@@ -1,0 +1,39 @@
+# Entorno virtual de Python
+venv/
+.venv/
+env/
+ENV/
+
+# Variables de entorno y secretos (¡NUNCA SUBIR AL REPO!)
+.env
+.env.local
+.env.*.local
+
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Archivos locales de Chainlit
+.chainlit/
+.files/
+chainlit.md
+
+# Archivos de configuración y bases de datos locales
+*.sqlite3
+*.log
+
+# Archivos del sistema operativo y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Datos temporales o subidas de prueba
+uploads/
+temp/
+*.pdf
+*.md
+!README.md
