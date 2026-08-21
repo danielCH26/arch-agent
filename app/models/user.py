@@ -1,4 +1,4 @@
-rom sqlalchemy import Column, Integer, String, Text, TIMESTAMP, func
+from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, func
 from app.core.database import Base
 
 class User(Base):
