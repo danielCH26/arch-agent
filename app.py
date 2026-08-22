@@ -4,6 +4,7 @@ from app.core.database import SessionLocal
 from app.models.user import User
 from app.auth.register import register_user
 from app.auth.validators import ValidationError
+from app.core.session_store import save_session_state, load_session_state
 
 def get_user_by_login(login: str):
     """Busca por username o por email, para que el login funcione con cualquiera de los dos."""
@@ -24,10 +25,35 @@ def auth_callback(username: str, password: str):
 
 @cl.on_chat_start
 async def start():
-    await cl.Message(content="¡Bienvenida! Sesión iniciada correctamente.").send()
+    user = cl.user_session.get("user")
+    user_id = user.metadata["user_id"]
+
+    state = load_session_state(user_id)
+    if state and state["project_id"]:
+        cl.user_session.set("project_id", state["project_id"])
+        cl.user_session.set("active_phase", state["active_phase"])
+        await cl.Message(
+            content=f"Bienvenida de vuelta. Proyecto activo: {state['project_id']}, fase: '{state['active_phase']}'."
+        ).send()
+    else:
+        await cl.Message(content="¡Bienvenida! Todavía no tienes una sesión activa.").send()
 
 @cl.on_chat_end
 async def on_end():
-    # Punto de enganche para "logout funcional": aquí se limpia lo que
-    # el resto de HUs vaya guardando en cl.user_session (ver HU2).
-    pass
+    user = cl.user_session.get("user")
+    if not user:
+        return
+    user_id = user.metadata["user_id"]
+    save_session_state(
+        user_id,
+        project_id=cl.user_session.get("project_id"),
+        active_phase=cl.user_session.get("active_phase"),
+    )
+@cl.on_message
+async def handle_test_phase_command(message: cl.Message):
+    if message.content.strip().lower().startswith("/set_fase "):
+        fase = message.content.strip().split(" ", 1)[1]
+        user = cl.user_session.get("user")
+        cl.user_session.set("active_phase", fase)
+        cl.user_session.set("project_id", 1)  
+        await cl.Message(content=f"Fase simulada como: {fase}").send()
