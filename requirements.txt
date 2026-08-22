@@ -12,3 +12,4 @@ python-dotenv
 numpy>=2.1.0
 email-validator
 python-dotenv
+jinja2
