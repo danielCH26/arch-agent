@@ -11,15 +11,19 @@
 
 services:
   # ===========================================================================
-  # APP PRINCIPAL (Chainlit + LangChain + MCPs)
+  # APP (Chainlit + LangChain + MCPs)
+  # ===========================================================================
+  # F01: este container es un PLACEHOLDER. Solo existe para que el compose
+  # tenga los 8 servicios del spec. La imagen real (Chainlit + LangChain)
+  # llega en F02. Aqui usamos alpine + sleep infinity para que:
+  #   - el container arranque y se mantenga Up
+  #   - las env vars lleguen al container (F02 las va a usar)
+  #   - NO se instale nada de Python/Node (esos viven en F02)
   # ===========================================================================
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: alpine:3.19
     container_name: asistente-app
-    ports:
-      - "8000:8000"
+    command: ["sleep", "infinity"]
     depends_on:
       postgres-app:
         condition: service_healthy
@@ -40,31 +44,14 @@ services:
 
       # Engram
       ENGRAM_PROJECT: ${ENGRAM_PROJECT}
-      ENGRAM_DATA_DIR: /root/.engram
 
       # LLM defaults (configurables luego en UI)
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_MODEL: ${LLM_MODEL}
-
-      # MCPs stdio paths (dentro del container)
-      PUPPETEER_CACHE_DIR: /app/.cache/puppeteer
-      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "false"
     volumes:
       - app_uploads:/app/uploads
       - app_logs:/app/logs
-      - models_cache:/app/models_cache
-      - npm_cache:/app/.npm
-      - uv_cache:/app/.cache/uv
-      - puppeteer_cache:/app/.cache/puppeteer
     restart: unless-stopped
-    healthcheck:
-      # Chainlit 2.x no expone decorador para routes custom. Usamos el root /
-      # como healthcheck: si responde 200 (HTML de Chainlit), el servicio esta vivo.
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ -o /dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 
   # ===========================================================================
   # ENGRAM (Memoria persistente)

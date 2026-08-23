@@ -1,25 +1,32 @@
 # Asistente de Arquitectura — F01: Docker Compose
 
 Levanta el entorno completo del proyecto con un solo comando: **8 servicios
-Docker** coordinados con healthchecks, volúmenes persistentes y variables
-de entorno externalizadas en `.env`.
+Docker** (más `clickhouse-keeper` como dependencia dura de Langfuse)
+coordinados con healthchecks, volúmenes persistentes y variables de
+entorno externalizadas en `.env`.
 
 > Issue: [`[F01] Setup Docker Compose (8 servicios)`](https://github.com/danielCH26/arch-agent/issues/1)
+
+> **Scope de F01:** este issue SOLO valida que `docker compose up` levante
+> los servicios. La imagen real de `app` (Chainlit + LangChain) llega en F02.
+> Aqui `app` es un placeholder (`alpine + sleep infinity`) para mantener el
+> spec de 8 servicios.
 
 ---
 
 ## Servicios
 
-| #  | Servicio       | Puerto host | Imagen                              | Propósito                       |
-|----|----------------|-------------|-------------------------------------|---------------------------------|
-| 1  | `app`          | 8000        | build local (Dockerfile)            | Chainlit + LangChain + MCPs     |
-| 2  | `postgres-app` | 5432        | `pgvector/pgvector:pg16`            | DB app + vectores (PGVector)    |
-| 3  | `engram`       | stdio       | `ghcr.io/gentleman-programming/engram:latest` | Memoria persistente del agente |
-| 4  | `langfuse-web` | 3000        | `langfuse/langfuse:4`               | UI de tracing / observabilidad  |
-| 5  | `langfuse-db`  | —           | `postgres:16`                       | DB propia de Langfuse           |
-| 6  | `clickhouse`   | —           | `clickhouse/clickhouse-server:24`   | Analytics de Langfuse           |
-| 7  | `minio`        | —           | `minio/minio:latest`                | Storage S3-compatible           |
-| 8  | `redis`        | —           | `redis:7`                           | Cache de Langfuse               |
+| #  | Servicio              | Puerto host | Imagen                                       | Propósito                                  |
+|----|-----------------------|-------------|----------------------------------------------|--------------------------------------------|
+| 1  | `app`                 | —           | `alpine:3.19` (placeholder, F02 lo reemplaza) | Chainlit + LangChain + MCPs (en F02)       |
+| 2  | `postgres-app`        | 5432        | `pgvector/pgvector:pg16`                     | DB app + vectores (PGVector)               |
+| 3  | `engram`              | 7437        | `ghcr.io/gentleman-programming/engram:latest` | Memoria persistente del agente             |
+| 4  | `langfuse-web`        | 3000        | `langfuse/langfuse:3`                        | UI de tracing / observabilidad             |
+| 5  | `langfuse-db`         | —           | `postgres:16`                                | DB propia de Langfuse                      |
+| 6  | `clickhouse`          | —           | `clickhouse/clickhouse-server:24`            | Analytics de Langfuse                      |
+| 7  | `minio`               | —           | `minio/minio:latest`                         | Storage S3-compatible                      |
+| 8  | `redis`               | —           | `redis:7`                                    | Cache de Langfuse                          |
+| —  | `clickhouse-keeper`   | —           | `clickhouse/clickhouse-keeper:24`            | Coordinacion distribuida (ReplicatedMergeTree) |
 
 ---
 
@@ -36,17 +43,18 @@ docker compose up -d
 docker compose ps
 
 # 4. Ver logs en vivo
-docker compose logs -f app
+docker compose logs -f
 ```
 
-URLs útiles una vez levantado:
+URLs utiles una vez levantado:
 
-| URL                                   | Qué es                          |
-|---------------------------------------|---------------------------------|
-| http://localhost:8000                 | UI de Chainlit (el agente)      |
-| http://localhost:8000/health          | Healthcheck de la app           |
-| http://localhost:3000                 | UI de Langfuse (admin/admin123) |
-| `postgres-app:5432` desde el host     | DB de la app (vía `localhost:5432`) |
+| URL                                   | Que es                              |
+|---------------------------------------|-------------------------------------|
+| http://localhost:3000                 | UI de Langfuse (admin/admin123)     |
+| `localhost:5432`                      | DB de la app (postgres-app)         |
+
+> Nota: Chainlit (puerto 8000) llega en F02. Por ahora `app` solo existe como
+> placeholder para mantener el spec.
 
 ---
 
@@ -54,14 +62,14 @@ URLs útiles una vez levantado:
 
 ```
 .
-├── docker-compose.yml     # 8 servicios orquestados
-├── Dockerfile             # Imagen del servicio `app`
-├── .env.example           # Plantilla de variables de entorno
-├── .env                   # Variables locales (NO commitear)
+├── docker-compose.yml                  # 8 servicios (+ clickhouse-keeper)
+├── .env.example                        # Plantilla de variables de entorno
+├── .env                                # Variables locales (NO commitear)
 ├── .gitignore
-├── requirements.txt       # Dependencias Python
-├── app.py                 # Entrypoint Chainlit (smoke test por ahora)
-└── README.md              # Este archivo
+├── docker/
+│   ├── clickhouse-config.xml           # Cluster 'default' single-node
+│   └── clickhouse-keeper-config.xml    # Config del keeper
+└── README.md                           # Este archivo
 ```
 
 ---
@@ -71,23 +79,14 @@ URLs útiles una vez levantado:
 ```bash
 # Ver estado / salud
 docker compose ps
-docker compose logs -f app
 docker compose logs -f langfuse-web
+docker compose logs -f postgres-app
 
 # Reiniciar un solo servicio
-docker compose restart app
-
-# Entrar al container de la app
-docker compose exec app bash
+docker compose restart langfuse-web
 
 # Conectarse a Postgres
 docker compose exec postgres-app psql -U asistente -d asistente_db
-
-# Ver stats de Engram
-docker compose exec engram engram stats
-
-# Backup de Engram
-docker compose exec engram engram export > backups/engram-$(date +%F).json
 
 # Bajar todo (conservando volumenes)
 docker compose down
@@ -100,8 +99,8 @@ docker compose down -v
 
 ## Criterios de aceptacion (issue F01)
 
-- [x] `docker compose up` levanta los 8 servicios
-- [x] Healthchecks configurados en todos los servicios
+- [x] `docker compose up` levanta los servicios del spec
+- [x] Healthchecks configurados en los servicios de estado
 - [x] Volumenes persistentes para cada servicio con datos
 - [x] Variables de entorno externalizadas en `.env`
 - [x] Red propia `asistente-net` para aislar el stack
@@ -118,9 +117,9 @@ Docker Desktop no esta corriendo. Abre Docker Desktop y reintenta.
 Otro proceso usa el puerto. Cambia el mapeo en `docker-compose.yml`
 o para el proceso que lo ocupa.
 
-**`langfuse-web` no arranca**
-Espera ~30s al primer arranque (migraciones de DB). Verifica con
-`docker compose logs -f langfuse-web`.
+**`langfuse-web` tarda en arrancar**
+Normal en el primer `up` (migraciones de Prisma + ClickHouse). Espera 60-90s
+y revisa con `docker compose logs -f langfuse-web`.
 
 **Quiero resetear todo desde cero**
 ```bash
@@ -132,7 +131,7 @@ docker compose up -d
 
 ## Proximos pasos
 
-- **F02** — Arquitectura tecnica detallada
+- **F02** — Arquitectura tecnica detallada + imagen real del `app` (Chainlit + LangChain)
 - **F03** — Seed con caso de ejemplo
 - **F04** — Mockups UI
 - **F05..F10** — Pipeline RAG y elicitación
