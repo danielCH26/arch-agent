@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Crear cuenta</title>
+  <style>
+    :root { --accent: #7c3aed; --bg: #0d0d10; --card: #17171b; --border: #2a2a30; --text: #ececf1; --muted: #9a9aa5; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, "Inter", "Segoe UI", sans-serif;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 3rem; width: 100%; max-width: 420px;
+    }
+    h2 { margin: 0 0 1.5rem; font-size: 1.4rem; font-weight: 600; text-align: center; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    input {
+      width: 100%; padding: 0.85rem 1rem; margin-bottom: 1.2rem;
+      background: #0d0d10; border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 1rem;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+    button {
+      width: 100%; padding: 0.85rem; border: none; border-radius: 8px;
+      background: var(--accent); color: white; font-size: 1rem; font-weight: 600; cursor: pointer;
+    }
+    button:hover { opacity: 0.9; }
+    .msg { text-align: center; font-size: 0.9rem; margin-bottom: 1.2rem; }
+    .msg.error { color: #f87171; }
+    .msg.success { color: #4ade80; }
+    a { color: var(--accent); text-decoration: none; }
+    .footer { text-align: center; margin-top: 1.2rem; font-size: 0.9rem; color: var(--muted); }
+
+    .password-wrap { position: relative; }
+    .password-wrap input { padding-right: 2.75rem; margin-bottom: 0; }
+    .toggle-password {
+      position: absolute; top: 0; right: 0; bottom: 0;
+      width: 2.75rem; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      background: none; border: none; padding: 0; margin: 0; cursor: pointer;
+      color: var(--muted);
+    }
+    .toggle-password:hover { color: var(--text); opacity: 1; }
+    .toggle-password svg { width: 20px; height: 20px; display: block; }
+    .toggle-password .icon-off { display: none; }
+    .toggle-password.showing .icon-eye { display: none; }
+    .toggle-password.showing .icon-off { display: block; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {% if success %}
+      <h2>Cuenta creada</h2>
+      <p class="msg success">Tu cuenta quedó lista.</p>
+      <div class="footer"><a href="/chainlit">Ir a iniciar sesión →</a></div>
+    {% else %}
+      <h2>Crear cuenta</h2>
+      {% if error %}<p class="msg error">{{ error }}</p>{% endif %}
+      <form method="post" action="/register">
+        <label for="username">Username</label>
+        <input id="username" name="username" placeholder="nombre de usuario" value="{{ username or '' }}" autocomplete="off">
+
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" placeholder="laura@example.com" value="{{ email or '' }}" autocomplete="off">
+
+        <label for="password">Contraseña</label>
+        <div class="password-wrap" style="margin-bottom: 1.2rem;">
+          <input id="password" name="password" type="password" placeholder="mínimo 8 caracteres" autocomplete="new-password">
+          <button type="button" class="toggle-password" onclick="togglePassword()" aria-label="Mostrar u ocultar contraseña">
+            <svg class="icon-eye" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <svg class="icon-off" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a21.8 21.8 0 0 1 5.06-6.94"></path>
+              <path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a21.77 21.77 0 0 1-3.22 4.65"></path>
+              <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>
+              <line x1="1" y1="1" x2="23" y2="23"></line>
+            </svg>
+          </button>
+        </div>
+
+        <button type="submit">Crear cuenta</button>
+      </form>
+      <div class="footer">¿Ya tienes cuenta? <a href="/chainlit">Inicia sesión</a></div>
+    {% endif %}
+  </div>
+
+  <script>
+    function togglePassword() {
+      const input = document.getElementById('password');
+      const btn = document.querySelector('.toggle-password');
+      const showing = input.type === 'password';
+      input.type = showing ? 'text' : 'password';
+      btn.classList.toggle('showing', showing);
+    }
+  </script>
+</body>
+</html>

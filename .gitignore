@@ -2,7 +2,7 @@
 # .gitignore — Asistente de Arquitectura
 # =============================================================================
 
-# --- Python ---
+# --- Python & Entornos Virtuales ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,7 +19,7 @@ ENV/
 dist/
 build/
 
-# --- Secrets y entorno ---
+# --- Variables de entorno y secretos ---
 .env
 .env.local
 .env.*.local
@@ -27,11 +27,12 @@ build/
 *.key
 secrets/
 
-# --- Logs ---
+# --- Logs y Bases de datos ---
 *.log
 logs/
+*.sqlite3
 
-# --- IDEs ---
+# --- IDEs y Sistema Operativo ---
 .vscode/
 .idea/
 *.swp
@@ -39,9 +40,19 @@ logs/
 .DS_Store
 Thumbs.db
 
-# --- Docker / volumenes locales ---
-docker-data/
+# --- Chainlit ---
+.chainlit/
+.files/
+chainlit.md
 
-# --- Langfuse / Engram caches locales ---
+# --- Docker y Caches locales ---
+docker-data/
 .langfuse/
 .engram/
+
+# --- Datos temporales y subidas ---
+uploads/
+temp/
+*.pdf
+*.md
+!README.md
