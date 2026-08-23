@@ -1,5 +1,5 @@
-# =============================================================================
-# Docker Compose — Asistente de Arquitectura (F01)
+﻿# =============================================================================
+# Docker Compose — arch-agent de Arquitectura (F01)
 # 8 servicios: app, postgres-app, engram, langfuse-web, langfuse-db,
 #              clickhouse, minio, redis
 # =============================================================================
@@ -22,7 +22,7 @@ services:
   # ===========================================================================
   app:
     image: alpine:3.19
-    container_name: asistente-app
+    container_name: arch-agent-app
     command: ["sleep", "infinity"]
     depends_on:
       postgres-app:
@@ -58,7 +58,7 @@ services:
   # ===========================================================================
   engram:
     image: ghcr.io/gentleman-programming/engram:latest
-    container_name: asistente-engram
+    container_name: arch-agent-engram
     # 'engram serve' arranca el HTTP API server (puerto default 7437).
     # NO existe subcomando 'cloud' en la imagen open-source — eso era del
     # stack doc original y causaba el restart loop. Mapeamos 7437 por si
@@ -85,7 +85,7 @@ services:
   # ===========================================================================
   postgres-app:
     image: pgvector/pgvector:pg16
-    container_name: asistente-postgres
+    container_name: arch-agent-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -106,7 +106,7 @@ services:
   # ===========================================================================
   langfuse-web:
     image: langfuse/langfuse:3
-    container_name: asistente-langfuse-web
+    container_name: arch-agent-langfuse-web
     ports:
       - "3000:3000"
     depends_on:
@@ -155,7 +155,7 @@ services:
   # Langfuse — DB
   langfuse-db:
     image: postgres:16
-    container_name: asistente-langfuse-db
+    container_name: arch-agent-langfuse-db
     environment:
       POSTGRES_USER: ${LANGFUSE_DB_USER}
       POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD}
@@ -172,7 +172,7 @@ services:
   # Langfuse — ClickHouse (analytics)
   clickhouse:
     image: clickhouse/clickhouse-server:24
-    container_name: asistente-clickhouse
+    container_name: arch-agent-clickhouse
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
@@ -200,7 +200,7 @@ services:
   # Necesario para que las migraciones de Langfuse (CREATE TABLE ... ON CLUSTER) funcionen.
   clickhouse-keeper:
     image: clickhouse/clickhouse-keeper:24
-    container_name: asistente-clickhouse-keeper
+    container_name: arch-agent-clickhouse-keeper
     volumes:
       - ./docker/clickhouse-keeper-config.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
       - langfuse_clickhouse_keeper_data:/var/lib/clickhouse-keeper
@@ -212,7 +212,7 @@ services:
   # Langfuse — MinIO (S3-compatible storage)
   minio:
     image: minio/minio:latest
-    container_name: asistente-minio
+    container_name: arch-agent-minio
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" /data'
     environment:
@@ -231,7 +231,7 @@ services:
   # Langfuse — Redis (cache)
   redis:
     image: redis:7
-    container_name: asistente-redis
+    container_name: arch-agent-redis
     command: redis-server --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
@@ -249,43 +249,43 @@ services:
 volumes:
   # App
   app_uploads:
-    name: asistente_app_uploads
+    name: arch_agent_app_uploads
   app_logs:
-    name: asistente_app_logs
+    name: arch_agent_app_logs
   models_cache:
-    name: asistente_models_cache
+    name: arch_agent_models_cache
   npm_cache:
-    name: asistente_npm_cache
+    name: arch_agent_npm_cache
   uv_cache:
-    name: asistente_uv_cache
+    name: arch_agent_uv_cache
   puppeteer_cache:
-    name: asistente_puppeteer_cache
+    name: arch_agent_puppeteer_cache
 
   # Engram
   engram_data:
-    name: asistente_engram_data
+    name: arch_agent_engram_data
 
   # Postgres App
   pg_app_data:
-    name: asistente_pg_app_data
+    name: arch_agent_pg_app_data
 
   # Langfuse
   langfuse_db_data:
-    name: asistente_langfuse_db_data
+    name: arch_agent_langfuse_db_data
   langfuse_clickhouse_data:
-    name: asistente_langfuse_clickhouse_data
+    name: arch_agent_langfuse_clickhouse_data
   langfuse_clickhouse_logs:
-    name: asistente_langfuse_clickhouse_logs
+    name: arch_agent_langfuse_clickhouse_logs
   langfuse_minio_data:
-    name: asistente_langfuse_minio_data
+    name: arch_agent_langfuse_minio_data
   langfuse_clickhouse_keeper_data:
-    name: asistente_langfuse_clickhouse_keeper_data
+    name: arch_agent_langfuse_clickhouse_keeper_data
   redis_data:
-    name: asistente_redis_data
+    name: arch_agent_redis_data
 
 # =============================================================================
 # REDES
 # =============================================================================
 networks:
   default:
-    name: asistente-net
+    name: arch-agent-net

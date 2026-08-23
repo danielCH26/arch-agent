@@ -1,4 +1,4 @@
-# Asistente de Arquitectura — F01: Docker Compose
+﻿# arch-agent de Arquitectura — F01: Docker Compose
 
 Levanta el entorno completo del proyecto con un solo comando: **8 servicios
 Docker** (más `clickhouse-keeper` como dependencia dura de Langfuse)
@@ -86,7 +86,7 @@ docker compose logs -f postgres-app
 docker compose restart langfuse-web
 
 # Conectarse a Postgres
-docker compose exec postgres-app psql -U asistente -d asistente_db
+docker compose exec postgres-app psql -U arch-agent -d arch_agent_db
 
 # Bajar todo (conservando volumenes)
 docker compose down
@@ -103,7 +103,7 @@ docker compose down -v
 - [x] Healthchecks configurados en los servicios de estado
 - [x] Volumenes persistentes para cada servicio con datos
 - [x] Variables de entorno externalizadas en `.env`
-- [x] Red propia `asistente-net` para aislar el stack
+- [x] Red propia `arch-agent-net` para aislar el stack
 - [x] `restart: unless-stopped` en servicios de estado
 
 ---
