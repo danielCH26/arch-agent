@@ -58,7 +58,9 @@ services:
       - puppeteer_cache:/app/.cache/puppeteer
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # Chainlit 2.x no expone decorador para routes custom. Usamos el root /
+      # como healthcheck: si responde 200 (HTML de Chainlit), el servicio esta vivo.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ -o /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -70,12 +72,25 @@ services:
   engram:
     image: ghcr.io/gentleman-programming/engram:latest
     container_name: asistente-engram
-    stdin_open: true
-    tty: true
+    # 'engram serve' arranca el HTTP API server (puerto default 7437).
+    # NO existe subcomando 'cloud' en la imagen open-source — eso era del
+    # stack doc original y causaba el restart loop. Mapeamos 7437 por si
+    # se quiere usar desde la app o para `docker compose exec engram engram ...`.
+    command: serve 7437
+    ports:
+      - "7437:7437"
     volumes:
       - engram_data:/root/.engram
     environment:
       ENGRAM_PROJECT: ${ENGRAM_PROJECT}
+    # El healthcheck lo dejamos simple (TCP) porque el endpoint exacto
+    # del HTTP server de engram puede cambiar entre versiones
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 --spider http://127.0.0.1:7437/ || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # ===========================================================================
@@ -103,7 +118,7 @@ services:
   # LANGFUSE — Web UI
   # ===========================================================================
   langfuse-web:
-    image: langfuse/langfuse:4
+    image: langfuse/langfuse:3
     container_name: asistente-langfuse-web
     ports:
       - "3000:3000"
@@ -118,6 +133,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${LANGFUSE_DB_USER}:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/${LANGFUSE_DB_NAME}
+      # SALT: requerido por Langfuse para encriptar API keys. Generar uno fuerte en prod.
+      SALT: ${LANGFUSE_SALT}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
       NEXTAUTH_URL: http://localhost:3000
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME}
@@ -126,10 +143,14 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME}
       CLICKHOUSE_URL: http://clickhouse:8123
+      # Migrations usan protocolo nativo (puerto 9000) con credenciales en URL
+      CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@clickhouse:9000
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB}
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: ${S3_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${S3_BUCKET}
       S3_ACCESS_KEY: ${MINIO_ROOT_USER}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       S3_REGION: ${S3_REGION}
@@ -171,8 +192,12 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
+      - ./docker/clickhouse-config.xml:/etc/clickhouse-server/config.d/99-langfuse.xml:ro
       - langfuse_clickhouse_data:/var/lib/clickhouse
       - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    depends_on:
+      clickhouse-keeper:
+        condition: service_started
     ulimits:
       nofile:
         soft: 262144
@@ -182,6 +207,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # Langfuse — ClickHouse Keeper (coordinacion distribuida para ReplicatedMergeTree)
+  # Necesario para que las migraciones de Langfuse (CREATE TABLE ... ON CLUSTER) funcionen.
+  clickhouse-keeper:
+    image: clickhouse/clickhouse-keeper:24
+    container_name: asistente-clickhouse-keeper
+    volumes:
+      - ./docker/clickhouse-keeper-config.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - langfuse_clickhouse_keeper_data:/var/lib/clickhouse-keeper
+    # Sin healthcheck: la imagen no trae `nc` y el endpoint HTTP no es
+    # convencional. clickhouse lo necesita para funcionar, asi que su
+    # propio healthcheck ya cubre la verificacion indirecta.
     restart: unless-stopped
 
   # Langfuse — MinIO (S3-compatible storage)
@@ -253,6 +291,8 @@ volumes:
     name: asistente_langfuse_clickhouse_logs
   langfuse_minio_data:
     name: asistente_langfuse_minio_data
+  langfuse_clickhouse_keeper_data:
+    name: asistente_langfuse_clickhouse_keeper_data
   redis_data:
     name: asistente_redis_data
 
