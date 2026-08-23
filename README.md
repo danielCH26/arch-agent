@@ -53,9 +53,6 @@ URLs utiles una vez levantado:
 | http://localhost:3000                 | UI de Langfuse (login: `admin@asistente.local` / `admin123`) |
 | `localhost:5432`                      | DB de la app (postgres-app)         |
 
-> Nota: Chainlit (puerto 8000) llega en F02. Por ahora `app` solo existe como
-> placeholder para mantener el spec.
-
 ---
 
 ## Configuracion por desarrollador (importante)
@@ -98,7 +95,7 @@ notepad .env                  # o tu editor favorito
 ### Que pasa con el .env
 
 - `.env` esta en `.gitignore` → `git add .` NUNCA lo va a incluir
-- Si accidentalmente haces `git add .env`, hace `git rm --cached .env` y commitea el `.gitignore`
+- Si en algun momento `.env` se trackea (raro pero pasa), hace `git rm --cached .env` y commitea el `.gitignore`
 - Si ya lo subiste, rotar TODAS las credenciales (asumir comprometo)
 - Para trabajo en equipo, cada dev tiene su propio `.env` local
 
@@ -184,9 +181,4 @@ docker compose up -d
 
 ---
 
-## Proximos pasos
 
-- **F02** — Arquitectura tecnica detallada + imagen real del `app` (Chainlit + LangChain)
-- **F03** — Seed con caso de ejemplo
-- **F04** — Mockups UI
-- **F05..F10** — Pipeline RAG y elicitación
