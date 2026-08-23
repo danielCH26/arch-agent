@@ -1,7 +1,6 @@
 ﻿# arch-agent de Arquitectura — F01: Docker Compose
 
-Levanta el entorno completo del proyecto con un solo comando: **8 servicios
-Docker** (más `clickhouse-keeper` como dependencia dura de Langfuse)
+Levanta el entorno completo del proyecto con un solo comando: **9 servicios Docker** (8 del spec + `clickhouse-keeper` como dependencia dura de Langfuse)
 coordinados con healthchecks, volúmenes persistentes y variables de
 entorno externalizadas en `.env`.
 
@@ -10,7 +9,7 @@ entorno externalizadas en `.env`.
 > **Scope de F01:** este issue SOLO valida que `docker compose up` levante
 > los servicios. La imagen real de `app` (Chainlit + LangChain) llega en F02.
 > Aqui `app` es un placeholder (`alpine + sleep infinity`) para mantener el
-> spec de 8 servicios.
+> spec de 8 servicios (+ 1 keeper).
 
 ---
 
@@ -26,7 +25,7 @@ entorno externalizadas en `.env`.
 | 6  | `clickhouse`          | —           | `clickhouse/clickhouse-server:24`            | Analytics de Langfuse                      |
 | 7  | `minio`               | —           | `minio/minio:latest`                         | Storage S3-compatible                      |
 | 8  | `redis`               | —           | `redis:7`                                    | Cache de Langfuse                          |
-| —  | `clickhouse-keeper`   | —           | `clickhouse/clickhouse-keeper:24`            | Coordinacion distribuida (ReplicatedMergeTree) |
+| 9  | `clickhouse-keeper`   | —           | `clickhouse/clickhouse-keeper:24`            | Coordinacion distribuida (ReplicatedMergeTree) |
 
 ---
 
@@ -117,7 +116,7 @@ Si aparece, parar y revisar `.gitignore` antes de cualquier `git commit`.
 
 ```
 .
-├── docker-compose.yml                  # 8 servicios (+ clickhouse-keeper)
+├── docker-compose.yml                  # 9 servicios (8 del spec + 1 keeper)
 ├── .env.example                        # Plantilla de variables de entorno
 ├── .env                                # Variables locales (NO commitear)
 ├── .gitignore
