@@ -54,5 +54,3 @@ docker-data/
 uploads/
 temp/
 *.pdf
-*.md
-!README.md
