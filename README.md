@@ -6,10 +6,10 @@ entorno externalizadas en `.env`.
 
 > Issue: [`[F01] Setup Docker Compose (8 servicios)`](https://github.com/danielCH26/arch-agent/issues/1)
 
-> **Scope de F01:** este issue SOLO valida que `docker compose up` levante
-> los servicios. La imagen real de `app` (Chainlit + LangChain) llega en F02.
-> Aqui `app` es un placeholder (`alpine + sleep infinity`) para mantener el
-> spec de 8 servicios (+ 1 keeper).
+> **Nota sobre F01:** el spec original define `app` como "Chainlit + LangChain".
+> En este F01 el container `app` es solo un placeholder (`alpine:3.19` + `sleep infinity`)
+> para mantener el contrato de 8 servicios. La implementacion real de la app
+> entra en F02, donde se decide la imagen y el stack.
 
 ---
 
@@ -17,7 +17,7 @@ entorno externalizadas en `.env`.
 
 | #  | Servicio              | Puerto host | Imagen                                       | Propósito                                  |
 |----|-----------------------|-------------|----------------------------------------------|--------------------------------------------|
-| 1  | `app`                 | —           | `alpine:3.19` (placeholder, F02 lo reemplaza) | Chainlit + LangChain + MCPs (en F02)       |
+| 1  | `app`                 | —           | `alpine:3.19` (placeholder F01)              | Implementacion real en F02                 |
 | 2  | `postgres-app`        | 5432        | `pgvector/pgvector:pg16`                     | DB app + vectores (PGVector)               |
 | 3  | `engram`              | 7437        | `ghcr.io/gentleman-programming/engram:latest` | Memoria persistente del agente             |
 | 4  | `langfuse-web`        | 3000        | `langfuse/langfuse:3`                        | UI de tracing / observabilidad             |
