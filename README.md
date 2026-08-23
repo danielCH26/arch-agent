@@ -1,10 +1,10 @@
-﻿# arch-agent de Arquitectura — F01: Docker Compose
+﻿# arch-agent — F01: Docker Compose
 
 Levanta el entorno completo del proyecto con un solo comando: **9 servicios Docker** (8 del spec + `clickhouse-keeper` como dependencia dura de Langfuse)
 coordinados con healthchecks, volúmenes persistentes y variables de
 entorno externalizadas en `.env`.
 
-> Issue: [`[F01] Setup Docker Compose (8 servicios)`](https://github.com/danielCH26/arch-agent/issues/1)
+> Issue: [`[F01] Setup Docker Compose (8 servicios)`](https://github.com/danielCH26/arch-agent/issues/1) (titulo original)
 
 > **Nota sobre F01:** el spec original define `app` como "Chainlit + LangChain".
 > En este F01 el container `app` es solo un placeholder (`alpine:3.19` + `sleep infinity`)
