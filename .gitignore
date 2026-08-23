@@ -1,56 +1,39 @@
-# =============================================================================
-# .gitignore — Asistente de Arquitectura
-# =============================================================================
+# Entorno virtual de Python
+venv/
+.venv/
+env/
+ENV/
 
-# --- Python & Entornos Virtuales ---
+# Variables de entorno y secretos (¡NUNCA SUBIR AL REPO!)
+.env
+.env.local
+.env.*.local
+
+# Archivos de caché de Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-.venv/
-venv/
-env/
-ENV/
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-*.egg-info/
-dist/
-build/
 
-# --- Variables de entorno y secretos ---
-.env
-.env.local
-.env.*.local
-*.pem
-*.key
-secrets/
-
-# --- Logs y Bases de datos ---
-*.log
-logs/
-*.sqlite3
-
-# --- IDEs y Sistema Operativo ---
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
-# --- Chainlit ---
+# Archivos locales de Chainlit
 .chainlit/
 .files/
 chainlit.md
 
-# --- Docker y Caches locales ---
-docker-data/
-.langfuse/
-.engram/
+# Archivos de configuración y bases de datos locales
+*.sqlite3
+*.log
 
-# --- Datos temporales y subidas ---
+# Archivos del sistema operativo y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Datos temporales o subidas de prueba
 uploads/
 temp/
 *.pdf
+*.md
+!README.md
