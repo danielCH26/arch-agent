@@ -33,7 +33,8 @@ entorno externalizadas en `.env`.
 
 ```bash
 # 1. Copiar la plantilla de variables de entorno
-cp .env.example .env
+cp .env.example .env          # Mac/Linux
+copy .env.example .env        # Windows (cmd.exe)
 
 # 2. Levantar todo en background
 docker compose up -d
@@ -49,7 +50,7 @@ URLs utiles una vez levantado:
 
 | URL                                   | Que es                              |
 |---------------------------------------|-------------------------------------|
-| http://localhost:3000                 | UI de Langfuse (admin/admin123)     |
+| http://localhost:3000                 | UI de Langfuse (login: `admin@asistente.local` / `admin123`) |
 | `localhost:5432`                      | DB de la app (postgres-app)         |
 
 > Nota: Chainlit (puerto 8000) llega en F02. Por ahora `app` solo existe como
@@ -140,7 +141,7 @@ docker compose logs -f postgres-app
 docker compose restart langfuse-web
 
 # Conectarse a Postgres
-docker compose exec postgres-app psql -U arch-agent -d arch_agent_db
+docker compose exec postgres-app psql -U asistente -d asistente_db
 
 # Bajar todo (conservando volumenes)
 docker compose down
@@ -157,7 +158,7 @@ docker compose down -v
 - [x] Healthchecks configurados en los servicios de estado
 - [x] Volumenes persistentes para cada servicio con datos
 - [x] Variables de entorno externalizadas en `.env`
-- [x] Red propia `arch-agent-net` para aislar el stack
+- [x] Red propia de Docker Compose para aislar el stack
 - [x] `restart: unless-stopped` en servicios de estado
 
 ---
