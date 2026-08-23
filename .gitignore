@@ -1,0 +1,47 @@
+# =============================================================================
+# .gitignore — Asistente de Arquitectura
+# =============================================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# --- Secrets y entorno ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Docker / volumenes locales ---
+docker-data/
+
+# --- Langfuse / Engram caches locales ---
+.langfuse/
+.engram/
