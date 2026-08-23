@@ -58,6 +58,61 @@ URLs utiles una vez levantado:
 
 ---
 
+## Configuracion por desarrollador (importante)
+
+**Regla de oro:** el archivo `.env` (con tus secretos) **NUNCA** se commitea al repo.
+Cada miembro del equipo genera su propio `.env` a partir de `.env.example`.
+
+### Setup inicial (una vez)
+
+```bash
+# 1. Clonar el repo
+git clone <repo-url>
+cd arch-agent
+
+# 2. Copiar la plantilla
+cp .env.example .env          # Mac/Linux
+copy .env.example .env        # Windows (cmd.exe)
+
+# 3. Editar .env con TUS credenciales (ver seccion siguiente)
+notepad .env                  # o tu editor favorito
+```
+
+### Que valores debes cambiar
+
+| Variable | Por que cambiarla | Como obtenerla |
+|----------|-------------------|----------------|
+| `LANGFUSE_PUBLIC_KEY` | Identifica tu instancia de Langfuse | Se genera sola en Langfuse UI (http://localhost:3000) al primer login |
+| `LANGFUSE_SECRET_KEY` | Lo mismo, es la clave privada | Misma UI, Settings -> API Keys |
+| `LANGFUSE_SALT` | Usado para encriptar datos en Langfuse | Cualquier string random de 32+ chars (`openssl rand -hex 32`) |
+| `NEXTAUTH_SECRET` | Firma los tokens de sesion de Langfuse | Cualquier string random de 32+ chars |
+| `LANGFUSE_INIT_USER_PASSWORD` | Tu password personal para Langfuse | El que vos quieras (no uses `admin123` en prod) |
+| `POSTGRES_PASSWORD` | Password de tu DB local | Cualquiera, es solo local |
+| `MINIO_ROOT_PASSWORD` | Password del storage S3 | Cualquiera, es solo local |
+| `REDIS_PASSWORD` | Password del cache | Cualquiera, es solo local |
+| `LLM_BASE_URL` | Apunta a tu provider LLM | `http://host.docker.internal:11434/v1` (Ollama), `https://api.openai.com/v1` (OpenAI), etc. |
+| `LLM_MODEL` | Que modelo usar | Depende del provider (`llama3`, `gpt-4o-mini`, etc.) |
+| `CONTEXT7_API_KEY` | API key de Context7 (opcional) | https://context7.com |
+| `WEB_SEARCH_API_KEY` | API key de busqueda web (opcional) | Tavily o Exa |
+
+### Que pasa con el .env
+
+- `.env` esta en `.gitignore` → `git add .` NUNCA lo va a incluir
+- Si accidentalmente haces `git add .env`, hace `git rm --cached .env` y commitea el `.gitignore`
+- Si ya lo subiste, rotar TODAS las credenciales (asumir comprometo)
+- Para trabajo en equipo, cada dev tiene su propio `.env` local
+
+### Verificar que .env no se commitea
+
+```bash
+git status
+# .env NO debe aparecer en la lista
+```
+
+Si aparece, parar y revisar `.gitignore` antes de cualquier `git commit`.
+
+---
+
 ## Estructura del repo
 
 ```
