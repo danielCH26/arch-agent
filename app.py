@@ -1,10 +1,19 @@
+import os
+from pathlib import Path
+
 import bcrypt
 import chainlit as cl
+from dotenv import load_dotenv
+
+# Cargar variables del .env al inicio (antes que nada)
+_env_path = Path(__file__).parent / ".env"
+load_dotenv(_env_path)
+
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.auth.register import register_user
 from app.auth.validators import ValidationError
-from app.llm.config_form import render_config_form_if_needed, render_sidebar_settings
+from app.llm.config_form import render_config_form_if_needed, render_sidebar_settings  # noqa: F401
 
 def get_user_by_login(login: str):
     """Busca por username o por email, para que el login funcione con cualquiera de los dos."""
@@ -36,13 +45,15 @@ async def start():
     # Verificar si tiene config LLM (HU12)
     config_ok = await render_config_form_if_needed(user_id)
     if not config_ok:
-        return  # Se mostró el form, esperar a que el usuario complete
+        # Ya se mostró el form (paso 1/3 pide URL)
+        return
 
-    # Si tiene config, mostrar bienvenida + botón en sidebar
+    # Si tiene config, mostrar bienvenida
     await cl.Message(
-        content=f"¡Bienvenida {user.identifier}! Sesión iniciada correctamente."
+        content=f"¡Bienvenida {user.identifier}! Sesión iniciada correctamente.\n\n"
+        f"Tu LLM está configurado. Si querés cambiarlo, usá el botón:",
+        actions=[await render_sidebar_settings(user_id)],
     ).send()
-    await render_sidebar_settings(user_id)
 
 @cl.on_chat_end
 async def on_end():
