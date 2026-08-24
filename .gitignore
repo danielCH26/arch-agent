@@ -37,3 +37,4 @@ temp/
 *.pdf
 *.md
 !README.md
+!README_hu2.md
