@@ -1,6 +1,8 @@
 sqlalchemy>=2.0
 psycopg2-binary
 chainlit
+fastapi
+uvicorn
 langchain>=0.3.0
 langchain-community>=0.3.0
 langchain-postgres
@@ -8,7 +10,9 @@ pypdf>=4.0.0
 unstructured>=0.16.0
 sentence-transformers>=3.0.0
 bcrypt
-python-dotenv
+cryptography
+httpx
+python-multipart
 numpy>=2.1.0
 email-validator
 python-dotenv
