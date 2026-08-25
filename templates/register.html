@@ -48,6 +48,11 @@
     .toggle-password .icon-off { display: none; }
     .toggle-password.showing .icon-eye { display: none; }
     .toggle-password.showing .icon-off { display: block; }
+
+    .password-rules {
+      display: block; font-size: 0.78rem; color: var(--muted);
+      margin: 0.4rem 0 1.2rem; line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -82,6 +87,9 @@
             </svg>
           </button>
         </div>
+        <small class="password-rules">
+          Debe tener mínimo 8 caracteres, una mayúscula, un número y un carácter especial (! @ # $ % &).
+        </small>
 
         <button type="submit">Crear cuenta</button>
       </form>

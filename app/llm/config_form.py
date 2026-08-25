@@ -22,6 +22,15 @@ from app.core.llm_loader import (
     LLMConfigError,
 )
 
+_on_config_complete = None
+
+
+def set_on_config_complete(callback):
+    """Registra una función async (sin argumentos) a llamar cuando la
+    configuración de LLM se guarda correctamente."""
+    global _on_config_complete
+    _on_config_complete = callback
+
 
 # =============================================================================
 # Lógica pura de filtrado (testeable sin Chainlit)
@@ -393,10 +402,11 @@ async def _save_and_confirm(
             content=(
                 f"✅ **Configuración guardada correctamente**\n\n"
                 f"- **Proveedor**: `{base_url}`\n"
-                f"- **Modelo**: `{model}`\n\n"
-                f"Ahora podés usar el asistente. Escribí tu consulta."
+                f"- **Modelo**: `{model}`"
             )
         ).send()
+        if _on_config_complete:
+            await _on_config_complete()
     except Exception as e:
         await cl.Message(
             content=f"❌ **Error al guardar:** {e}"
