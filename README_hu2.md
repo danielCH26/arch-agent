@@ -9,7 +9,7 @@ Asistente que guía a equipos de desarrollo en la definición de arquitecturas d
 - Un archivo `.env` configurado. **Antes de continuar**, copiar `.env.example` a `.env` y completar los valores necesarios de POSTGRES_USER= y POSTGRES_DB=:
 
   ```powershell
-  Copy-Item .env.example .env 
+  Copy-Item .env.example .env
   ```
 
   Sin este paso, los comandos de las siguientes secciones (Docker, PostgreSQL) fallarán o usarán valores por defecto incorrectos.

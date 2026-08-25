@@ -1,6 +1,6 @@
 from app.core.database import SessionLocal
 from app.models.session import UserSession
-from app.models.project import Project 
+from app.models.project import Project
 
 def save_session_state(user_id: int, project_id: int = None, active_phase: str = None, engram_state: dict = None):
     db = SessionLocal()
