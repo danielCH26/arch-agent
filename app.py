@@ -215,6 +215,47 @@ async def on_project_selected(action: cl.Action):
         )
     await cl.Message(content=f"Proyecto seleccionado (id {project_id}). Continuemos donde lo dejaste.").send()
 
+
+@cl.action_callback("request_delete_project")
+async def on_project_delete_requested(action: cl.Action):
+    await cl.Message(
+        content=f"Seguro que quieres eliminar '{action.payload['project_name']}'?",
+        actions=[
+            cl.Action(
+                name="confirm_delete_project",
+                payload=action.payload,
+                label="Si, eliminar",
+            ),
+            cl.Action(
+                name="cancel_delete_project",
+                payload={},
+                label="Cancelar",
+            ),
+        ],
+    ).send()
+
+
+@cl.action_callback("confirm_delete_project")
+async def on_project_delete_confirmed(action: cl.Action):
+    user = cl.user_session.get("user")
+    if not user:
+        await cl.Message(content="No hay una sesion activa para eliminar proyectos.").send()
+        return
+
+    project_id = action.payload["project_id"]
+    try:
+        delete_project(user.metadata["user_id"], project_id)
+        if cl.user_session.get("project_id") == project_id:
+            cl.user_session.set("project_id", None)
+        await cl.Message(content=f"Proyecto eliminado: {action.payload['project_name']}.").send()
+    except ValidationError as e:
+        await cl.Message(content=f"No se pudo eliminar: {e}").send()
+
+
+@cl.action_callback("cancel_delete_project")
+async def on_project_delete_cancelled(action: cl.Action):
+    await cl.Message(content="Eliminacion cancelada.").send()
+
 @cl.on_message
 async def handle_message(message: cl.Message):
     content = message.content.strip()
@@ -290,16 +331,15 @@ async def handle_message(message: cl.Message):
             await cl.Message(content="Todavia no tienes proyectos para eliminar.").send()
             return
 
-        project_lines = [
-            f"- {p.id}: {p.name} (ultima actividad: {format_local(p.updated_at)})"
+        actions = [
+            cl.Action(
+                name="request_delete_project",
+                payload={"project_id": p.id, "project_name": p.name},
+                label=f"Eliminar {p.name}",
+            )
             for p in projects
         ]
-        await cl.Message(
-            content=(
-                "Para eliminar un proyecto escribe `/eliminar_proyecto <id>`.\n\n"
-                "Proyectos disponibles:\n" + "\n".join(project_lines)
-            )
-        ).send()
+        await cl.Message(content="Elige el proyecto que quieres eliminar:", actions=actions).send()
         return
 
     if lower.startswith("/eliminar_proyecto "):
