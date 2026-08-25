@@ -1,14 +1,23 @@
+import os
+import logging
+from pathlib import Path
+from uuid import uuid4
+
 import bcrypt
 import chainlit as cl
-import logging
-import os
-from uuid import uuid4
+from dotenv import load_dotenv
+
+# Cargar variables del .env al inicio (antes que nada)
+_env_path = Path(__file__).parent / ".env"
+load_dotenv(_env_path)
+
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.auth.register import register_user
 from app.auth.validators import ValidationError
 from app.core.session_store import save_session_state, load_session_state
 from app.core.engram_client import EngramClient, EngramError
+from app.llm.config_form import render_config_form_if_needed, render_sidebar_settings  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +26,7 @@ def get_engram_project_key(user_id: int, project_id: int | None = None) -> str:
     """Aísla la memoria de Engram por usuario; el resumen conserva el proyecto activo."""
     prefix = os.getenv("ENGRAM_PROJECT", "arch-agent")
     return f"{prefix}-user-{user_id}"
+
 
 def get_user_by_login(login: str):
     """Busca por username o por email, para que el login funcione con cualquiera de los dos."""
@@ -28,6 +38,7 @@ def get_user_by_login(login: str):
     finally:
         db.close()
 
+
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
     user = get_user_by_login(username)
@@ -35,10 +46,17 @@ def auth_callback(username: str, password: str):
         return cl.User(identifier=user.username, metadata={"user_id": user.id})
     return None
 
+
 @cl.on_chat_start
 async def start():
     user = cl.user_session.get("user")
     user_id = user.metadata["user_id"]
+
+    # Verificar si tiene config LLM (HU12)
+    config_ok = await render_config_form_if_needed(user_id)
+    if not config_ok:
+        # Ya se mostró el form (paso 1/3 pide URL)
+        return
 
     state = load_session_state(user_id)
     project_id = state["project_id"] if state else None
@@ -66,7 +84,12 @@ async def start():
             )
         ).send()
     else:
-        await cl.Message(content="¡Bienvenida! Todavía no tienes una sesión activa.").send()
+        await cl.Message(
+            content=f"¡Bienvenida {user.identifier}! Sesión iniciada correctamente.\n\n"
+            f"Tu LLM está configurado. Si querés cambiarlo, usá el botón:",
+            actions=[await render_sidebar_settings(user_id)],
+        ).send()
+
 
 @cl.on_chat_end
 async def on_end():
@@ -98,6 +121,8 @@ async def on_end():
         engram.end_session(engram_session_id, summary)
     except EngramError as exc:
         logger.warning("No se pudo guardar la memoria de Engram para el usuario %s: %s", user_id, exc)
+
+
 @cl.on_message
 async def handle_test_phase_command(message: cl.Message):
     if message.content.strip().lower().startswith("/set_fase "):
