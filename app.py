@@ -284,6 +284,24 @@ async def handle_message(message: cl.Message):
             await cl.Message(content=f"No se pudo crear: {e}\n\nEscribe /crear_proyecto para volver a intentarlo.").send()
         return
 
+    if lower == "/eliminar_proyecto":
+        projects = get_projects_for_user(user.metadata["user_id"])
+        if not projects:
+            await cl.Message(content="Todavia no tienes proyectos para eliminar.").send()
+            return
+
+        project_lines = [
+            f"- {p.id}: {p.name} (ultima actividad: {format_local(p.updated_at)})"
+            for p in projects
+        ]
+        await cl.Message(
+            content=(
+                "Para eliminar un proyecto escribe `/eliminar_proyecto <id>`.\n\n"
+                "Proyectos disponibles:\n" + "\n".join(project_lines)
+            )
+        ).send()
+        return
+
     if lower.startswith("/eliminar_proyecto "):
         try:
             project_id = int(content.split(" ", 1)[1])
