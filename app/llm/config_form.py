@@ -3,8 +3,8 @@ Formulario Chainlit para configurar el LLM del usuario.
 
 Issue: #7 - HU12 Configuración de LLM
 
-Usa @cl.on_message con state machine en cl.user_session (en lugar de
-AskUserMessage que tiene problemas en Chainlit 2.11).
+Usa una state machine en cl.user_session. El unico @cl.on_message vive en
+app.py y delega a handle_config_flow cuando no es un comando global.
 """
 
 import chainlit as cl
@@ -123,7 +123,7 @@ def clear_form_state():
 
 
 # =============================================================================
-# Flujo principal con @cl.on_message
+# Flujo principal del formulario
 # =============================================================================
 
 
@@ -165,7 +165,6 @@ async def _show_welcome_and_step1() -> None:
     ).send()
 
 
-@cl.on_message
 async def handle_config_flow(message: cl.Message):
     """Maneja el flujo del form según el estado actual."""
     state = get_form_state()

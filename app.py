@@ -17,7 +17,11 @@ from app.auth.register import register_user
 from app.auth.validators import ValidationError
 from app.core.session_store import save_session_state, load_session_state
 from app.core.engram_client import EngramClient, EngramError
-from app.llm.config_form import render_config_form_if_needed, render_sidebar_settings  # noqa: F401
+from app.llm.config_form import (
+    handle_config_flow,
+    render_config_form_if_needed,
+    render_sidebar_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +128,7 @@ async def on_end():
 
 
 @cl.on_message
-async def handle_test_phase_command(message: cl.Message):
+async def handle_message(message: cl.Message):
     if message.content.strip().lower().startswith("/set_fase "):
         fase = message.content.strip().split(" ", 1)[1]
         user = cl.user_session.get("user")
@@ -154,3 +158,6 @@ async def handle_test_phase_command(message: cl.Message):
             except EngramError as exc:
                 logger.warning("No se pudo guardar la fase en Engram para el usuario %s: %s", user_id, exc)
         await cl.Message(content=f"Fase simulada como: {fase}").send()
+        return
+
+    await handle_config_flow(message)

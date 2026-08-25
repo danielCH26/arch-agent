@@ -25,9 +25,12 @@ pip install -r requirements.txt
 # 5. Inicializar la base de datos
 python scripts/init_db.py
 
-# 6. Correr Chainlit
-chainlit run app.py --port 8000
+# 6. Correr la app completa (registro + Chainlit)
+uvicorn server:app --reload --port 8000
 ```
+
+La pantalla de registro queda en `http://localhost:8000/register` y el chat de
+Chainlit en `http://localhost:8000/chainlit`.
 
 ---
 
@@ -65,7 +68,8 @@ Cada usuario configura su propio LLM desde la interfaz de Chainlit. El sistema s
    ENCRYPTION_KEY=<clave-generada>
    ```
 
-2. **Inicia el agente** y crea una cuenta en la pantalla de login.
+2. **Inicia la app con `uvicorn server:app --reload --port 8000`** y crea una
+   cuenta en `http://localhost:8000/register`.
 
 3. **Completa el formulario de configuración LLM** que aparece automáticamente al primer chat:
    - **URL base** (ej: `https://api.openai.com/v1`)
