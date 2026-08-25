@@ -160,8 +160,11 @@ async def start():
         )
 
 
+
 @cl.on_chat_end
 async def on_end():
+    # Punto de enganche para "logout funcional": aquí se limpia lo que
+    # el resto de HUs vaya guardando en cl.user_session (ver HU2).
     user = cl.user_session.get("user")
     if not user:
         return
@@ -192,7 +195,7 @@ async def on_end():
         logger.warning("No se pudo guardar la memoria de Engram para el usuario %s: %s", user_id, exc)
 
 
-# --- Proyectos ------------------------------------------------------------
+# --- Proyectos (HU3 + creación/eliminación) ---------------------------------
 
 def get_projects_for_user(user_id: int):
     db = SessionLocal()
