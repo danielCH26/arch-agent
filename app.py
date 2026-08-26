@@ -47,13 +47,13 @@ def format_local(dt):
     return dt_local.strftime('%d/%m/%Y %I:%M %p')
 
 
-def normalize_phase(raw: str) -> str:
-    """Limpia lo que escribe el usuario como fase: quita espacios y '/' o '#' sueltos
-    al inicio (por si lo escribe como si fuera un comando), y baja a minúsculas."""
-    fase = raw.strip()
-    fase = fase.lstrip("/#").strip()
-    return fase.lower()
-
+PHASES = ["requerimientos", "propuesta", "refinamiento", "revision"]
+PHASE_LABELS = {
+    "requerimientos": "Requerimientos",
+    "propuesta": "Propuesta",
+    "refinamiento": "Refinamiento",
+    "revision": "Revisión",
+}
 
 PASSWORD_RULES_TEXT = (
     "**La contraseña debe cumplir:**\n"
@@ -71,7 +71,7 @@ def main_menu_actions():
         cl.Action(name="menu_proyectos", payload={}, label="📁 Mis proyectos"),
         cl.Action(name="menu_crear_proyecto", payload={}, label="➕ Crear proyecto"),
         cl.Action(name="menu_eliminar_proyecto", payload={}, label="🗑️ Eliminar proyecto"),
-        cl.Action(name="menu_set_fase", payload={}, label="🔄 Cambiar fase activa"),
+        cl.Action(name="menu_fase", payload={}, label="📊 Ver fase / avanzar"),
         cl.Action(name="menu_perfil", payload={}, label="👤 Ver perfil"),
         cl.Action(name="menu_editar_perfil", payload={}, label="✏️ Editar perfil"),
         cl.Action(name="menu_cambiar_password", payload={}, label="🔒 Cambiar contraseña"),
@@ -145,14 +145,21 @@ async def start():
         logger.warning("No se pudo recuperar la memoria de Engram para el usuario %s: %s", user_id, exc)
         cl.user_session.set("engram_context", "")
 
-    if state and (state["project_id"] is not None or state["active_phase"] is not None):
-        cl.user_session.set("project_id", state["project_id"])
-        cl.user_session.set("active_phase", state["active_phase"])
-        project_name = get_project_name(user_id, state["project_id"])
+    if state and state["project_id"] is not None:
+        project_id = state["project_id"]
+        cl.user_session.set("project_id", project_id)
+        project = get_project(user_id, project_id)
+        if project:
+            project_name = project.name
+            fase_label = PHASE_LABELS.get(project.current_phase, project.current_phase or "sin asignar")
+            cl.user_session.set("active_phase", project.current_phase)
+        else:
+            project_name = "sin asignar"
+            fase_label = "sin asignar"
         await send_main_menu(
             "Bienvenida de vuelta. "
             f"Proyecto activo: {project_name}, "
-            f"fase: '{state['active_phase'] or 'sin asignar'}'.\n\n¿Qué quieres hacer?"
+            f"fase: '{fase_label}'.\n\n¿Qué quieres hacer?"
         )
     else:
         await send_main_menu(
@@ -160,11 +167,8 @@ async def start():
         )
 
 
-
 @cl.on_chat_end
 async def on_end():
-    # Punto de enganche para "logout funcional": aquí se limpia lo que
-    # el resto de HUs vaya guardando en cl.user_session (ver HU2).
     user = cl.user_session.get("user")
     if not user:
         return
@@ -195,7 +199,7 @@ async def on_end():
         logger.warning("No se pudo guardar la memoria de Engram para el usuario %s: %s", user_id, exc)
 
 
-# --- Proyectos (HU3 + creación/eliminación) ---------------------------------
+# --- Proyectos ------------------------------------------------------------
 
 def get_projects_for_user(user_id: int):
     db = SessionLocal()
@@ -219,7 +223,7 @@ def get_project_name(user_id: int, project_id: int | None) -> str:
         db.close()
 
 
-def create_project(user_id: int, name: str, description: str = None, current_phase: str = "elicitación"):
+def create_project(user_id: int, name: str, description: str = None, current_phase: str = "requerimientos"):
     name = name.strip()
     if not name:
         raise ValidationError("El nombre del proyecto no puede estar vacío.")
@@ -256,6 +260,76 @@ def delete_project(user_id: int, project_id: int):
             raise ValidationError("No se encontró ese proyecto, o no te pertenece.")
         db.delete(project)
         db.commit()
+    except ValidationError:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+
+def get_project(user_id: int, project_id: int) -> Project | None:
+    db = SessionLocal()
+    try:
+        return db.query(Project).filter(
+            Project.id == project_id, Project.user_id == user_id
+        ).first()
+    finally:
+        db.close()
+
+
+def advance_phase(user_id: int, project_id: int) -> Project:
+    """Avanza el proyecto a la siguiente fase de PHASES, solo si phase_ready es True."""
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter(
+            Project.id == project_id, Project.user_id == user_id
+        ).first()
+        if project is None:
+            raise ValidationError("No se encontró ese proyecto, o no te pertenece.")
+        if not project.phase_ready:
+            label = PHASE_LABELS.get(project.current_phase, project.current_phase or "sin asignar")
+            raise ValidationError(f"La fase '{label}' todavía no está completa. No puedes avanzar aún.")
+        idx = PHASES.index(project.current_phase) if project.current_phase in PHASES else -1
+        if idx == -1:
+            raise ValidationError("Este proyecto tiene una fase no reconocida; revísala manualmente.")
+        if idx == len(PHASES) - 1:
+            raise ValidationError("Ya estás en la última fase.")
+        project.current_phase = PHASES[idx + 1]
+        project.phase_ready = False
+        db.commit()
+        db.refresh(project)
+        return project
+    except ValidationError:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+
+def mark_phase_ready(user_id: int, project_id: int) -> Project:
+    """
+    TEMPORAL (dev): marca la fase actual como lista para avanzar.
+    Cuando F08 conecte el agente LangChain, esta misma función debe ser
+    llamada por el agente cuando determine que ya se cumplió todo lo
+    necesario de la fase (según el PRD), en vez de un botón manual.
+    """
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter(
+            Project.id == project_id, Project.user_id == user_id
+        ).first()
+        if project is None:
+            raise ValidationError("No se encontró ese proyecto, o no te pertenece.")
+        project.phase_ready = True
+        db.commit()
+        db.refresh(project)
+        return project
     except ValidationError:
         db.rollback()
         raise
@@ -364,12 +438,105 @@ async def on_project_delete_cancelled(action: cl.Action):
     await send_main_menu()
 
 
-# --- Fase activa ---------------------------------------------------------
+# --- Fase activa (fija, con gate de avance) --------------------------------
 
-@cl.action_callback("menu_set_fase")
-async def on_menu_set_fase(action: cl.Action):
-    start_flow("set_fase", "fase")
-    await cl.Message(content="¿Cuál es la nueva fase activa? (o 'cancelar'):").send()
+async def _sync_active_phase(user_id: int, project_id: int, phase: str):
+    """Refleja la fase del proyecto en la sesión, session_store y Engram (igual que antes)."""
+    cl.user_session.set("active_phase", phase)
+    engram_session_id = cl.user_session.get("engram_session_id")
+    engram_project_key = cl.user_session.get("engram_project_key") or get_engram_project_key(user_id, project_id)
+    summary = f"Proyecto activo: {project_id or 'sin asignar'}. Fase activa: {phase}."
+    save_session_state(
+        user_id,
+        project_id=project_id,
+        active_phase=phase,
+        engram_state={"engram_session_id": engram_session_id, "project_key": engram_project_key},
+    )
+    if engram_session_id:
+        try:
+            EngramClient().save_observation(
+                engram_session_id, engram_project_key, "Fase de flujo actualizada", summary
+            )
+        except EngramError as exc:
+            logger.warning("No se pudo guardar la fase en Engram para el usuario %s: %s", user_id, exc)
+
+
+@cl.action_callback("menu_fase")
+async def on_menu_fase(action: cl.Action):
+    user = cl.user_session.get("user")
+    user_id = user.metadata["user_id"]
+    project_id = cl.user_session.get("project_id")
+
+    if project_id is None:
+        await cl.Message(content="Primero selecciona un proyecto (📁 Mis proyectos) para ver su fase.").send()
+        await send_main_menu()
+        return
+
+    project = get_project(user_id, project_id)
+    if project is None:
+        await cl.Message(content="No se encontró el proyecto activo.").send()
+        await send_main_menu()
+        return
+
+    label = PHASE_LABELS.get(project.current_phase, project.current_phase or "sin asignar")
+    idx = PHASES.index(project.current_phase) if project.current_phase in PHASES else -1
+    is_last = idx == len(PHASES) - 1
+    status = "✅ lista para avanzar" if project.phase_ready else "⏳ en progreso"
+
+    actions = []
+    if project.phase_ready and not is_last:
+        actions.append(
+            cl.Action(name="fase_avanzar", payload={"project_id": project_id}, label="➡️ Avanzar a la siguiente fase")
+        )
+    if not project.phase_ready:
+        actions.append(
+            cl.Action(
+                name="fase_simular_completa",
+                payload={"project_id": project_id},
+                label="🧪 Simular fase completa (temporal, hasta que el agente lo haga solo)",
+            )
+        )
+    actions.append(cl.Action(name="menu_volver", payload={}, label="⬅️ Volver al menú"))
+
+    pasos = " → ".join(
+        f"**{PHASE_LABELS[p]}**" if p == project.current_phase else PHASE_LABELS[p] for p in PHASES
+    )
+
+    await cl.Message(
+        content=f"{pasos}\n\nFase actual: **{label}** ({status})",
+        actions=actions,
+    ).send()
+
+
+@cl.action_callback("fase_avanzar")
+async def on_fase_avanzar(action: cl.Action):
+    user = cl.user_session.get("user")
+    user_id = user.metadata["user_id"]
+    project_id = action.payload["project_id"]
+    try:
+        project = advance_phase(user_id, project_id)
+        await _sync_active_phase(user_id, project_id, project.current_phase)
+        await cl.Message(
+            content=f"Fase avanzada a: **{PHASE_LABELS.get(project.current_phase, project.current_phase)}**"
+        ).send()
+    except ValidationError as e:
+        await cl.Message(content=f"❌ {e}").send()
+    await send_main_menu()
+
+
+@cl.action_callback("fase_simular_completa")
+async def on_fase_simular_completa(action: cl.Action):
+    user = cl.user_session.get("user")
+    user_id = user.metadata["user_id"]
+    project_id = action.payload["project_id"]
+    try:
+        mark_phase_ready(user_id, project_id)
+        await cl.Message(
+            content="✅ (dev) Fase marcada como completa. Ya puedes avanzar a la siguiente."
+        ).send()
+    except ValidationError as e:
+        await cl.Message(content=f"❌ {e}").send()
+    await send_main_menu()
 
 
 # --- Perfil ----------------------------------------------------------------
@@ -434,39 +601,19 @@ async def _handle_pending_flow(flow: dict, text: str, user):
             description = None if text in ("", "-") else text
             try:
                 project = create_project(user_id, data["name"], description)
-                await cl.Message(content=f"Proyecto '{project.name}' creado (id {project.id}).").send()
+                cl.user_session.set("project_id", project.id)
+                save_session_state(
+                    user_id,
+                    project_id=project.id,
+                    active_phase=project.current_phase,
+                )
+                await cl.Message(
+                    content=f"Proyecto '{project.name}' creado (id {project.id}) y seleccionado como activo."
+                ).send()
             except ValidationError as e:
                 await cl.Message(content=f"No se pudo crear: {e}").send()
             await send_main_menu()
             return
-
-    if flow_type == "set_fase":
-        fase = normalize_phase(text)
-        if not fase:
-            await cl.Message(content="No se registró ninguna fase.").send()
-            await send_main_menu()
-            return
-        cl.user_session.set("active_phase", fase)
-        project_id = cl.user_session.get("project_id")
-        engram_session_id = cl.user_session.get("engram_session_id")
-        engram_project_key = cl.user_session.get("engram_project_key") or get_engram_project_key(user_id, project_id)
-        summary = f"Proyecto activo: {project_id or 'sin asignar'}. Fase activa: {fase}."
-        save_session_state(
-            user_id,
-            project_id=project_id,
-            active_phase=fase,
-            engram_state={"engram_session_id": engram_session_id, "project_key": engram_project_key},
-        )
-        if engram_session_id:
-            try:
-                EngramClient().save_observation(
-                    engram_session_id, engram_project_key, "Fase de flujo actualizada", summary
-                )
-            except EngramError as exc:
-                logger.warning("No se pudo guardar la fase en Engram para el usuario %s: %s", user_id, exc)
-        await cl.Message(content=f"Fase actualizada a: {fase}").send()
-        await send_main_menu()
-        return
 
     if flow_type == "editar_perfil":
         if step == "username":

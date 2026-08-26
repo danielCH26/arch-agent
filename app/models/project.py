@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, Boolean, ForeignKey, func
 from app.core.database import Base
 
 class Project(Base):
@@ -10,5 +10,9 @@ class Project(Base):
     description = Column(Text)
     status = Column(String(50), default="active")
     current_phase = Column(String(50))
+    # True cuando el LLM (o, mientras F08 no esté listo, un botón de prueba)
+    # determina que ya se cumplió todo lo necesario de la fase actual y se
+    # puede avanzar a la siguiente. Se resetea a False cada vez que se avanza.
+    phase_ready = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now())
