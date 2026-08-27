@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import bcrypt
 import chainlit as cl
-from chainlit.sidebar import ElementSidebar
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
@@ -87,28 +86,10 @@ def main_menu_actions():
     return actions
 
 
-class AppSidebar(cl.CustomElement):
-    """Sidebar nativo con botones de navegación.
-
-    Se renderiza en el sidebar de Chainlit via ElementSidebar.
-    Chainlit automáticamente hace el bundle del JSX y muestra los botones.
-    """
-    # El frontend por defecto de Chainlit renderiza las props.actions
-    # como botones que disparan las cl.Action correspondientes.
-
-
-async def render_sidebar():
-    """Renderiza el sidebar con todos los botones del menú principal."""
-    cl.user_session.set("pending_flow", None)
-    await ElementSidebar.set_elements([
-        AppSidebar(actions=main_menu_actions()),
-    ])
-
-
 async def send_main_menu(text: str = "¿Qué quieres hacer?"):
-    """Muestra el menú en el sidebar (no en el chat) y un mensaje contextual."""
-    await render_sidebar()
-    await cl.Message(content=text).send()
+    """Muestra el menú en el chat (primera vez) y mensaje contextual."""
+    cl.user_session.set("pending_flow", None)
+    await cl.Message(content=text, actions=main_menu_actions()).send()
 
 
 # Cuando config_form.py termina de guardar la configuración de LLM (ya sea
