@@ -19,6 +19,11 @@ class UploadedDocument(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     filename = Column(String(500), nullable=False)
     file_type = Column(String(20))  # 'pdf' o 'md'
     file_size_bytes = Column(Integer)

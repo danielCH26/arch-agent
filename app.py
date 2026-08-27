@@ -684,6 +684,14 @@ async def handle_message(message: cl.Message):
     flow = cl.user_session.get("pending_flow")
     text = message.content.strip()
 
+    # Procesar archivos adjuntos (botón de adjuntar del chat)
+    if message.elements:
+        from app.llm.document_upload import handle_attached_files
+        processed = await handle_attached_files(message)
+        if processed > 0:
+            await send_main_menu(f"✅ {processed} documento(s) procesado(s) y agregado(s) al RAG.")
+            return
+
     if flow and text.lower() in ("cancelar", "/cancelar"):
         await cl.Message(content="Operación cancelada.").send()
         await send_main_menu()

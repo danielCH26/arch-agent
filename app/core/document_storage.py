@@ -28,19 +28,27 @@ class DocumentStorageError(Exception):
     pass
 
 
-def check_duplicate(user_id: int, filename: str) -> Optional[int]:
+def check_duplicate(user_id: int, filename: str, project_id: Optional[int] = None) -> Optional[int]:
     """
-    Verifica si el user ya tiene un documento con ese filename.
+    Verifica si el user ya tiene un documento con ese filename (en un proyecto).
+
+    Args:
+        user_id: ID del usuario
+        filename: nombre del archivo
+        project_id: ID del proyecto (opcional, si es None busca en cualquier proyecto)
 
     Returns:
         Versión más alta existente (1, 2, 3...) o None si no existe
     """
     db = SessionLocal()
     try:
-        result = db.query(func.max(UploadedDocument.version)).filter(
+        query = db.query(func.max(UploadedDocument.version)).filter(
             UploadedDocument.user_id == user_id,
             UploadedDocument.filename == filename,
-        ).scalar()
+        )
+        if project_id:
+            query = query.filter(UploadedDocument.project_id == project_id)
+        result = query.scalar()
         return result
     finally:
         db.close()
@@ -53,11 +61,16 @@ def save_document(
     file_size_bytes: int,
     chunks: List[Document],
     embeddings: List[List[float]],
+    project_id: Optional[int] = None,
 ) -> int:
     """
     Crea un nuevo documento con sus chunks.
 
     Calcula automáticamente la versión (max + 1).
+
+    Args:
+        user_id: ID del usuario
+        project_id: ID del proyecto (opcional, para asociar el doc al proyecto)
 
     Returns:
         document_id del documento creado
@@ -72,13 +85,14 @@ def save_document(
 
     db = SessionLocal()
     try:
-        # Calcular versión
-        max_version = check_duplicate(user_id, filename)
+        # Calcular versión (por proyecto, si se pasa project_id)
+        max_version = check_duplicate(user_id, filename, project_id=project_id)
         new_version = (max_version or 0) + 1
 
         # Crear documento
         doc = UploadedDocument(
             user_id=user_id,
+            project_id=project_id,
             filename=filename,
             file_type=file_type,
             file_size_bytes=file_size_bytes,
@@ -116,12 +130,14 @@ def get_user_documents(
     user_id: int,
     limit: int = 50,
     offset: int = 0,
+    project_id: Optional[int] = None,
 ) -> List[UploadedDocument]:
     """
     Lista los documentos del usuario, ordenados por más recientes.
 
     Args:
         user_id: ID del usuario (filtro de privacidad)
+        project_id: ID del proyecto (opcional, filtra por proyecto activo)
         limit: máximo de documentos a retornar
         offset: offset para paginación
 
@@ -130,11 +146,14 @@ def get_user_documents(
     """
     db = SessionLocal()
     try:
-        docs = db.query(UploadedDocument).filter(
+        query = db.query(UploadedDocument).filter(
             UploadedDocument.user_id == user_id,
-        ).order_by(
-            desc(UploadedDocument.created_at),
-        ).limit(limit).offset(offset).all()
+        ).order_by(desc(UploadedDocument.created_at))
+
+        if project_id is not None:
+            query = query.filter(UploadedDocument.project_id == project_id)
+
+        docs = query.limit(limit).offset(offset).all()
         return docs
     finally:
         db.close()

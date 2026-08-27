@@ -347,9 +347,13 @@ async def _save_new_version(file, filename: str, file_bytes: int, version: int):
 
 @cl.action_callback("menu_list_documents")
 async def on_menu_list_documents(action: cl.Action):
-    """Handler cuando el usuario hace clic en 'Mis documentos'."""
+    """Handler cuando el usuario hace clic en 'Mis documentos'.
+
+    Muestra los documentos del proyecto activo (si hay), o todos si no hay proyecto.
+    """
     user_id = cl.user_session.get("user").metadata["user_id"]
-    docs = get_user_documents(user_id, limit=50)
+    project_id = _get_active_project_id()
+    docs = get_user_documents(user_id, limit=50, project_id=project_id)
 
     if not docs:
         await cl.Message(
@@ -358,7 +362,10 @@ async def on_menu_list_documents(action: cl.Action):
         ).send()
         return
 
-    lines = [f"## 📋 Tus documentos ({len(docs)})\n"]
+    project_label = ""
+    if project_id:
+        project_label = " del proyecto activo"
+    lines = [f"## 📋 Tus documentos{project_label} ({len(docs)})\n"]
     for doc in docs:
         size_kb = (doc.file_size_bytes or 0) / 1024
         lines.append(
@@ -395,6 +402,134 @@ async def on_delete_document(action: cl.Action):
         await cl.Message(content=f"🗑️ `{filename}` borrado correctamente.").send()
     else:
         await cl.Message(content=f"❌ No se pudo borrar `{filename}`.").send()
+
+
+# =============================================================================
+# Archivos adjuntos del chat (botón de adjuntar)
+# =============================================================================
+
+
+def _get_active_project_id() -> Optional[int]:
+    """Obtiene el project_id del proyecto activo desde la sesión."""
+    return cl.user_session.get("project_id")
+
+
+async def handle_attached_files(msg: cl.Message) -> int:
+    """
+    Procesa archivos adjuntos al mensaje del chat (PDF/MD).
+
+    Se llama desde @cl.on_message cuando msg.elements tiene archivos.
+    Asocia los documentos al proyecto activo.
+
+    Args:
+        msg: mensaje de Chainlit con .elements (archivos adjuntos)
+
+    Returns:
+        Cantidad de archivos procesados correctamente
+    """
+    if not msg.elements:
+        return 0
+
+    user_id = cl.user_session.get("user").metadata["user_id"]
+    project_id = _get_active_project_id()
+    processed_count = 0
+
+    await cl.Message(
+        content=f"📎 Detectados {len(msg.elements)} archivo(s) adjunto(s). Procesando..."
+    ).send()
+
+    for element in msg.elements:
+        filename = getattr(element, "name", "")
+        file_path = getattr(element, "path", None)
+        mime = getattr(element, "mime", "")
+
+        if not filename or not file_path:
+            continue
+
+        # Validar extensión
+        if not validate_file_extension(filename):
+            await cl.Message(
+                content=f"❌ `{filename}` no es un formato soportado. Solo PDF y MD."
+            ).send()
+            continue
+
+        # Obtener tamaño
+        try:
+            file_bytes = os.path.getsize(file_path)
+        except Exception:
+            file_bytes = 0
+
+        if not validate_file_size(file_bytes):
+            size_mb = file_bytes / (1024 * 1024)
+            await cl.Message(
+                content=f"❌ `{filename}` supera el límite de 10MB ({size_mb:.1f}MB)."
+            ).send()
+            continue
+
+        # Guardar a temp y procesar
+        try:
+            from pathlib import Path
+            suffix = Path(filename).suffix
+            import shutil
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                shutil.copyfileobj(open(file_path, "rb"), tmp)
+                tmp_path = tmp.name
+
+            chunks = process_file(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        except DocumentProcessingError as e:
+            await cl.Message(content=f"❌ Error al procesar `{filename}`: {e}").send()
+            continue
+
+        # Generar embeddings
+        try:
+            from app.core.embeddings import get_embeddings
+            embeddings = get_embeddings().embed_documents(
+                [c.page_content for c in chunks]
+            )
+        except Exception as e:
+            await cl.Message(content=f"❌ Error al generar embeddings de `{filename}`: {e}").send()
+            continue
+
+        # Detectar duplicado y guardar
+        existing_version = check_duplicate(user_id, filename, project_id=project_id)
+        file_type = filename.split(".")[-1].lower()
+        try:
+            if existing_version is None:
+                doc_id = save_document(
+                    user_id=user_id,
+                    project_id=project_id,
+                    filename=filename,
+                    file_type=file_type,
+                    file_size_bytes=file_bytes,
+                    chunks=chunks,
+                    embeddings=embeddings,
+                )
+                await cl.Message(
+                    content=f"✅ `{filename}` v1 creado ({len(chunks)} chunks)."
+                ).send()
+            else:
+                # Duplicado → crear nueva versión automáticamente
+                doc_id = save_document(
+                    user_id=user_id,
+                    project_id=project_id,
+                    filename=filename,
+                    file_type=file_type,
+                    file_size_bytes=file_bytes,
+                    chunks=chunks,
+                    embeddings=embeddings,
+                )
+                await cl.Message(
+                    content=f"✅ `{filename}` v{existing_version + 1} creado ({len(chunks)} chunks)."
+                ).send()
+            processed_count += 1
+        except DocumentStorageError as e:
+            await cl.Message(content=f"❌ Error al guardar `{filename}`: {e}").send()
+
+    return processed_count
 
 
 # =============================================================================

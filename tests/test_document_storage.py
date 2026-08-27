@@ -11,6 +11,7 @@ import pytest
 from unittest.mock import MagicMock
 from langchain_core.documents import Document
 
+import app.models  # noqa: F401  # registrar todos los modelos antes de create_all
 from app.core.database import SessionLocal, Base, engine
 from app.models.user import User
 from app.models.uploaded_document import UploadedDocument, DocumentChunk
