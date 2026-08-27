@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import List
 
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
@@ -84,7 +84,11 @@ def load_document(file_path: str) -> List[Document]:
     if ext == ".pdf":
         loader = PyPDFLoader(file_path)
     elif ext == ".md":
-        loader = UnstructuredMarkdownLoader(file_path)
+        # Usamos TextLoader en vez de UnstructuredMarkdownLoader porque
+        # este último requiere spacy (en_core_web_sm) que no se puede
+        # instalar automáticamente por permisos en algunos entornos.
+        # Para el MVP, leer el MD como texto plano es suficiente.
+        loader = TextLoader(file_path, encoding="utf-8")
     else:
         raise DocumentProcessingError(
             f"Formato no soportado: {ext}. "

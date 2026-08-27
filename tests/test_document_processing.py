@@ -113,11 +113,11 @@ class TestLoadDocument:
         finally:
             os.unlink(tmp_path)
 
-    @patch("app.core.document_processing.UnstructuredMarkdownLoader")
+    @patch("app.core.document_processing.TextLoader")
     def test_load_md_uses_markdown_loader(self, mock_md_loader):
         mock_loader_instance = MagicMock()
         mock_loader_instance.load.return_value = [
-            Document(page_content="# Hello", metadata={})
+            Document(page_content="# Hello", metadata={"source": "test.md"})
         ]
         mock_md_loader.return_value = mock_loader_instance
 
@@ -127,7 +127,8 @@ class TestLoadDocument:
 
         try:
             docs = load_document(tmp_path)
-            mock_md_loader.assert_called_once_with(tmp_path)
+            # TextLoader se llama con (file_path, encoding="utf-8")
+            mock_md_loader.assert_called_once_with(tmp_path, encoding="utf-8")
             assert len(docs) == 1
         finally:
             os.unlink(tmp_path)

@@ -26,6 +26,7 @@ from app.llm.config_form import (
     render_sidebar_settings,
     set_on_config_complete,
 )
+from app.llm.document_upload import get_menu_items as get_doc_menu_items
 
 logger = logging.getLogger(__name__)
 
@@ -67,16 +68,22 @@ PASSWORD_RULES_TEXT = (
 # --- Menú principal -----------------------------------------------------
 
 def main_menu_actions():
-    return [
+    actions = [
         cl.Action(name="menu_proyectos", payload={}, label="📁 Mis proyectos"),
         cl.Action(name="menu_crear_proyecto", payload={}, label="➕ Crear proyecto"),
         cl.Action(name="menu_eliminar_proyecto", payload={}, label="🗑️ Eliminar proyecto"),
         cl.Action(name="menu_fase", payload={}, label="📊 Ver fase / avanzar"),
+    ]
+    # HU13: Documentos
+    for name, label, desc in get_doc_menu_items():
+        actions.append(cl.Action(name=name, payload={}, label=label, description=desc))
+    actions += [
         cl.Action(name="menu_perfil", payload={}, label="👤 Ver perfil"),
         cl.Action(name="menu_editar_perfil", payload={}, label="✏️ Editar perfil"),
         cl.Action(name="menu_cambiar_password", payload={}, label="🔒 Cambiar contraseña"),
         cl.Action(name="menu_llm_config", payload={}, label="⚙️ Configurar LLM"),
     ]
+    return actions
 
 
 async def send_main_menu(text: str = "¿Qué quieres hacer?"):
