@@ -1,0 +1,37 @@
+schema: spec-driven
+change: chainlit-api
+created: 2026-08-28
+
+phases:
+  proposal:
+    status: done
+    artifact: openspec/changes/chainlit-api/proposal.md
+  spec:
+    status: done
+    artifact: openspec/changes/chainlit-api/specs/
+    capabilities:
+      - rest-auth
+      - chat-streaming
+      - llm-config-api
+      - document-upload-api
+      - jwt-middleware
+    notes: |
+      Specs written for 5 of 6 capabilities in the proposal. `rest-projects`
+      was intentionally deferred per orchestrator instruction; recommend
+      handling it in a follow-up change or before sdd-apply.
+
+artifacts:
+  - path: openspec/changes/chainlit-api/proposal.md
+    exists: true
+  - path: openspec/changes/chainlit-api/specs/rest-auth/spec.md
+    exists: true
+  - path: openspec/changes/chainlit-api/specs/chat-streaming/spec.md
+    exists: true
+  - path: openspec/changes/chainlit-api/specs/llm-config-api/spec.md
+    exists: true
+  - path: openspec/changes/chainlit-api/specs/document-upload-api/spec.md
+    exists: true
+  - path: openspec/changes/chainlit-api/specs/jwt-middleware/spec.md
+    exists: true
+
+next_recommended: design

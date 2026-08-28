@@ -1,20 +1,35 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from chainlit.utils import mount_chainlit
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from dotenv import load_dotenv
+
 from app.auth.register import register_user
 from app.auth.validators import ValidationError
-from dotenv import load_dotenv
+
 load_dotenv()
 
-templates = Jinja2Templates(directory="templates")  
-app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+app = FastAPI(title="Arch Agent API", version="1.0.0")
+
+# CORS — allow SPA frontend to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Jinja register form (kept for backward compat during migration) ----------
 
 @app.get("/register", response_class=HTMLResponse)
 async def register_form(request: Request):
     return templates.TemplateResponse(
         request, "register.html", {"error": None, "success": False, "username": "", "email": ""}
     )
+
 
 @app.post("/register", response_class=HTMLResponse)
 async def register_submit(request: Request):
@@ -33,7 +48,9 @@ async def register_submit(request: Request):
                 "username": form.get("username", ""), "email": form.get("email", ""),
             },
         )
-# Monta el chat de Chainlit (app.py) como sub-app, bajo /chainlit.
-# Todo lo que Chainlit registre internamente (incluida su ruta atrapa-todo)
-# queda confinado a ese prefijo y no puede tapar las rutas de arriba.
-mount_chainlit(app=app, target="app.py", path="/chainlit")
+
+
+# --- API routes --------------------------------------------------------------
+
+from app.api.auth import router as auth_router
+app.include_router(auth_router)
