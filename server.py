@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
@@ -53,4 +52,11 @@ async def register_submit(request: Request):
 # --- API routes --------------------------------------------------------------
 
 from app.api.auth import router as auth_router
+from app.api.projects import router as projects_router
+from app.api.llm_config import router as llm_config_router
+from app.api.documents import router as documents_router
+
 app.include_router(auth_router)
+app.include_router(projects_router)
+app.include_router(llm_config_router)
+app.include_router(documents_router)

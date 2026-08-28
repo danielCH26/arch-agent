@@ -11,19 +11,32 @@ phases:
     artifact: openspec/changes/chainlit-api/specs/
     capabilities:
       - rest-auth
+      - rest-projects
       - chat-streaming
       - llm-config-api
       - document-upload-api
       - jwt-middleware
-    notes: |
-      Specs written for 5 of 6 capabilities in the proposal. `rest-projects`
-      was intentionally deferred per orchestrator instruction; recommend
-      handling it in a follow-up change or before sdd-apply.
+  design:
+    status: done
+    artifact: openspec/changes/chainlit-api/design.md
+  tasks:
+    status: done
+    artifact: openspec/changes/chainlit-api/tasks.md
+  apply:
+    status: in_progress
+    units_completed: [1, 2, 3, 4, 5]
+    units_pending: [6, 7]
 
 artifacts:
   - path: openspec/changes/chainlit-api/proposal.md
     exists: true
+  - path: openspec/changes/chainlit-api/design.md
+    exists: true
+  - path: openspec/changes/chainlit-api/tasks.md
+    exists: true
   - path: openspec/changes/chainlit-api/specs/rest-auth/spec.md
+    exists: true
+  - path: openspec/changes/chainlit-api/specs/rest-projects/spec.md
     exists: true
   - path: openspec/changes/chainlit-api/specs/chat-streaming/spec.md
     exists: true
@@ -34,4 +47,22 @@ artifacts:
   - path: openspec/changes/chainlit-api/specs/jwt-middleware/spec.md
     exists: true
 
-next_recommended: design
+# PR progress
+pr_chain:
+  - pr: 1
+    title: "Foundation + Auth (JWT, deps, SSE, register/login/logout)"
+    branch: feature/chainlit-api
+    status: merged
+    units: [1, 2]
+  - pr: 2
+    title: "Projects + LLM Config + Documents API"
+    branch: feature/chainlit-api
+    status: merged
+    units: [3, 4, 5]
+  - pr: 3
+    title: "Chat Streaming + Tests + Cleanup"
+    branch: feature/chainlit-api
+    status: pending
+    units: [6, 7]
+
+next_recommended: apply
