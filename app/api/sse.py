@@ -1,10 +1,10 @@
 import asyncio
 from typing import Any
 
-from langchain_core.callbacks import CallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler
 
 
-class SSEStreamCallbackHandler(CallbackHandler):
+class SSEStreamCallbackHandler(BaseCallbackHandler):
     """
     LangChain callback handler that collects LLM tokens and makes them
     available as an async iterator for FastAPI's StreamingResponse.
