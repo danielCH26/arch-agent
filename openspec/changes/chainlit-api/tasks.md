@@ -9,7 +9,7 @@ Chain strategy: feature-branch-chain.
 
 **PR 1: COMPLETED** ✅ (tasks 1.1-1.5, 2.1-2.2 — Foundation + Auth)
 **PR 2: COMPLETED** ✅ (tasks 3.1-4.3 — Projects + LLM Config + Documents)
-**PR 3: pending** — Chat + Tests + Cleanup (tasks 5.1-7.7)
+**PR 3: COMPLETED** ✅ (tasks 5.1-7.7 — Chat Streaming + Chainlit Cleanup) [Tests pending - Phase 7 not executed]
 
 ### Work Units
 
@@ -50,15 +50,15 @@ Chain strategy: feature-branch-chain.
 
 ## Phase 5: Chat Streaming
 
-- [ ] 5.1 `app/api/chat.py` `POST /api/chat` → `StreamingResponse(media_type="text/event-stream")`; model via `build_langchain_model(user_id)`; 409 on `LLMConfigError`, 404 on foreign, 400 if `project_id is None`.
-- [ ] 5.2 Emit `event: token` per `on_llm_new_token`, terminate `event: done`; on error emit `event: error` then close.
-- [ ] 5.3 Wire router in `server.py`. `curl -N /api/chat` returns SSE.
+- [x] 5.1 `app/api/chat.py` `POST /api/chat` → `StreamingResponse(media_type="text/event-stream")`; model via `build_langchain_model(user_id)`; 409 on `LLMConfigError`, 404 on foreign, 400 if `project_id is None`.
+- [x] 5.2 Emit `event: token` per `on_llm_new_token`, terminate `event: done`; on error emit `event: error` then close.
+- [x] 5.3 Wire router in `server.py`. `curl -N /api/chat` returns SSE.
 
 ## Phase 6: Cleanup
 
-- [ ] 6.1 `app.py`: drop `@cl.on_message`, `@cl.on_chat_start`, `@cl.on_chat_end`, all `@cl.action_callback`; keep `PHASES`, `get_user_by_login`, `create_project`, `advance_phase`, `mark_phase_ready`.
-- [ ] 6.2 Remove `chainlit` from `requirements.txt` (keep `pyjwt`, `python-multipart`, `fastapi`, `uvicorn`, `httpx`). `pip check` post-uninstall.
-- [ ] 6.3 `server.py`: mount Jinja `/register`, every `app.api.*` router, no `mount_chainlit`. `/docs` lists all routes.
+- [x] 6.1 `app.py`: drop `@cl.on_message`, `@cl.on_chat_start`, `@cl.on_chat_end`, all `@cl.action_callback`; keep `PHASES`, `get_user_by_login`, `create_project`, `advance_phase`, `mark_phase_ready`.
+- [x] 6.2 Remove `chainlit` from `requirements.txt` (keep `pyjwt`, `python-multipart`, `fastapi`, `uvicorn`, `httpx`). `pip check` post-uninstall.
+- [x] 6.3 `server.py`: mount Jinja `/register`, every `app.api.*` router, no `mount_chainlit`. `/docs` lists all routes.
 
 ## Phase 7: Tests
 

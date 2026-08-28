@@ -55,6 +55,21 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
+  # SPA (React frontend built with Vite, served by nginx)
+  # ===========================================================================
+  spa:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    volumes:
+      - spa_build:/var/www/html
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  # ===========================================================================
   # ENGRAM (Memoria persistente)
   # ===========================================================================
   engram:
@@ -284,4 +299,7 @@ volumes:
   langfuse_minio_data:
   langfuse_clickhouse_keeper_data:
   redis_data:
+
+  # SPA
+  spa_build:
 

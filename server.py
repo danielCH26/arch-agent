@@ -2,6 +2,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from dotenv import load_dotenv
 
 from app.auth.register import register_user
@@ -62,3 +64,9 @@ app.include_router(projects_router)
 app.include_router(llm_config_router)
 app.include_router(documents_router)
 app.include_router(chat_router)
+
+# Serve SPA static files (built by Vite)
+# Mount AFTER specific routes so /api/* and /register work first
+SPA_DIST = Path(__file__).parent / "frontend" / "dist"
+if SPA_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(SPA_DIST), html=True), name="spa")
