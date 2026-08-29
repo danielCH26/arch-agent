@@ -38,8 +38,6 @@ temp/
 *.md
 !README.md
 !README_hu2.md
-# OpenSpec: proposals, specs, design, tasks viven en openspec/changes/
-!openspec/**/*.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
