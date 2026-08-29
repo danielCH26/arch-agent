@@ -1,20 +1,36 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from chainlit.utils import mount_chainlit
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from dotenv import load_dotenv
+
 from app.auth.register import register_user
 from app.auth.validators import ValidationError
-from dotenv import load_dotenv
+
 load_dotenv()
 
-templates = Jinja2Templates(directory="templates")  
-app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+app = FastAPI(title="Arch Agent API", version="1.0.0")
+
+# CORS — allow SPA frontend to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Jinja register form (kept for backward compat during migration) ----------
 
 @app.get("/register", response_class=HTMLResponse)
 async def register_form(request: Request):
     return templates.TemplateResponse(
         request, "register.html", {"error": None, "success": False, "username": "", "email": ""}
     )
+
 
 @app.post("/register", response_class=HTMLResponse)
 async def register_submit(request: Request):
@@ -33,7 +49,24 @@ async def register_submit(request: Request):
                 "username": form.get("username", ""), "email": form.get("email", ""),
             },
         )
-# Monta el chat de Chainlit (app.py) como sub-app, bajo /chainlit.
-# Todo lo que Chainlit registre internamente (incluida su ruta atrapa-todo)
-# queda confinado a ese prefijo y no puede tapar las rutas de arriba.
-mount_chainlit(app=app, target="app.py", path="/chainlit")
+
+
+# --- API routes --------------------------------------------------------------
+
+from app.api.auth import router as auth_router
+from app.api.projects import router as projects_router
+from app.api.llm_config import router as llm_config_router
+from app.api.documents import router as documents_router
+from app.api.chat import router as chat_router
+
+app.include_router(auth_router)
+app.include_router(projects_router)
+app.include_router(llm_config_router)
+app.include_router(documents_router)
+app.include_router(chat_router)
+
+# Serve SPA static files (built by Vite)
+# Mount AFTER specific routes so /api/* and /register work first
+SPA_DIST = Path(__file__).parent / "frontend" / "dist"
+if SPA_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(SPA_DIST), html=True), name="spa")
