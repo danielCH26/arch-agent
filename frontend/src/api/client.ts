@@ -44,5 +44,10 @@ export async function apiFetch<T>(
     throw new ApiError(res.status, (data.detail as string) || 'Request failed', data)
   }
 
+  // 204 No Content no tiene body para parsear
+  if (res.status === 204) {
+    return undefined as T
+  }
+
   return res.json() as Promise<T>
 }
