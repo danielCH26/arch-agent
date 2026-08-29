@@ -3,7 +3,7 @@ import { createChatStream } from '../api/chat'
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
   content: string
 }
 
@@ -14,6 +14,7 @@ interface ChatState {
 
   sendMessage: (projectId: number | null, text: string) => Promise<void>
   addUserMessage: (content: string) => void
+  addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
   appendToLastAssistantMessage: (content: string) => void
   clearMessages: () => void
@@ -98,6 +99,17 @@ export const chatStore = create<ChatState>((set) => ({
     const message: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
+      content,
+    }
+    set((state) => ({
+      messages: [...state.messages, message],
+    }))
+  },
+
+  addSystemMessage: (content: string) => {
+    const message: Message = {
+      id: `system-${Date.now()}`,
+      role: 'system',
       content,
     }
     set((state) => ({

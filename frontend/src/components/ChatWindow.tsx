@@ -57,7 +57,7 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      <ChatInput onSend={handleSend} disabled={isStreaming} />
+      <ChatInput projectId={projectId} onSend={handleSend} disabled={isStreaming} />
     </div>
   )
 }

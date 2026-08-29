@@ -28,7 +28,6 @@ export default function App() {
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="projects/:id" element={<ProjectPage />} />
           <Route path="projects/:id/chat" element={<ChatPage />} />
-          <Route path="projects/:id/settings" element={<SettingsPage />} />
           <Route path="projects/:id/documents" element={<DocumentsPage />} />
           <Route path="settings/llm" element={<SettingsPage />} />
         </Route>

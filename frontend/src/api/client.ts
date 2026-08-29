@@ -32,15 +32,21 @@ export async function apiFetch<T>(
   })
 
   if (res.status === 401) {
-    // Clear token and redirect to login
+    // Token inválido o expirado — limpiar estado y redirigir
     authStore.getState().logout()
-    window.location.href = '/login'
-    throw new ApiError(401, 'Unauthorized')
+    // Redirigir usando replace para no agregar a historial
+    window.location.replace('/login')
+    throw new ApiError(401, 'Session expired')
   }
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
     throw new ApiError(res.status, (data.detail as string) || 'Request failed', data)
+  }
+
+  // 204 No Content no tiene body para parsear
+  if (res.status === 204) {
+    return undefined as T
   }
 
   return res.json() as Promise<T>

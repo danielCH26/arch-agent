@@ -22,7 +22,7 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://asistente:asistente@localhost:5432/asistente_db",
+    "postgresql://asistente:asistente@postgres-app:5432/asistente_db",
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
