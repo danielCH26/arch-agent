@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { uploadDocument } from '../api/documents'
+import { uploadDocument, DuplicateFileError } from '../api/documents'
 
 interface DocumentUploaderProps {
   projectId: number
@@ -14,6 +14,11 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [duplicateInfo, setDuplicateInfo] = useState<{
+    filename: string
+    existing_version: number
+  } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const validateFile = (file: File): string | null => {
@@ -27,26 +32,62 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
     return null
   }
 
+  /**
+   * Lógica central de upload. Si `overwrite=true`, agrega el query param
+   * `?overwrite=true` para que el backend reemplace la versión existente.
+   *
+   * Si el backend retorna 409, capturamos DuplicateFileError y abrimos
+   * el modal de confirmación. El usuario decide si sube con `overwrite=true`
+   * o cancela.
+   */
+  const doUpload = async (file: File, overwrite: boolean) => {
+    setError('')
+    setUploading(true)
+    setProgress(0)
+    try {
+      await uploadDocument(projectId, file, {
+        overwrite,
+        onProgress: (p) => setProgress(p),
+      })
+      setPendingFile(null)
+      setDuplicateInfo(null)
+      onUploadComplete()
+    } catch (err) {
+      if (err instanceof DuplicateFileError) {
+        // 409: el backend nos dice que ya existe. Mostramos modal de
+        // confirmación y el usuario decide si sobrescribe.
+        setPendingFile(file)
+        setDuplicateInfo({
+          filename: err.info.filename,
+          existing_version: err.info.existing_version,
+        })
+      } else {
+        setError(err instanceof Error ? err.message : 'Error al subir archivo')
+      }
+    } finally {
+      setUploading(false)
+      setProgress(0)
+    }
+  }
+
   const handleUpload = async (file: File) => {
     const validationError = validateFile(file)
     if (validationError) {
       setError(validationError)
       return
     }
+    await doUpload(file, false)
+  }
 
+  const handleConfirmOverwrite = async () => {
+    if (!pendingFile) return
+    await doUpload(pendingFile, true)
+  }
+
+  const handleCancelOverwrite = () => {
+    setPendingFile(null)
+    setDuplicateInfo(null)
     setError('')
-    setUploading(true)
-    setProgress(0)
-
-    try {
-      await uploadDocument(projectId, file, (p) => setProgress(p))
-      onUploadComplete()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al subir archivo')
-    } finally {
-      setUploading(false)
-      setProgress(0)
-    }
   }
 
   const handleDrop = (e: React.DragEvent) => {
@@ -131,6 +172,38 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
       {error && (
         <div className="mt-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
           {error}
+        </div>
+      )}
+
+      {duplicateInfo && (
+        <div className="mt-3 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <p className="text-sm font-medium text-yellow-900 mb-1">
+            Archivo duplicado
+          </p>
+          <p className="text-sm text-yellow-800 mb-3">
+            <strong>{duplicateInfo.filename}</strong> ya existe en este
+            proyecto como <strong>v{duplicateInfo.existing_version}</strong>.
+            Si lo subís de nuevo, se va a sobrescribir la versión actual
+            (los chunks anteriores se reemplazan).
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleConfirmOverwrite}
+              disabled={uploading}
+              className="px-3 py-1.5 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700 disabled:opacity-50"
+            >
+              Sobrescribir v{duplicateInfo.existing_version}
+            </button>
+            <button
+              type="button"
+              onClick={handleCancelOverwrite}
+              disabled={uploading}
+              className="px-3 py-1.5 bg-white text-yellow-900 text-sm border border-yellow-300 rounded hover:bg-yellow-50 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+          </div>
         </div>
       )}
     </div>

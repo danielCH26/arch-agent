@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
@@ -100,23 +100,31 @@ async def delete_doc(
 
 @router.post(
     "/upload",
-    response_model=DocumentOut,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
     project_id: int,
     file: UploadFile,
+    overwrite: bool = Query(
+        False,
+        description=(
+            "Si ya existe un documento con el mismo nombre en este proyecto, "
+            "sobrescribe la ultima version en lugar de crear una nueva."
+        ),
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     """
     Upload a PDF or MD file and index it in PGVector.
 
     Handles duplicates:
-    - If filename exists for this user+project → returns 409 with version info
-    - User must explicitly confirm to overwrite via ?overwrite=true
+    - Si el archivo ya existe para este user+project y `overwrite=false` (default):
+      retorna 409 con `DuplicateResponse` (cliente debe confirmar y reintentar
+      con `?overwrite=true`).
+    - Si el archivo ya existe y `overwrite=true`: borra la version anterior
+      (cascadea chunks) y crea una nueva con el mismo numero de version.
+    - Si el archivo NO existe: crea version 1.
     """
-    overwrite = False  # TODO: read ?overwrite=true query param when FastAPI supports it cleanly
-
     user_id = current_user["user_id"]
     filename = file.filename or "unnamed"
 
@@ -135,8 +143,26 @@ async def upload_document(
             detail=f"El archivo excede el límite de {MAX_FILE_SIZE_BYTES // (1024*1024)} MB",
         )
 
-    # Check for duplicate
+    # Check for duplicate (despues de validar extension/size para no leak info)
     existing_version = check_duplicate(user_id, filename, project_id=project_id)
+    if existing_version is not None and not overwrite:
+        # El cliente debe confirmar explicitamente via ?overwrite=true.
+        # Devolvemos 409 con un body que es un DuplicateResponse (no DocumentOut).
+        # Para que FastAPI serialice bien, usamos JSONResponse manual.
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "is_duplicate": True,
+                "existing_version": existing_version,
+                "filename": filename,
+                "detail": (
+                    f"Ya existe '{filename}' (v{existing_version}) en este proyecto. "
+                    "Reenvia con ?overwrite=true para sobrescribir."
+                ),
+            },
+        )
 
     # Write to temp file for processing
     suffix = Path(filename).suffix.lower()
@@ -163,15 +189,28 @@ async def upload_document(
 
         # Store document and chunks
         try:
-            doc_id = save_document(
-                user_id=user_id,
-                filename=filename,
-                file_type=suffix,
-                file_size_bytes=len(content),
-                chunks=chunks,
-                embeddings=embeddings,
-                project_id=project_id,
-            )
+            if existing_version is not None and overwrite:
+                # Borrar la version anterior (cascadea chunks) y crear nueva
+                # con el mismo numero de version via overwrite_document.
+                doc_id = overwrite_document(
+                    user_id=user_id,
+                    filename=filename,
+                    file_type=suffix,
+                    file_size_bytes=len(content),
+                    chunks=chunks,
+                    embeddings=embeddings,
+                    project_id=project_id,
+                )
+            else:
+                doc_id = save_document(
+                    user_id=user_id,
+                    filename=filename,
+                    file_type=suffix,
+                    file_size_bytes=len(content),
+                    chunks=chunks,
+                    embeddings=embeddings,
+                    project_id=project_id,
+                )
         except DocumentStorageError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
