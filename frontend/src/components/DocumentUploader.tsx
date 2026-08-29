@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { uploadDocument, DuplicateFileError } from '../api/documents'
+import { DuplicateModal } from './DuplicateModal'
 
 interface DocumentUploaderProps {
   projectId: number
@@ -32,21 +33,14 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
     return null
   }
 
-  /**
-   * Lógica central de upload. Si `overwrite=true`, agrega el query param
-   * `?overwrite=true` para que el backend reemplace la versión existente.
-   *
-   * Si el backend retorna 409, capturamos DuplicateFileError y abrimos
-   * el modal de confirmación. El usuario decide si sube con `overwrite=true`
-   * o cancela.
-   */
-  const doUpload = async (file: File, overwrite: boolean) => {
+  const doUpload = async (file: File, overwrite: boolean, suffix: boolean) => {
     setError('')
     setUploading(true)
     setProgress(0)
     try {
       await uploadDocument(projectId, file, {
         overwrite,
+        suffix,
         onProgress: (p) => setProgress(p),
       })
       setPendingFile(null)
@@ -54,8 +48,6 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
       onUploadComplete()
     } catch (err) {
       if (err instanceof DuplicateFileError) {
-        // 409: el backend nos dice que ya existe. Mostramos modal de
-        // confirmación y el usuario decide si sobrescribe.
         setPendingFile(file)
         setDuplicateInfo({
           filename: err.info.filename,
@@ -76,15 +68,20 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
       setError(validationError)
       return
     }
-    await doUpload(file, false)
+    await doUpload(file, false, false)
   }
 
-  const handleConfirmOverwrite = async () => {
+  const handleReplace = async () => {
     if (!pendingFile) return
-    await doUpload(pendingFile, true)
+    await doUpload(pendingFile, true, false)
   }
 
-  const handleCancelOverwrite = () => {
+  const handleSuffix = async () => {
+    if (!pendingFile) return
+    await doUpload(pendingFile, false, true)
+  }
+
+  const handleCancelDuplicate = () => {
     setPendingFile(null)
     setDuplicateInfo(null)
     setError('')
@@ -175,36 +172,15 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
         </div>
       )}
 
-      {duplicateInfo && (
-        <div className="mt-3 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <p className="text-sm font-medium text-yellow-900 mb-1">
-            Archivo duplicado
-          </p>
-          <p className="text-sm text-yellow-800 mb-3">
-            <strong>{duplicateInfo.filename}</strong> ya existe en este
-            proyecto como <strong>v{duplicateInfo.existing_version}</strong>.
-            Si lo subís de nuevo, se va a sobrescribir la versión actual
-            (los chunks anteriores se reemplazan).
-          </p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={handleConfirmOverwrite}
-              disabled={uploading}
-              className="px-3 py-1.5 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700 disabled:opacity-50"
-            >
-              Sobrescribir v{duplicateInfo.existing_version}
-            </button>
-            <button
-              type="button"
-              onClick={handleCancelOverwrite}
-              disabled={uploading}
-              className="px-3 py-1.5 bg-white text-yellow-900 text-sm border border-yellow-300 rounded hover:bg-yellow-50 disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-          </div>
-        </div>
+      {duplicateInfo && pendingFile && (
+        <DuplicateModal
+          filename={duplicateInfo.filename}
+          existingVersion={duplicateInfo.existing_version}
+          onReplace={handleReplace}
+          onSuffix={handleSuffix}
+          onCancel={handleCancelDuplicate}
+          loading={uploading}
+        />
       )}
     </div>
   )
