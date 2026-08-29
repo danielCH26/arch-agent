@@ -112,18 +112,26 @@ async def upload_document(
             "sobrescribe la ultima version en lugar de crear una nueva."
         ),
     ),
+    suffix: bool = Query(
+        False,
+        description=(
+            "Si ya existe un documento con el mismo nombre en este proyecto, "
+            "guarda como <nombre>_v2.<ext> (version nueva con nombre distinto) "
+            "en lugar de sobrescribir."
+        ),
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     """
     Upload a PDF or MD file and index it in PGVector.
 
-    Handles duplicates:
-    - Si el archivo ya existe para este user+project y `overwrite=false` (default):
-      retorna 409 con `DuplicateResponse` (cliente debe confirmar y reintentar
-      con `?overwrite=true`).
-    - Si el archivo ya existe y `overwrite=true`: borra la version anterior
-      (cascadea chunks) y crea una nueva con el mismo numero de version.
-    - Si el archivo NO existe: crea version 1.
+    Manejo de duplicados (3 opciones, mutuamente excluyentes):
+    - Default (sin flag): si el archivo ya existe para este user+project,
+      retorna 409 con `DuplicateResponse` (el cliente elige que hacer).
+    - `overwrite=true`: borra la version anterior (cascadea chunks) y crea
+      una nueva con el MISMO numero de version.
+    - `suffix=true`: guarda como `<nombre>_v2.<ext>` (version nueva con
+      nombre distinto). La version original queda intacta.
     """
     user_id = current_user["user_id"]
     filename = file.filename or "unnamed"
@@ -145,10 +153,9 @@ async def upload_document(
 
     # Check for duplicate (despues de validar extension/size para no leak info)
     existing_version = check_duplicate(user_id, filename, project_id=project_id)
-    if existing_version is not None and not overwrite:
-        # El cliente debe confirmar explicitamente via ?overwrite=true.
-        # Devolvemos 409 con un body que es un DuplicateResponse (no DocumentOut).
-        # Para que FastAPI serialice bien, usamos JSONResponse manual.
+    if existing_version is not None and not overwrite and not suffix:
+        # El cliente debe confirmar explicitamente que hacer (reemplazar,
+        # subir con sufijo, o cancelar). Devolvemos 409 con DuplicateResponse.
         from fastapi.responses import JSONResponse
 
         return JSONResponse(
@@ -159,14 +166,30 @@ async def upload_document(
                 "filename": filename,
                 "detail": (
                     f"Ya existe '{filename}' (v{existing_version}) en este proyecto. "
-                    "Reenvia con ?overwrite=true para sobrescribir."
+                    "Envía ?overwrite=true para reemplazar o "
+                    "?suffix=true para subir como versión nueva con sufijo."
                 ),
             },
         )
 
-    # Write to temp file for processing
-    suffix = Path(filename).suffix.lower()
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    # Si suffix=true y hay duplicado: generar nuevo nombre <base>_vN.ext
+    # hasta encontrar uno libre (v2, v3, ...). La version original queda intacta.
+    final_filename = filename
+    if suffix and existing_version is not None:
+        base_name = Path(filename).stem
+        ext = Path(filename).suffix
+        candidate_n = existing_version
+        while True:
+            candidate_n += 1
+            candidate = f"{base_name}_v{candidate_n}{ext}"
+            if check_duplicate(user_id, candidate, project_id=project_id) is None:
+                final_filename = candidate
+                break
+
+    # Write to temp file for processing. Usamos la extension del archivo
+    # original (el file type a guardar siempre es .pdf o .md).
+    file_ext = Path(filename).suffix.lower()
+    with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -189,23 +212,25 @@ async def upload_document(
 
         # Store document and chunks
         try:
-            if existing_version is not None and overwrite:
-                # Borrar la version anterior (cascadea chunks) y crear nueva
-                # con el mismo numero de version via overwrite_document.
+            if existing_version is not None and overwrite and not suffix:
+                # Reemplazar: borra la version anterior (cascadea chunks) y
+                # crea una nueva con el mismo numero de version.
                 doc_id = overwrite_document(
                     user_id=user_id,
-                    filename=filename,
-                    file_type=suffix,
+                    filename=final_filename,
+                    file_type=file_ext,
                     file_size_bytes=len(content),
                     chunks=chunks,
                     embeddings=embeddings,
                     project_id=project_id,
                 )
             else:
+                # save_document con el filename final (original o con sufijo).
+                # Si es un nombre nuevo (sufijo), la version arranca en 1.
                 doc_id = save_document(
                     user_id=user_id,
-                    filename=filename,
-                    file_type=suffix,
+                    filename=final_filename,
+                    file_type=file_ext,
                     file_size_bytes=len(content),
                     chunks=chunks,
                     embeddings=embeddings,

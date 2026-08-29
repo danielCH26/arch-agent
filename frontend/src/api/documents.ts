@@ -39,19 +39,28 @@ export class DuplicateFileError extends Error {
 export async function uploadDocument(
   projectId: number,
   file: File,
-  options?: { overwrite?: boolean; onProgress?: (progress: number) => void }
+  options?: {
+    overwrite?: boolean
+    suffix?: boolean
+    onProgress?: (progress: number) => void
+  }
 ): Promise<Document> {
   const token = authStore.getState().token
   const overwrite = options?.overwrite ?? false
+  const suffix = options?.suffix ?? false
   const onProgress = options?.onProgress
   const formData = new FormData()
   formData.append('file', file)
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    const url = overwrite
-      ? `/api/documents/upload?project_id=${projectId}&overwrite=true`
-      : `/api/documents/upload?project_id=${projectId}`
+    let url = `/api/documents/upload?project_id=${projectId}`
+    if (overwrite) {
+      url += '&overwrite=true'
+    }
+    if (suffix) {
+      url += '&suffix=true'
+    }
 
     xhr.open('POST', url)
 
