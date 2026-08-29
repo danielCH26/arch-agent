@@ -32,10 +32,11 @@ export async function apiFetch<T>(
   })
 
   if (res.status === 401) {
-    // Clear token and redirect to login
+    // Token inválido o expirado — limpiar estado y redirigir
     authStore.getState().logout()
-    window.location.href = '/login'
-    throw new ApiError(401, 'Unauthorized')
+    // Redirigir usando replace para no agregar a historial
+    window.location.replace('/login')
+    throw new ApiError(401, 'Session expired')
   }
 
   if (!res.ok) {
