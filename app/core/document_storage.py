@@ -206,11 +206,16 @@ def overwrite_document(
     file_size_bytes: int,
     chunks: List[Document],
     embeddings: List[List[float]],
+    project_id: Optional[int] = None,
 ) -> int:
     """
     Borra la versión actual del documento y crea una nueva con el mismo número.
 
     Útil cuando el usuario eligió "Sobrescribir" en el popup de duplicados.
+
+    Si se pasa `project_id`, filtra la versión a sobrescribir por (user_id,
+    filename, project_id). Esto es importante porque un mismo usuario podría
+    tener el mismo filename en proyectos distintos (v1 en proyecto A, v1 en B).
 
     Returns:
         document_id del nuevo documento
@@ -218,10 +223,13 @@ def overwrite_document(
     db = SessionLocal()
     try:
         # Buscar versión actual
-        current = db.query(UploadedDocument).filter(
+        query = db.query(UploadedDocument).filter(
             UploadedDocument.user_id == user_id,
             UploadedDocument.filename == filename,
-        ).order_by(desc(UploadedDocument.version)).first()
+        )
+        if project_id is not None:
+            query = query.filter(UploadedDocument.project_id == project_id)
+        current = query.order_by(desc(UploadedDocument.version)).first()
 
         if current is None:
             # No existe → equivalente a save_document con version=1
@@ -232,6 +240,7 @@ def overwrite_document(
                 file_size_bytes=file_size_bytes,
                 chunks=chunks,
                 embeddings=embeddings,
+                project_id=project_id,
             )
 
         # Borrar la versión actual (chunks por CASCADE)
@@ -248,6 +257,7 @@ def overwrite_document(
             chunk_count=len(chunks),
             processed=True,
             version=version_to_keep,
+            project_id=project_id,
         )
         db.add(new_doc)
         db.flush()
