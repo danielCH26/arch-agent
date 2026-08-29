@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Setup local automatizado para arch-agent (branch feature/chainlit-api).
+# Setup local automatizado para arch-agent (post-migración Chainlit → SPA).
 #
 # Stack 100% en Docker. No requiere Python ni Node locales.
 #

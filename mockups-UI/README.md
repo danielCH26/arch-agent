@@ -1,5 +1,7 @@
 # Mockups UI Arch Agent 🤖
-A continuación se adjuntan los mockups del UI para Arch Agent
+Mockups del UI de Arch Agent (React 18 + Vite 6 + TypeScript SPA, servido por nginx en `:5173`).
+
+Estos mockups sirvieron de referencia para el diseño de la UI actual. La implementación final está en `frontend/src/`.
 
 ## Login/Registro — HU1
 ![Registro](Registro.png)

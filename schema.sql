@@ -1,6 +1,19 @@
+-- =============================================================================
+-- Schema inicial de arch-agent (aplicado por scripts/init_db.py).
+--
+-- Las migraciones incrementales viven en migrations/NNNN_*.sql (ver
+-- migrations/run_migrations.py). Este archivo representa el estado "base"
+-- de la DB; las migrations agregan columnas que los modelos SQLAlchemy
+-- esperan pero que el schema inicial no contemplaba.
+--
+-- Para desarrollo nuevo: correr init_db.py + run_migrations.py.
+-- Las columnas definidas acá con ADD COLUMN IF NOT EXISTS cubren lo mismo
+-- que las migrations, para que init_db solo produzca una DB consistente.
+-- =============================================================================
+
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(100) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
@@ -12,7 +25,7 @@ CREATE TABLE users (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
@@ -23,8 +36,8 @@ CREATE TABLE projects (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Nueva: soporta HU2 (recordar sesión del usuario)
-CREATE TABLE sessions (
+-- HU2: recordar sesión del usuario
+CREATE TABLE IF NOT EXISTS sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
@@ -34,9 +47,11 @@ CREATE TABLE sessions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE UNIQUE INDEX ON sessions (user_id);
+-- Solo una sesión activa por usuario. Si re-ejecuta init_db.py despues de
+-- migrations 0003, el UNIQUE INDEX ya existe y este CREATE es idempotente.
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_user_id_unique ON sessions (user_id);
 
-CREATE TABLE uploaded_documents (
+CREATE TABLE IF NOT EXISTS uploaded_documents (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     filename VARCHAR(500) NOT NULL,
@@ -47,7 +62,7 @@ CREATE TABLE uploaded_documents (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE document_chunks (
+CREATE TABLE IF NOT EXISTS document_chunks (
     id SERIAL PRIMARY KEY,
     document_id INTEGER REFERENCES uploaded_documents(id) ON DELETE CASCADE,
     chunk_text TEXT,
@@ -57,4 +72,19 @@ CREATE TABLE document_chunks (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX ON document_chunks USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
+    ON document_chunks USING ivfflat (embedding vector_cosine_ops);
+
+-- =============================================================================
+-- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
+-- init_db.py aplica todo en orden; migrations/run_migrations.py es idempotente.
+-- =============================================================================
+
+-- projects.phase_ready (migration 0001)
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS phase_ready BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- uploaded_documents.version (migration 0002)
+ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+
+-- uploaded_documents.project_id (migration 0004)
+ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;

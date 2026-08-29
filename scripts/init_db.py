@@ -3,7 +3,7 @@
 Script de inicializacion de la base de datos.
 
 Uso:
-    docker compose exec app python scripts/init_db.py
+    docker compose exec -T backend python scripts/init_db.py
 
 Que hace:
 1. Habilita/verifica la extension PGVector
@@ -133,21 +133,6 @@ def verify_pgvector_works(conn):
         sys.exit(1)
 
 
-def seed_initial_data_placeholder(conn):
-    """Placeholder para el seed (se carga en Sprint 2)."""
-    cur = conn.cursor()
-    cur.execute("SELECT to_regclass('public.architect_patterns');")
-    if cur.fetchone()[0] is None:
-        return
-
-    cur.execute("SELECT COUNT(*) FROM architect_patterns;")
-    count = cur.fetchone()[0]
-    if count == 0:
-        log("Tabla architect_patterns vacia. El seed se cargara en Sprint 2 (F07).", "WARN")
-    else:
-        log(f"architect_patterns ya tiene {count} patrones cargados", "OK")
-
-
 def main():
     """Funcion principal."""
     log("=" * 60)
@@ -167,7 +152,6 @@ def main():
         create_schema(conn, schema_sql)
         verify_schema(conn, expected_tables)
         verify_pgvector_works(conn)
-        seed_initial_data_placeholder(conn)
 
         log("=" * 60)
         log("Base de datos inicializada correctamente", "OK")
