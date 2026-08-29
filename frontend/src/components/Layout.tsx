@@ -1,20 +1,32 @@
 import { useEffect, useState } from 'react'
-import { Outlet, Link, useNavigate } from 'react-router-dom'
+import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { authStore } from '../stores/authStore'
 import { projectsStore } from '../stores/projectsStore'
 
 export function Layout() {
   const navigate = useNavigate()
+  const location = useLocation()
   const user = authStore((state) => state.user)
   const logout = authStore((state) => state.logout)
   const projects = projectsStore((state) => state.projects)
   const fetchProjects = projectsStore((state) => state.fetchProjects)
+  const projectsStatus = projectsStore((state) => state.status)
+  const projectsError = projectsStore((state) => state.error)
 
   const [expanded, setExpanded] = useState<number | null>(null)
 
   useEffect(() => {
     fetchProjects()
   }, [fetchProjects])
+
+  // Auto-expand project when navigating to its routes
+  useEffect(() => {
+    const match = location.pathname.match(/^\/projects\/(\d+)/)
+    if (match) {
+      const projectId = parseInt(match[1], 10)
+      setExpanded(projectId)
+    }
+  }, [location.pathname])
 
   const toggleExpand = (projectId: number) => {
     setExpanded((prev) => (prev === projectId ? null : projectId))
@@ -24,6 +36,8 @@ export function Layout() {
     await logout()
     navigate('/login')
   }
+
+  const isActivePath = (path: string) => location.pathname === path
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -60,13 +74,41 @@ export function Layout() {
               </Link>
 
               <div className="mt-1 space-y-1">
+                {/* Loading state */}
+                {projectsStatus === 'loading' && (
+                  <div className="px-3 py-2 text-xs text-gray-500">Cargando proyectos...</div>
+                )}
+
+                {/* Error state */}
+                {projectsError && (
+                  <div className="px-3 py-2 text-xs text-red-600 bg-red-50 rounded">
+                    {projectsError}
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {projectsStatus !== 'loading' && !projectsError && projects.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-gray-500">
+                    No hay proyectos aún.
+                    <br />
+                    <Link to="/projects" className="text-blue-600 hover:underline">
+                      Crear el primero
+                    </Link>
+                  </div>
+                )}
+
+                {/* Project list */}
                 {projects.map((p) => {
                   const isOpen = expanded === p.id
+                  const isChatActive = isActivePath(`/projects/${p.id}/chat`)
+                  const isDocsActive = isActivePath(`/projects/${p.id}/documents`)
                   return (
                     <div key={p.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
                       <button
                         onClick={() => toggleExpand(p.id)}
-                        className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-800 hover:bg-gray-50 transition-colors"
+                        className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-gray-50 transition-colors ${
+                          isChatActive || isDocsActive ? 'bg-blue-50' : 'text-gray-800'
+                        }`}
                       >
                         <span className="font-medium truncate">{p.name}</span>
                         <svg
@@ -83,15 +125,19 @@ export function Layout() {
                         <div className="border-t border-gray-200 bg-gray-50 py-1">
                           <Link
                             to={`/projects/${p.id}/chat`}
-                            className="flex items-center gap-2 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+                            className={`flex items-center gap-2 px-4 py-1.5 text-sm hover:bg-gray-100 ${
+                              isChatActive ? 'bg-blue-100 font-semibold text-blue-700' : 'text-gray-700'
+                            }`}
                           >
-                            Chat
+                            💬 Chat
                           </Link>
                           <Link
                             to={`/projects/${p.id}/documents`}
-                            className="flex items-center gap-2 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+                            className={`flex items-center gap-2 px-4 py-1.5 text-sm hover:bg-gray-100 ${
+                              isDocsActive ? 'bg-blue-100 font-semibold text-blue-700' : 'text-gray-700'
+                            }`}
                           >
-                            Documentos
+                            📄 Documentos
                           </Link>
                         </div>
                       )}
