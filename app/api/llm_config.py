@@ -16,7 +16,9 @@ El wizard valida incrementalmente y filtra modelos por tier MMLU.
 """
 
 import logging
+import re
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -102,12 +104,32 @@ def _normalize_base_url(base_url: str) -> str:
 
 def _validate_url_format(base_url: str) -> None:
     """Validacion client-side del formato. 400 si falla."""
-    if not base_url or not base_url.strip():
-        raise HTTPException(status_code=400, detail="La URL es obligatoria")
-    if not base_url.startswith(("http://", "https://")):
+    # Check empty or whitespace-only
+    stripped = base_url.strip()
+    if not stripped:
+        raise HTTPException(status_code=400, detail="La URL es obligatoria.")
+
+    # Check protocol
+    if not stripped.startswith(("http://", "https://")):
         raise HTTPException(
             status_code=400,
-            detail="La URL debe comenzar con http:// o https://",
+            detail="La URL debe comenzar con http:// o https://.",
+        )
+
+    # Check host is present using urlparse
+    parsed = urlparse(stripped)
+    if not parsed.hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="La URL está incompleta. Ingresá el host, por ejemplo: https://api.openai.com/v1",
+        )
+
+    # Additional validation: hostname must have at least one alphanumeric char
+    # Use a simple pattern to verify there's a real host (not just scheme://)
+    if not re.match(r"^[a-zA-Z0-9]", parsed.hostname):
+        raise HTTPException(
+            status_code=400,
+            detail="La URL está incompleta. Ingresá el host, por ejemplo: https://api.openai.com/v1",
         )
 
 
@@ -134,10 +156,10 @@ def _ping_models_endpoint(
             status_code=400,
             detail=f"El proveedor no respondió en {DEFAULT_TIMEOUT}s. Verifica tu conexión.",
         )
-    except httpx.ConnectError as e:
+    except httpx.ConnectError:
         raise HTTPException(
             status_code=400,
-            detail=f"No se pudo conectar al proveedor: {str(e)[:200]}",
+            detail="No se pudo conectar al proveedor. Verificá que la URL sea correcta y que el servicio esté activo.",
         )
     except httpx.RequestError as e:
         raise HTTPException(
@@ -151,7 +173,7 @@ def _ping_models_endpoint(
     if response.status_code == 404:
         raise HTTPException(
             status_code=400,
-            detail="La URL no existe o no es un endpoint /models válido.",
+            detail="La URL no es compatible con OpenAI. Verificá que el endpoint /models exista.",
         )
     if response.status_code == 401:
         if require_auth:

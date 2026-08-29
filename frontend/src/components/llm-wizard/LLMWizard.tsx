@@ -90,6 +90,7 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
     try {
       await wizardStep1({ base_url: baseUrl.trim() })
       setStep(2)
+      setMode('step2')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al validar URL')
     } finally {
@@ -103,6 +104,7 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
     try {
       await wizardStep2({ base_url: baseUrl.trim(), api_key: apiKey.trim() })
       setStep(3)
+      setMode('step3')
       setLoading(true)
       await loadAvailableModels()
     } catch (err) {

@@ -75,7 +75,7 @@ class TestWizardStep1:
 
     @patch("app.api.llm_config.httpx.get")
     def test_url_with_404_fails(self, mock_get):
-        """URL con 404 falla con 400 'URL no existe'."""
+        """URL con 404 falla con 400 'no es compatible con OpenAI'."""
         mock_get.return_value = _mock_response(404)
 
         import asyncio
@@ -87,7 +87,7 @@ class TestWizardStep1:
             asyncio.run(wizard_step1(body, _current_user()))
 
         assert exc_info.value.status_code == 400
-        assert "no existe" in exc_info.value.detail.lower()
+        assert "no es compatible con openai" in exc_info.value.detail.lower()
 
     @patch("app.api.llm_config.httpx.get")
     def test_url_timeout_fails(self, mock_get):
@@ -118,6 +118,112 @@ class TestWizardStep1:
 
         assert exc_info.value.status_code == 400
         assert "http" in exc_info.value.detail.lower()
+
+    def test_empty_url_fails(self):
+        """URL vacía falla con 400 'URL es obligatoria'."""
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="")
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "obligatoria" in exc_info.value.detail.lower()
+
+    def test_whitespace_only_url_fails(self):
+        """URL con solo espacios falla con 400 'URL es obligatoria'."""
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="   ")
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "obligatoria" in exc_info.value.detail.lower()
+
+    def test_url_without_protocol_fails(self):
+        """URL sin protocolo falla con 400 'debe comenzar con http'."""
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="api.openai.com/v1")
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "http:// o https://" in exc_info.value.detail.lower()
+
+    def test_url_with_only_scheme_fails(self):
+        """URL con solo esquema (https://) falla con 400 'Ingresá el host'."""
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="https://")
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "host" in exc_info.value.detail.lower()
+
+    def test_url_with_scheme_and_path_but_no_host_fails(self):
+        """URL con esquema y path pero sin host falla con 400 'Ingresá el host'."""
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="https:///v1")
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "host" in exc_info.value.detail.lower()
+
+    def test_valid_url_passes(self):
+        """URL válida pasa la validación de formato."""
+        import asyncio
+        from app.api.llm_config import _validate_url_format
+
+        # No debe lanzar excepción
+        _validate_url_format("https://api.openai.com/v1")
+
+    def test_valid_localhost_url_passes(self):
+        """URL localhost pasa la validación."""
+        import asyncio
+        from app.api.llm_config import _validate_url_format
+
+        # No debe lanzar excepción
+        _validate_url_format("http://localhost:11434/v1")
+
+    def test_valid_ip_url_passes(self):
+        """URL con IP literal pasa la validación."""
+        import asyncio
+        from app.api.llm_config import _validate_url_format
+
+        # No debe lanzar excepción
+        _validate_url_format("https://192.168.0.10:8080/v1")
+
+    @patch("app.api.llm_config.httpx.get")
+    def test_connect_error_fails(self, mock_get):
+        """ConnectError falla con mensaje específico."""
+        import httpx
+        mock_get.side_effect = httpx.ConnectError("connection failed")
+
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="https://unreachable.example/v1")
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "no se pudo conectar" in exc_info.value.detail.lower()
 
 
 # --- Wizard Step 2: validate API key + connection ---------------------------
