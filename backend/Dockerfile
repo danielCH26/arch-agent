@@ -31,7 +31,11 @@ FROM python:3.11-slim AS builder
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Forzar wheels CPU-only de torch en TODOS los pip install, no solo
+    # el primero. Sin esto, sentence-transformers re-baja torch+CUDA
+    # cuando se resuelve requirements.txt.
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 WORKDIR /app
 
@@ -46,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --prefix=/install \
         torch --index-url https://download.pytorch.org/whl/cpu
 
-# 2. Resto de deps
+# 2. Resto de deps (PIP_EXTRA_INDEX_URL global toma precedence)
 COPY requirements.txt .
 RUN pip install --prefix=/install -r requirements.txt
 
