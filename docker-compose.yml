@@ -1,29 +1,30 @@
 ﻿# =============================================================================
-# Docker Compose (F01)
-# 8 servicios: app, postgres-app, engram, langfuse-web, langfuse-db,
-#              clickhouse, minio, redis
-# =============================================================================
-# Levantar todo:  docker compose up -d
-# Ver logs:       docker compose logs -f app
-# Bajar todo:     docker compose down
-# Bajar + volumen: docker compose down -v
+# Docker Compose — arch-agent stack completo
+#
+# Servicios (post-migración Chainlit → FastAPI):
+#   - backend     FastAPI + LangChain RAG + PGVector (Python)
+#   - spa         React + Vite built + nginx
+#   - postgres-app DB principal con extensión vector
+#   - engram      Memoria persistente (HTTP API)
+#   - engram-proxy Publica engram para el host
+#   - langfuse-*  Observabilidad LLM (web + db + clickhouse + minio + redis)
+#
+# Levantar todo:        docker compose up -d
+# Ver logs:             docker compose logs -f backend
+# Bajar todo:           docker compose down
+# Bajar + data:         docker compose down -v
 # =============================================================================
 
 services:
   # ===========================================================================
-  # APP (Chainlit + LangChain + MCPs)
+  # BACKEND — FastAPI + LangChain RAG
   # ===========================================================================
-  # F01: este container es un PLACEHOLDER. Solo existe para que el compose
-  # tenga los 8 servicios del spec. La imagen real (Chainlit + LangChain)
-  # llega en F02. Aqui usamos alpine + sleep infinity para que:
-  #   - el container arranque y se mantenga Up
-  #   - las env vars lleguen al container (F02 las va a usar)
-  #   - NO se instale nada de Python/Node (esos viven en F02)
-  # ===========================================================================
-  app:
-    container_name: app
-    image: alpine:3.19
-    command: ["sleep", "infinity"]
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: arch-agent-backend:latest
+    container_name: backend
     depends_on:
       postgres-app:
         condition: service_healthy
@@ -34,7 +35,7 @@ services:
     env_file:
       - .env
     environment:
-      # Database
+      # Database (host = nombre del servicio en la red de compose)
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-app:5432/${POSTGRES_DB}
 
       # Langfuse
@@ -42,54 +43,55 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
       LANGFUSE_BASE_URL: http://langfuse-web:3000
 
-      # Engram
+      # Engram (accedido por hostname engram dentro de la red Docker)
       ENGRAM_PROJECT: ${ENGRAM_PROJECT}
       ENGRAM_URL: http://engram:7437
 
-      # LLM defaults (configurables luego en UI)
+      # LLM defaults (configurables luego en UI por usuario)
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_MODEL: ${LLM_MODEL}
+
+      PYTHONUNBUFFERED: "1"
     volumes:
-      - app_uploads:/app/uploads
-      - app_logs:/app/logs
+      - backend_uploads:/app/uploads
+      - backend_logs:/app/logs
+      - backend_models:/app/.cache
+    ports:
+      - "8000:8000"
     restart: unless-stopped
 
   # ===========================================================================
-  # SPA (React frontend built with Vite, served by nginx)
+  # SPA — React frontend built with Vite, served by nginx
   # ===========================================================================
   spa:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    image: arch-agent-spa:latest
+    container_name: spa
+    depends_on:
+      - backend
     ports:
       - "5173:80"
     volumes:
       - spa_build:/var/www/html
-    depends_on:
-      - app
     restart: unless-stopped
 
   # ===========================================================================
-  # ENGRAM (Memoria persistente)
+  # ENGRAM — Memoria persistente
   # ===========================================================================
   engram:
     container_name: engram
     image: ghcr.io/gentleman-programming/engram:latest
-    # 'engram serve' arranca el HTTP API server (puerto default 7437).
-    # NO existe subcomando 'cloud' en la imagen open-source — eso era del
-    # stack doc original y causaba el restart loop. Mapeamos 7437 por si
-    # se quiere usar desde la app o para `docker compose exec engram engram ...`.
-    # Engram solo escucha en 127.0.0.1. El proxy engram-proxy publica 7437
-    # y reenvía a este puerto interno en el mismo namespace de red.
     command: serve 7438
     ports:
-      - "7437:7437"
+      # NOTA: el puerto default 7437 puede estar ocupado por tu engram local (Gentle AI).
+      # Mapeamos 7439 -> 7437 interno. Cambiá a "7437:7437" si no tenes engram local.
+      - "7439:7437"
     volumes:
       - engram_data:/root/.engram
     environment:
       ENGRAM_PROJECT: ${ENGRAM_PROJECT}
-    # El healthcheck lo dejamos simple (TCP) porque el endpoint exacto
-    # del HTTP server de engram puede cambiar entre versiones
     healthcheck:
       test: ["CMD-SHELL", "wget -q --tries=1 --spider http://127.0.0.1:7438/health || exit 0"]
       interval: 15s
@@ -98,9 +100,6 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Hace accesible la API local de Engram para la app del host y otros
-  # contenedores. Comparte la red del contenedor engram para alcanzar su
-  # listener de loopback (127.0.0.1:7438).
   engram-proxy:
     container_name: engram-proxy
     image: alpine/socat:1.8.1.3
@@ -151,7 +150,6 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${LANGFUSE_DB_USER}:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/${LANGFUSE_DB_NAME}
-      # SALT: requerido por Langfuse para encriptar API keys. Generar uno fuerte en prod.
       SALT: ${LANGFUSE_SALT}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
       NEXTAUTH_URL: http://localhost:3000
@@ -161,7 +159,6 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME}
       CLICKHOUSE_URL: http://clickhouse:8123
-      # Migrations usan protocolo nativo (puerto 9000) con credenciales en URL
       CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@clickhouse:9000
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
@@ -183,7 +180,6 @@ services:
       retries: 10
       start_period: 30s
 
-  # Langfuse — DB
   langfuse-db:
     container_name: langfuse-db
     image: postgres:16
@@ -200,7 +196,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Langfuse — ClickHouse (analytics)
   clickhouse:
     container_name: clickhouse
     image: clickhouse/clickhouse-server:24
@@ -227,20 +222,14 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Langfuse — ClickHouse Keeper (coordinacion distribuida para ReplicatedMergeTree)
-  # Necesario para que las migraciones de Langfuse (CREATE TABLE ... ON CLUSTER) funcionen.
   clickhouse-keeper:
     container_name: clickhouse-keeper
     image: clickhouse/clickhouse-keeper:24
     volumes:
       - ./docker/clickhouse-keeper-config.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
       - langfuse_clickhouse_keeper_data:/var/lib/clickhouse-keeper
-    # Sin healthcheck: la imagen no trae `nc` y el endpoint HTTP no es
-    # convencional. clickhouse lo necesita para funcionar, asi que su
-    # propio healthcheck ya cubre la verificacion indirecta.
     restart: unless-stopped
 
-  # Langfuse — MinIO (S3-compatible storage)
   minio:
     container_name: minio
     image: minio/minio:latest
@@ -259,7 +248,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # Langfuse — Redis (cache)
   redis:
     container_name: redis
     image: redis:7
@@ -278,13 +266,10 @@ services:
 # VOLÚMENES PERSISTENTES
 # =============================================================================
 volumes:
-  # App
-  app_uploads:
-  app_logs:
-  models_cache:
-  npm_cache:
-  uv_cache:
-  puppeteer_cache:
+  # Backend
+  backend_uploads:
+  backend_logs:
+  backend_models:
 
   # Engram
   engram_data:
@@ -302,4 +287,3 @@ volumes:
 
   # SPA
   spa_build:
-

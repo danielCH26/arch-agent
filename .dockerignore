@@ -1,0 +1,56 @@
+# =============================================================================
+# .dockerignore — minimiza el build context del backend.
+# Sin esto, docker copia TODO el repo (venv 2.5GB, node_modules, .git, ...)
+# cada vez que cambia una linea de codigo.
+# =============================================================================
+
+# Python venv + caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+*.dist-info/
+
+# Node / frontend (no se necesita en la imagen backend)
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/Dockerfile
+frontend/nginx.conf
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests + dev tooling (NO se incluyen en el contenedor)
+tests/
+
+# Documentacion que no es runtime
+*.md
+LICENSE
+openspec/
+
+# Datos locales
+*.log
+uploads/
+logs/
+.cache/
+
+# Dockerfiles propios (no se autorecopian)
+backend/Dockerfile
+.dockerignore

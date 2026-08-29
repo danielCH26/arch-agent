@@ -24,6 +24,7 @@ class RegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     username: str  # username or email
+    password: str
 
 
 class TokenResponse(BaseModel):

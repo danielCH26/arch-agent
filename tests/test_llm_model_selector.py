@@ -8,7 +8,7 @@ Tests para la lógica pura de filtrado (sin Chainlit).
 
 import pytest
 
-from app.llm.config_form import (
+from app.core.llm_model_selector import (
     filter_models,
     split_visible_and_excess,
     match_model_exact,
