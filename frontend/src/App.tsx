@@ -30,6 +30,7 @@ export default function App() {
           <Route path="projects/:id/chat" element={<ChatPage />} />
           <Route path="projects/:id/settings" element={<SettingsPage />} />
           <Route path="projects/:id/documents" element={<DocumentsPage />} />
+          <Route path="settings/llm" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Routes>
