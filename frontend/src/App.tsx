@@ -7,6 +7,7 @@ import { ProjectPage } from './pages/ProjectPage'
 import { ChatPage } from './pages/ChatPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { DocumentsPage } from './pages/DocumentsPage'
+import { ProfilePage } from './pages/ProfilePage'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { NotFound } from './components/NotFound'
 
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="projects/:id/chat" element={<ChatPage />} />
           <Route path="projects/:id/documents" element={<DocumentsPage />} />
           <Route path="settings/llm" element={<SettingsPage />} />
+          <Route path="settings/profile" element={<ProfilePage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Routes>

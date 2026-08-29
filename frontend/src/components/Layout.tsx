@@ -172,7 +172,18 @@ export function Layout() {
           </div>
 
           {/* Footer: Settings */}
-          <div className="p-4 border-t border-gray-200 bg-gray-50">
+          <div className="p-4 border-t border-gray-200 bg-gray-50 space-y-1">
+            <Link
+              to="/settings/profile"
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
+                isActivePath('/settings/profile')
+                  ? 'bg-indigo-100 text-indigo-700 font-medium'
+                  : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+            >
+              <span className="text-lg">👤</span>
+              <span>Perfil</span>
+            </Link>
             <Link
               to="/settings/llm"
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
