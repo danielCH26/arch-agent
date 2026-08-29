@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getProject, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { PhaseBadge } from '../components/PhaseBadge'
+import { projectsStore } from '../stores/projectsStore'
 
 export function ChatPage() {
   const { id } = useParams<{ id: string }>()
@@ -21,6 +22,9 @@ export function ChatPage() {
     getProject(projectId)
       .then((data) => {
         setProject(data)
+        // Setear el proyecto activo en el store global para que el sidebar
+        // muestre los links a Chat / Documentos / Configuración.
+        projectsStore.getState().setCurrentProject(data)
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')

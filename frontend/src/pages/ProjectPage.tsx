@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getProject, Project } from '../api/projects'
+import { projectsStore } from '../stores/projectsStore'
 
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -20,7 +21,9 @@ export function ProjectPage() {
     getProject(projectId)
       .then((data) => {
         setProject(data)
-        // Redirect to chat by default
+        // Setear el proyecto activo en el store para que el sidebar muestre
+        // Chat / Documentos / Configuración.
+        projectsStore.getState().setCurrentProject(data)
         navigate(`/projects/${projectId}/chat`, { replace: true })
       })
       .catch((err) => {

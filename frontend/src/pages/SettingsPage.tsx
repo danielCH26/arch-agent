@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getProject, Project } from '../api/projects'
 import { getLLMConfig } from '../api/llm'
 import { LLMWizard } from '../components/llm-wizard/LLMWizard'
+import { projectsStore } from '../stores/projectsStore'
 
 export function SettingsPage() {
   const { id } = useParams<{ id: string }>()
@@ -21,6 +22,8 @@ export function SettingsPage() {
     getProject(projectId)
       .then((data) => {
         setProject(data)
+        // Setear proyecto activo para que el sidebar lo refleje
+        projectsStore.getState().setCurrentProject(data)
       })
       .catch(() => {
         // Ignore error, show page anyway

@@ -4,6 +4,7 @@ import { getProject, Project } from '../api/projects'
 import { Document, listDocuments } from '../api/documents'
 import { DocumentUploader } from '../components/DocumentUploader'
 import { DocumentList } from '../components/DocumentList'
+import { projectsStore } from '../stores/projectsStore'
 
 export function DocumentsPage() {
   const { id } = useParams<{ id: string }>()
@@ -33,6 +34,8 @@ export function DocumentsPage() {
       try {
         const projectData = await getProject(projectId)
         setProject(projectData)
+        // Setear proyecto activo para que el sidebar lo refleje
+        projectsStore.getState().setCurrentProject(projectData)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Error al cargar proyecto')
       }
