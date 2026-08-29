@@ -137,20 +137,19 @@ const handleCancelDuplicate = () => {
 
   return (
     <form onSubmit={handleSubmit} className="border-t border-gray-200 p-4 bg-white">
-      {/* Textarea con auto-resize */}
-      <textarea
-        ref={textareaRef}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Escribe un mensaje..."
-        disabled={disabled}
-        rows={1}
-        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
-      />
-
-      {/* Contenedor de la caja de texto + clip */}
+      {/* Contenedor: textarea + botones en la misma fila */}
       <div className="flex gap-2 items-end">
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Escribe un mensaje..."
+          disabled={disabled}
+          rows={1}
+          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+        />
+
         <button
           type="button"
           onClick={handleClipClick}
@@ -162,6 +161,7 @@ const handleCancelDuplicate = () => {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
           </svg>
         </button>
+
         <input
           ref={fileInputRef}
           type="file"
@@ -170,6 +170,7 @@ const handleCancelDuplicate = () => {
           onChange={handleFileSelect}
           disabled={uploading}
         />
+
         <button
           type="submit"
           disabled={disabled || !text.trim() || uploading}
@@ -205,7 +206,7 @@ const handleCancelDuplicate = () => {
         Presiona Enter para enviar, Shift+Enter para nueva línea. Adjunta PDF o MD con el clip.
       </p>
 
-      {/* Modal de duplicados: 3 opciones */}
+      {/* Modal de duplicados */}
       {duplicateInfo && pendingFile && (
         <DuplicateModal
           filename={duplicateInfo.filename}
