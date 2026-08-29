@@ -19,9 +19,15 @@ export interface WizardStep3Request {
 export interface WizardStepResponse {
   success: boolean
   message: string
-  model?: string
-  base_url?: string
-  has_api_key?: boolean
+  model?: string | null
+  base_url?: string | null
+  has_api_key?: boolean | null
+}
+
+export interface AvailableModelsResponse {
+  models: string[]
+  base_url: string
+  cached: boolean
 }
 
 export async function wizardStep1(body: WizardStep1Request): Promise<WizardStepResponse> {
@@ -45,22 +51,8 @@ export async function wizardStep3(body: WizardStep3Request): Promise<WizardStepR
   })
 }
 
-export async function fetchAvailableModels(baseUrl: string, apiKey: string): Promise<string[]> {
-  const url = `${baseUrl.replace(/\/$/, '')}/models`
-  const response = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${apiKey}` },
+export async function fetchAvailableModelsFromBackend(): Promise<AvailableModelsResponse> {
+  return apiFetch<AvailableModelsResponse>('/api/llm/wizard/available-models', {
+    method: 'GET',
   })
-  if (!response.ok) throw new Error(`Failed to fetch models: ${response.status}`)
-  const data = await response.json()
-  return (data.data || data.models || [])
-    .map((m: unknown) => {
-      if (typeof m === 'string') return m
-      if (m && typeof m === 'object') {
-        const obj = m as { id?: unknown; name?: unknown }
-        if (typeof obj.id === 'string') return obj.id
-        if (typeof obj.name === 'string') return obj.name
-      }
-      return null
-    })
-    .filter((m: string | null): m is string => Boolean(m))
 }

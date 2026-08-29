@@ -394,3 +394,95 @@ class TestValidateDeprecated:
 
         assert exc_info.value.status_code == 410
         assert "wizard" in exc_info.value.detail.lower()
+
+# --- Available models endpoint ----------------------------------------------
+
+class TestAvailableModelsEndpoint:
+    """GET /api/llm/wizard/available-models"""
+
+    @patch("app.api.llm_config.get_available_models")
+    @patch("app.core.llm_loader.SessionLocal")
+    def test_returns_models_from_provider(self, mock_session, mock_get_models):
+        """Endpoint exitoso: devuelve lista + base_url."""
+        # Generar API key encriptada valida con la ENCRYPTION_KEY del conftest
+        from cryptography.fernet import Fernet
+        from app.core.encryption import encrypt
+
+        encrypted_key = encrypt("sk-test-plain-key")
+
+        # Mock user con config
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.llm_base_url = "https://api.openai.com/v1"
+        mock_user.llm_model = "gpt-4o"
+        mock_user.encrypted_api_key = encrypted_key
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_user
+        mock_session.return_value = mock_db
+
+        # Mock get_available_models para devolver lista
+        mock_get_models.return_value = ["gpt-4o", "gpt-4o-mini", "o1"]
+
+        import asyncio
+        from app.api.llm_config import wizard_available_models
+
+        result = asyncio.run(wizard_available_models(_current_user()))
+
+        assert result.models == ["gpt-4o", "gpt-4o-mini", "o1"]
+        assert result.base_url == "https://api.openai.com/v1"
+        # NO debe devolver api_key
+        assert not hasattr(result, "api_key")
+
+    @patch("app.core.llm_loader.SessionLocal")
+    def test_returns_404_when_no_config(self, mock_session):
+        """Sin config guardada, endpoint retorna 404."""
+        # Mock para que load_user_llm_config falle (no hay config)
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.llm_base_url = None  # no hay config
+        mock_user.llm_model = None
+        mock_user.encrypted_api_key = None
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_user
+        mock_session.return_value = mock_db
+
+        import asyncio
+        from app.api.llm_config import wizard_available_models
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_available_models(_current_user()))
+
+        assert exc_info.value.status_code == 404
+
+    @patch("app.api.llm_config.get_available_models")
+    @patch("app.core.llm_loader.SessionLocal")
+    def test_provider_error_returns_400(self, mock_session, mock_get_models):
+        """Si el provider falla, endpoint retorna 400."""
+        from cryptography.fernet import Fernet
+        from app.core.encryption import encrypt
+        from app.core.llm_validator import LLMValidationError
+
+        encrypted_key = encrypt("sk-test-plain-key")
+
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.llm_base_url = "https://api.openai.com/v1"
+        mock_user.llm_model = "gpt-4o"
+        mock_user.encrypted_api_key = encrypted_key
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_user
+        mock_session.return_value = mock_db
+
+        mock_get_models.side_effect = LLMValidationError("404 not found", status_code=404)
+
+        import asyncio
+        from app.api.llm_config import wizard_available_models
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_available_models(_current_user()))
+
+        assert exc_info.value.status_code == 400
+        assert "No se pudo listar" in exc_info.value.detail

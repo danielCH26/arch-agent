@@ -24,13 +24,19 @@ from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
 from app.core.database import SessionLocal
+from app.core.encryption import decrypt
 from app.core.llm_loader import (
     LLMConfigError,
     clear_session_cache,
+    load_user_llm_config,
     save_user_llm_config,
 )
 from app.core.model_classifier import classify_model
-from app.core.llm_validator import DEFAULT_TIMEOUT, LLMValidationError
+from app.core.llm_validator import (
+    DEFAULT_TIMEOUT,
+    LLMValidationError,
+    get_available_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -376,3 +382,65 @@ async def wizard_step3(
     except Exception as e:
         logger.exception("Error guardando config LLM via wizard")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AvailableModelsResponse(BaseModel):
+    models: list[str]
+    base_url: str
+    cached: bool = False
+
+
+@router.get("/wizard/available-models", response_model=AvailableModelsResponse)
+async def wizard_available_models(
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Lista los modelos disponibles del provider guardado del usuario.
+
+    Desencripta la API key guardada en DB y consulta {base_url}/models.
+    La api_key NUNCA se devuelve al frontend (se usa solo server-side).
+
+    Pensado para que el paso 3 del wizard muestre la lista actual del provider
+    sin pedirle al usuario que re-ingrese la key.
+    """
+    try:
+        config = load_user_llm_config(current_user["user_id"])
+    except LLMConfigError:
+        # load_user_llm_config raises si no hay config guardada.
+        raise HTTPException(
+            status_code=404,
+            detail="No hay config LLM guardada. Completá los pasos 1 y 2 primero.",
+        )
+
+    if config is None or not config.base_url or not config.api_key:
+        raise HTTPException(
+            status_code=404,
+            detail="No hay config LLM guardada. Completá los pasos 1 y 2 primero.",
+        )
+
+    # get_available_models acepta api_key encriptada O en plano.
+    # Le pasamos la desencriptada porque decrypt() requiere ENCRYPTION_KEY
+    # y queremos que este endpoint funcione solo si el backend tiene la key.
+    api_key_plain = config.api_key
+
+    try:
+        models = get_available_models(
+            base_url=config.base_url,
+            api_key=api_key_plain,
+            user_id=current_user["user_id"],
+            force_refresh=False,  # usa cache 24h si existe
+        )
+    except LLMValidationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo listar modelos: {e}",
+        )
+    except Exception as e:
+        logger.exception("Error listando modelos del provider")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return AvailableModelsResponse(
+        models=models,
+        base_url=config.base_url,
+        cached=True,
+    )
