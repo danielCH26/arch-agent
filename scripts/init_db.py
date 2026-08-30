@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 Script de inicializacion de la base de datos.
 
 Uso:
-    docker compose exec app python scripts/init_db.py
+    docker compose exec -T backend python scripts/init_db.py
 
 Que hace:
 1. Habilita/verifica la extension PGVector
@@ -12,34 +11,16 @@ Que hace:
 4. Verifica la conexion y PGVector
 """
 
-import os
 import re
 import sys
 from pathlib import Path
 
 import psycopg2
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://asistente:asistente@localhost:5432/asistente_db",
-)
+from _db_utils import connect_db, log
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT_DIR / "schema.sql"
-
-
-def log(msg: str, level: str = "INFO"):
-    """Logger simple con colores."""
-    colors = {
-        "INFO": "\033[94m",
-        "OK": "\033[92m",
-        "WARN": "\033[93m",
-        "ERROR": "\033[91m",
-    }
-    reset = "\033[0m"
-    color = colors.get(level, "")
-    print(f"{color}[{level}]{reset} {msg}")
 
 
 def load_schema_sql() -> str:
@@ -60,18 +41,6 @@ def expected_tables_from_schema(schema_sql: str) -> set[str]:
             flags=re.IGNORECASE,
         )
     )
-
-
-def connect_db():
-    """Conecta a PostgreSQL y maneja errores."""
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        log(f"Conectado a: {DATABASE_URL}", "OK")
-        return conn
-    except psycopg2.OperationalError as e:
-        log(f"No se pudo conectar: {e}", "ERROR")
-        sys.exit(1)
 
 
 def check_pgvector_extension(conn):
@@ -133,21 +102,6 @@ def verify_pgvector_works(conn):
         sys.exit(1)
 
 
-def seed_initial_data_placeholder(conn):
-    """Placeholder para el seed (se carga en Sprint 2)."""
-    cur = conn.cursor()
-    cur.execute("SELECT to_regclass('public.architect_patterns');")
-    if cur.fetchone()[0] is None:
-        return
-
-    cur.execute("SELECT COUNT(*) FROM architect_patterns;")
-    count = cur.fetchone()[0]
-    if count == 0:
-        log("Tabla architect_patterns vacia. El seed se cargara en Sprint 2 (F07).", "WARN")
-    else:
-        log(f"architect_patterns ya tiene {count} patrones cargados", "OK")
-
-
 def main():
     """Funcion principal."""
     log("=" * 60)
@@ -167,7 +121,6 @@ def main():
         create_schema(conn, schema_sql)
         verify_schema(conn, expected_tables)
         verify_pgvector_works(conn)
-        seed_initial_data_placeholder(conn)
 
         log("=" * 60)
         log("Base de datos inicializada correctamente", "OK")

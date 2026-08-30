@@ -10,7 +10,7 @@ Ejecuta, en orden:
     2. scripts/seed_example.py  — proyecto de ejemplo end-to-end
 
 Uso:
-    docker compose exec app python scripts/seed.py
+    docker compose exec backend python scripts/seed.py
 
 Nota: requiere que la base de datos ya exista (scripts/init_db.py).
 """

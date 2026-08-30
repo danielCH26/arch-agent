@@ -18,6 +18,15 @@ se guardan como una clave dentro de ese mismo JSON, no como filas nuevas.
 Requiere que scripts/seed_patterns.py ya se haya ejecutado (usa los
 patrones cargados en architect_patterns para la fase de propuesta).
 
+Nota (A1, revisión de PR): demo_user tiene is_demo_user=TRUE y un
+password_hash que NO es un hash bcrypt real ("seed-demo-not-a-real-hash").
+Este usuario no debe poder autenticarse nunca -- cualquier endpoint de
+login debe filtrar explícitamente is_demo_user=TRUE antes de intentar
+bcrypt.checkpw() contra su hash.
+
+Nota (A3, revisión de PR): el proyecto demo tiene is_demo=TRUE. Los
+endpoints que listan proyectos de un usuario real deben excluirlo.
+
 Uso:
     docker compose exec backend python scripts/seed.py
     (o, individual: python scripts/seed_example.py)
@@ -99,12 +108,20 @@ def ensure_demo_user(conn) -> int:
     cur.execute("SELECT id FROM users WHERE username = %s", (DEMO_USERNAME,))
     row = cur.fetchone()
     if row:
-        return row[0]
+        user_id = row[0]
+        # Auto-reparación: si este usuario se creó antes de que existiera
+        # la columna is_demo_user (A1), lo corrige en vez de dejarlo con
+        # el flag en FALSE.
+        cur.execute(
+            "UPDATE users SET is_demo_user = TRUE WHERE id = %s AND is_demo_user = FALSE",
+            (user_id,),
+        )
+        return user_id
 
     cur.execute(
         """
-        INSERT INTO users (username, email, password_hash)
-        VALUES (%s, %s, %s)
+        INSERT INTO users (username, email, password_hash, is_demo_user)
+        VALUES (%s, %s, %s, TRUE)
         RETURNING id
         """,
         (DEMO_USERNAME, DEMO_EMAIL, "seed-demo-not-a-real-hash"),
@@ -123,12 +140,19 @@ def ensure_demo_project(conn, user_id: int) -> int:
     )
     row = cur.fetchone()
     if row:
-        return row[0]
+        project_id = row[0]
+        # Auto-reparación: mismo caso que en ensure_demo_user, para is_demo (A3).
+        cur.execute(
+            "UPDATE projects SET is_demo = TRUE WHERE id = %s AND is_demo = FALSE",
+            (project_id,),
+        )
+        return project_id
 
     cur.execute(
         """
-        INSERT INTO projects (user_id, name, description, status, current_phase)
-        VALUES (%s, %s, %s, 'active', %s)
+        INSERT INTO projects
+            (user_id, name, description, status, current_phase, is_demo)
+        VALUES (%s, %s, %s, 'active', %s, TRUE)
         RETURNING id
         """,
         (user_id, PROJECT_NAME, PROJECT_DESCRIPTION, EXPECTED_PHASES[0]),

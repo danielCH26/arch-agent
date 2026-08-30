@@ -11,7 +11,7 @@ agente pueda consultarlos por similitud semántica durante la fase de
 propuesta.
 
 Uso:
-    docker compose exec app python scripts/seed_patterns.py
+    docker compose exec backend python scripts/seed_patterns.py
 
 Requiere:
     sentence-transformers (para generar los embeddings)
