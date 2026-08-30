@@ -31,6 +31,9 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
   const [step, setStep] = useState<Step>(1)
   const [baseUrl, setBaseUrl] = useState(initialConfig?.base_url ?? '')
   const [apiKey, setApiKey] = useState('')
+  // Estado local del resumen: lo actualizamos despues de un step3 exitoso
+  // para que el "Volver al resumen" muestre la nueva config sin recargar.
+  const [displayConfig, setDisplayConfig] = useState(initialConfig)
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState('')
   const [freeTextMode, setFreeTextMode] = useState(false)
@@ -118,14 +121,31 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
     clearError()
     setLoading(true)
     try {
-      const result = await wizardStep3({
+      // Si no hay apiKey en el state (caso "Cambiar modelo"), omitir el campo
+      // para que el backend reuse la guardada en DB. Si no hay guardada,
+      // wizardStep3 retornara 400 con mensaje claro.
+      const payload: {
+        base_url: string
+        api_key?: string
+        model: string
+        allow_unknown_model: boolean
+      } = {
         base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
         model: model.trim(),
         allow_unknown_model: allowUnknown,
-      })
+      }
+      const trimmedKey = apiKey.trim()
+      if (trimmedKey) {
+        payload.api_key = trimmedKey
+      }
+      const result = await wizardStep3(payload)
+      const newConfig = {
+        base_url: result.base_url ?? baseUrl.trim(),
+        model: result.model ?? model.trim(),
+      }
+      setDisplayConfig(newConfig)
       setSuccess(result.message || 'Configuración guardada.')
-      onSaved?.({ model: result.model ?? model.trim(), baseUrl: result.base_url ?? baseUrl.trim() })
+      onSaved?.({ model: newConfig.model, baseUrl: newConfig.base_url })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al guardar configuración')
     } finally {
@@ -220,10 +240,10 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
         <div className="mb-4 p-3 bg-green-50 text-green-700 rounded-lg text-sm">{success}</div>
       )}
 
-      {mode === 'summary' && initialConfig && (
+      {mode === 'summary' && displayConfig && (
         <SummaryView
-          baseUrl={initialConfig.base_url}
-          model={initialConfig.model}
+          baseUrl={displayConfig.base_url}
+          model={displayConfig.model}
           onChangeModel={handleChangeModel}
           onChangeAll={handleChangeAll}
           loading={loading}
