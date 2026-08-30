@@ -445,8 +445,25 @@ async def wizard_available_models(
     """
     try:
         config = load_user_llm_config(current_user["user_id"])
-    except LLMConfigError:
-        # load_user_llm_config raises si no hay config guardada.
+    except LLMConfigError as e:
+        if e.reason == "decryption_failed":
+            # La config existe en DB pero la API key esta corrupta
+            # (probablemente cambio ENCRYPTION_KEY del backend).
+            # Distinto de "no config" -> el cliente necesita saber que
+            # tiene que reconfigurar.
+            logger.warning(
+                "user_id=%s tiene config con API key que no se puede desencriptar",
+                current_user["user_id"],
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "La API key guardada no se puede desencriptar. "
+                    "Probablemente cambio ENCRYPTION_KEY del backend. "
+                    "Reconfigura tu LLM con el paso 1."
+                ),
+            )
+        # "missing" u otro motivo: no hay config utilizable.
         raise HTTPException(
             status_code=404,
             detail="No hay config LLM guardada. Completá los pasos 1 y 2 primero.",

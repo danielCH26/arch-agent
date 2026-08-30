@@ -630,3 +630,39 @@ class TestAvailableModelsEndpoint:
 
         assert exc_info.value.status_code == 400
         assert "No se pudo listar" in exc_info.value.detail
+
+    @patch("app.core.llm_loader.SessionLocal")
+    def test_returns_422_when_decryption_fails(self, mock_session):
+        """Si la API key en DB no se puede desencriptar, retorna 422 (no 404).
+
+        Distingue 'key corrupta por cambio de ENCRYPTION_KEY' de
+        'no config guardada' para que el cliente sepa que tiene que
+        reconfigurar.
+        """
+        from app.core.encryption import EncryptionError
+        from app.core.llm_loader import LLMConfigError
+
+        # Mock user con config pero key corrupta (no se puede desencriptar)
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.llm_base_url = "https://api.openai.com/v1"
+        mock_user.llm_model = "gpt-4o"
+        mock_user.encrypted_api_key = "key-que-no-se-puede-desencriptar"
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_user
+        mock_session.return_value = mock_db
+
+        # Patchear decrypt para que falle como si ENCRYPTION_KEY hubiera cambiado
+        with patch("app.core.llm_loader.decrypt") as mock_decrypt:
+            mock_decrypt.side_effect = EncryptionError("No se pudo desencriptar")
+
+            import asyncio
+            from app.api.llm_config import wizard_available_models
+
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(wizard_available_models(_current_user()))
+
+        assert exc_info.value.status_code == 422
+        assert "no se puede desencriptar" in exc_info.value.detail.lower()
+        assert "ENCRYPTION_KEY" in exc_info.value.detail

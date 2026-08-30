@@ -18,7 +18,13 @@ from app.core.encryption import decrypt, EncryptionError
 
 class LLMConfigError(Exception):
     """El usuario no tiene configuración LLM válida."""
-    pass
+
+    def __init__(self, message: str, reason: str = "missing"):
+        super().__init__(message)
+        # Sub-tipo del error. Call sites pueden inspeccionarlo para
+        # distinguir entre "no config" y otros modos de falla.
+        # Valores esperados: "missing", "decryption_failed", "user_not_found".
+        self.reason = reason
 
 
 @dataclass
@@ -70,7 +76,8 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
             api_key = decrypt(user.encrypted_api_key)
         except EncryptionError as e:
             raise LLMConfigError(
-                f"No se pudo desencriptar la API key: {e}"
+                f"No se pudo desencriptar la API key: {e}",
+                reason="decryption_failed",
             )
 
         return UserLLMConfig(
