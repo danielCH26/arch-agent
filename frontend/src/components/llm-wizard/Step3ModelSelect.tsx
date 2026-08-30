@@ -1,21 +1,46 @@
+// IMPORTANTE: esta lista DEBE estar sincronizada con
+// app/core/llm_model_benchmarks.yaml. Si agregas un modelo aca, agregalo
+// tambien en el YAML, o viceversa. Existe un test
+// tests/api/test_llm_wizard_yaml_tsx_parity.py que falla automaticamente
+// si se desincronizan.
+//
+// Fuente de cada score: ver campo `source` en el YAML. El backend usa el
+// YAML como fuente de verdad para tier enforcement, este TSX es solo para
+// la UI (mostrar badge "Recomendado" / "Sin score conocido").
 const MODEL_MMLU: Record<string, number> = {
+  // OpenAI
   'gpt-4o': 88.7,
   'gpt-4-turbo': 86.5,
   'o1': 92.3,
   'o3-mini': 89.0,
   'o4-mini': 90.5,
+  // Anthropic
   'claude-3-5-sonnet-latest': 88.7,
   'claude-3-7-sonnet': 89.3,
   'claude-sonnet-4': 91.5,
   'claude-opus-4': 92.5,
+  // Google
   'gemini-2.5-pro': 88.0,
   'gemini-2.0-pro': 86.5,
+  // Meta
   'llama-3.1-405b-instruct': 88.6,
   'llama-3.3-70b-instruct': 86.0,
+  // DeepSeek (chinos)
+  'deepseek-v3': 88.5,
+  'deepseek-r1': 90.8,
+  'deepseek-v3.1': 88.6,
+  // Qwen (Alibaba, chinos)
+  'qwen-3-235b-a22b': 86.0,
+  'qwen-2.5-72b-instruct': 86.4,
+  // MiniMax (modelo del sistema)
   'MiniMax-M3': 87.0,
+  // Tier 2
   'gpt-4o-mini': 82.0,
   'claude-3-5-haiku': 75.2,
   'gemini-2.0-flash': 81.5,
+  'deepseek-v2.5': 80.4,
+  'qwen-3-32b': 81.3,
+  'qwen-2.5-32b-instruct': 75.6,
 }
 
 export type ModelTier = 'tier1' | 'tier2' | 'blocked' | 'unknown'
