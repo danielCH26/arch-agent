@@ -45,6 +45,7 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
 
   // Benchmarks MMLU desde el backend (cacheados durante la vida del wizard).
   // Se usan para clasificar los modelos disponibles en tier1/tier2/unknown.
+  // Un solo fetch compartido con Step3ModelSelect (recibe via prop).
   const benchmarks = useBenchmarks()
 
   const loadAvailableModels = async (preferredModel?: string) => {
@@ -264,6 +265,7 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
           {backToSummaryLink}
           <Step3ModelSelect
             models={availableModels}
+            benchmarks={benchmarks}
             selectedModel={selectedModel}
             onSelect={setSelectedModel}
             onCancelToFreeText={() => setFreeTextMode(true)}

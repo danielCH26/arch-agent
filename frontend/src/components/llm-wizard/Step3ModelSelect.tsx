@@ -81,6 +81,7 @@ export function useBenchmarks(): Record<string, number> {
 
 interface Step3ModelSelectProps {
   models: string[]
+  benchmarks: Record<string, number>
   selectedModel: string
   onSelect: (model: string) => void
   onCancelToFreeText: () => void
@@ -95,6 +96,7 @@ interface Step3ModelSelectProps {
 
 export function Step3ModelSelect({
   models,
+  benchmarks,
   selectedModel,
   onSelect,
   onCancelToFreeText,
@@ -106,9 +108,6 @@ export function Step3ModelSelect({
   loading,
   error,
 }: Step3ModelSelectProps) {
-  // Benchmarks dinamicos desde el backend (con fallback hardcoded si falla).
-  const benchmarks = useBenchmarks()
-
   const recommended = models.filter((m) => tierFor(m, benchmarks) === 'tier1').sort()
   const other = models
     .filter((m) => {
