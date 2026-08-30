@@ -9,7 +9,7 @@ import { ApiError as ClientApiError } from '../../api/client'
 import { Step1BaseUrl } from './Step1BaseUrl'
 import { Step2ApiKey } from './Step2ApiKey'
 import { Step3ModelSelect } from './Step3ModelSelect'
-import { tierFor } from './Step3ModelSelect'
+import { tierFor, useBenchmarks } from './Step3ModelSelect'
 import { SummaryView } from './SummaryView'
 
 interface LLMWizardProps {
@@ -43,12 +43,16 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
 
   const clearError = () => setError('')
 
+  // Benchmarks MMLU desde el backend (cacheados durante la vida del wizard).
+  // Se usan para clasificar los modelos disponibles en tier1/tier2/unknown.
+  const benchmarks = useBenchmarks()
+
   const loadAvailableModels = async (preferredModel?: string) => {
     try {
       const resp = await fetchAvailableModelsFromBackend()
-      const filtered = resp.models.filter((m) => tierFor(m) !== 'blocked')
+      const filtered = resp.models.filter((m) => tierFor(m, benchmarks) !== 'blocked')
       setAvailableModels(filtered)
-      const firstTier1 = filtered.find((m) => tierFor(m) === 'tier1')
+      const firstTier1 = filtered.find((m) => tierFor(m, benchmarks) === 'tier1')
       const fallbackModel = firstTier1 ?? filtered[0] ?? ''
       const initialModel =
         preferredModel && filtered.includes(preferredModel)

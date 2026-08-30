@@ -1,4 +1,11 @@
-const MODEL_MMLU: Record<string, number> = {
+// Fallback hardcoded: si el fetch a /api/llm/benchmarks falla (offline,
+// backend down, etc.), usamos estos scores locales para no bloquear al
+// usuario. El backend es la fuente de verdad y se sincroniza via PR; este
+// fallback es solo un safety net de ultima instancia.
+//
+// Si agregar un modelo aca, agregalo tambien en
+// app/core/llm_model_benchmarks.json (fuente de verdad del backend).
+const MODEL_MMLU_FALLBACK: Record<string, number> = {
   'gpt-4o': 88.7,
   'gpt-4-turbo': 86.5,
   'o1': 92.3,
@@ -18,18 +25,58 @@ const MODEL_MMLU: Record<string, number> = {
   'gemini-2.0-flash': 81.5,
 }
 
+const TIER1_THRESHOLD = 85
+const TIER2_THRESHOLD = 60
+
 export type ModelTier = 'tier1' | 'tier2' | 'blocked' | 'unknown'
 
-export function tierFor(modelId: string): ModelTier {
-  const score = MODEL_MMLU[modelId]
+export function tierFor(
+  modelId: string,
+  benchmarks: Record<string, number> = MODEL_MMLU_FALLBACK
+): ModelTier {
+  const score = benchmarks[modelId]
   if (score === undefined) return 'unknown'
-  if (score >= 85) return 'tier1'
-  if (score >= 60) return 'tier2'
+  if (score >= TIER1_THRESHOLD) return 'tier1'
+  if (score >= TIER2_THRESHOLD) return 'tier2'
   return 'blocked'
 }
 
 export function isBlocked(modelId: string): boolean {
   return tierFor(modelId) === 'blocked'
+}
+
+import { useEffect, useState } from 'react'
+import { getBenchmarks } from '../../api/llm'
+
+/**
+ * Hook que fetcha los benchmarks MMLU desde el backend en /api/llm/benchmarks.
+ * Devuelve el dict model -> score; si el fetch falla, devuelve el
+ * fallback hardcoded (MODEL_MMLU_FALLBACK).
+ *
+ * Cachea durante toda la vida del componente (no re-fetchea en cada render).
+ * Cuando el backend publica nuevos scores, hay que refrescar la pagina.
+ */
+export function useBenchmarks(): Record<string, number> {
+  const [benchmarks, setBenchmarks] = useState<Record<string, number>>(MODEL_MMLU_FALLBACK)
+  useEffect(() => {
+    let cancelled = false
+    getBenchmarks()
+      .then((resp) => {
+        if (cancelled) return
+        const map: Record<string, number> = {}
+        for (const entry of resp.models) {
+          map[entry.model_id] = entry.mmlu_score
+        }
+        setBenchmarks(map)
+      })
+      .catch(() => {
+        // Silencioso: ya estamos usando el fallback hardcoded.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return benchmarks
 }
 
 interface Step3ModelSelectProps {
@@ -59,10 +106,13 @@ export function Step3ModelSelect({
   loading,
   error,
 }: Step3ModelSelectProps) {
-  const recommended = models.filter((m) => tierFor(m) === 'tier1').sort()
+  // Benchmarks dinamicos desde el backend (con fallback hardcoded si falla).
+  const benchmarks = useBenchmarks()
+
+  const recommended = models.filter((m) => tierFor(m, benchmarks) === 'tier1').sort()
   const other = models
     .filter((m) => {
-      const t = tierFor(m)
+      const t = tierFor(m, benchmarks)
       return t === 'tier2' || t === 'unknown'
     })
     .sort()
@@ -75,7 +125,7 @@ export function Step3ModelSelect({
       return
     }
     if (!selectedModel) return
-    const allowUnknown = tierFor(selectedModel) !== 'tier1'
+    const allowUnknown = tierFor(selectedModel, benchmarks) !== 'tier1'
     onSubmit(selectedModel, allowUnknown)
   }
 

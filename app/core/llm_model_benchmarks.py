@@ -1,26 +1,31 @@
 """
-Loader del YAML de benchmarks MMLU.
+Loader del JSON de benchmarks MMLU.
 
 Issue: #51 — Wizard de config LLM con tier filter
 
-Lee app/core/llm_model_benchmarks.yaml y expone la lista de modelos
-con su score. Cacheado en modulo (el YAML cambia solo via PR).
+Lee app/core/llm_model_benchmarks.json y expone la lista de modelos
+con su score. Cacheado en modulo (el JSON cambia solo via PR).
 
 API:
     load_benchmarks()                  -> list[BenchmarkEntry]
     get_model_score(model_id)          -> float | None
-    LLMBenchmarkFileError              -> excepcion si YAML malformado
+    LLMBenchmarkFileError              -> excepcion si JSON malformado
+
+El frontend debe fetchear GET /api/llm/benchmarks para obtener
+los mismos datos (ver app/api/llm_config.py:get_benchmarks).
+Antes de este refactor la lista estaba duplicada en el frontend
+(frontend/src/components/llm-wizard/Step3ModelSelect.tsx); el
+endpoint la centraliza para evitar drift.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
-import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Tier 1 estricto: >= 85
 # Tier 2: 60 <= score < 85
 # Blocked: < 60
+# Tambien expuesto en el JSON `_meta.thresholds` para sincronizacion.
 MMLU_TIER1_THRESHOLD: float = 85.0
 MMLU_TIER2_THRESHOLD: float = 60.0
 
@@ -42,7 +48,7 @@ class BenchmarkEntry:
 
 
 class LLMBenchmarkFileError(Exception):
-    """El YAML de benchmarks no existe, esta malformado, o le faltan campos."""
+    """El JSON de benchmarks no existe, esta malformado, o le faltan campos."""
 
 
 # --- Cache --------------------------------------------------------------------
@@ -51,20 +57,20 @@ _lock = threading.Lock()
 _cache: Optional[list[BenchmarkEntry]] = None
 
 
-def _yaml_path() -> Path:
-    """Path absoluto al YAML de benchmarks."""
-    return Path(__file__).parent / "llm_model_benchmarks.yaml"
+def _json_path() -> Path:
+    """Path absoluto al JSON de benchmarks."""
+    return Path(__file__).parent / "llm_model_benchmarks.json"
 
 
 def load_benchmarks() -> list[BenchmarkEntry]:
     """
-    Carga (y cachea) la lista de benchmarks del YAML.
+    Carga (y cachea) la lista de benchmarks del JSON.
 
     Returns:
-        Lista de BenchmarkEntry, ordenada como aparece en el YAML.
+        Lista de BenchmarkEntry, ordenada como aparece en el JSON.
 
     Raises:
-        LLMBenchmarkFileError: si el archivo no existe, no es YAML valido,
+        LLMBenchmarkFileError: si el archivo no existe, no es JSON valido,
             o no tiene la estructura esperada.
     """
     global _cache
@@ -76,20 +82,20 @@ def load_benchmarks() -> list[BenchmarkEntry]:
         if _cache is not None:
             return _cache
 
-        path = _yaml_path()
+        path = _json_path()
         if not path.exists():
             raise LLMBenchmarkFileError(
                 f"No se encontro el archivo de benchmarks: {path}"
             )
 
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as e:
-            raise LLMBenchmarkFileError(f"YAML invalido en {path}: {e}")
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise LLMBenchmarkFileError(f"JSON invalido en {path}: {e}")
 
         if not isinstance(raw, dict) or "models" not in raw:
             raise LLMBenchmarkFileError(
-                f"El YAML debe tener una clave 'models' en el top-level. "
+                f"El JSON debe tener una clave 'models' en el top-level. "
                 f"Encontrado: {list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__}"
             )
 
@@ -107,7 +113,11 @@ def load_benchmarks() -> list[BenchmarkEntry]:
                 skipped += 1
                 continue
 
+            # Saltar entradas meta (campo _meta, etc.) que no tienen model_id
             model_id = item.get("model_id")
+            if not model_id:
+                continue
+
             mmlu_score = item.get("mmlu_score")
             source = item.get("source", "(no source)")
 
@@ -132,7 +142,7 @@ def load_benchmarks() -> list[BenchmarkEntry]:
 
         if skipped:
             logger.warning(
-                "Benchmark YAML: %d entries cargadas, %d saltadas por formato invalido",
+                "Benchmark JSON: %d entries cargadas, %d saltadas por formato invalido",
                 len(entries), skipped,
             )
 
@@ -143,9 +153,9 @@ def load_benchmarks() -> list[BenchmarkEntry]:
 
 def get_model_score(model_id: str) -> Optional[float]:
     """
-    Devuelve el MMLU score de un modelo, o None si no esta en el YAML.
+    Devuelve el MMLU score de un modelo, o None si no esta en el JSON.
 
-    No recarga el YAML cada llamada (usa el cache de load_benchmarks).
+    No recarga el JSON cada llamada (usa el cache de load_benchmarks).
     """
     if not model_id:
         return None

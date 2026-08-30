@@ -37,6 +37,12 @@ from app.core.llm_validator import (
     LLMValidationError,
     get_available_models,
 )
+from app.core.llm_model_benchmarks import (
+    LLMBenchmarkFileError,
+    MMLU_TIER1_THRESHOLD,
+    MMLU_TIER2_THRESHOLD,
+    load_benchmarks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +97,24 @@ class WizardStepResponse(BaseModel):
     model: Optional[str] = None
     base_url: Optional[str] = None
     has_api_key: Optional[bool] = None
+
+
+class BenchmarkEntryOut(BaseModel):
+    """Una entrada de MMLU benchmark expuesta al frontend."""
+    model_id: str
+    mmlu_score: float
+    source: str
+
+
+class BenchmarksResponse(BaseModel):
+    """Lista completa de benchmarks MMLU + thresholds.
+
+    Sin auth: la informacion es publica (los scores MMLU se publican en
+    papers). Cachear del lado del cliente con TTL largo (cambian solo via PR).
+    """
+    models: list[BenchmarkEntryOut]
+    tier1_threshold: float
+    tier2_threshold: float
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -443,4 +467,43 @@ async def wizard_available_models(
         models=models,
         base_url=config.base_url,
         cached=True,
+    )
+
+
+# --- Benchmarks endpoint (publico, sin auth) ------------------------------
+#
+# Lista los benchmarks MMLU que el frontend usa para clasificar modelos
+# por tier en el Step3 del wizard. El frontend DEBE fetchear este endpoint
+# al montar el wizard en vez de hardcodear los scores (antes existia
+# duplicacion YAML/TSX; este endpoint la centraliza).
+#
+# El JSON vive en app/core/llm_model_benchmarks.json. Si lo modificas,
+# reiniciar el backend invalida el cache (o esperar el TTL).
+
+
+@router.get("/benchmarks", response_model=BenchmarksResponse)
+async def get_benchmarks() -> BenchmarksResponse:
+    """Devuelve la lista de modelos con score MMLU + thresholds de tier.
+
+    Sin auth: la informacion MMLU es publica en papers. El frontend
+    debe cachear la respuesta (TTL horas/dias OK; los scores cambian
+    solo via PR).
+    """
+    try:
+        entries = load_benchmarks()
+    except LLMBenchmarkFileError as e:
+        logger.exception("Error cargando benchmarks")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return BenchmarksResponse(
+        models=[
+            BenchmarkEntryOut(
+                model_id=e.model_id,
+                mmlu_score=e.mmlu_score,
+                source=e.source,
+            )
+            for e in entries
+        ],
+        tier1_threshold=MMLU_TIER1_THRESHOLD,
+        tier2_threshold=MMLU_TIER2_THRESHOLD,
     )

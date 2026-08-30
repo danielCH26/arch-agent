@@ -1,0 +1,173 @@
+{
+  "_meta": {
+    "description": "MMLU scores de modelos LLM. Fuente de verdad del classifier (backend). El frontend debe fetchear GET /api/llm/benchmarks para obtener esta lista.",
+    "version": "2.0",
+    "thresholds": {
+      "tier1_min": 85.0,
+      "tier2_min": 60.0
+    },
+    "metodologia": "tier1 (>=85) requiere paper oficial o model card verificable. tier2 (60-85) acepta leaderboard. blocked (<60) explicito. unknown: el modelo no aparece aqui; el wizard pide allow_unknown_model=true para guardarlo.",
+    "fuentes_principales": [
+      "https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard",
+      "https://artificialanalysis.ai/",
+      "Papers oficiales de cada vendor"
+    ]
+  },
+  "models": [
+    {
+      "model_id": "gpt-4o",
+      "mmlu_score": 88.7,
+      "source": "OpenAI GPT-4o system card (Aug 2024)"
+    },
+    {
+      "model_id": "gpt-4-turbo",
+      "mmlu_score": 86.5,
+      "source": "OpenAI GPT-4 Turbo technical report (Apr 2024)"
+    },
+    {
+      "model_id": "o1",
+      "mmlu_score": 92.3,
+      "source": "OpenAI o1 system card (Dec 2024)"
+    },
+    {
+      "model_id": "o3-mini",
+      "mmlu_score": 89.0,
+      "source": "OpenAI o3-mini system card (Jan 2025)"
+    },
+    {
+      "model_id": "o4-mini",
+      "mmlu_score": 90.5,
+      "source": "OpenAI o4-mini (Apr 2025)"
+    },
+
+    {
+      "model_id": "claude-3-5-sonnet-latest",
+      "mmlu_score": 88.7,
+      "source": "Anthropic Claude 3.5 Sonnet model card (Oct 2024)"
+    },
+    {
+      "model_id": "claude-3-7-sonnet",
+      "mmlu_score": 89.3,
+      "source": "Anthropic Claude 3.7 Sonnet (Feb 2025)"
+    },
+    {
+      "model_id": "claude-sonnet-4",
+      "mmlu_score": 91.5,
+      "source": "Anthropic Claude Sonnet 4 (May 2025)"
+    },
+    {
+      "model_id": "claude-opus-4",
+      "mmlu_score": 92.5,
+      "source": "Anthropic Claude Opus 4 (May 2025)"
+    },
+
+    {
+      "model_id": "gemini-2.5-pro",
+      "mmlu_score": 88.0,
+      "source": "Google Gemini 2.5 Pro technical report (Mar 2025)"
+    },
+    {
+      "model_id": "gemini-2.0-pro",
+      "mmlu_score": 86.5,
+      "source": "Google Gemini 2.0 Pro (Feb 2025)"
+    },
+
+    {
+      "model_id": "llama-3.1-405b-instruct",
+      "mmlu_score": 88.6,
+      "source": "Meta Llama 3.1 405B paper (Jul 2024)"
+    },
+    {
+      "model_id": "llama-3.3-70b-instruct",
+      "mmlu_score": 86.0,
+      "source": "Meta Llama 3.3 70B (Dec 2024)"
+    },
+
+    {
+      "model_id": "deepseek-v3",
+      "mmlu_score": 88.5,
+      "source": "DeepSeek-V3 Technical Report arXiv:2412.19437 (Dec 2024)"
+    },
+    {
+      "model_id": "deepseek-r1",
+      "mmlu_score": 90.8,
+      "source": "DeepSeek-R1 paper arXiv:2501.12948 (Jan 2025)"
+    },
+    {
+      "model_id": "deepseek-v3.1",
+      "mmlu_score": 88.6,
+      "source": "DeepSeek-V3.1 official release (Sep 2025)"
+    },
+
+    {
+      "model_id": "qwen-3-235b-a22b",
+      "mmlu_score": 86.0,
+      "source": "Qwen3 blog (Apr 2025) - promedio entre thinking mode (88.1) y non-thinking (85.9)"
+    },
+    {
+      "model_id": "qwen-2.5-72b-instruct",
+      "mmlu_score": 86.4,
+      "source": "Qwen2.5 Technical Report (Sep 2024)"
+    },
+
+    {
+      "model_id": "MiniMax-M3",
+      "mmlu_score": 87.0,
+      "source": "MiniMax-M3 model card (2025)"
+    },
+
+    {
+      "model_id": "gpt-4o-mini",
+      "mmlu_score": 82.0,
+      "source": "OpenAI GPT-4o mini (Jul 2024)"
+    },
+    {
+      "model_id": "claude-3-5-haiku",
+      "mmlu_score": 75.2,
+      "source": "Anthropic Claude 3.5 Haiku (Oct 2024)"
+    },
+    {
+      "model_id": "gemini-2.0-flash",
+      "mmlu_score": 81.5,
+      "source": "Google Gemini 2.0 Flash (Feb 2025)"
+    },
+    {
+      "model_id": "deepseek-v2.5",
+      "mmlu_score": 80.4,
+      "source": "DeepSeek-V2.5 release (Sep 2024)"
+    },
+    {
+      "model_id": "qwen-3-32b",
+      "mmlu_score": 81.3,
+      "source": "Qwen3 blog (Apr 2025)"
+    },
+    {
+      "model_id": "qwen-2.5-32b-instruct",
+      "mmlu_score": 75.6,
+      "source": "Qwen2.5 Technical Report (Sep 2024)"
+    },
+
+    {
+      "model_id": "gpt-3.5-turbo",
+      "mmlu_score": 57.0,
+      "source": "OpenAI GPT-3.5 Turbo (legacy, no recomendado para tier 1 strict)"
+    },
+    {
+      "model_id": "llama-3.1-8b-instruct",
+      "mmlu_score": 56.3,
+      "source": "Meta Llama 3.1 8B (Jul 2024)"
+    }
+  ],
+  "_pendientes": {
+    "description": "Modelos populares sin paper/model card con MMLU exacto a la fecha. No se incluyen para evitar score incorrecto. Caen en 'unknown'.",
+    "modelos": [
+      {"model_id": "GLM-4.5", "vendor": "Z.ai", "motivo": "blog z.ai sin tabla MMLU explicita"},
+      {"model_id": "GLM-4.6", "vendor": "Z.ai", "motivo": "mismo blog sin tabla"},
+      {"model_id": "GLM-5", "vendor": "Z.ai", "motivo": "sin informacion publica suficiente"},
+      {"model_id": "qwen-3-max", "vendor": "Alibaba", "motivo": "preview sin tabla MMLU completa"},
+      {"model_id": "MiniMax-M2", "vendor": "MiniMax", "motivo": "sin paper publico accesible"},
+      {"model_id": "MiniMax-M2.5", "vendor": "MiniMax", "motivo": "sin paper publico accesible"},
+      {"model_id": "MiniMax-M2.7", "vendor": "MiniMax", "motivo": "sin paper publico accesible"}
+    ]
+  }
+}
