@@ -165,9 +165,12 @@ def save_user_llm_config(
     api_key: str,
 ) -> None:
     """
-    Guarda (o actualiza) la configuración LLM del usuario.
+    Guarda (o actualiza) la configuración LLM completa del usuario.
 
-    Encripta la API key antes de guardar.
+    Encripta la API key antes de guardar. Usado por el endpoint legacy
+    POST /api/llm/config. Para los steps del wizard, usar los helpers
+    granulares (update_user_base_url_only, update_user_credentials,
+    update_user_model_only) que preservan el resto de la config.
 
     Args:
         user_id: ID del usuario
@@ -192,4 +195,65 @@ def save_user_llm_config(
     finally:
         db.close()
         # Invalidar cache
+        clear_session_cache(user_id)
+
+
+def update_user_base_url_only(user_id: int, base_url: str) -> None:
+    """
+    Actualiza solo el base_url del usuario, sin tocar api_key ni model.
+
+    Usado por wizard step1 para persistir la URL apenas se valida, de modo
+    que el siguiente llamado a /api/llm/wizard/available-models (que lee de
+    DB) vea la URL nueva y devuelva modelos del provider correcto.
+    """
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+        user.llm_base_url = base_url
+        db.commit()
+    finally:
+        db.close()
+        clear_session_cache(user_id)
+
+
+def update_user_credentials(user_id: int, base_url: str, api_key: str) -> None:
+    """
+    Actualiza base_url + api_key (encriptada) en una sola transaccion.
+
+    Usado por wizard step2. NO toca llm_model para no borrar el modelo
+    que el usuario ya tenia configurado.
+    """
+    from app.core.encryption import encrypt
+
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+        user.llm_base_url = base_url
+        user.encrypted_api_key = encrypt(api_key)
+        db.commit()
+    finally:
+        db.close()
+        clear_session_cache(user_id)
+
+
+def update_user_model_only(user_id: int, model: str) -> None:
+    """
+    Actualiza solo el model del usuario, sin tocar base_url ni api_key.
+
+    Usado por wizard step3. Asume que base_url y api_key ya estan en DB
+    (persistidos por step1/step2 o por un save anterior).
+    """
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+        user.llm_model = model
+        db.commit()
+    finally:
+        db.close()
         clear_session_cache(user_id)

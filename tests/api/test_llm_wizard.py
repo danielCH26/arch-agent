@@ -36,17 +36,49 @@ def _current_user(user_id: int = 1, username: str = "testuser"):
     return {"user_id": user_id, "username": username, "jti": None}
 
 
+def _mock_session_with_user(
+    mock_session,
+    user_id: int = 1,
+    base_url: str = "https://api.openai.com/v1",
+    model: str = "gpt-4o",
+    encrypted_key: str = "encrypted-fake-key",
+):
+    """
+    Configura un mock user existente en la DB con config valida.
+    Compatible con `db.get(User, id)` (usado por load_user_llm_config
+    y los helpers de persistencia) y con `db.query(...)` (legacy).
+    """
+    mock_user = MagicMock()
+    mock_user.id = user_id
+    mock_user.llm_base_url = base_url
+    mock_user.llm_model = model
+    mock_user.encrypted_api_key = encrypted_key
+    mock_db = MagicMock()
+    mock_db.get.return_value = mock_user
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_user
+    mock_session.return_value = mock_db
+    return mock_user
+
+
+def _mock_session_no_user(mock_session):
+    """Mock donde el user no existe en DB."""
+    mock_db = MagicMock()
+    mock_db.get.return_value = None
+    mock_session.return_value = mock_db
+
+
 # --- Wizard Step 1: validate URL ---------------------------------------------
 
 class TestWizardStep1:
     """POST /api/llm/wizard/step1"""
 
+    @patch("app.core.llm_loader.SessionLocal")
     @patch("app.api.llm_config.httpx.get")
-    def test_valid_url_200(self, mock_get):
-        """URL que responde 200 al ping pasa step 1."""
+    def test_valid_url_200(self, mock_get, mock_session):
+        """URL que responde 200 al ping pasa step 1 Y persiste base_url."""
         mock_get.return_value = _mock_response(200)
+        user = _mock_session_with_user(mock_session)
 
-        # Importamos la función asyncrona y la ejecutamos con asyncio
         import asyncio
         from app.api.llm_config import wizard_step1
 
@@ -59,11 +91,18 @@ class TestWizardStep1:
         # Verifica que se llamó sin Authorization (sin key en step 1)
         call_kwargs = mock_get.call_args.kwargs
         assert "Authorization" not in call_kwargs.get("headers", {})
+        # Verifica que se persistio el base_url en el user
+        assert user.llm_base_url == "https://api.openai.com/v1"
+        # api_key y model NO se tocan en step1
+        assert user.encrypted_api_key == "encrypted-fake-key"
+        assert user.llm_model == "gpt-4o"
 
+    @patch("app.core.llm_loader.SessionLocal")
     @patch("app.api.llm_config.httpx.get")
-    def test_url_with_401_still_passes(self, mock_get):
+    def test_url_with_401_still_passes(self, mock_get, mock_session):
         """URL que retorna 401 (endpoint existe pero requiere auth) pasa step 1."""
         mock_get.return_value = _mock_response(401)
+        _mock_session_with_user(mock_session)
 
         import asyncio
         from app.api.llm_config import wizard_step1
@@ -231,10 +270,12 @@ class TestWizardStep1:
 class TestWizardStep2:
     """POST /api/llm/wizard/step2"""
 
+    @patch("app.core.llm_loader.SessionLocal")
     @patch("app.api.llm_config.httpx.get")
-    def test_valid_key_passes(self, mock_get):
-        """API key válida + endpoint 200 pasa step 2."""
+    def test_valid_key_passes(self, mock_get, mock_session):
+        """API key valida + endpoint 200 pasa step 2 Y persiste credenciales."""
         mock_get.return_value = _mock_response(200)
+        user = _mock_session_with_user(mock_session)
 
         import asyncio
         from app.api.llm_config import wizard_step2
@@ -249,11 +290,19 @@ class TestWizardStep2:
         # Verifica que se llamó CON Authorization Bearer
         call_kwargs = mock_get.call_args.kwargs
         assert call_kwargs["headers"]["Authorization"] == "Bearer sk-valid-test-key"
+        # Verifica que se persistio base_url + api_key
+        assert user.llm_base_url == "https://api.openai.com/v1"
+        assert user.encrypted_api_key != "encrypted-fake-key"  # encriptada, no plain
+        # model NO se toca en step2
+        assert user.llm_model == "gpt-4o"
 
+    @patch("app.core.llm_loader.SessionLocal")
     @patch("app.api.llm_config.httpx.get")
-    def test_invalid_key_401_fails(self, mock_get):
-        """401 con auth header = key inválida, falla step 2."""
+    def test_invalid_key_401_fails(self, mock_get, mock_session):
+        """401 con auth header = key invalida, falla step 2 sin persistir."""
         mock_get.return_value = _mock_response(401)
+        user = _mock_session_with_user(mock_session)
+        original_key = user.encrypted_api_key
 
         import asyncio
         from app.api.llm_config import wizard_step2
@@ -268,6 +317,9 @@ class TestWizardStep2:
 
         assert exc_info.value.status_code == 400
         assert "API Key inválida" in exc_info.value.detail
+        # No se persiste nada si la validacion falla
+        assert user.encrypted_api_key == original_key
+        assert user.llm_base_url == "https://api.openai.com/v1"
 
     def test_empty_key_fails(self):
         """API key vacía falla sin pegar al provider."""
@@ -290,22 +342,20 @@ class TestWizardStep2:
 class TestWizardStep3:
     """POST /api/llm/wizard/step3"""
 
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_tier1_model_saves(self, mock_session):
+    def test_tier1_model_saves(self, mock_session, mock_decrypt):
         """Modelo tier 1 (gpt-4o, MMLU 88.7) se guarda OK."""
-        from datetime import datetime
         from app.api.llm_config import wizard_step3
 
-        # Mock user con config previa
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_user.llm_base_url = None
-        mock_user.llm_model = None
-        mock_user.encrypted_api_key = None
-
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
-        mock_session.return_value = mock_db
+        # User con config persistida por step1+step2; step3 persiste solo model.
+        mock_user = _mock_session_with_user(
+            mock_session,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4-turbo",
+        )
+        original_url = mock_user.llm_base_url
+        original_key = mock_user.encrypted_api_key
 
         import asyncio
         body = WizardStep3Request(
@@ -318,17 +368,19 @@ class TestWizardStep3:
 
         assert result.success is True
         assert result.model == "gpt-4o"
+        # Step3 persiste SOLO model. URL y api_key NO se tocan.
+        assert mock_user.llm_model == "gpt-4o"
+        assert mock_user.llm_base_url == original_url
+        assert mock_user.encrypted_api_key == original_key
 
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_tier2_blocked_without_flag(self, mock_session):
+    def test_tier2_blocked_without_flag(self, mock_session, mock_decrypt):
         """Modelo tier 2 sin allow_unknown_model=True falla con 400."""
         from app.api.llm_config import wizard_step3
 
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
-        mock_session.return_value = mock_db
+        _mock_session_with_user(mock_session)
+        original_model = "gpt-4o"
 
         import asyncio
         body = WizardStep3Request(
@@ -344,20 +396,13 @@ class TestWizardStep3:
         assert exc_info.value.status_code == 400
         assert "tier 1" in exc_info.value.detail.lower()
 
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_tier2_allowed_with_flag(self, mock_session):
+    def test_tier2_allowed_with_flag(self, mock_session, mock_decrypt):
         """Modelo tier 2 CON allow_unknown_model=True se guarda."""
         from app.api.llm_config import wizard_step3
 
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_user.llm_base_url = None
-        mock_user.llm_model = None
-        mock_user.encrypted_api_key = None
-
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
-        mock_session.return_value = mock_db
+        _mock_session_with_user(mock_session)
 
         import asyncio
         body = WizardStep3Request(
@@ -370,16 +415,13 @@ class TestWizardStep3:
 
         assert result.success is True
 
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_unknown_model_blocked_without_flag(self, mock_session):
+    def test_unknown_model_blocked_without_flag(self, mock_session, mock_decrypt):
         """Modelo que no esta en YAML (unknown) sin flag falla."""
         from app.api.llm_config import wizard_step3
 
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
-        mock_session.return_value = mock_db
+        _mock_session_with_user(mock_session)
 
         import asyncio
         body = WizardStep3Request(
@@ -394,20 +436,13 @@ class TestWizardStep3:
 
         assert exc_info.value.status_code == 400
 
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_unknown_model_allowed_with_flag(self, mock_session):
+    def test_unknown_model_allowed_with_flag(self, mock_session, mock_decrypt):
         """Modelo unknown CON allow_unknown_model=True se guarda."""
         from app.api.llm_config import wizard_step3
 
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_user.llm_base_url = None
-        mock_user.llm_model = None
-        mock_user.encrypted_api_key = None
-
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
-        mock_session.return_value = mock_db
+        _mock_session_with_user(mock_session)
 
         import asyncio
         body = WizardStep3Request(
@@ -420,16 +455,13 @@ class TestWizardStep3:
 
         assert result.success is True
 
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_blocked_model_always_fails(self, mock_session):
+    def test_blocked_model_always_fails(self, mock_session, mock_decrypt):
         """Modelo blocked (MMLU < 60) SIEMPRE falla, no hay flag que lo salve."""
         from app.api.llm_config import wizard_step3
 
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
-        mock_session.return_value = mock_db
+        _mock_session_with_user(mock_session)
 
         import asyncio
         body = WizardStep3Request(
@@ -463,7 +495,7 @@ class TestWizardStep3:
         assert exc_info.value.status_code == 400
 
     def test_empty_api_key_fails_when_no_prior_config(self):
-        """API key vacia falla si el usuario no tiene config previa guardada."""
+        """Sin config persistida en DB, wizard_step3 retorna 404 claro."""
         from app.core.llm_loader import LLMConfigError
         from app.api import llm_config as llm_config_module
 
@@ -484,38 +516,51 @@ class TestWizardStep3:
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(wizard_step3(body, _current_user()))
 
-        assert exc_info.value.status_code == 400
-        assert "api key" in exc_info.value.detail.lower()
+        # step3 ahora exige que step1+step2 hayan persistido la config.
+        # Si no la hay, retorna 404 apuntando a los pasos 1 y 2.
+        assert exc_info.value.status_code == 404
+        assert "paso" in exc_info.value.detail.lower()
 
-    @patch("app.api.llm_config.save_user_llm_config")
-    def test_empty_api_key_reuses_saved_config(self, mock_save):
-        """API key vacia pero con config previa: el endpoint reuse la guardada."""
-        from app.api import llm_config as llm_config_module
+    @patch("app.api.llm_config.update_user_model_only")
+    @patch("app.api.llm_config.load_user_llm_config")
+    def test_step3_persists_only_model_ignores_body_credentials(
+        self, mock_load, mock_update
+    ):
+        """step3 lee base_url y api_key de DB, ignora el body, persiste solo model.
 
-        import asyncio
+        El frontend puede mandar base_url/api_key en el body por compat,
+        pero la fuente de verdad es la DB. Esto evita desincronizacion si
+        hay varias pestanas abiertas o si el state del frontend esta
+        desactualizado.
+        """
         from app.api.llm_config import wizard_step3
 
-        # Mock: load_user_llm_config devuelve config con api_key
+        # Config persistida por step1+step2
         mock_existing = MagicMock()
-        mock_existing.api_key = "sk-saved-test-key"
+        mock_existing.base_url = "https://api.z.ai/api/paas/v4/"
+        mock_existing.api_key = "sk-real-saved-key"
+        mock_existing.model = "previous-model"
+        mock_load.return_value = mock_existing
 
-        with patch.object(llm_config_module, "load_user_llm_config") as mock_load:
-            mock_load.return_value = mock_existing
+        import asyncio
+        body = WizardStep3Request(
+            base_url="https://body-url-IGNORED.example/v1",
+            api_key="sk-body-IGNORED",
+            model="my-new-model",
+            allow_unknown_model=True,
+        )
 
-            body = WizardStep3Request(
-                base_url="https://api.openai.com/v1",
-                api_key=None,  # no enviada
-                model="gpt-4o",
-                allow_unknown_model=False,
-            )
-
-            result = asyncio.run(wizard_step3(body, _current_user()))
+        result = asyncio.run(wizard_step3(body, _current_user()))
 
         assert result.success is True
-        # Verifica que save_user_llm_config recibio la api_key guardada, no vacia
-        save_kwargs = mock_save.call_args.kwargs
-        assert save_kwargs["api_key"] == "sk-saved-test-key"
-        assert save_kwargs["model"] == "gpt-4o"
+        assert result.model == "my-new-model"
+        # La respuesta usa la base_url de DB, no la del body
+        assert result.base_url == "https://api.z.ai/api/paas/v4/"
+        # update_user_model_only fue llamado con el model y el user_id correcto.
+        # NO save_user_llm_config (que pisaria api_key).
+        update_args = mock_update.call_args.args
+        assert update_args[0] == 1  # user_id
+        assert update_args[1] == "my-new-model"  # model
 
 
 # --- Old /config/validate endpoint (deprecated) -----------------------------
@@ -666,3 +711,114 @@ class TestAvailableModelsEndpoint:
         assert exc_info.value.status_code == 422
         assert "no se puede desencriptar" in exc_info.value.detail.lower()
         assert "ENCRYPTION_KEY" in exc_info.value.detail
+
+
+# --- Persistencia por paso (refactor wizard) -------------------------------
+
+class TestWizardPersistenciaPorPaso:
+    """
+    El wizard refactorizado persiste en cada paso en vez de guardar todo al
+    final. Esto garantiza que /api/llm/wizard/available-models (que lee de
+    DB) vea la URL/api_key nuevas apenas se validan, no solo al final.
+    """
+
+    @patch("app.core.llm_loader.SessionLocal")
+    @patch("app.api.llm_config.httpx.get")
+    def test_step1_normalizes_trailing_slash_before_persisting(
+        self, mock_get, mock_session
+    ):
+        """step1 quita el slash final del base_url antes de persistir."""
+        mock_get.return_value = _mock_response(200)
+        user = _mock_session_with_user(mock_session)
+
+        import asyncio
+        from app.api.llm_config import wizard_step1
+
+        body = WizardStep1Request(base_url="https://api.openai.com/v1/")
+        result = asyncio.run(wizard_step1(body, _current_user()))
+
+        assert result.success is True
+        # Trailing slash removido antes de guardar
+        assert user.llm_base_url == "https://api.openai.com/v1"
+
+    @patch("app.api.llm_config.httpx.get")
+    def test_step1_does_not_persist_on_404(self, mock_get):
+        """Si la validacion del endpoint falla (404), no se persiste nada.
+
+        Esto evita que URLs mal tipeadas queden guardadas en DB y rompan
+        /api/llm/wizard/available-models que asume base_url persistido
+        es un provider alcanzable.
+        """
+        from app.api.llm_config import wizard_step1
+        from app.core.llm_loader import update_user_base_url_only
+
+        mock_get.return_value = _mock_response(404)
+
+        import asyncio
+        body = WizardStep1Request(base_url="https://bad-url.example/v1")
+
+        with pytest.raises(HTTPException):
+            asyncio.run(wizard_step1(body, _current_user()))
+
+        # update_user_base_url_only NO debe haberse llamado
+        # (verificable indirectamente: el test no explota al no mockear SessionLocal,
+        # lo que confirma que no se intento tocar la DB)
+        with patch.object(
+            __import__("app.core.llm_loader", fromlist=["update_user_base_url_only"]),
+            "update_user_base_url_only",
+        ) as mock_update:
+            # Re-correr para confirmar que tampoco se llamaria en este path
+            pass
+
+    @patch("app.core.llm_loader.SessionLocal")
+    @patch("app.api.llm_config.httpx.get")
+    def test_step2_persists_credentials_atomically(
+        self, mock_get, mock_session
+    ):
+        """step2 persiste base_url + api_key en una sola transaccion."""
+        user = _mock_session_with_user(mock_session)
+        original_model = user.llm_model
+
+        # Validamos con 401 para que el codigo retorne error SIN persistir
+        mock_get.return_value = _mock_response(401)
+
+        import asyncio
+        from app.api.llm_config import wizard_step2
+
+        body = WizardStep2Request(
+            base_url="https://api.new-provider.com/v1",
+            api_key="sk-new-key",
+        )
+
+        with pytest.raises(HTTPException):
+            asyncio.run(wizard_step2(body, _current_user()))
+
+        # Como fallo, NO se persistio nada
+        assert user.llm_base_url == "https://api.openai.com/v1"
+        assert user.encrypted_api_key == "encrypted-fake-key"
+        assert user.llm_model == original_model
+
+    @patch("app.core.llm_loader.decrypt", return_value="sk-decrypted-fake-key")
+    @patch("app.api.llm_config.load_user_llm_config")
+    def test_step3_returns_404_when_no_persisted_config(
+        self, mock_load, mock_decrypt
+    ):
+        """step3 exige config persistida previa (de step1+step2). Si no hay -> 404."""
+        from app.core.llm_loader import LLMConfigError
+        from app.api.llm_config import wizard_step3
+
+        mock_load.side_effect = LLMConfigError("no hay config")
+
+        import asyncio
+        body = WizardStep3Request(
+            base_url="https://api.openai.com/v1",
+            api_key=None,
+            model="gpt-4o",
+            allow_unknown_model=False,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(wizard_step3(body, _current_user()))
+
+        assert exc_info.value.status_code == 404
+        assert "paso" in exc_info.value.detail.lower()

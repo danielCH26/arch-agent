@@ -32,6 +32,9 @@ from app.core.llm_loader import (
     clear_session_cache,
     load_user_llm_config,
     save_user_llm_config,
+    update_user_base_url_only,
+    update_user_credentials,
+    update_user_model_only,
 )
 from app.core.model_classifier import classify_model
 from app.core.llm_validator import (
@@ -276,10 +279,15 @@ async def wizard_step1(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Step 1: valida la Base URL del provider.
+    Step 1: valida la Base URL del provider y la persiste en DB.
 
     Ping a {base_url}/models con key dummy. Acepta 200/401/403 (endpoint
     existe), rechaza 404 (endpoint no existe), timeout, conn error.
+
+    Si la validacion pasa, persiste SOLO el base_url. La api_key y el
+    model no se tocan en este paso — eso lo hacen step2 y step3
+    respectivamente. Esto garantiza que el endpoint available-models
+    (que lee base_url de DB) vea la URL nueva apenas se valida.
     """
     _validate_url_format(body.base_url)
 
@@ -291,9 +299,18 @@ async def wizard_step1(
         # ya levanta HTTPException directo, este except queda como safety net
         raise HTTPException(status_code=400, detail="URL no responde /models")
 
+    # Persistir base_url (atomicamente, sin tocar api_key ni model)
+    try:
+        update_user_base_url_only(
+            current_user["user_id"], _normalize_base_url(body.base_url)
+        )
+    except LLMConfigError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
     return WizardStepResponse(
         success=True,
-        message="URL válida. Continúa al paso 2.",
+        message="URL válida y guardada. Continúa al paso 2.",
+        base_url=body.base_url,
     )
 
 
@@ -303,9 +320,14 @@ async def wizard_step2(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Step 2: valida la API Key y testea la conexion real.
+    Step 2: valida la API Key contra el endpoint autenticado y la persiste.
 
     Pega a {base_url}/models con Bearer. 200 = conexion OK. 401 = key inválida.
+
+    Si la validacion pasa, persiste base_url + api_key (encriptada) en una
+    sola transaccion, SIN tocar llm_model para no borrar el modelo que el
+    usuario ya tenia configurado. Asi, cuando el frontend llame a
+    available-models desde step3, ya tendra las credenciales correctas.
     """
     _validate_url_format(body.base_url)
 
@@ -318,9 +340,21 @@ async def wizard_step2(
     # _ping_models_endpoint con api_key y require_auth=True
     _ping_models_endpoint(body.base_url, api_key=body.api_key, require_auth=True)
 
+    # Persistir base_url + api_key encriptada (NO toca model)
+    try:
+        update_user_credentials(
+            current_user["user_id"],
+            _normalize_base_url(body.base_url),
+            body.api_key.strip(),
+        )
+    except LLMConfigError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
     return WizardStepResponse(
         success=True,
-        message="Conexión exitosa. Continúa al paso 3.",
+        message="Conexión exitosa y credenciales guardadas. Continúa al paso 3.",
+        base_url=body.base_url,
+        has_api_key=True,
     )
 
 
@@ -330,37 +364,52 @@ async def wizard_step3(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Step 3: guarda la config con tier enforcement.
+    Step 3: selecciona el modelo y lo persiste. Tier enforcement.
+
+    Asume que base_url y api_key ya estan persistidos en DB (por step1 y
+    step2, o por una configuracion anterior valida). Lee la config actual
+    para validar que existe; si no hay config previa -> 404 con mensaje
+    claro apuntando a los pasos 1 y 2.
+
+    Si el body trae base_url/api_key del state del frontend, se ignoran:
+    la fuente de verdad es la DB (mantiene consistencia si hay varias
+    pestanas abiertas, etc.).
 
     Reglas:
+      - Si no hay config previa (base_url o api_key faltantes) -> 404
       - Si el modelo NO esta en el YAML (unknown) y allow_unknown_model=False -> 400
       - Si el modelo es tier2 (MMLU 60-85) y allow_unknown_model=False -> 400
-      - Si el modelo es blocked (MMLU < 60) -> 400 SIEMPRE (no se puede override)
+      - Si el modelo es blocked (MMLU < 60) -> 400 SIEMPRE (no override)
       - Si el modelo es tier1 -> OK siempre
-      - Si el modelo es unknown/tier2 y allow_unknown_model=True -> OK (warning loggeado)
+      - Si el modelo es unknown/tier2 y allow_unknown_model=True -> OK (warning)
     """
-    _validate_url_format(body.base_url)
-
     if not body.model or not body.model.strip():
         raise HTTPException(status_code=400, detail="El modelo es obligatorio")
 
-    # Si el cliente no envio api_key (caso "Cambiar modelo"): reusar la guardada
-    # en DB si existe. Si no hay config previa ni api_key nueva -> 400 claro.
-    api_key_to_use = (body.api_key or "").strip()
-    if not api_key_to_use:
-        try:
-            existing = load_user_llm_config(current_user["user_id"])
-        except LLMConfigError:
-            existing = None
-        if not existing or not existing.api_key:
+    # Cargar config actual de DB. step1 y step2 ya debieron persistir
+    # base_url + api_key; si no estan, devolvemos 404 claro.
+    try:
+        existing = load_user_llm_config(current_user["user_id"])
+    except LLMConfigError as e:
+        if e.reason == "decryption_failed":
+            logger.warning(
+                "user_id=%s tiene config con API key que no se puede desencriptar",
+                current_user["user_id"],
+            )
             raise HTTPException(
-                status_code=400,
+                status_code=422,
                 detail=(
-                    "La API key es obligatoria (no hay config previa guardada, "
-                    "completá los pasos 1 y 2 primero)."
+                    "La API key guardada no se puede desencriptar. "
+                    "Probablemente cambio ENCRYPTION_KEY del backend. "
+                    "Reconfigura tu LLM con el paso 1."
                 ),
             )
-        api_key_to_use = existing.api_key
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No hay config LLM persistida. Completá los pasos 1 y 2 primero."
+            ),
+        )
 
     classification = classify_model(body.model)
 
@@ -396,32 +445,19 @@ async def wizard_step3(
             classification.mmlu_score,
         )
 
-    # Guardar
+    # Persistir SOLO el modelo. base_url y api_key ya estan en DB.
     try:
-        save_user_llm_config(
-            user_id=current_user["user_id"],
-            base_url=body.base_url,
-            model=body.model,
-            api_key=api_key_to_use,
-        )
-        # Limpiar cache del modelo por si tenia uno previo
-        try:
-            clear_session_cache(user_id=current_user["user_id"])
-        except Exception:
-            pass  # no critico
-
-        return WizardStepResponse(
-            success=True,
-            message="Configuración guardada correctamente",
-            model=body.model,
-            base_url=body.base_url,
-            has_api_key=True,
-        )
+        update_user_model_only(current_user["user_id"], body.model.strip())
     except LLMConfigError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Error guardando config LLM via wizard")
         raise HTTPException(status_code=500, detail=str(e))
+
+    return WizardStepResponse(
+        success=True,
+        message="Configuración guardada correctamente",
+        model=body.model,
+        base_url=existing.base_url,
+        has_api_key=True,
+    )
 
 
 class AvailableModelsResponse(BaseModel):
