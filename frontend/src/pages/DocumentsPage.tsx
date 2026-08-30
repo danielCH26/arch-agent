@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { getProject, Project } from '../api/projects'
 import { Document, listDocuments } from '../api/documents'
@@ -12,6 +12,7 @@ export function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const projectId = Number(id)
 
@@ -25,6 +26,25 @@ export function DocumentsPage() {
       setError(err instanceof Error ? err.message : 'Error al cargar documentos')
     }
   }
+
+  // Polling: si hay documentos sin procesar, refrescar cada 3s
+  useEffect(() => {
+    const hasUnprocessed = documents.some((d) => !d.processed)
+
+    if (hasUnprocessed && !pollRef.current) {
+      pollRef.current = setInterval(fetchDocuments, 3000)
+    } else if (!hasUnprocessed && pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [documents])
 
   useEffect(() => {
     const loadData = async () => {

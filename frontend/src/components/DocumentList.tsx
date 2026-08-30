@@ -87,6 +87,12 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
                 }`}>
                   {doc.file_type}
                 </span>
+                {!doc.processed && (
+                  <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-xs rounded inline-flex items-center gap-1">
+                    <span className="animate-spin inline-block h-3 w-3 border-b border-amber-600 rounded-full"></span>
+                    Procesando...
+                  </span>
+                )}
               </div>
               <div className="text-xs text-gray-500 mt-0.5">
                 {formatSize(doc.file_size_bytes)} • {doc.chunk_count} chunks

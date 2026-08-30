@@ -285,6 +285,151 @@ def overwrite_document(
         db.close()
 
 
+def save_document_pending(
+    user_id: int,
+    filename: str,
+    file_type: str,
+    file_size_bytes: int,
+    chunk_count: int,
+    project_id: Optional[int] = None,
+) -> int:
+    """
+    Crea un documento con processed=False (sin chunks aún).
+    Los chunks + embeddings se guardan después en background.
+
+    Returns:
+        document_id del documento creado
+    """
+    db = SessionLocal()
+    try:
+        max_version = check_duplicate(user_id, filename, project_id=project_id)
+        new_version = (max_version or 0) + 1
+
+        doc = UploadedDocument(
+            user_id=user_id,
+            project_id=project_id,
+            filename=filename,
+            file_type=file_type,
+            file_size_bytes=file_size_bytes,
+            chunk_count=chunk_count,
+            processed=False,
+            version=new_version,
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+        return doc.id
+    except IntegrityError as e:
+        db.rollback()
+        raise DocumentStorageError(f"Constraint violation: {e}")
+    except Exception as e:
+        db.rollback()
+        raise DocumentStorageError(f"Error al guardar documento: {e}")
+    finally:
+        db.close()
+
+
+def overwrite_document_pending(
+    user_id: int,
+    filename: str,
+    file_type: str,
+    file_size_bytes: int,
+    chunk_count: int,
+    project_id: Optional[int] = None,
+) -> int:
+    """
+    Borra la versión actual del documento y crea una nueva pending (processed=False).
+    Los chunks + embeddings se guardan después en background.
+
+    Returns:
+        document_id del nuevo documento
+    """
+    db = SessionLocal()
+    try:
+        query = db.query(UploadedDocument).filter(
+            UploadedDocument.user_id == user_id,
+            UploadedDocument.filename == filename,
+        )
+        if project_id is not None:
+            query = query.filter(UploadedDocument.project_id == project_id)
+        current = query.order_by(desc(UploadedDocument.version)).first()
+
+        if current is None:
+            return save_document_pending(
+                user_id=user_id,
+                filename=filename,
+                file_type=file_type,
+                file_size_bytes=file_size_bytes,
+                chunk_count=chunk_count,
+                project_id=project_id,
+            )
+
+        version_to_keep = current.version
+        db.delete(current)
+        db.flush()
+
+        new_doc = UploadedDocument(
+            user_id=user_id,
+            filename=filename,
+            file_type=file_type,
+            file_size_bytes=file_size_bytes,
+            chunk_count=chunk_count,
+            processed=False,
+            version=version_to_keep,
+            project_id=project_id,
+        )
+        db.add(new_doc)
+        db.commit()
+        db.refresh(new_doc)
+        return new_doc.id
+    except Exception as e:
+        db.rollback()
+        raise DocumentStorageError(f"Error al sobrescribir: {e}")
+    finally:
+        db.close()
+
+
+def save_chunks_and_mark_processed(
+    doc_id: int,
+    chunks: List[Document],
+    embeddings: List[List[float]],
+) -> None:
+    """
+    Guarda los chunks con sus embeddings y marca el documento como processed=True.
+    Se llama en background después del upload.
+
+    Raises:
+        DocumentStorageError: si hay error al guardar
+    """
+    if len(chunks) != len(embeddings):
+        raise DocumentStorageError(
+            f"Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings"
+        )
+
+    db = SessionLocal()
+    try:
+        for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            chunk_record = DocumentChunk(
+                document_id=doc_id,
+                chunk_text=chunk.page_content,
+                chunk_index=idx,
+                embedding=embedding,
+                chunk_metadata=chunk.metadata if chunk.metadata else None,
+            )
+            db.add(chunk_record)
+
+        db.query(UploadedDocument).filter(
+            UploadedDocument.id == doc_id
+        ).update({"processed": True})
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise DocumentStorageError(f"Error al guardar chunks: {e}")
+    finally:
+        db.close()
+
+
 def get_document_chunks(document_id: int) -> List[DocumentChunk]:
     """
     Obtiene todos los chunks de un documento (ordenados por chunk_index).
