@@ -30,25 +30,28 @@ class DocumentStorageError(Exception):
 
 def check_duplicate(user_id: int, filename: str, project_id: Optional[int] = None) -> Optional[int]:
     """
-    Verifica si el user ya tiene un documento con ese filename (en un proyecto).
+    Verifica si el user ya tiene un documento con ese filename.
+
+    El parámetro project_id se ignora a efectos de la búsqueda de duplicados,
+    ya que la constraint UNIQUE es (user_id, filename, version) sin project_id.
+    Esto significa que un archivo con el mismo nombre no puede tener la misma
+    versión en ningún proyecto — un documento es único globalmente por usuario
+    y nombre, no por proyecto.
 
     Args:
         user_id: ID del usuario
         filename: nombre del archivo
-        project_id: ID del proyecto (opcional, si es None busca en cualquier proyecto)
+        project_id: ID del proyecto (aceptado por compatibilidad, ignorado)
 
     Returns:
         Versión más alta existente (1, 2, 3...) o None si no existe
     """
     db = SessionLocal()
     try:
-        query = db.query(func.max(UploadedDocument.version)).filter(
+        result = db.query(func.max(UploadedDocument.version)).filter(
             UploadedDocument.user_id == user_id,
             UploadedDocument.filename == filename,
-        )
-        if project_id:
-            query = query.filter(UploadedDocument.project_id == project_id)
-        result = query.scalar()
+        ).scalar()
         return result
     finally:
         db.close()
