@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 Seed del caso de ejemplo end-to-end.
 
 Issue: Caso de ejemplo (seed)
-Responsable: Sofía (Backend / Agente)
+Responsable: Sofía
 Sprint: 1
 
 Crea un proyecto de ejemplo completo — "Sistema de Gestión de Tareas" —

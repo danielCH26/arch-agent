@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 Entrypoint único para cargar todo el seed del proyecto.
 
 Issue: Caso de ejemplo (seed)
-Responsable: Sofía (Backend / Agente)
+Responsable: Sofía
 Sprint: 1
 
 Ejecuta, en orden:

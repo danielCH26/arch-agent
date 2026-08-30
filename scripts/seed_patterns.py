@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 Seed de patrones de arquitectura para la base RAG (architect_patterns).
 
 Issue: Caso de ejemplo (seed)
-Responsable: Sofía (Backend / Agente)
+Responsable: Sofía
 Sprint: 1
 
 Carga un conjunto inicial de patrones de arquitectura de software, cada uno

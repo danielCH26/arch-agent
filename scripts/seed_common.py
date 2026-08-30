@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 Utilidades compartidas para los scripts de seed.
 
 Issue: Caso de ejemplo (seed)
-Responsable: Sofía (Backend / Agente)
+Responsable: Sofía
 Sprint: 1
 
 Reutiliza la misma convención de logging y conexión que scripts/init_db.py
