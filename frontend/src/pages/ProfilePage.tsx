@@ -9,7 +9,10 @@ export function ProfilePage() {
   useEffect(() => {
     getUserProfile()
       .then((p) => setProfile(p))
-      .catch(() => setError('Error al cargar el perfil'))
+      .catch((err) => {
+        console.error('ProfilePage error:', err)
+        setError('Error al cargar el perfil')
+      })
       .finally(() => setLoading(false))
   }, [])
 
