@@ -462,22 +462,60 @@ class TestWizardStep3:
 
         assert exc_info.value.status_code == 400
 
-    def test_empty_api_key_fails(self):
-        """API key vacía falla."""
+    def test_empty_api_key_fails_when_no_prior_config(self):
+        """API key vacia falla si el usuario no tiene config previa guardada."""
+        from app.core.llm_loader import LLMConfigError
+        from app.api import llm_config as llm_config_module
+
         import asyncio
         from app.api.llm_config import wizard_step3
 
-        body = WizardStep3Request(
-            base_url="https://api.openai.com/v1",
-            api_key="",
-            model="gpt-4o",
-            allow_unknown_model=False,
-        )
+        # Mock: load_user_llm_config no encuentra config previa
+        with patch.object(llm_config_module, "load_user_llm_config") as mock_load:
+            mock_load.side_effect = LLMConfigError("no hay config")
 
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(wizard_step3(body, _current_user()))
+            body = WizardStep3Request(
+                base_url="https://api.openai.com/v1",
+                api_key="",
+                model="gpt-4o",
+                allow_unknown_model=False,
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(wizard_step3(body, _current_user()))
 
         assert exc_info.value.status_code == 400
+        assert "api key" in exc_info.value.detail.lower()
+
+    @patch("app.api.llm_config.save_user_llm_config")
+    def test_empty_api_key_reuses_saved_config(self, mock_save):
+        """API key vacia pero con config previa: el endpoint reuse la guardada."""
+        from app.api import llm_config as llm_config_module
+
+        import asyncio
+        from app.api.llm_config import wizard_step3
+
+        # Mock: load_user_llm_config devuelve config con api_key
+        mock_existing = MagicMock()
+        mock_existing.api_key = "sk-saved-test-key"
+
+        with patch.object(llm_config_module, "load_user_llm_config") as mock_load:
+            mock_load.return_value = mock_existing
+
+            body = WizardStep3Request(
+                base_url="https://api.openai.com/v1",
+                api_key=None,  # no enviada
+                model="gpt-4o",
+                allow_unknown_model=False,
+            )
+
+            result = asyncio.run(wizard_step3(body, _current_user()))
+
+        assert result.success is True
+        # Verifica que save_user_llm_config recibio la api_key guardada, no vacia
+        save_kwargs = mock_save.call_args.kwargs
+        assert save_kwargs["api_key"] == "sk-saved-test-key"
+        assert save_kwargs["model"] == "gpt-4o"
 
 
 # --- Old /config/validate endpoint (deprecated) -----------------------------

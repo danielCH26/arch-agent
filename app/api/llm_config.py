@@ -81,7 +81,9 @@ class WizardStep2Request(BaseModel):
 
 class WizardStep3Request(BaseModel):
     base_url: str
-    api_key: str
+    # Opcional: si esta vacio, el endpoint reusa la api_key guardada del usuario
+    # (caso de uso "Cambiar modelo" en el wizard, donde el user no re-ingresa key).
+    api_key: Optional[str] = None
     model: str
     allow_unknown_model: bool = False
 
@@ -339,10 +341,26 @@ async def wizard_step3(
     """
     _validate_url_format(body.base_url)
 
-    if not body.api_key or not body.api_key.strip():
-        raise HTTPException(status_code=400, detail="La API key es obligatoria")
     if not body.model or not body.model.strip():
         raise HTTPException(status_code=400, detail="El modelo es obligatorio")
+
+    # Si el cliente no envio api_key (caso "Cambiar modelo"): reusar la guardada
+    # en DB si existe. Si no hay config previa ni api_key nueva -> 400 claro.
+    api_key_to_use = (body.api_key or "").strip()
+    if not api_key_to_use:
+        try:
+            existing = load_user_llm_config(current_user["user_id"])
+        except LLMConfigError:
+            existing = None
+        if not existing or not existing.api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "La API key es obligatoria (no hay config previa guardada, "
+                    "completá los pasos 1 y 2 primero)."
+                ),
+            )
+        api_key_to_use = existing.api_key
 
     classification = classify_model(body.model)
 
@@ -384,7 +402,7 @@ async def wizard_step3(
             user_id=current_user["user_id"],
             base_url=body.base_url,
             model=body.model,
-            api_key=body.api_key,
+            api_key=api_key_to_use,
         )
         # Limpiar cache del modelo por si tenia uno previo
         try:
