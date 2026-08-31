@@ -379,7 +379,139 @@ curl http://localhost:8000/health
 
 ---
 
-## 14. Próximos Pasos
+## 14. ArchitectAgent — Agente LangGraph (F08)
+
+> **Issue:** #12 — F08 Generación propuesta + aprobación
+
+### Propósito
+
+El `ArchitectAgent` es un agente conversacional basado en LangGraph que guía al usuario en la definición de arquitecturas de software. Genera propuestas estructuradas con componentes, tecnologías, patrones y justificación.
+
+### Nodos del Grafo
+
+```
+START → retrieve_context → build_prompt → call_llm → format_proposal → END
+```
+
+| Nodo | Función |
+|------|---------|
+| `retrieve_context` | Consulta PGVector (documentos del usuario + `architect_patterns`) |
+| `build_prompt` | Compone: System prompt + contexto del proyecto + RAG |
+| `call_llm` | Invoca el LLM configurado por el usuario (con retry backoff) |
+| `format_proposal` | Parsea la respuesta como propuesta estructurada |
+
+### State (AgentState)
+
+```python
+class AgentState(TypedDict):
+    messages: Sequence[BaseMessage]       # conversación
+    user_id: int
+    project_id: Optional[int]
+    project_context: str                 # info del proyecto activo
+    rag_documents: List[Document]        # resultados del RAG
+    response_text: str                   # respuesta completa del LLM
+    proposal: Optional[Dict]            # propuesta parseada
+```
+
+### SSE Events (Chat Endpoint)
+
+El endpoint `/api/chat` retorna Server-Sent Events:
+
+| Event | Payload | Descripción |
+|-------|---------|-------------|
+| `token` | `{"content": "..."}` | Chunk de texto del LLM |
+| `proposal` | `{"has_proposal": true\|false}` | Al final, indica si se parseó propuesta |
+| `done` | `null` | Fin del stream |
+| `error` | `{"message": "..."}` | Error (LLM no configurado, etc.) |
+
+### Notas de Implementación
+
+- **R13**: Instancia POR REQUEST (nunca global, nunca singleton)
+- **R3**: Retry con backoff (2 intentos, delay 1.5s × 2^n)
+- **R12**: `CancelledError` manejado para client disconnect
+
+---
+
+## 15. Tablas proposals y approvals
+
+> **Issue:** #12 — F08
+
+### Diagrama ER
+
+```
+┌─────────────────────┐       ┌─────────────────────┐
+│     proposals       │       │      approvals      │
+├─────────────────────┤       ├─────────────────────┤
+│ id (PK)             │       │ id (PK)             │
+│ session_id (FK)    │◄──────│ proposal_id (FK)    │
+│ phase (String)     │       │ decision (String)   │
+│ version (Integer)  │       │ feedback (String)   │
+│ content (JSONB)    │       │ previous_content    │
+│ status (String)    │       │   (JSONB)           │
+│ created_at         │       │ modified_content    │
+│ updated_at         │       │   (JSONB)           │
+└─────────────────────┘       │ created_at         │
+                              └─────────────────────┘
+```
+
+### Propuestas (proposals)
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `id` | Integer | PK auto-incremental |
+| `session_id` | Integer | FK → `sessions.id` |
+| `phase` | String(50) | Fase del agente (ej: "architecture") |
+| `version` | Integer | Número de versión (1, 2, 3...) |
+| `content` | JSONB | `{title, components, technologies, patterns, rationale, raw_text}` |
+| `status` | String(20) | `draft` \| `pending_approval` \| `approved` \| `rejected` |
+| `created_at` | TIMESTAMP | Server default now() |
+| `updated_at` | TIMESTAMP | Server default now() |
+
+**Constraints:**
+- Unique: `(session_id, version)`
+
+### Decisiones (approvals)
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `id` | Integer | PK auto-incremental |
+| `proposal_id` | Integer | FK → `proposals.id` (CASCADE) |
+| `decision` | String(20) | `approved` \| `modified` \| `rejected` |
+| `feedback` | String | Feedback del usuario (para modify/reject) |
+| `previous_content` | JSONB | Copia del contenido antes del cambio |
+| `modified_content` | JSONB | Nuevo contenido (si aplica) |
+| `created_at` | TIMESTAMP | Server default now() |
+
+**Constraints:**
+- Check: `decision IN ('approved', 'modified', 'rejected')`
+
+### Flujo de versioning
+
+1. Primera propuesta en sesión → `version=1`, `status=draft`
+2. siguiente → `version=max+1`, mantiene anterior
+3. Approval modifica status: `approved` / `rejected` / `draft` (para modify)
+
+---
+
+## 16. Endpoints de Propuestas (F08)
+
+| Método | Path | Auth | Descripción |
+|--------|------|------|-------------|
+| `GET` | `/api/proposals?session_id=X` | Sí | Lista propuestas de una sesión |
+| `GET` | `/api/proposals/{id}` | Sí | Detalle de propuesta (propia) |
+| `POST` | `/api/proposals/{id}/approve` | Sí | Aprueba la propuesta |
+| `POST` | `/api/proposals/{id}/reject` | Sí | Rechaza con feedback |
+| `POST` | `/api/proposals/{id}/modify` | Sí | Pide modificación (vuelve a draft) |
+
+### Seguridad (R5)
+
+- Ownership verificado vía `proposal → session → user`
+- Retorna **404** (nunca 403) cuando no hay acceso — evita information leak
+- 409 Conflict si ya está aprobada/rechazada
+
+---
+
+## 17. Próximos Pasos
 
 Esta arquitectura está **cerrada** en cuanto a decisiones macro. Las próximas
 iteraciones refinarán:
@@ -392,5 +524,5 @@ iteraciones refinarán:
 ---
 
 **Mantenedor:** Daniel (Tech Lead)
-**Última actualización:** 2026-08-23
-**Versión:** 1.0
+**Última actualización:** 2026-08-31
+**Versión:** 1.1
