@@ -6,14 +6,28 @@ Responsable: Sofía
 Sprint: 1
 
 Crea un proyecto de ejemplo completo — "Sistema de Gestión de Tareas" —
-que recorre las 4 fases del flujo del agente (elicitación, propuesta,
-diagrama, trade-offs).
+que recorre las 4 fases reales del flujo (ver AVAILABLE_PHASES en
+app/api/projects.py): requerimientos, propuesta, refinamiento, revision.
 
 Nota de esquema: `sessions` tiene una sola fila por usuario (UNIQUE en
 user_id) con el progreso guardado en `engram_state` (JSONB) y la fase
-activa en `active_phase`. Por eso el contenido y la aprobación de cada
-fase (mismo mecanismo de Feature 3: Refinamiento y validación por etapas)
-se guardan como una clave dentro de ese mismo JSON, no como filas nuevas.
+activa en `active_phase`. El contenido de cada fase vive como una clave
+dentro de ese mismo JSON.
+
+Nota (fix, issue [F05]): las primeras versiones de este seed usaban
+nombres de fase en inglés (elicitation/proposal/diagram/tradeoffs) que no
+coincidían con AVAILABLE_PHASES, y guardaban la aprobación como una clave
+suelta dentro de engram_state en vez de usar la tabla `approvals` real
+(que no existía todavía cuando se escribió este seed por primera vez).
+Corregido: los 4 nombres de fase ahora coinciden con AVAILABLE_PHASES, y
+cada aprobación se registra como una fila real en `approvals` -- el mismo
+mecanismo que usa app/api/elicitation.py.
+
+El contenido de la fase "requerimientos" además sigue exactamente la
+forma que produce app/core/elicitation_agent.py (preguntas_respuestas,
+pending_question, resumen con problema/usuarios_y_escala/requerimientos_
+funcionales/requerimientos_no_funcionales/restricciones), para que el
+proyecto demo sea un ejemplo fiel del flujo real, no solo una aproximación.
 
 Requiere que scripts/seed_patterns.py ya se haya ejecutado (usa los
 patrones cargados en architect_patterns para la fase de propuesta).
@@ -45,6 +59,9 @@ PROJECT_DESCRIPTION = (
     "Aplicación para que equipos pequeños creen, asignen y den seguimiento "
     "a tareas, con notificaciones cuando cambia el estado de una tarea."
 )
+
+# Fases reales, en orden (ver AVAILABLE_PHASES en app/api/projects.py).
+EXPECTED_PHASES = ["requerimientos", "propuesta", "refinamiento", "revision"]
 
 # Resumen que representaría lo que el agente entendió tras la elicitación;
 # se usa como query para recuperar patrones relevantes por similitud.
@@ -78,6 +95,24 @@ ELICITATION_QA = [
     },
 ]
 
+# Misma forma que app/core/elicitation_agent.SUMMARY_SYSTEM_PROMPT espera.
+REQUIREMENTS_SUMMARY = {
+    "problema": "Permitir que equipos pequeños creen, asignen y sigan tareas sin usar hojas de cálculo.",
+    "usuarios_y_escala": "Entre 20 y 50 usuarios concurrentes, distribuidos en unos 5 equipos.",
+    "requerimientos_funcionales": [
+        "Crear, asignar y dar seguimiento a tareas",
+        "Notificar cuando una tarea cambia de estado o se asigna a alguien",
+    ],
+    "requerimientos_no_funcionales": [
+        "Notificaciones en tiempo real",
+        "Simplicidad sobre escalabilidad prematura (proyecto de un semestre)",
+    ],
+    "restricciones": [
+        "Alcance de un semestre académico",
+        "Equipo de 4 personas",
+    ],
+}
+
 DIAGRAM_MERMAID = (
     "graph TD\n"
     "    A[Cliente web] --> B[API de tareas]\n"
@@ -98,8 +133,6 @@ TRADEOFFS = {
         "Menos aislamiento entre módulos que una arquitectura hexagonal o de microservicios",
     ],
 }
-
-EXPECTED_PHASES = ["elicitation", "proposal", "diagram", "tradeoffs"]
 
 
 def ensure_demo_user(conn) -> int:
@@ -200,15 +233,50 @@ def save_phase(conn, session_id: int, engram_state: dict, phase: str, active_pha
         """,
         (json.dumps(engram_state), active_phase, session_id),
     )
-    log(f"Fase '{phase}' guardada en engram_state (aprobada)", "OK")
+    log(f"Fase '{phase}' guardada en engram_state", "OK")
 
 
-def update_project_phase(conn, project_id: int, phase: str):
+def set_project_phase(conn, project_id: int, phase: str, phase_ready: bool):
+    """
+    Actualiza current_phase/phase_ready -- mismos campos que usa
+    app/api/projects.py (/phase, /advance) y app/api/elicitation.py
+    (/elicitation/decision) en el código real.
+    """
     cur = conn.cursor()
     cur.execute(
-        "UPDATE projects SET current_phase = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-        (phase, project_id),
+        """
+        UPDATE projects
+        SET current_phase = %s, phase_ready = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (phase, phase_ready, project_id),
     )
+
+
+def record_approval(conn, session_id: int, phase: str, feedback: str):
+    """
+    Inserta una fila en `approvals` (issue [F05] Elicitación guiada +
+    aprobación) -- mismo mecanismo real que usa
+    app/api/elicitation.py::decide_elicitation.
+
+    Idempotente por (session_id, phase): si ya existe una aprobación para
+    esta fase en esta sesión, no la duplica.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM approvals WHERE session_id = %s AND phase = %s",
+        (session_id, phase),
+    )
+    if cur.fetchone():
+        return
+    cur.execute(
+        """
+        INSERT INTO approvals (session_id, phase, decision, feedback)
+        VALUES (%s, %s, 'approved', %s)
+        """,
+        (session_id, phase, feedback),
+    )
+    log(f"Aprobación registrada en 'approvals' para fase '{phase}'", "OK")
 
 
 def retrieve_relevant_patterns(conn, top_k: int = 3):
@@ -216,7 +284,7 @@ def retrieve_relevant_patterns(conn, top_k: int = 3):
     Consulta architect_patterns por similitud usando el resumen de
     elicitación como query. Es, a la vez, el paso de 'propuesta' del caso
     de ejemplo y la verificación en vivo de que los patrones del RAG son
-    consultables (criterio de aceptación del issue).
+    consultables (criterio de aceptación del issue del seed).
     """
     query_vector = to_pgvector_literal(embed_query(ELICITATION_SUMMARY))
     cur = conn.cursor()
@@ -249,59 +317,59 @@ def seed_example_project(conn) -> tuple:
     project_id = ensure_demo_project(conn, user_id)
     session_id, engram_state = ensure_demo_session(conn, user_id, project_id)
 
-    # --- Fase 1: Elicitación -------------------------------------------
-    engram_state["elicitation"] = {
+    # --- Fase 1: requerimientos (elicitación) ---------------------------
+    engram_state["requerimientos"] = {
         "preguntas_respuestas": ELICITATION_QA,
-        "aprobacion": {
-            "decision": "approved",
-            "feedback": "Requerimientos completos, se aprueba avanzar a propuesta.",
-        },
+        "pending_question": None,
+        "resumen": REQUIREMENTS_SUMMARY,
     }
-    save_phase(conn, session_id, engram_state, "elicitation", active_phase="proposal")
-    update_project_phase(conn, project_id, "proposal")
+    save_phase(conn, session_id, engram_state, "requerimientos", active_phase="propuesta")
+    record_approval(
+        conn, session_id, "requerimientos",
+        "Requerimientos completos, se aprueba avanzar a propuesta.",
+    )
+    set_project_phase(conn, project_id, "propuesta", phase_ready=False)
 
-    # --- Fase 2: Propuesta (consulta real al RAG) -----------------------
+    # --- Fase 2: propuesta (consulta real al RAG) -----------------------
     relevant_patterns = retrieve_relevant_patterns(conn)
-    engram_state["proposal"] = {
+    engram_state["propuesta"] = {
         "patrones_consultados": relevant_patterns,
         "patron_recomendado": relevant_patterns[0]["pattern_name"],
-        "aprobacion": {
-            "decision": "approved",
-            "feedback": "Propuesta alineada con el alcance de un semestre, se aprueba.",
-        },
     }
-    save_phase(conn, session_id, engram_state, "proposal", active_phase="diagram")
-    update_project_phase(conn, project_id, "diagram")
+    save_phase(conn, session_id, engram_state, "propuesta", active_phase="refinamiento")
+    record_approval(
+        conn, session_id, "propuesta",
+        "Propuesta alineada con el alcance de un semestre, se aprueba.",
+    )
+    set_project_phase(conn, project_id, "refinamiento", phase_ready=False)
 
-    # --- Fase 3: Diagrama -------------------------------------------------
-    engram_state["diagram"] = {
-        "diagrama_mermaid": DIAGRAM_MERMAID,
-        "aprobacion": {
-            "decision": "approved",
-            "feedback": "Diagrama claro, se aprueba sin cambios.",
-        },
-    }
-    save_phase(conn, session_id, engram_state, "diagram", active_phase="tradeoffs")
-    update_project_phase(conn, project_id, "tradeoffs")
+    # --- Fase 3: refinamiento (diagrama) ---------------------------------
+    engram_state["refinamiento"] = {"diagrama_mermaid": DIAGRAM_MERMAID}
+    save_phase(conn, session_id, engram_state, "refinamiento", active_phase="revision")
+    record_approval(
+        conn, session_id, "refinamiento",
+        "Diagrama claro, se aprueba sin cambios.",
+    )
+    set_project_phase(conn, project_id, "revision", phase_ready=False)
 
-    # --- Fase 4: Trade-offs -------------------------------------------------
-    engram_state["tradeoffs"] = {
-        **TRADEOFFS,
-        "aprobacion": {
-            "decision": "approved",
-            "feedback": "Trade-offs entendidos y aceptados por el equipo.",
-        },
-    }
-    save_phase(conn, session_id, engram_state, "tradeoffs", active_phase="tradeoffs")
+    # --- Fase 4: revision (trade-offs) -------------------------------------
+    engram_state["revision"] = dict(TRADEOFFS)
+    save_phase(conn, session_id, engram_state, "revision", active_phase="revision")
+    record_approval(
+        conn, session_id, "revision",
+        "Trade-offs entendidos y aceptados por el equipo.",
+    )
+    # Última fase: no hay a dónde avanzar, pero sí queda "lista".
+    set_project_phase(conn, project_id, "revision", phase_ready=True)
 
-    return project_id, user_id
+    return project_id, user_id, session_id
 
 
-def verify_end_to_end(conn, project_id: int, user_id: int):
+def verify_end_to_end(conn, project_id: int, user_id: int, session_id: int):
     """
     Verifica que el caso de ejemplo cubre las 4 fases y quedó aprobado
-    etapa por etapa — esto vuelve verificable el criterio de aceptación
-    'demuestra todas las fases del flujo'.
+    etapa por etapa en la tabla `approvals` real -- esto vuelve verificable
+    el criterio de aceptación 'demuestra todas las fases del flujo'.
     """
     cur = conn.cursor()
     cur.execute("SELECT engram_state FROM sessions WHERE user_id = %s", (user_id,))
@@ -313,21 +381,28 @@ def verify_end_to_end(conn, project_id: int, user_id: int):
     engram_state = row[0]
     missing = [p for p in EXPECTED_PHASES if p not in engram_state]
     if missing:
-        log(f"Faltan fases en el caso de ejemplo: {missing}", "ERROR")
+        log(f"Faltan fases en engram_state: {missing}", "ERROR")
         sys.exit(1)
 
-    approved_count = sum(
-        1
-        for p in EXPECTED_PHASES
-        if engram_state.get(p, {}).get("aprobacion", {}).get("decision") == "approved"
+    cur.execute(
+        """
+        SELECT COUNT(DISTINCT phase) FROM approvals
+        WHERE session_id = %s AND decision = 'approved'
+        """,
+        (session_id,),
     )
+    approved_count = cur.fetchone()[0]
     if approved_count < len(EXPECTED_PHASES):
-        log(f"Solo {approved_count}/{len(EXPECTED_PHASES)} etapas quedaron aprobadas", "ERROR")
+        log(
+            f"Solo {approved_count}/{len(EXPECTED_PHASES)} fases tienen "
+            "aprobación registrada en 'approvals'",
+            "ERROR",
+        )
         sys.exit(1)
 
     log(
-        f"Caso de ejemplo completo: {len(EXPECTED_PHASES)}/4 fases, "
-        f"{approved_count}/4 aprobaciones registradas",
+        f"Caso de ejemplo completo: {len(EXPECTED_PHASES)}/4 fases en engram_state, "
+        f"{approved_count}/4 aprobaciones reales en 'approvals'",
         "OK",
     )
 
@@ -338,8 +413,8 @@ def main():
     log("=" * 60)
     conn = connect_db()
     try:
-        project_id, user_id = seed_example_project(conn)
-        verify_end_to_end(conn, project_id, user_id)
+        project_id, user_id, session_id = seed_example_project(conn)
+        verify_end_to_end(conn, project_id, user_id, session_id)
         log("=" * 60)
         log("Seed de ejemplo cargado correctamente ✓", "OK")
         log("=" * 60)
