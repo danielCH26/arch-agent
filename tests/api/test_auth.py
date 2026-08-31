@@ -8,12 +8,13 @@ Los imports de app.api.* se hacen DENTRO de cada test.
 import pytest
 import os
 
-# Configurar entorno antes de cualquier import de app
-os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# Configurar entorno antes de cualquier import de app.
+# NOTA: no seteamos DATABASE_URL (mocking puro, sin DB real) para no
+# contaminar el engine global de app.core.database usado por otras suites.
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 class TestGetUserByLogin:
