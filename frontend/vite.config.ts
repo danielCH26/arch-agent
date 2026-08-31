@@ -23,6 +23,8 @@ export default defineConfig({
           '/api': {
             target: apiBaseUrl,
             changeOrigin: true,
+            proxyTimeout: 300_000, // 5 min — uploads pueden tardar con embeddings
+            timeout: 300_000,
           },
         }
       : undefined,

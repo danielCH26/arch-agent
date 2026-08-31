@@ -11,7 +11,9 @@ export interface WizardStep2Request {
 
 export interface WizardStep3Request {
   base_url: string
-  api_key: string
+  // Opcional: si se omite o viene vacio, el backend reusa la api_key
+  // guardada del usuario (caso "Cambiar modelo" en el wizard).
+  api_key?: string
   model: string
   allow_unknown_model: boolean
 }

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from app.core.llm_validator import (
     validate_llm_config,
     get_available_models,
+    _make_cache_key,
     LLMValidationError,
 )
 
@@ -193,3 +194,27 @@ class TestGetAvailableModels:
                 engram_client=mock_engram,
             )
             assert models == ["new-model"]  # vino de la API porque cache expiró
+
+
+class TestCacheKeyParticion:
+    """La cache_key se particiona por provider (base_url normalizado)."""
+
+    def test_distinct_providers_produce_distinct_keys(self):
+        """Dos base_url distintos producen cache_keys distintas para el mismo user."""
+        k1 = _make_cache_key(1, "https://api.openai.com/v1")
+        k2 = _make_cache_key(1, "https://api.z.ai/api/paas/v4")
+        assert k1 != k2
+        assert k1.startswith("models_cache:user_1:provider_")
+        assert k2.startswith("models_cache:user_1:provider_")
+
+    def test_same_provider_different_user_produces_distinct_keys(self):
+        """Mismo base_url, distintos users → cache_keys distintas."""
+        k1 = _make_cache_key(1, "https://api.openai.com/v1")
+        k2 = _make_cache_key(2, "https://api.openai.com/v1")
+        assert k1 != k2
+
+    def test_trailing_slash_normalized(self):
+        """Con o sin slash final, el mismo provider da la misma cache_key."""
+        k1 = _make_cache_key(1, "https://api.openai.com/v1")
+        k2 = _make_cache_key(1, "https://api.openai.com/v1/")
+        assert k1 == k2

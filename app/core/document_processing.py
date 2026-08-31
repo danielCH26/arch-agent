@@ -134,6 +134,11 @@ def split_documents(
     return splitter.split_documents(documents)
 
 
+def _sanitize_text(text: str) -> str:
+    """Remove NUL characters that PostgreSQL TEXT columns cannot store."""
+    return text.replace("\x00", "")
+
+
 def process_file(file_path: str) -> List[Document]:
     """
     Orquesta load + split. Retorna chunks listos para embeddings.
@@ -148,4 +153,7 @@ def process_file(file_path: str) -> List[Document]:
         DocumentProcessingError: si hay error en cualquier paso
     """
     documents = load_document(file_path)
+    # Sanitize NUL characters before splitting (some PDFs extract with NUL bytes)
+    for doc in documents:
+        doc.page_content = _sanitize_text(doc.page_content)
     return split_documents(documents)

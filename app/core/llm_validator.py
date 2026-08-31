@@ -4,6 +4,7 @@ Validación de configuración LLM y listado de modelos disponibles.
 Issue: #7 - HU12 Configuración de LLM
 """
 
+import hashlib
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional
@@ -16,6 +17,19 @@ DEFAULT_TIMEOUT = 10.0  # segundos
 
 # Cache TTL
 CACHE_TTL_HOURS = 24
+
+
+def _make_cache_key(user_id: int, base_url: str) -> str:
+    """
+    Construye la cache_key de modelos disponibles.
+
+    La clave se particiona por provider (hash corto del base_url normalizado)
+    para que cambiar de proveedor devuelva siempre modelos frescos del
+    nuevo provider, no una cache del anterior.
+    """
+    normalized = _normalize_base_url(base_url)
+    provider_hash = hashlib.sha256(normalized.encode()).hexdigest()[:8]
+    return f"models_cache:user_{user_id}:provider_{provider_hash}"
 
 
 class LLMValidationError(Exception):
@@ -107,7 +121,7 @@ def get_available_models(
     Raises:
         LLMValidationError: si falla la consulta
     """
-    cache_key = f"models_cache:user_{user_id}"
+    cache_key = _make_cache_key(user_id, base_url)
 
     # 1. Intentar usar cache (si no es force_refresh)
     if not force_refresh and engram_client is not None:
@@ -194,9 +208,18 @@ def _save_cache(engram_client, cache_key: str, models: list[str]) -> None:
 
 
 def invalidate_cache(engram_client, user_id: int) -> None:
-    """Invalida el cache de modelos de un usuario."""
-    cache_key = f"models_cache:user_{user_id}"
+    """
+    Invalida caches legacy (pre-particion por provider) de un usuario.
+
+    Las nuevas cache_keys son particionadas por provider (ver
+    _make_cache_key), asi que cambiar de provider automaticamente
+    produce una clave nueva y no necesita invalido explicito.
+    Esta funcion queda solo como salvaguarda para borrar caches
+    pre-existentes que usen la clave legacy
+    `models_cache:user_{user_id}` (sin sufijo de provider).
+    """
+    legacy_key = f"models_cache:user_{user_id}"
     try:
-        engram_client.delete(topic_key=cache_key)
+        engram_client.delete(topic_key=legacy_key)
     except Exception:
-        pass  # Best-effort
+        pass  # best-effort

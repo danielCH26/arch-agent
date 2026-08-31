@@ -18,6 +18,7 @@ interface AuthState {
   logout: () => Promise<void>
   loadUser: () => Promise<void>
   clearError: () => void
+  updateUser: (updates: Partial<User>) => void
 }
 
 export const authStore = create<AuthState>()(
@@ -121,6 +122,13 @@ export const authStore = create<AuthState>()(
       },
 
       clearError: () => set({ error: null }),
+
+      updateUser: (updates: Partial<User>) => {
+        const currentUser = get().user
+        if (currentUser) {
+          set({ user: { ...currentUser, ...updates } })
+        }
+      },
     }),
     {
       name: 'auth-storage',

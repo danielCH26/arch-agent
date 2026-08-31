@@ -8,6 +8,7 @@ export interface Document {
   file_size_bytes: number
   chunk_count: number
   version: number
+  processed: boolean
   created_at: string
 }
 

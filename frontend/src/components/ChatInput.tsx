@@ -76,7 +76,7 @@ export function ChatInput({
         suffix,
         onProgress: (p) => setProgress(p),
       })
-      chatStore.getState().addSystemMessage(`[Adjunto: ${doc.filename}] subido al proyecto`)
+      chatStore.getState().addSystemMessage(`[Adjunto: ${doc.filename}] subido. Procesando embeddings en segundo plano...`)
       setPendingFile(null)
       setDuplicateInfo(null)
     } catch (err) {

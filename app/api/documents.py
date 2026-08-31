@@ -1,9 +1,11 @@
+import asyncio
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
@@ -22,11 +24,13 @@ from app.core.document_storage import (
     delete_document,
     get_document_by_id,
     get_user_documents,
-    overwrite_document,
-    save_document,
+    overwrite_document_pending,
+    save_chunks_and_mark_processed,
+    save_document_pending,
 )
 from app.core.embeddings import get_embeddings
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 
@@ -39,6 +43,7 @@ class DocumentOut(BaseModel):
     file_size_bytes: int
     chunk_count: int
     version: int
+    processed: bool
     created_at: str
 
     class Config:
@@ -58,6 +63,22 @@ def _require_document(user_id: int, doc_id: int) -> None:
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
     return doc
+
+
+def _process_embeddings_background(doc_id: int, chunks: list) -> None:
+    """
+    Tarea en background: genera embeddings y guarda los chunks.
+
+    Se ejecuta después de que el endpoint ya devolvió 201 al cliente.
+    Si falla, el documento queda con processed=False y se loguea el error.
+    """
+    try:
+        texts = [c.page_content for c in chunks]
+        embeddings = get_embeddings().embed_documents(texts)
+        save_chunks_and_mark_processed(doc_id, chunks, embeddings)
+        logger.info("Background embeddings completed for doc_id=%d (%d chunks)", doc_id, len(chunks))
+    except Exception as e:
+        logger.error("Background embeddings FAILED for doc_id=%d: %s", doc_id, e)
 
 
 # --- Routes -----------------------------------------------------------------
@@ -80,6 +101,7 @@ async def list_documents(
             file_size_bytes=d.file_size_bytes,
             chunk_count=d.chunk_count,
             version=d.version,
+            processed=d.processed,
             created_at=d.created_at.isoformat() if d.created_at else "",
         )
         for d in docs
@@ -105,6 +127,7 @@ async def delete_doc(
 async def upload_document(
     project_id: int,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     overwrite: bool = Query(
         False,
         description=(
@@ -124,6 +147,11 @@ async def upload_document(
 ):
     """
     Upload a PDF or MD file and index it in PGVector.
+
+    El documento se guarda inmediatamente con processed=False.
+    Los embeddings se generan en background (BackgroundTasks).
+    El frontend puede hacer polling de /api/documents/{project_id} para
+    detectar cuando processed pasa a True.
 
     Manejo de duplicados (3 opciones, mutuamente excluyentes):
     - Default (sin flag): si el archivo ya existe para este user+project,
@@ -194,52 +222,44 @@ async def upload_document(
         tmp_path = tmp.name
 
     try:
-        # Process file (load + split into chunks)
+        # Process file (load + split into chunks) — rápido, se hace sincrónico
         try:
             chunks = process_file(tmp_path)
         except DocumentProcessingError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-        # Compute embeddings for each chunk
-        try:
-            texts = [c.page_content for c in chunks]
-            embeddings = get_embeddings().embed_documents(texts)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error al generar embeddings: {str(e)[:200]}",
-            )
-
-        # Store document and chunks
+        # Store document as pending (processed=False) — instantáneo
         try:
             if existing_version is not None and overwrite and not suffix:
-                # Reemplazar: borra la version anterior (cascadea chunks) y
-                # crea una nueva con el mismo numero de version.
-                doc_id = overwrite_document(
+                doc_id = overwrite_document_pending(
                     user_id=user_id,
                     filename=final_filename,
                     file_type=file_ext,
                     file_size_bytes=len(content),
-                    chunks=chunks,
-                    embeddings=embeddings,
+                    chunk_count=len(chunks),
                     project_id=project_id,
                 )
             else:
-                # save_document con el filename final (original o con sufijo).
-                # Si es un nombre nuevo (sufijo), la version arranca en 1.
-                doc_id = save_document(
+                doc_id = save_document_pending(
                     user_id=user_id,
                     filename=final_filename,
                     file_type=file_ext,
                     file_size_bytes=len(content),
-                    chunks=chunks,
-                    embeddings=embeddings,
+                    chunk_count=len(chunks),
                     project_id=project_id,
                 )
         except DocumentStorageError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-        # Fetch the created document
+        # Registrar tarea en background: generar embeddings + guardar chunks
+        # asyncio.to_thread evita bloquear el event loop durante el cómputo
+        background_tasks.add_task(
+            _process_embeddings_background,
+            doc_id=doc_id,
+            chunks=chunks,
+        )
+
+        # Fetch the created document (with processed=False)
         doc = get_document_by_id(user_id, doc_id)
 
         return DocumentOut(
@@ -249,6 +269,7 @@ async def upload_document(
             file_size_bytes=doc.file_size_bytes,
             chunk_count=doc.chunk_count,
             version=doc.version,
+            processed=doc.processed,
             created_at=doc.created_at.isoformat() if doc.created_at else "",
         )
 

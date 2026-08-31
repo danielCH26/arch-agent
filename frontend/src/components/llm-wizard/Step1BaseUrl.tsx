@@ -7,7 +7,7 @@ interface Step1BaseUrlProps {
 }
 
 export function Step1BaseUrl({ baseUrl, onChange, onNext, loading, error }: Step1BaseUrlProps) {
-  const isValid = /^https?:\/\/.+/.test(baseUrl.trim())
+  const isValid = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.\-_]*(:\d+)?(\/.*)?$/.test(baseUrl.trim())
 
   return (
     <div>
