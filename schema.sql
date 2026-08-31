@@ -73,11 +73,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-    ON document_chunks USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-
-CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
-    ON document_chunks(document_id);
+    ON document_chunks USING ivfflat (embedding vector_cosine_ops);
 
 -- architect_patterns (issue "Caso de ejemplo (seed)" / comentario C2 de PR):
 -- agregada acá también, no solo en migration 0005, para que una DB
@@ -100,6 +96,21 @@ CREATE INDEX IF NOT EXISTS idx_architect_patterns_embedding
 CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
     ON architect_patterns (category);
 
+-- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
+-- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
+-- migration 0007, mismo criterio que architect_patterns arriba (C2).
+CREATE TABLE IF NOT EXISTS approvals (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    phase VARCHAR(50) NOT NULL,
+    decision VARCHAR(20) NOT NULL,  -- 'approved' | 'modified' | 'rejected'
+    feedback TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_session_phase
+    ON approvals (session_id, phase);
+
 -- =============================================================================
 -- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
 -- init_db.py aplica todo en orden; migrations/run_migrations.py es idempotente.
@@ -120,4 +131,3 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
-
