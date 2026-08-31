@@ -39,6 +39,7 @@ Cuando el stack esté arriba:
 ## Features
 
 - **Wizard de configuración LLM** — Elige tu proveedor (OpenAI, Ollama, LM Studio, etc.) con filtro de calidad MMLU
+- **Agente conversacional** — Chat streaming con LangGraph que genera propuestas de arquitectura
 - **Elicitación guiada** — Preguntas progresivas para levantar requerimientos
 - **Generación de propuesta** — Arquitectura justificada con patrones reconocidos
 - **Diagramas Mermaid.js** — Renderizados automáticamente
@@ -225,6 +226,11 @@ arch-agent/
 | `POST` | `/api/llm/wizard/step2` | Sí | Wizard paso 2: valida API key |
 | `POST` | `/api/llm/wizard/step3` | Sí | Wizard paso 3: guarda config con tier enforcement |
 | `GET` | `/api/llm/wizard/available-models` | Sí | Lista modelos del provider guardado |
+| `GET` | `/api/proposals?session_id=X` | Sí | Lista propuestas de una sesión |
+| `GET` | `/api/proposals/{id}` | Sí | Detalle de propuesta |
+| `POST` | `/api/proposals/{id}/approve` | Sí | Aprueba la propuesta |
+| `POST` | `/api/proposals/{id}/reject` | Sí | Rechaza con feedback |
+| `POST` | `/api/proposals/{id}/modify` | Sí | Pide modificación |
 
 `POST /api/llm/config/validate` está **deprecated** (retorna 410 Gone). Usá el wizard.
 
