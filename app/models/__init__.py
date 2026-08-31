@@ -5,3 +5,4 @@ from app.models.user import User  # noqa: F401
 from app.models.project import Project  # noqa: F401
 from app.models.session import UserSession  # noqa: F401
 from app.models.uploaded_document import UploadedDocument, DocumentChunk  # noqa: F401
+from app.models.proposal import Proposal, Approval  # noqa: F401

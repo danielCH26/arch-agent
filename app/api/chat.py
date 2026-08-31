@@ -1,14 +1,17 @@
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
-from app.api.sse import SSEStreamCallbackHandler
+from app.core.agent import ArchitectAgent
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.models.project import Project
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -69,35 +72,67 @@ async def chat(
         finally:
             db.close()
 
-    # Build the LLM model (raises LLMConfigError if not configured)
+    # Build the LLM model early to fail fast if not configured (409)
     try:
-        model = build_langchain_model(user_id)
+        build_langchain_model(user_id)
     except LLMConfigError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler
-    handler = SSEStreamCallbackHandler()
+    # Project context for the agent prompt
+    project_context = ""
+    if body.project_id is not None:
+        db = SessionLocal()
+        try:
+            project = db.query(Project).filter(
+                Project.id == body.project_id,
+                Project.user_id == user_id,
+            ).first()
+            if project:
+                project_context = (
+                    f"Nombre: {project.name}\n"
+                    f"Descripción: {project.description or 'sin descripción'}\n"
+                    f"Fase actual: {project.current_phase or 'sin asignar'}"
+                )
+        finally:
+            db.close()
 
     async def event_generator():
         """
-        SSE generator that yields tokens as they arrive from the model.
+        SSE generator streaming agent response tokens.
 
-        TODO (F08): wire to the real LangChain agent with full prompt + tools.
-        For now, calls the model directly with a placeholder prompt.
+        F08: uses ArchitectAgent (LangGraph) with RAG context.
+        Events: token → proposal → done (or error).
         """
         try:
-            # Placeholder: direct model call (F08 will replace this with agent)
-            prompt = f"Mensaje del usuario: {body.message}"
-            async for event in model.astream(prompt):
-                if event.content:
-                    # Yield the token as SSE
-                    yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
+            # R13: agent instantiated PER REQUEST (never global)
+            agent = ArchitectAgent(user_id=user_id, project_id=body.project_id)
+
+            proposal_payload = None
+            async for event in agent.stream(
+                message=body.message,
+                project_context=project_context,
+            ):
+                if event["type"] == "token":
+                    yield f"event: token\ndata: {json.dumps(event['content'], ensure_ascii=False)}\n\n"
+                elif event["type"] == "proposal":
+                    proposal_payload = event["proposal"]
+                    payload = json.dumps(
+                        {"has_proposal": proposal_payload is not None},
+                        ensure_ascii=False,
+                    )
+                    yield f"event: proposal\ndata: {payload}\n\n"
+                elif event["type"] == "done":
+                    break
+
             yield f"event: done\ndata: null\n\n"
+        except LLMConfigError:
+            yield f"event: error\ndata: {json.dumps('LLM no configurado', ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+            logger.exception("Agent stream failed")
+            yield f"event: error\ndata: {json.dumps(f'Error del agente: {e}', ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
