@@ -146,6 +146,11 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
       setDisplayConfig(newConfig)
       setSuccess(result.message || 'Configuración guardada.')
       onSaved?.({ model: newConfig.model, baseUrl: newConfig.base_url })
+      // Volver al resumen para que el usuario vea su config nueva.
+      // El banner de success sigue visible porque esta fuera del switch
+      // por mode.
+      setMode('summary')
+      setStep(1)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al guardar configuración')
     } finally {
@@ -268,6 +273,11 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
             onChange={setApiKey}
             onBack={() => {
               clearError()
+              // Si llegamos aca desde el resumen (mode='step2' despues de step1
+              // inicial) o desde el flow wizard paso-a-paso, queremos volver
+              // al Step1 (URL base). Importante: tambien cambiar `mode` para
+              // que el render {mode === 'step2'} deje de mostrarse.
+              setMode('step1')
               setStep(1)
             }}
             onNext={handleStep2Next}
