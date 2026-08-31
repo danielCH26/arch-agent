@@ -5,6 +5,15 @@ export interface ChatRequest {
   message: string
 }
 
+export interface Message {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+  latency_ms?: number
+  model?: string
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: () => void
@@ -114,4 +123,24 @@ export function createChatStream(
   return () => {
     controller.abort()
   }
+}
+
+// --- Chat History API ---
+
+export async function getMessages(projectId: number): Promise<Message[]> {
+  const token = authStore.getState().token
+
+  const response = await fetch(`/api/chat/messages?project_id=${projectId}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  })
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    const errorMessage = (data.detail as string) || 'Failed to fetch messages'
+    throw new Error(errorMessage)
+  }
+
+  return response.json()
 }

@@ -4,6 +4,7 @@ import { getProject, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { PhaseBadge } from '../components/PhaseBadge'
 import { projectsStore } from '../stores/projectsStore'
+import { chatStore } from '../stores/chatStore'
 
 export function ChatPage() {
   const { id } = useParams<{ id: string }>()
@@ -32,6 +33,14 @@ export function ChatPage() {
       .finally(() => {
         setLoading(false)
       })
+  }, [id])
+
+  // Load chat history when project changes
+  useEffect(() => {
+    const projectId = Number(id)
+    if (projectId && !isNaN(projectId)) {
+      chatStore.getState().loadHistory(projectId)
+    }
   }, [id])
 
   if (loading) {

@@ -1,8 +1,8 @@
 import { create } from 'zustand'
-import { createChatStream } from '../api/chat'
+import { createChatStream, getMessages } from '../api/chat'
 
 export interface Message {
-  id: string
+  id: string | number
   role: 'user' | 'assistant' | 'system'
   content: string
 }
@@ -10,8 +10,10 @@ export interface Message {
 interface ChatState {
   messages: Message[]
   isStreaming: boolean
+  isLoadingHistory: boolean
   error: string | null
 
+  loadHistory: (projectId: number) => Promise<void>
   sendMessage: (projectId: number | null, text: string) => Promise<void>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
@@ -24,7 +26,25 @@ interface ChatState {
 export const chatStore = create<ChatState>((set) => ({
   messages: [],
   isStreaming: false,
+  isLoadingHistory: false,
   error: null,
+
+  loadHistory: async (projectId: number) => {
+    set({ isLoadingHistory: true, error: null })
+    try {
+      const apiMessages = await getMessages(projectId)
+      // Convert API messages to store format
+      const messages: Message[] = apiMessages.map((msg) => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+      }))
+      set({ messages, isLoadingHistory: false })
+    } catch (err) {
+      console.error('Failed to load history:', err)
+      set({ isLoadingHistory: false, error: 'Error al cargar el historial' })
+    }
+  },
 
   sendMessage: async (projectId: number | null, text: string) => {
     // Add user message
