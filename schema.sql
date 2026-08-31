@@ -88,3 +88,35 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL
 
 -- uploaded_documents.project_id (migration 0004)
 ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+-- proposals (migration 0005)
+CREATE TABLE IF NOT EXISTS proposals (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    phase VARCHAR(50) NOT NULL DEFAULT 'architecture',
+    version INTEGER NOT NULL DEFAULT 1,
+    content JSONB NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, version)
+);
+
+-- approvals (migration 0005)
+CREATE TABLE IF NOT EXISTS approvals (
+    id SERIAL PRIMARY KEY,
+    proposal_id INTEGER REFERENCES proposals(id) ON DELETE CASCADE,
+    decision VARCHAR(20) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
+    feedback TEXT,
+    previous_content JSONB,
+    modified_content JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- interaction_logs extensions (migration 0005)
+ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS phase VARCHAR(50);
+ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS proposal_id INTEGER REFERENCES proposals(id);
+ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS rag_patterns_used JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_proposals_session ON proposals (session_id, version);
+CREATE INDEX IF NOT EXISTS idx_approvals_proposal ON approvals (proposal_id);
