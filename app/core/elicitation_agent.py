@@ -25,59 +25,43 @@ from langchain_core.messages import HumanMessage, SystemMessage
 MIN_QUESTIONS = 5
 MAX_QUESTIONS = 10
 
-# HU5: "El sistema inicia con pregunta abierta" -- se fuerza determinísticamente
-# (no se le pide al LLM que decida la primera pregunta) para que este criterio
-# de aceptación no dependa de que el modelo se porte bien.
-FIRST_QUESTION = (
-    "Para empezar, cuéntame en tus propias palabras: ¿qué problema quieres "
-    "resolver con este sistema, y para quién es?"
-)
-
-# HU5: "Se cubren: usuarios, funcionalidades, restricciones, calidad" -- las
-# 4 categorías del prompt calcan literalmente el texto del criterio de
-# aceptación, para que sea trazable HU -> prompt -> resumen.
 NEXT_STEP_SYSTEM_PROMPT = """\
-Eres un product manager levantando requerimientos para un nuevo proyecto \
-de software mediante preguntas progresivas. Cada pregunta debe construir \
+Eres un arquitecto de software levantando requerimientos para un nuevo \
+proyecto mediante preguntas progresivas. Cada pregunta debe construir \
 sobre las respuestas anteriores, no repetir lo ya preguntado.
 
-Antes de decidir que el contexto es suficiente, cubre estas 4 categorías \
-a lo largo de la conversación (no todo en una sola pregunta):
-1. Usuarios: quiénes son, cuántos, qué tan seguido usarían el sistema.
-2. Funcionalidades: qué debe poder hacer el sistema, en orden de prioridad.
-3. Restricciones: tiempo, equipo, presupuesto, tecnologías obligatorias u \
-   obligatoriamente evitadas.
-4. Calidad: rendimiento, seguridad, disponibilidad, y cualquier otro \
-   requerimiento no funcional relevante.
+Cubre, a lo largo de la conversación (no todo en una sola pregunta):
+- Qué problema resuelve el sistema y para quién
+- Usuarios esperados y escala (cuántos, concurrencia)
+- Requerimientos no funcionales relevantes (rendimiento, seguridad, \
+disponibilidad)
+- Restricciones de tiempo, equipo o presupuesto
+- Cualquier integración o dependencia externa relevante
 
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
 {"done": bool, "question": str o null, "reason": str}
 
-- "done": true solo si ya cubriste las 4 categorías con suficiente detalle \
-para proponer una arquitectura razonable.
+- "done": true solo si ya tienes contexto suficiente para proponer una \
+arquitectura razonable.
 - "question": la siguiente pregunta a hacer (null si done=true).
 - "reason": una frase corta explicando la decisión (para logs, no se \
 muestra al usuario).
 """
 
-# HU5: "El resumen final es completo y validable" -- las claves calcan las
-# 4 categorías de arriba (mismo criterio de trazabilidad), y cada una es un
-# campo discreto que un product manager puede revisar y marcar como
-# cubierto o no, en vez de un párrafo suelto.
 SUMMARY_SYSTEM_PROMPT = """\
-Eres un product manager resumiendo los requerimientos levantados durante \
-una sesión de elicitación. Basado ÚNICAMENTE en las preguntas y \
+Eres un arquitecto de software resumiendo los requerimientos levantados \
+durante una sesión de elicitación. Basado ÚNICAMENTE en las preguntas y \
 respuestas proporcionadas -- no inventes información que no esté ahí.
 
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
 {
   "problema": str,
-  "usuarios": str,
-  "funcionalidades": [str, ...],
-  "restricciones": [str, ...],
-  "calidad": [str, ...]
+  "usuarios_y_escala": str,
+  "requerimientos_funcionales": [str, ...],
+  "requerimientos_no_funcionales": [str, ...],
+  "restricciones": [str, ...]
 }
 """
 
@@ -146,15 +130,6 @@ def next_step(
     Returns:
         ElicitationDecision(done, question, reason)
     """
-    if not history:
-        # HU5: primera pregunta siempre abierta y determinística, sin
-        # depender de que el LLM la formule bien.
-        return ElicitationDecision(
-            done=False,
-            question=FIRST_QUESTION,
-            reason="Primera pregunta: forzada a ser abierta (HU5), sin llamar al LLM.",
-        )
-
     context = (
         f"Descripción inicial del proyecto: "
         f"{project_description or '(no proporcionada)'}\n\n"
@@ -207,14 +182,4 @@ def generate_summary(
         f"{project_description or '(no proporcionada)'}\n\n"
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
     )
-    summary = _invoke_json(model, SUMMARY_SYSTEM_PROMPT, context)
-    required_keys = ("problema", "usuarios", "funcionalidades", "restricciones", "calidad")
-    missing = [key for key in required_keys if key not in summary]
-    if missing:
-        raise ElicitationAgentError(
-            "El resumen no contiene todas las categorías requeridas: " + ", ".join(missing)
-        )
-    for key in ("funcionalidades", "restricciones", "calidad"):
-        if not isinstance(summary[key], list):
-            raise ElicitationAgentError(f"El campo '{key}' del resumen debe ser una lista")
-    return summary
+    return _invoke_json(model, SUMMARY_SYSTEM_PROMPT, context)
