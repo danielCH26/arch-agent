@@ -676,6 +676,46 @@ class TestAvailableModelsEndpoint:
         assert exc_info.value.status_code == 400
         assert "No se pudo listar" in exc_info.value.detail
 
+    @patch("app.api.llm_config.get_available_models")
+    @patch("app.core.llm_loader.SessionLocal")
+    def test_works_for_new_user_without_model_yet(self, mock_session, mock_get_models):
+        """User nuevo que completo step1+step2 pero todavia no modelo.
+
+        Repro del bug reportado: un user nuevo que recien configuro URL
+        y API key no tiene llm_model seteado todavia. El endpoint
+        available-models (llamado despues de step2 para mostrar la lista)
+        debe funcionar igual — el model es opcional para listar
+        modelos del provider.
+
+        Antes del fix, load_user_llm_config requeria llm_model no vacio,
+        lo cual rompia este caso y el usuario quedaba bloqueado.
+        """
+        from cryptography.fernet import Fernet
+        from app.core.encryption import encrypt
+
+        # User nuevo: tiene URL + api_key pero NO tiene model todavia.
+        encrypted_key = encrypt("sk-test-plain-key")
+
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.llm_base_url = "https://api.openai.com/v1"
+        mock_user.llm_model = None  # todavia no eligio modelo
+        mock_user.encrypted_api_key = encrypted_key
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_user
+        mock_session.return_value = mock_db
+
+        mock_get_models.return_value = ["gpt-4o", "gpt-4o-mini"]
+
+        import asyncio
+        from app.api.llm_config import wizard_available_models
+
+        result = asyncio.run(wizard_available_models(_current_user()))
+
+        assert result.models == ["gpt-4o", "gpt-4o-mini"]
+        assert result.base_url == "https://api.openai.com/v1"
+
     @patch("app.core.llm_loader.SessionLocal")
     def test_returns_422_when_decryption_fails(self, mock_session):
         """Si la API key en DB no se puede desencriptar, retorna 422 (no 404).

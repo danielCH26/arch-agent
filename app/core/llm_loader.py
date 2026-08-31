@@ -49,10 +49,19 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
         user_id: ID del usuario
 
     Returns:
-        UserLLMConfig con la API key ya desencriptada
+        UserLLMConfig con la API key ya desencriptada y el model (puede
+        ser vacio si el user no completo todavia el step3 del wizard).
 
     Raises:
         LLMConfigError: si el usuario no tiene config o está corrupta
+
+    Nota historica: antes esta funcion requeria que `llm_model` estuviera
+    seteado, pero eso rompe el flujo del wizard: despues de step2 el
+    user tiene base_url + api_key guardadas pero todavia no eligio
+    modelo, asi que available-models (que se llama justo despues de
+    step2) falla con 404. Por eso ahora solo exigimos base_url +
+    api_key. La validacion de model vacio se hace mas adelante (en
+    build_langchain_model, que es donde realmente importa).
     """
     db = SessionLocal()
     try:
@@ -60,15 +69,16 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
         if user is None:
             raise LLMConfigError(f"Usuario {user_id} no encontrado")
 
-        if not user.llm_base_url or not user.llm_model:
+        if not user.llm_base_url:
             raise LLMConfigError(
-                f"Usuario {user_id} no tiene configuración LLM. "
-                "Completa el formulario de configuración primero."
+                f"Usuario {user_id} no tiene URL base configurada. "
+                "Completa el paso 1 del wizard primero."
             )
 
         if not user.encrypted_api_key:
             raise LLMConfigError(
-                f"Usuario {user_id} no tiene API key configurada."
+                f"Usuario {user_id} no tiene API key configurada. "
+                "Completa el paso 2 del wizard primero."
             )
 
         # Desencriptar API key
