@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -8,9 +10,11 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
+from app.core.rag import similarity_search
 from app.models.project import Project
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 # --- Request model ---------------------------------------------------------
@@ -72,7 +76,12 @@ async def chat(
     # Build the LLM model (raises LLMConfigError if not configured)
     try:
         model = build_langchain_model(user_id)
-    except LLMConfigError:
+    except LLMConfigError as e:
+        if e.reason == "initialization_failed":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e),
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
@@ -81,16 +90,41 @@ async def chat(
     # Build SSE streaming handler
     handler = SSEStreamCallbackHandler()
 
+    async def retrieve_context() -> str:
+        try:
+            docs, _metrics = await asyncio.to_thread(
+                similarity_search,
+                query=body.message,
+                user_id=user_id,
+                project_id=body.project_id,
+                k=5,
+                scope="all",
+            )
+        except Exception as e:
+            logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
+            return ""
+
+        context_blocks = []
+        for index, doc in enumerate(docs, start=1):
+            source = doc.metadata.get("pattern_name") or doc.metadata.get("filename") or doc.metadata.get("source_type")
+            context_blocks.append(f"[{index}] {source}\n{doc.page_content}")
+        return "\n\n".join(context_blocks)
+
     async def event_generator():
         """
         SSE generator that yields tokens as they arrive from the model.
 
-        TODO (F08): wire to the real LangChain agent with full prompt + tools.
-        For now, calls the model directly with a placeholder prompt.
+        Recupera contexto RAG desde PGVector y lo agrega al prompt.
         """
         try:
-            # Placeholder: direct model call (F08 will replace this with agent)
-            prompt = f"Mensaje del usuario: {body.message}"
+            rag_context = await retrieve_context()
+            prompt = (
+                "Eres un asistente de arquitectura de software. "
+                "Responde en español, de forma clara y accionable.\n\n"
+                "Contexto recuperado desde RAG:\n"
+                f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
+                f"Mensaje del usuario: {body.message}"
+            )
             async for event in model.astream(prompt):
                 if event.content:
                     # Yield the token as SSE

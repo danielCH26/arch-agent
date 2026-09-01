@@ -72,20 +72,26 @@ class TestLoadUserLLMConfig:
         mock_db.get.return_value = user
         mock_session_local.return_value = mock_db
 
-        with pytest.raises(LLMConfigError, match="no tiene configuración"):
+        with pytest.raises(LLMConfigError, match="URL base"):
             load_user_llm_config(1)
 
     @patch("app.core.llm_loader.SessionLocal")
-    def test_missing_model_raises(self, mock_session_local):
+    def test_missing_model_loads_empty_model_for_wizard_flow(self, mock_session_local):
+        from app.core.encryption import encrypt
+
         user = FakeUser(
-            user_id=1, base_url="https://x.com", model=None, encrypted_api_key="x"
+            user_id=1,
+            base_url="https://x.com",
+            model=None,
+            encrypted_api_key=encrypt("sk-test"),
         )
         mock_db = MagicMock()
         mock_db.get.return_value = user
         mock_session_local.return_value = mock_db
 
-        with pytest.raises(LLMConfigError, match="no tiene configuración"):
-            load_user_llm_config(1)
+        config = load_user_llm_config(1)
+
+        assert config.model == ""
 
     @patch("app.core.llm_loader.SessionLocal")
     def test_missing_api_key_raises(self, mock_session_local):
@@ -227,6 +233,20 @@ class TestBuildLangchainModel:
     def test_no_config_raises(self, mock_load):
         mock_load.side_effect = LLMConfigError("Usuario sin config")
         with pytest.raises(LLMConfigError, match="sin config"):
+            build_langchain_model(1)
+
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_missing_model_raises_when_building_model(self, mock_load):
+        from app.core.llm_loader import UserLLMConfig
+
+        mock_load.return_value = UserLLMConfig(
+            user_id=1,
+            base_url="https://api.openai.com/v1",
+            model="",
+            api_key="sk-test",
+        )
+
+        with pytest.raises(LLMConfigError, match="paso 3"):
             build_langchain_model(1)
 
 

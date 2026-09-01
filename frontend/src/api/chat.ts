@@ -11,14 +11,45 @@ interface StreamCallbacks {
   onError: (error: string) => void
 }
 
-function parseSSELine(line: string): { event?: string; data?: string } {
-  if (line.startsWith('event:')) {
-    return { event: line.slice(6).trim() }
+function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
+  let eventName = 'message'
+  const dataLines: string[] = []
+
+  for (const line of rawEvent.split('\n')) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim())
+    }
   }
-  if (line.startsWith('data:')) {
-    return { data: line.slice(5).trim() }
+
+  const rawData = dataLines.join('\n')
+
+  if (eventName === 'token' && rawData) {
+    try {
+      const data = JSON.parse(rawData)
+      callbacks.onToken(data.delta || data)
+    } catch {
+      callbacks.onToken(rawData)
+    }
+    return false
   }
-  return {}
+
+  if (eventName === 'done') {
+    callbacks.onDone()
+    return true
+  }
+
+  if (eventName === 'error' && rawData) {
+    try {
+      callbacks.onError(JSON.parse(rawData))
+    } catch {
+      callbacks.onError(rawData)
+    }
+    return true
+  }
+
+  return false
 }
 
 export function createChatStream(
@@ -70,33 +101,19 @@ export function createChatStream(
 
         buffer += decoder.decode(value, { stream: true })
 
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+        const events = buffer.split(/\r?\n\r?\n/)
+        buffer = events.pop() || ''
 
-        for (const line of lines) {
-          if (!line.trim()) continue
-
-          const parsed = parseSSELine(line)
-          if (parsed.event === 'token' && parsed.data) {
-            try {
-              const data = JSON.parse(parsed.data)
-              onToken(data.delta || data)
-            } catch {
-              onToken(parsed.data)
-            }
-          } else if (parsed.event === 'done') {
-            onDone()
-            return
-          } else if (parsed.event === 'error' && parsed.data) {
-            try {
-              const data = JSON.parse(parsed.data)
-              onError(data)
-            } catch {
-              onError(parsed.data)
-            }
-            return
-          }
+        for (const event of events) {
+          if (!event.trim()) continue
+          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError })
+          if (shouldStop) return
         }
+      }
+
+      if (buffer.trim()) {
+        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError })
+        if (shouldStop) return
       }
 
       // Stream ended without explicit done event
