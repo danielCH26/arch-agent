@@ -13,8 +13,37 @@ from app.core.database import SessionLocal
 from app.core.rag import similarity_search
 from app.models.project import Project
 
+# Umbral MINIMO de similitud para considerar un chunk/patron "relevante".
+# Sin esto, similarity_search() siempre devuelve los top-k mas cercanos
+# aunque ninguno tenga relacion real con la query.
+#
+# Es un UNICO umbral global (no diferenciado por tipo) -- se intento
+# diferenciar por source_type (patrones vs. documentos) pero la evidencia
+# real termino contradiciendolo: un falso positivo de un documento
+# (PDF de matematicas, en una pregunta de microservicios) salio a 83%,
+# por ENCIMA de un verdadero positivo de otro documento real (PDF de
+# grafos/MapReduce, en su propia pregunta, a 80-81%). Con este modelo de
+# embeddings (multilingual-e5-small), la similitud coseno sola no separa
+# limpiamente relevante/irrelevante en la banda 80-88%; no existe un
+# numero (global o por tipo) que acierte siempre en esa zona gris.
+#
+# 0.85 es un punto intermedio elegido con la evidencia acumulada:
+#   Verdaderos positivos medidos: 88% (patron), 89-92% (documento).
+#   Falsos positivos medidos:     75-78%, 81-83% (ambos tipos).
+# Es una heuristica "best effort", no una garantia -- puede ocasionalmente
+# dejar pasar ruido cerca del limite, o descartar un match debil pero
+# legitimo. Si se necesita precision real en esa zona gris, la solucion
+# correcta es un paso de re-ranking (ej. que el LLM juzgue relevancia
+# real de cada candidato, o un cross-encoder), no seguir ajustando este
+# numero -- quedo fuera del alcance de esta HU, ver docs/QA_criterios_aceptacion_RAG.md.
+RAG_MIN_SIMILARITY = 0.85
+
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+
+
+def _is_relevant(doc) -> bool:
+    return (doc.metadata.get("similarity") or 0.0) >= RAG_MIN_SIMILARITY
 
 
 # --- Request model ---------------------------------------------------------
@@ -105,11 +134,16 @@ async def chat(
             logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
             return [], ""
 
+        # Descarta lo que quedo por debajo del umbral de relevancia segun
+        # su tipo -- ver comentario junto a RAG_MIN_SIMILARITY_PATTERNS /
+        # RAG_MIN_SIMILARITY_DOCUMENTS.
+        relevant_docs = [doc for doc in docs if _is_relevant(doc)]
+
         context_blocks = []
-        for index, doc in enumerate(docs, start=1):
+        for index, doc in enumerate(relevant_docs, start=1):
             source = doc.metadata.get("pattern_name") or doc.metadata.get("filename") or doc.metadata.get("source_type")
             context_blocks.append(f"[{index}] {source}\n{doc.page_content}")
-        return docs, "\n\n".join(context_blocks)
+        return relevant_docs, "\n\n".join(context_blocks)
 
     def _doc_to_source(doc) -> dict:
         """Metadata minima para que el frontend pueda mostrar/loguear que fuente se uso."""
