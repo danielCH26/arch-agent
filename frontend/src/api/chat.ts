@@ -5,10 +5,23 @@ export interface ChatRequest {
   message: string
 }
 
+// Metadata de un documento/patron recuperado por el pipeline RAG (PGVector).
+// Se usa para poder mostrar/loguear si una respuesta realmente se apoyo en
+// contenido recuperado, en vez de solo confiar en lo que el LLM "dice".
+export interface RagSource {
+  source_type: string | null
+  name: string | null
+  similarity: number | null
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: () => void
   onError: (error: string) => void
+  // Se dispara UNA vez, antes de los primeros tokens, con la lista de
+  // fuentes recuperadas (puede venir vacia si no hubo match o si el
+  // retrieval fallo silenciosamente en el backend).
+  onSources?: (sources: RagSource[]) => void
 }
 
 function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
@@ -24,6 +37,16 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
   }
 
   const rawData = dataLines.join('\n')
+
+  if (eventName === 'sources' && rawData) {
+    try {
+      callbacks.onSources?.(JSON.parse(rawData) as RagSource[])
+    } catch {
+      // Si viene mal formado, no bloqueamos el resto del stream por esto.
+      callbacks.onSources?.([])
+    }
+    return false
+  }
 
   if (eventName === 'token' && rawData) {
     try {
@@ -57,7 +80,7 @@ export function createChatStream(
   projectId: number | null,
   callbacks: StreamCallbacks
 ): () => void {
-  const { onToken, onDone, onError } = callbacks
+  const { onToken, onDone, onError, onSources } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -106,13 +129,13 @@ export function createChatStream(
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError })
+          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources })
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError })
+        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources })
         if (shouldStop) return
       }
 

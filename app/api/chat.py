@@ -38,7 +38,8 @@ async def chat(
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream — tokens as "event: token" + final "event: done"
+        200 text/event-stream — "sources" event (metadata RAG) + tokens
+            como "event: token" + final "event: done"
         400 — no message provided
         401 — invalid JWT
         404 — project not found or not owned
@@ -90,7 +91,7 @@ async def chat(
     # Build SSE streaming handler
     handler = SSEStreamCallbackHandler()
 
-    async def retrieve_context() -> str:
+    async def retrieve_context() -> tuple[list, str]:
         try:
             docs, _metrics = await asyncio.to_thread(
                 similarity_search,
@@ -102,25 +103,45 @@ async def chat(
             )
         except Exception as e:
             logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
-            return ""
+            return [], ""
 
         context_blocks = []
         for index, doc in enumerate(docs, start=1):
             source = doc.metadata.get("pattern_name") or doc.metadata.get("filename") or doc.metadata.get("source_type")
             context_blocks.append(f"[{index}] {source}\n{doc.page_content}")
-        return "\n\n".join(context_blocks)
+        return docs, "\n\n".join(context_blocks)
+
+    def _doc_to_source(doc) -> dict:
+        """Metadata minima para que el frontend pueda mostrar/loguear que fuente se uso."""
+        return {
+            "source_type": doc.metadata.get("source_type"),
+            "name": doc.metadata.get("pattern_name") or doc.metadata.get("filename"),
+            "similarity": doc.metadata.get("similarity"),
+        }
 
     async def event_generator():
         """
         SSE generator that yields tokens as they arrive from the model.
 
         Recupera contexto RAG desde PGVector y lo agrega al prompt.
+        Antes de los tokens, emite un evento 'sources' con la metadata de
+        los documentos recuperados (o [] si no hubo match / hubo error),
+        asi el frontend puede mostrar/loguear si la respuesta se apoyo
+        realmente en la base vectorial.
         """
         try:
-            rag_context = await retrieve_context()
+            docs, rag_context = await retrieve_context()
+
+            sources = [_doc_to_source(doc) for doc in docs]
+            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
+
             prompt = (
                 "Eres un asistente de arquitectura de software. "
                 "Responde en español, de forma clara y accionable.\n\n"
+                "Formato: usa markdown (encabezados, negritas, tablas) libremente, "
+                "pero NUNCA envuelvas la respuesta completa dentro de un bloque de "
+                "codigo (```). Usa ``` unicamente para fragmentos de codigo real o "
+                "diagramas ASCII puntuales, nunca para el mensaje entero.\n\n"
                 "Contexto recuperado desde RAG:\n"
                 f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
                 f"Mensaje del usuario: {body.message}"

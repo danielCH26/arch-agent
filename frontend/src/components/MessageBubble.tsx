@@ -147,8 +147,39 @@ function renderHtmlTable(tableMarkup: string, keyPrefix: string) {
   )
 }
 
+// A veces el LLM envuelve la respuesta ENTERA en un solo bloque ```...```
+// (comun cuando la respuesta mezcla tablas + texto + diagramas). Si lo
+// dejamos pasar tal cual, el parser lo trata como codigo literal y el
+// usuario ve markdown crudo (headers, **negritas**, | tablas |, todo sin
+// renderizar). Esta funcion detecta ESE caso puntual -un unico par de
+// fences que envuelve todo el mensaje- y lo desenvuelve antes de parsear.
+// No toca bloques de codigo legitimos (fences que aparecen en medio de
+// texto normal, o mensajes que son *solo* codigo sin pinta de markdown).
+const outerFencePattern = /^```[^\n]*\n([\s\S]*?)\n```\s*$/
+
+function stripFullMessageCodeFence(content: string): string {
+  const trimmed = content.trim()
+  const match = trimmed.match(outerFencePattern)
+  if (!match) return content
+
+  // Debe ser exactamente UN par de fences (apertura + cierre), no varios
+  // bloques de codigo sueltos dentro de una respuesta normal.
+  const fenceCount = (trimmed.match(/```/g) ?? []).length
+  if (fenceCount !== 2) return content
+
+  const inner = match[1]
+  const looksLikeStructuredMarkdown =
+    /^#{1,6}\s+/m.test(inner) ||
+    /\*\*[^*]+\*\*/.test(inner) ||
+    /^\s*\|.*\|\s*$/m.test(inner)
+
+  // Si no hay señales de markdown estructurado adentro, es probable que
+  // sea un snippet de codigo real -> lo dejamos como bloque de codigo.
+  return looksLikeStructuredMarkdown ? inner : content
+}
+
 function renderMarkdownBlocks(content: string) {
-  const normalizedContent = content.replace(/<br\s*\/?>/gi, '\n')
+  const normalizedContent = stripFullMessageCodeFence(content).replace(/<br\s*\/?>/gi, '\n')
   const parts = normalizedContent.split(htmlTablePattern)
   const htmlTables = normalizedContent.match(htmlTablePattern) ?? []
   const blocks: React.ReactNode[] = []
@@ -266,6 +297,34 @@ function renderMarkdownBlocks(content: string) {
   return blocks
 }
 
+function renderSources(sources: Message['sources']) {
+  // undefined = todavia no llego el evento 'sources' (o el mensaje es
+  // viejo y nunca lo tuvo) -> no mostramos nada.
+  if (sources === undefined) return null
+
+  if (sources.length === 0) {
+    return (
+      <p className="mt-2 text-xs italic text-gray-400">
+        Sin contexto recuperado de la base vectorial — respuesta basada en conocimiento general del modelo.
+      </p>
+    )
+  }
+
+  return (
+    <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">
+      <span className="font-semibold">Fuentes (PGVector):</span>
+      <ul className="mt-1 space-y-0.5">
+        {sources.map((source, index) => (
+          <li key={index}>
+            {source.name ?? source.source_type ?? 'desconocida'}
+            {source.similarity != null && ` — similitud ${(source.similarity * 100).toFixed(0)}%`}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -279,6 +338,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
+        {!isUser && renderSources(message.sources)}
       </div>
     </div>
   )
