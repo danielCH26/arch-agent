@@ -134,9 +134,8 @@ async def chat(
             logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
             return [], ""
 
-        # Descarta lo que quedo por debajo del umbral de relevancia segun
-        # su tipo -- ver comentario junto a RAG_MIN_SIMILARITY_PATTERNS /
-        # RAG_MIN_SIMILARITY_DOCUMENTS.
+        # Descarta lo que quedo por debajo del umbral de relevancia -- ver
+        # comentario junto a RAG_MIN_SIMILARITY.
         relevant_docs = [doc for doc in docs if _is_relevant(doc)]
 
         context_blocks = []
