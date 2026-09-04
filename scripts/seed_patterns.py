@@ -148,6 +148,28 @@ PATTERNS = [
         },
     },
     {
+        "pattern_name": "Event sourcing",
+        "category": "Patrón de datos",
+        "description": (
+            "Persiste eventos inmutables como fuente de verdad y "
+            "reconstruye el estado actual reproduciendo esos eventos."
+        ),
+        "use_cases": (
+            "Auditoría fuerte, historial completo, dominios financieros o "
+            "transaccionales."
+        ),
+        "tradeoffs": {
+            "ventajas": [
+                "Auditoría completa: cada cambio queda registrado como evento inmutable",
+                "Permite reconstruir el estado en cualquier punto del tiempo (replay)",
+            ],
+            "desventajas": [
+                "Modelo mental más complejo que CRUD tradicional",
+                "Las consultas requieren proyecciones separadas del log de eventos",
+            ],
+        },
+    },
+    {
         "pattern_name": "CQRS (Command Query Responsibility Segregation)",
         "category": "Patrón de datos",
         "description": (

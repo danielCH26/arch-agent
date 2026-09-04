@@ -38,6 +38,7 @@ temp/
 *.md
 !README.md
 !README_hu2.md
+!QA_criterios_aceptacion_RAG_final.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
