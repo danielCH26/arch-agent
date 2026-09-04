@@ -198,12 +198,38 @@ Esto sirve como evidencia visual rápida de los Criterios 1 y 2 sin tener que ll
 
 ---
 
+## Extra — Edición de perfil desde la UI
+
+**Componente probado:** pantalla de perfil (`/settings/profile`) → `PATCH /api/users/me` y `PUT /api/users/me/password`
+
+### Pasos
+1. Inicia sesión y entra a **Perfil** desde el menú lateral.
+2. Cambia el nombre de usuario o el correo electrónico y guarda.
+3. Confirma que el cambio se refleja inmediatamente en la pantalla y, para el username, también en el header superior.
+4. Intenta guardar un email inválido, un username inválido o un username/email que ya exista en otra cuenta.
+5. En la sección de contraseña, intenta cambiarla usando primero una contraseña actual incorrecta y luego una nueva contraseña que no cumpla las reglas.
+6. Repite el cambio de contraseña con la contraseña actual correcta y una nueva contraseña válida.
+
+### Resultado esperado
+- [ ] El usuario puede editar y guardar cambios en su perfil desde el front.
+- [ ] Los cambios de username/email se reflejan de inmediato tras guardar, sin recargar la página.
+- [ ] El backend valida formato de username y correo antes de guardar.
+- [ ] No permite repetir username o correo ya usado por otra cuenta.
+- [ ] Para cambiar contraseña, exige contraseña actual correcta.
+- [ ] La nueva contraseña cumple las validaciones existentes: mínimo 8 caracteres, al menos una mayúscula, un número y un carácter especial.
+- [ ] Los errores de validación se muestran en la UI sin cerrar sesión ni perder los datos ya escritos.
+
+**Implementación agregada:** la lógica ya existía en `app/auth/profile.py`, pero faltaba exponerla y conectarla al front. Se agregaron los endpoints `PATCH /api/users/me` y `PUT /api/users/me/password` en `app/api/users.py`, los clientes en `frontend/src/api/users.ts` y el formulario editable en `frontend/src/pages/ProfilePage.tsx`.
+
+---
+
 ## Bugs encontrados y ya corregidos durante esta ronda de pruebas (contexto para el reviewer)
 
 1. **Markdown crudo en el chat** — el LLM a veces envolvía toda la respuesta en un solo bloque ` ``` `, mostrando tablas/negritas sin renderizar. Corregido con instrucción explícita en el prompt + fallback en `MessageBubble.tsx`.
 2. **Sin trazabilidad de fuentes RAG** — no había forma de confirmar desde la UI si una respuesta usó PGVector o el conocimiento general del modelo. Corregido con el evento `sources` (ver sección "Extra" arriba).
 3. **Build del frontend roto** — faltaba `frontend/.dockerignore`, causando que `node_modules` local pisara el del contenedor. Corregido.
 4. **Atribución engañosa de fuentes RAG** — el chat mostraba "Fuentes (PGVector)" citando patrones de arquitectura irrelevantes (75-78% similitud) para preguntas totalmente ajenas al dominio (ej. una receta de cocina), porque `similarity_search()` no tenía umbral mínimo de relevancia. Corregido con `RAG_MIN_SIMILARITY = 0.85` en `app/api/chat.py` — ver detalle en Criterio 1.
+5. **Perfil solo lectura** — la pantalla de perfil mostraba username/email, pero no permitía editarlos ni cambiar contraseña desde la UI. Corregido con formulario editable, actualización inmediata del store de usuario y endpoints protegidos en `/api/users/me`.
 
 ## Fallos preexistentes, no relacionados con esta HU (no bloquean el merge, pendientes aparte)
 
