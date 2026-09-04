@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0005: crear tabla architect_patterns (RAG de patrones de arquitectura)
+-- Migration 0006: crear tabla architect_patterns (RAG de patrones de arquitectura)
 -- =============================================================================
 -- Issue: Caso de ejemplo (seed)
 -- Problema: el modelo ArchitectPattern (app/models/pattern.py) y el seed de
