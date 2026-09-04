@@ -62,24 +62,6 @@ CREATE TABLE IF NOT EXISTS uploaded_documents (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS architect_patterns (
-    id SERIAL PRIMARY KEY,
-    pattern_name VARCHAR(255) NOT NULL,
-    category VARCHAR(100),
-    description TEXT,
-    use_cases TEXT,
-    tradeoffs JSONB,
-    embedding vector(384),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_architect_patterns_embedding
-    ON architect_patterns USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-
-CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
-    ON architect_patterns(category);
-
 CREATE TABLE IF NOT EXISTS document_chunks (
     id SERIAL PRIMARY KEY,
     document_id INTEGER REFERENCES uploaded_documents(id) ON DELETE CASCADE,
