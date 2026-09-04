@@ -11,15 +11,15 @@ Este documento es la guía para que QA / el reviewer valide los criterios de ace
 ## Pre-requisitos antes de probar
 
 ```powershell
-docker compose build backend spa
-docker compose up -d
-docker compose ps          # todos los servicios "running"/"healthy"
+docker compose build backend
+docker compose up -d backend
+docker compose exec backend python -m migrations.run_migrations
 ```
 
 Sembrar los patrones de arquitectura (necesario para tener datos con embeddings):
 
 ```powershell
-docker compose exec backend python scripts/seed_architect_patterns.py
+docker compose exec backend python scripts/seed_patterns.py
 ```
 
 Confirmar que quedaron con embedding generado:
@@ -33,6 +33,8 @@ Necesitas un usuario logueado (token JWT) para las pruebas de API — inicia ses
 
 > **Sobre configurar el LLM:** `POST /api/rag/search` (usado en el Criterio 1 vía `curl`) **no** requiere tener un LLM configurado — solo el JWT del usuario, ya que solo hace retrieval, no genera texto. Si en cambio prefieres probar la búsqueda de patrones **desde el chat de la UI** (ver sección "Extra" más abajo), ahí sí necesitas tener un LLM configurado para tu usuario — sin eso, `POST /api/chat` devuelve `409 LLM not configured for user` antes de siquiera llegar al retrieval. Configúralo en la sección de ajustes de LLM de la app (`/api/llm/*`) antes de probar por esa vía.
 
+> **Si el chat responde pero no muestra patrones guardados:** primero valida el retrieval crudo con `POST /api/rag/search` y `scope: "patterns"`. Si ese endpoint devuelve patrones, la base/seed están bien y probablemente el chat los está filtrando por `RAG_MIN_SIMILARITY = 0.85`. Si ese endpoint devuelve `results: []`, revisa que la migración `0005_add_architect_patterns.sql` se haya aplicado y vuelve a correr `scripts/seed_patterns.py`.
+
 ---
 
 ## Criterio 1 — Búsqueda de patrones retorna resultados relevantes
@@ -45,14 +47,14 @@ Necesitas un usuario logueado (token JWT) para las pruebas de API — inicia ses
    curl -X POST http://localhost:8000/api/rag/search `
      -H "Content-Type: application/json" `
      -H "Authorization: Bearer TU_TOKEN" `
-     -d '{"query":"como manejo microservicios independientes","scope":"patterns"}'
+     -d '{"query":"que arquitectura me conviene si mi sistema debe crecer por modulos independientes","scope":"patterns"}'
    ```
-2. Repite con una query claramente distinta, ej. `"como implemento CQRS y event sourcing"`.
+2. Repite con una query claramente distinta, ej. `"como puedo optimizar por separado las lecturas y las escrituras de una aplicacion"`.
 3. Repite con una query sin relación al dominio, ej. `"receta de pan de banano"`.
 
 ### Resultado esperado
 - [ ] La query de microservicios devuelve como primer resultado (`results[0]`) el patrón **"Arquitectura de microservicios"** (o equivalente), con `metadata.similarity` alto (> 0.7 aprox.).
-- [ ] La query de CQRS devuelve el patrón de **CQRS/Event Sourcing** primero, no microservicios.
+- [ ] La query de CQRS devuelve el patrón de **CQRS** primero, no microservicios.
 - [ ] Los resultados vienen **ordenados de mayor a menor similitud** (revisa que `similarity` vaya descendiendo en la lista).
 - [ ] La query sin relación al dominio (ej. "receta de pan de banano") devuelve resultados — `/api/rag/search` siempre trae los top-k más cercanos, no hay corte por relevancia en ese endpoint. **No esperes que `similarity` caiga drásticamente**: con `multilingual-e5-small` una query totalmente ajena al dominio igual devolvió patrones al 75-78% de similitud en pruebas reales (ver hallazgo abajo). Lo que sí debe cumplirse es que sea **más baja** que la similitud de una query relevante (que suele rondar 85-95%+), aunque no caiga a valores bajos en términos absolutos.
 - [ ] Cada resultado trae `content` (texto del patrón) y `metadata.source_type = "architect_pattern"`.
@@ -66,14 +68,14 @@ Al probar con "receta de pan de banano" **desde el chat de la UI** (no `/api/rag
 
 **Causa:** `similarity_search()` en `app/core/rag.py` no aplica ningún umbral mínimo de similitud — siempre devuelve los top-k más cercanos que encuentre, sin importar qué tan irrelevantes sean en términos absolutos.
 
-**Fix aplicado:** se agregó `RAG_MIN_SIMILARITY = 0.80` en `app/api/chat.py`. Los documentos recuperados con `similarity` por debajo de ese umbral se descartan antes de usarse en el prompt del LLM y antes de mostrarse en el evento `sources` / bloque "Fuentes (PGVector)" de la UI. `/api/rag/search` (el endpoint crudo, usado en las pruebas con `curl` de este documento) **no** tiene este filtro — sigue devolviendo el top-k sin cortar, a propósito, para que QA/debug pueda ver la similitud real sin filtrar. El filtro vive solo en la capa del chat, que es donde el problema de "atribución engañosa" ocurre.
+**Fix aplicado:** se agregó `RAG_MIN_SIMILARITY = 0.85` en `app/api/chat.py`. Los documentos recuperados con `similarity` por debajo de ese umbral se descartan antes de usarse en el prompt del LLM y antes de mostrarse en el evento `sources` / bloque "Fuentes (PGVector)" de la UI. `/api/rag/search` (el endpoint crudo, usado en las pruebas con `curl` de este documento) **no** tiene este filtro — sigue devolviendo el top-k sin cortar, a propósito, para que QA/debug pueda ver la similitud real sin filtrar. El filtro vive solo en la capa del chat, que es donde el problema de "atribución engañosa" ocurre.
 
 **Para re-probar este caso puntual:**
 1. Preguntar en el chat de la UI algo totalmente ajeno al dominio (ej. "receta de pan de banano", "capital de Francia").
 2. ✅ Esperado ahora: el chat responde con conocimiento general y muestra el aviso **"Sin contexto recuperado de la base vectorial..."**, no un bloque de fuentes con patrones irrelevantes.
-3. Si aun así aparecen fuentes con similitud claramente irrelevante, bajar `RAG_MIN_SIMILARITY` no es la solución (ya está filtrando) — revisar si esa query en particular sí superó el 80% por casualidad semántica y ajustar el umbral con más casos de prueba antes de subirlo.
+3. Si aun así aparecen fuentes con similitud claramente irrelevante, bajar `RAG_MIN_SIMILARITY` no es la solución (ya está filtrando) — revisar si esa query en particular sí superó el 85% por casualidad semántica y ajustar el umbral con más casos de prueba antes de cambiarlo.
 
-**✅ Verificado tras el fix:** se repitió la pregunta de la receta de pan de banano en el chat de la UI. Resultado: la respuesta se generó con conocimiento general del modelo (receta completa y correcta) y, debajo, apareció **"Sin contexto recuperado de la base vectorial — respuesta basada en conocimiento general del modelo"** — sin ningún patrón de arquitectura citado. El umbral `RAG_MIN_SIMILARITY = 0.80` descartó correctamente los 5 documentos irrelevantes que antes se mostraban al 75-78%.
+**✅ Verificado tras el fix:** se repitió la pregunta de la receta de pan de banano en el chat de la UI. Resultado: la respuesta se generó con conocimiento general del modelo (receta completa y correcta) y, debajo, apareció **"Sin contexto recuperado de la base vectorial — respuesta basada en conocimiento general del modelo"** — sin ningún patrón de arquitectura citado. El umbral `RAG_MIN_SIMILARITY = 0.85` descartó correctamente los 5 documentos irrelevantes que antes se mostraban al 75-78%.
 
 ---
 
@@ -96,7 +98,7 @@ Al probar con "receta de pan de banano" **desde el chat de la UI** (no `/api/rag
    curl -X POST http://localhost:8000/api/rag/search `
      -H "Content-Type: application/json" `
      -H "Authorization: Bearer TU_TOKEN" `
-     -d '{"query":"texto o tema puntual del documento subido","scope":"documents","project_id":ID_DEL_PROYECTO}'
+     -d '{"query":"frase o concepto literal que aparezca en el documento subido","scope":"documents","project_id":ID_DEL_PROYECTO}'
    ```
 
 ### Resultado esperado
@@ -188,7 +190,8 @@ search_ms -> avg=5.73ms  min=4.31ms  max=12.25ms  p95=6.32ms
 
 El chat (`POST /api/chat`, usado desde la UI) ahora expone qué fuentes de PGVector usó para cada respuesta vía el evento SSE `event: sources`, visible en la UI como un bloque "Fuentes (PGVector)" debajo de cada mensaje del asistente (o el aviso de "sin contexto recuperado" si no hubo match).
 
-- [ ] Preguntar algo que matchee con un patrón sembrado → debe aparecer el bloque de fuentes con nombre + % de similitud.
+- [ ] Preguntar algo que matchee con un patrón sembrado, por ejemplo: `"quiero cambiar la base de datos sin tocar las reglas de negocio, que arquitectura recomiendas"` → debe aparecer el bloque de fuentes con nombre + % de similitud.
+- [ ] Repetir con otro patrón sembrado, por ejemplo: `"mi aplicacion va a crecer por partes y necesito desplegar cada modulo por separado, que opcion ves mejor"` → debe aparecer **Microservicios** entre las fuentes.
 - [ ] Preguntar algo fuera de dominio → debe aparecer el aviso de que no se encontró contexto relevante.
 
 Esto sirve como evidencia visual rápida de los Criterios 1 y 2 sin tener que llamar la API a mano.
@@ -200,7 +203,7 @@ Esto sirve como evidencia visual rápida de los Criterios 1 y 2 sin tener que ll
 1. **Markdown crudo en el chat** — el LLM a veces envolvía toda la respuesta en un solo bloque ` ``` `, mostrando tablas/negritas sin renderizar. Corregido con instrucción explícita en el prompt + fallback en `MessageBubble.tsx`.
 2. **Sin trazabilidad de fuentes RAG** — no había forma de confirmar desde la UI si una respuesta usó PGVector o el conocimiento general del modelo. Corregido con el evento `sources` (ver sección "Extra" arriba).
 3. **Build del frontend roto** — faltaba `frontend/.dockerignore`, causando que `node_modules` local pisara el del contenedor. Corregido.
-4. **Atribución engañosa de fuentes RAG** — el chat mostraba "Fuentes (PGVector)" citando patrones de arquitectura irrelevantes (75-78% similitud) para preguntas totalmente ajenas al dominio (ej. una receta de cocina), porque `similarity_search()` no tenía umbral mínimo de relevancia. Corregido con `RAG_MIN_SIMILARITY = 0.80` en `app/api/chat.py` — ver detalle en Criterio 1.
+4. **Atribución engañosa de fuentes RAG** — el chat mostraba "Fuentes (PGVector)" citando patrones de arquitectura irrelevantes (75-78% similitud) para preguntas totalmente ajenas al dominio (ej. una receta de cocina), porque `similarity_search()` no tenía umbral mínimo de relevancia. Corregido con `RAG_MIN_SIMILARITY = 0.85` en `app/api/chat.py` — ver detalle en Criterio 1.
 
 ## Fallos preexistentes, no relacionados con esta HU (no bloquean el merge, pendientes aparte)
 

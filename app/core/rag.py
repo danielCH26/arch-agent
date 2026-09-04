@@ -148,7 +148,7 @@ def similarity_search_patterns(
 ) -> tuple[list[Document], float, float]:
     """Embebe una consulta y busca patrones relevantes."""
     embed_started = perf_counter()
-    query_embedding = get_embeddings().embed_query(query)
+    query_embedding = get_embeddings().embed_query(f"query: {query}")
     embedding_ms = (perf_counter() - embed_started) * 1000
     docs, search_ms = similarity_search_patterns_by_vector(query_embedding, k=k, category=category)
     return docs, search_ms, embedding_ms
@@ -162,7 +162,7 @@ def similarity_search_document_chunks(
 ) -> tuple[list[Document], float, float]:
     """Embebe una consulta y busca chunks privados relevantes."""
     embed_started = perf_counter()
-    query_embedding = get_embeddings().embed_query(query)
+    query_embedding = get_embeddings().embed_query(f"query: {query}")
     embedding_ms = (perf_counter() - embed_started) * 1000
     docs, search_ms = similarity_search_document_chunks_by_vector(
         query_embedding,
@@ -205,7 +205,7 @@ def similarity_search(
         raise RAGSearchError("user_id es requerido para buscar documentos")
 
     embed_started = perf_counter()
-    query_embedding = get_embeddings().embed_query(query)
+    query_embedding = get_embeddings().embed_query(f"query: {query}")
     embedding_ms = (perf_counter() - embed_started) * 1000
 
     groups: list[tuple[list[Document], float]] = []

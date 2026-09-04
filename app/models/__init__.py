@@ -1,5 +1,7 @@
 # Registrar todos los modelos al importar el paquete app.models
 # para que Base.metadata los conozca (necesario para create_all y migraciones).
+# Registrar todos los modelos al importar el paquete app.models
+# para que Base.metadata los conozca (necesario para create_all y migraciones).
 
 from app.models.user import User  # noqa: F401
 from app.models.project import Project  # noqa: F401
