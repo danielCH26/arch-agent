@@ -14,5 +14,9 @@ class Project(Base):
     # determina que ya se cumplió todo lo necesario de la fase actual y se
     # puede avanzar a la siguiente. Se resetea a False cada vez que se avanza.
     phase_ready = Column(Boolean, nullable=False, default=False, server_default="false")
+    # True solo para el proyecto del seed (scripts/seed_example.py). Los
+    # endpoints que listan proyectos de un usuario real deben excluirlo
+    # (ver migration 0006 / comentario A3 en revisión del PR de seed).
+    is_demo = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now())

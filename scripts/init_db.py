@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Script de inicializacion de la base de datos.
 
@@ -12,14 +11,13 @@ Que hace:
 4. Verifica la conexion y PGVector
 """
 
-import os
 import re
 import sys
 from pathlib import Path
 
 import psycopg2
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
+from _db_utils import connect_db, log
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://asistente:asistente@postgres-app:5432/asistente_db",
@@ -27,19 +25,6 @@ DATABASE_URL = os.environ.get(
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT_DIR / "schema.sql"
-
-
-def log(msg: str, level: str = "INFO"):
-    """Logger simple con colores."""
-    colors = {
-        "INFO": "\033[94m",
-        "OK": "\033[92m",
-        "WARN": "\033[93m",
-        "ERROR": "\033[91m",
-    }
-    reset = "\033[0m"
-    color = colors.get(level, "")
-    print(f"{color}[{level}]{reset} {msg}")
 
 
 def load_schema_sql() -> str:
@@ -60,18 +45,6 @@ def expected_tables_from_schema(schema_sql: str) -> set[str]:
             flags=re.IGNORECASE,
         )
     )
-
-
-def connect_db():
-    """Conecta a PostgreSQL y maneja errores."""
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        log(f"Conectado a: {DATABASE_URL}", "OK")
-        return conn
-    except psycopg2.OperationalError as e:
-        log(f"No se pudo conectar: {e}", "ERROR")
-        sys.exit(1)
 
 
 def check_pgvector_extension(conn):

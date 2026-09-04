@@ -1,0 +1,21 @@
+-- =============================================================================
+-- Migration 0006: marcar el usuario y proyecto del seed como demo
+-- =============================================================================
+-- Issue: revisión del PR "Caso de ejemplo (seed)"
+--
+-- Problema (A1): password_hash = "seed-demo-not-a-real-hash" no es un hash
+-- bcrypt válido. Si #57 agrega login real para /api/users/me,
+-- bcrypt.checkpw() contra este valor lanza una excepción en vez de devolver
+-- False limpio. Este usuario no debe poder autenticarse nunca.
+--
+-- Problema (A3): el proyecto demo ("Sistema de Gestión de Tareas") no debe
+-- aparecer en el listado de un usuario real si entra a /projects.
+--
+-- Esta migración agrega columnas is_demo_user / is_demo para que login y
+-- los endpoints de listado puedan filtrarlas explícitamente. No implementa
+-- el filtrado en sí (eso vive en #57 y en los endpoints de /projects) —
+-- solo deja la columna disponible para que ese trabajo no tenga que volver
+-- a tocar el seed.
+-- =============================================================================
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;

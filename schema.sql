@@ -97,6 +97,27 @@ CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
 CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
     ON document_chunks(document_id);
 
+-- architect_patterns (issue "Caso de ejemplo (seed)" / comentario C2 de PR):
+-- agregada acá también, no solo en migration 0005, para que una DB
+-- greenfield (init_db.py sin correr migrations aún) ya la tenga.
+CREATE TABLE IF NOT EXISTS architect_patterns (
+    id SERIAL PRIMARY KEY,
+    pattern_name VARCHAR(255) NOT NULL,
+    category VARCHAR(100),
+    description TEXT,
+    use_cases TEXT,
+    tradeoffs JSONB,
+    embedding vector(384),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_architect_patterns_embedding
+    ON architect_patterns USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
+    ON architect_patterns (category);
+
 -- =============================================================================
 -- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
 -- init_db.py aplica todo en orden; migrations/run_migrations.py es idempotente.
@@ -110,3 +131,11 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL
 
 -- uploaded_documents.project_id (migration 0004)
 ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+-- users.is_demo_user / projects.is_demo (migration 0006, comentarios A1 y A3
+-- de la revisión del PR de "Caso de ejemplo (seed)"): permiten que el login
+-- (#57) y los endpoints de listado filtren explícitamente al usuario/proyecto
+-- del seed. El demo_user NO debe poder autenticarse nunca.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+
