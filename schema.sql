@@ -116,3 +116,4 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;

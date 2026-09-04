@@ -30,25 +30,28 @@ class DocumentStorageError(Exception):
 
 def check_duplicate(user_id: int, filename: str, project_id: Optional[int] = None) -> Optional[int]:
     """
-    Verifica si el user ya tiene un documento con ese filename (en un proyecto).
+    Verifica si el user ya tiene un documento con ese filename.
+
+    El parámetro project_id se ignora a efectos de la búsqueda de duplicados,
+    ya que la constraint UNIQUE es (user_id, filename, version) sin project_id.
+    Esto significa que un archivo con el mismo nombre no puede tener la misma
+    versión en ningún proyecto — un documento es único globalmente por usuario
+    y nombre, no por proyecto.
 
     Args:
         user_id: ID del usuario
         filename: nombre del archivo
-        project_id: ID del proyecto (opcional, si es None busca en cualquier proyecto)
+        project_id: ID del proyecto (aceptado por compatibilidad, ignorado)
 
     Returns:
         Versión más alta existente (1, 2, 3...) o None si no existe
     """
     db = SessionLocal()
     try:
-        query = db.query(func.max(UploadedDocument.version)).filter(
+        result = db.query(func.max(UploadedDocument.version)).filter(
             UploadedDocument.user_id == user_id,
             UploadedDocument.filename == filename,
-        )
-        if project_id:
-            query = query.filter(UploadedDocument.project_id == project_id)
-        result = query.scalar()
+        ).scalar()
         return result
     finally:
         db.close()
@@ -206,11 +209,16 @@ def overwrite_document(
     file_size_bytes: int,
     chunks: List[Document],
     embeddings: List[List[float]],
+    project_id: Optional[int] = None,
 ) -> int:
     """
     Borra la versión actual del documento y crea una nueva con el mismo número.
 
     Útil cuando el usuario eligió "Sobrescribir" en el popup de duplicados.
+
+    Si se pasa `project_id`, filtra la versión a sobrescribir por (user_id,
+    filename, project_id). Esto es importante porque un mismo usuario podría
+    tener el mismo filename en proyectos distintos (v1 en proyecto A, v1 en B).
 
     Returns:
         document_id del nuevo documento
@@ -218,10 +226,13 @@ def overwrite_document(
     db = SessionLocal()
     try:
         # Buscar versión actual
-        current = db.query(UploadedDocument).filter(
+        query = db.query(UploadedDocument).filter(
             UploadedDocument.user_id == user_id,
             UploadedDocument.filename == filename,
-        ).order_by(desc(UploadedDocument.version)).first()
+        )
+        if project_id is not None:
+            query = query.filter(UploadedDocument.project_id == project_id)
+        current = query.order_by(desc(UploadedDocument.version)).first()
 
         if current is None:
             # No existe → equivalente a save_document con version=1
@@ -232,6 +243,7 @@ def overwrite_document(
                 file_size_bytes=file_size_bytes,
                 chunks=chunks,
                 embeddings=embeddings,
+                project_id=project_id,
             )
 
         # Borrar la versión actual (chunks por CASCADE)
@@ -248,6 +260,7 @@ def overwrite_document(
             chunk_count=len(chunks),
             processed=True,
             version=version_to_keep,
+            project_id=project_id,
         )
         db.add(new_doc)
         db.flush()
@@ -268,6 +281,151 @@ def overwrite_document(
     except Exception as e:
         db.rollback()
         raise DocumentStorageError(f"Error al sobrescribir: {e}")
+    finally:
+        db.close()
+
+
+def save_document_pending(
+    user_id: int,
+    filename: str,
+    file_type: str,
+    file_size_bytes: int,
+    chunk_count: int,
+    project_id: Optional[int] = None,
+) -> int:
+    """
+    Crea un documento con processed=False (sin chunks aún).
+    Los chunks + embeddings se guardan después en background.
+
+    Returns:
+        document_id del documento creado
+    """
+    db = SessionLocal()
+    try:
+        max_version = check_duplicate(user_id, filename, project_id=project_id)
+        new_version = (max_version or 0) + 1
+
+        doc = UploadedDocument(
+            user_id=user_id,
+            project_id=project_id,
+            filename=filename,
+            file_type=file_type,
+            file_size_bytes=file_size_bytes,
+            chunk_count=chunk_count,
+            processed=False,
+            version=new_version,
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+        return doc.id
+    except IntegrityError as e:
+        db.rollback()
+        raise DocumentStorageError(f"Constraint violation: {e}")
+    except Exception as e:
+        db.rollback()
+        raise DocumentStorageError(f"Error al guardar documento: {e}")
+    finally:
+        db.close()
+
+
+def overwrite_document_pending(
+    user_id: int,
+    filename: str,
+    file_type: str,
+    file_size_bytes: int,
+    chunk_count: int,
+    project_id: Optional[int] = None,
+) -> int:
+    """
+    Borra la versión actual del documento y crea una nueva pending (processed=False).
+    Los chunks + embeddings se guardan después en background.
+
+    Returns:
+        document_id del nuevo documento
+    """
+    db = SessionLocal()
+    try:
+        query = db.query(UploadedDocument).filter(
+            UploadedDocument.user_id == user_id,
+            UploadedDocument.filename == filename,
+        )
+        if project_id is not None:
+            query = query.filter(UploadedDocument.project_id == project_id)
+        current = query.order_by(desc(UploadedDocument.version)).first()
+
+        if current is None:
+            return save_document_pending(
+                user_id=user_id,
+                filename=filename,
+                file_type=file_type,
+                file_size_bytes=file_size_bytes,
+                chunk_count=chunk_count,
+                project_id=project_id,
+            )
+
+        version_to_keep = current.version
+        db.delete(current)
+        db.flush()
+
+        new_doc = UploadedDocument(
+            user_id=user_id,
+            filename=filename,
+            file_type=file_type,
+            file_size_bytes=file_size_bytes,
+            chunk_count=chunk_count,
+            processed=False,
+            version=version_to_keep,
+            project_id=project_id,
+        )
+        db.add(new_doc)
+        db.commit()
+        db.refresh(new_doc)
+        return new_doc.id
+    except Exception as e:
+        db.rollback()
+        raise DocumentStorageError(f"Error al sobrescribir: {e}")
+    finally:
+        db.close()
+
+
+def save_chunks_and_mark_processed(
+    doc_id: int,
+    chunks: List[Document],
+    embeddings: List[List[float]],
+) -> None:
+    """
+    Guarda los chunks con sus embeddings y marca el documento como processed=True.
+    Se llama en background después del upload.
+
+    Raises:
+        DocumentStorageError: si hay error al guardar
+    """
+    if len(chunks) != len(embeddings):
+        raise DocumentStorageError(
+            f"Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings"
+        )
+
+    db = SessionLocal()
+    try:
+        for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            chunk_record = DocumentChunk(
+                document_id=doc_id,
+                chunk_text=chunk.page_content,
+                chunk_index=idx,
+                embedding=embedding,
+                chunk_metadata=chunk.metadata if chunk.metadata else None,
+            )
+            db.add(chunk_record)
+
+        db.query(UploadedDocument).filter(
+            UploadedDocument.id == doc_id
+        ).update({"processed": True})
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise DocumentStorageError(f"Error al guardar chunks: {e}")
     finally:
         db.close()
 

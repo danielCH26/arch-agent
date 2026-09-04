@@ -11,7 +11,12 @@ def get_profile(user_id: int):
         user = db.get(User, user_id)
         if user is None:
             raise ValidationError("Usuario no encontrado.")
-        return {"username": user.username, "email": user.email}
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "created_at": user.created_at.isoformat() + "Z" if user.created_at else None,
+        }
     finally:
         db.close()
 

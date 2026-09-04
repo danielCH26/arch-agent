@@ -18,6 +18,10 @@ from pathlib import Path
 import psycopg2
 
 from _db_utils import connect_db, log
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://asistente:asistente@postgres-app:5432/asistente_db",
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT_DIR / "schema.sql"

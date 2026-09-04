@@ -1,0 +1,278 @@
+import asyncio
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel
+
+from app.api.dependencies import get_current_user
+from app.core.database import SessionLocal
+from app.core.document_processing import (
+    ALLOWED_EXTENSIONS,
+    MAX_FILE_SIZE_BYTES,
+    DocumentProcessingError,
+    process_file,
+    validate_file_extension,
+    validate_file_size,
+)
+from app.core.document_storage import (
+    DocumentStorageError,
+    check_duplicate,
+    delete_document,
+    get_document_by_id,
+    get_user_documents,
+    overwrite_document_pending,
+    save_chunks_and_mark_processed,
+    save_document_pending,
+)
+from app.core.embeddings import get_embeddings
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+# --- Pydantic models ---------------------------------------------------------
+
+class DocumentOut(BaseModel):
+    id: int
+    filename: str
+    file_type: str
+    file_size_bytes: int
+    chunk_count: int
+    version: int
+    processed: bool
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class DuplicateResponse(BaseModel):
+    is_duplicate: bool
+    existing_version: Optional[int] = None
+
+
+# --- Helpers -----------------------------------------------------------------
+
+def _require_document(user_id: int, doc_id: int) -> None:
+    """Raise 403/404 if document doesn't exist or isn't owned by user."""
+    doc = get_document_by_id(user_id, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
+    return doc
+
+
+def _process_embeddings_background(doc_id: int, chunks: list) -> None:
+    """
+    Tarea en background: genera embeddings y guarda los chunks.
+
+    Se ejecuta después de que el endpoint ya devolvió 201 al cliente.
+    Si falla, el documento queda con processed=False y se loguea el error.
+    """
+    try:
+        texts = [c.page_content for c in chunks]
+        embeddings = get_embeddings().embed_documents(texts)
+        save_chunks_and_mark_processed(doc_id, chunks, embeddings)
+        logger.info("Background embeddings completed for doc_id=%d (%d chunks)", doc_id, len(chunks))
+    except Exception as e:
+        logger.error("Background embeddings FAILED for doc_id=%d: %s", doc_id, e)
+
+
+# --- Routes -----------------------------------------------------------------
+
+@router.get("/{project_id}", response_model=list[DocumentOut])
+async def list_documents(
+    project_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """List documents for a project."""
+    docs = get_user_documents(
+        user_id=current_user["user_id"],
+        project_id=project_id,
+    )
+    return [
+        DocumentOut(
+            id=d.id,
+            filename=d.filename,
+            file_type=d.file_type,
+            file_size_bytes=d.file_size_bytes,
+            chunk_count=d.chunk_count,
+            version=d.version,
+            processed=d.processed,
+            created_at=d.created_at.isoformat() if d.created_at else "",
+        )
+        for d in docs
+    ]
+
+
+@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_doc(
+    doc_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a document."""
+    _require_document(current_user["user_id"], doc_id)
+    deleted = delete_document(current_user["user_id"], doc_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
+
+
+@router.post(
+    "/upload",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    project_id: int,
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    overwrite: bool = Query(
+        False,
+        description=(
+            "Si ya existe un documento con el mismo nombre en este proyecto, "
+            "sobrescribe la ultima version en lugar de crear una nueva."
+        ),
+    ),
+    suffix: bool = Query(
+        False,
+        description=(
+            "Si ya existe un documento con el mismo nombre en este proyecto, "
+            "guarda como <nombre>_v2.<ext> (version nueva con nombre distinto) "
+            "en lugar de sobrescribir."
+        ),
+    ),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Upload a PDF or MD file and index it in PGVector.
+
+    El documento se guarda inmediatamente con processed=False.
+    Los embeddings se generan en background (BackgroundTasks).
+    El frontend puede hacer polling de /api/documents/{project_id} para
+    detectar cuando processed pasa a True.
+
+    Manejo de duplicados (3 opciones, mutuamente excluyentes):
+    - Default (sin flag): si el archivo ya existe para este user+project,
+      retorna 409 con `DuplicateResponse` (el cliente elige que hacer).
+    - `overwrite=true`: borra la version anterior (cascadea chunks) y crea
+      una nueva con el MISMO numero de version.
+    - `suffix=true`: guarda como `<nombre>_v2.<ext>` (version nueva con
+      nombre distinto). La version original queda intacta.
+    """
+    user_id = current_user["user_id"]
+    filename = file.filename or "unnamed"
+
+    # Validate extension
+    if not validate_file_extension(filename):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Formato no soportado. Solo: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+        )
+
+    # Read content and validate size
+    content = await file.read()
+    if not validate_file_size(len(content), MAX_FILE_SIZE_BYTES):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"El archivo excede el límite de {MAX_FILE_SIZE_BYTES // (1024*1024)} MB",
+        )
+
+    # Check for duplicate (despues de validar extension/size para no leak info)
+    existing_version = check_duplicate(user_id, filename, project_id=project_id)
+    if existing_version is not None and not overwrite and not suffix:
+        # El cliente debe confirmar explicitamente que hacer (reemplazar,
+        # subir con sufijo, o cancelar). Devolvemos 409 con DuplicateResponse.
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "is_duplicate": True,
+                "existing_version": existing_version,
+                "filename": filename,
+                "detail": (
+                    f"Ya existe '{filename}' (v{existing_version}) en este proyecto. "
+                    "Envía ?overwrite=true para reemplazar o "
+                    "?suffix=true para subir como versión nueva con sufijo."
+                ),
+            },
+        )
+
+    # Si suffix=true y hay duplicado: generar nuevo nombre <base>_vN.ext
+    # hasta encontrar uno libre (v2, v3, ...). La version original queda intacta.
+    final_filename = filename
+    if suffix and existing_version is not None:
+        base_name = Path(filename).stem
+        ext = Path(filename).suffix
+        candidate_n = existing_version
+        while True:
+            candidate_n += 1
+            candidate = f"{base_name}_v{candidate_n}{ext}"
+            if check_duplicate(user_id, candidate, project_id=project_id) is None:
+                final_filename = candidate
+                break
+
+    # Write to temp file for processing. Usamos la extension del archivo
+    # original (el file type a guardar siempre es .pdf o .md).
+    file_ext = Path(filename).suffix.lower()
+    with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        # Process file (load + split into chunks) — rápido, se hace sincrónico
+        try:
+            chunks = process_file(tmp_path)
+        except DocumentProcessingError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+        # Store document as pending (processed=False) — instantáneo
+        try:
+            if existing_version is not None and overwrite and not suffix:
+                doc_id = overwrite_document_pending(
+                    user_id=user_id,
+                    filename=final_filename,
+                    file_type=file_ext,
+                    file_size_bytes=len(content),
+                    chunk_count=len(chunks),
+                    project_id=project_id,
+                )
+            else:
+                doc_id = save_document_pending(
+                    user_id=user_id,
+                    filename=final_filename,
+                    file_type=file_ext,
+                    file_size_bytes=len(content),
+                    chunk_count=len(chunks),
+                    project_id=project_id,
+                )
+        except DocumentStorageError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+        # Registrar tarea en background: generar embeddings + guardar chunks
+        # asyncio.to_thread evita bloquear el event loop durante el cómputo
+        background_tasks.add_task(
+            _process_embeddings_background,
+            doc_id=doc_id,
+            chunks=chunks,
+        )
+
+        # Fetch the created document (with processed=False)
+        doc = get_document_by_id(user_id, doc_id)
+
+        return DocumentOut(
+            id=doc.id,
+            filename=doc.filename,
+            file_type=doc.file_type,
+            file_size_bytes=doc.file_size_bytes,
+            chunk_count=doc.chunk_count,
+            version=doc.version,
+            processed=doc.processed,
+            created_at=doc.created_at.isoformat() if doc.created_at else "",
+        )
+
+    finally:
+        # Clean up temp file
+        os.unlink(tmp_path)

@@ -38,3 +38,12 @@ temp/
 *.md
 !README.md
 !README_hu2.md
+
+# Frontend (Vite + React)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# OpenSpec artifacts (experimental workflow - not for production)
+openspec/

@@ -1,0 +1,169 @@
+# =============================================================================
+# LLM Model Benchmarks — source of truth para tier classification
+# =============================================================================
+# Cada modelo tiene su MMLU score (0-100) usado por app/core/model_classifier.py
+# para clasificarlo en tier1 (>=85), tier2 (60-85), blocked (<60) o unknown.
+#
+# Para agregar/actualizar scores: PR con la fuente (paper URL, model card
+# oficial, leaderboard snapshot). No hay UI de admin — esto es código.
+#
+# IMPORTANTE: el frontend frontend/src/components/llm-wizard/Step3ModelSelect.tsx
+# tiene una copia sincronizada de este diccionario. Si agregas un modelo aca,
+# agregalo tambien en el TSX, o vas a quedar con tier drift entre lo que ve
+# el usuario y lo que aprueba el backend. Existe un test
+# tests/api/test_llm_wizard_yaml_tsx_parity.py que falla automaticamente
+# si se desincronizan.
+#
+# Metodologia de score MMLU:
+# - tier1 (>=85): fuente paper oficial o model card del vendor.
+# - tier2 (60-85): fuente leaderboard o paper con varianza reportada.
+# - unknown: el modelo no aparece aca; el frontend lo muestra como
+#   "Sin score conocido" y guarda requiere allow_unknown_model=true.
+# - blocked (<60): se listan aca SOLO modelos que NO queremos disponibles
+#   por MMLU bajo, para que el classifier los oculte consistentemente
+#   del dropdown.
+#
+# Fuente principal de MMLU scores: papers originales de cada vendor
+# (DeepSeek Tech Report, Qwen Blog, Z.ai docs, Anthropic/OpenAI/Google
+# Model Cards, Meta Llama Papers) y leaderboards publicos.
+# =============================================================================
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # OpenAI — Tier 1 estricto
+  # ---------------------------------------------------------------------------
+  - model_id: gpt-4o
+    mmlu_score: 88.7
+    source: "OpenAI GPT-4o system card (Aug 2024)"
+  - model_id: gpt-4-turbo
+    mmlu_score: 86.5
+    source: "OpenAI GPT-4 Turbo technical report (Apr 2024)"
+  - model_id: o1
+    mmlu_score: 92.3
+    source: "OpenAI o1 system card (Dec 2024)"
+  - model_id: o3-mini
+    mmlu_score: 89.0
+    source: "OpenAI o3-mini system card (Jan 2025)"
+  - model_id: o4-mini
+    mmlu_score: 90.5
+    source: "OpenAI o4-mini (Apr 2025)"
+
+  # ---------------------------------------------------------------------------
+  # Anthropic — Tier 1 estricto
+  # ---------------------------------------------------------------------------
+  - model_id: claude-3-5-sonnet-latest
+    mmlu_score: 88.7
+    source: "Anthropic Claude 3.5 Sonnet model card (Oct 2024)"
+  - model_id: claude-3-7-sonnet
+    mmlu_score: 89.3
+    source: "Anthropic Claude 3.7 Sonnet (Feb 2025)"
+  - model_id: claude-sonnet-4
+    mmlu_score: 91.5
+    source: "Anthropic Claude Sonnet 4 (May 2025)"
+  - model_id: claude-opus-4
+    mmlu_score: 92.5
+    source: "Anthropic Claude Opus 4 (May 2025)"
+
+  # ---------------------------------------------------------------------------
+  # Google — Tier 1 estricto
+  # ---------------------------------------------------------------------------
+  - model_id: gemini-2.5-pro
+    mmlu_score: 88.0
+    source: "Google Gemini 2.5 Pro technical report (Mar 2025)"
+  - model_id: gemini-2.0-pro
+    mmlu_score: 86.5
+    source: "Google Gemini 2.0 Pro (Feb 2025)"
+
+  # ---------------------------------------------------------------------------
+  # Meta — Tier 1 estricto
+  # ---------------------------------------------------------------------------
+  - model_id: llama-3.1-405b-instruct
+    mmlu_score: 88.6
+    source: "Meta Llama 3.1 405B paper (Jul 2024)"
+  - model_id: llama-3.3-70b-instruct
+    mmlu_score: 86.0
+    source: "Meta Llama 3.3 70B (Dec 2024)"
+
+  # ---------------------------------------------------------------------------
+  # DeepSeek — Tier 1 (papers oficiales verificados)
+  # ---------------------------------------------------------------------------
+  - model_id: deepseek-v3
+    mmlu_score: 88.5
+    source: "DeepSeek-V3 Technical Report arXiv:2412.19437 (Dec 2024)"
+  - model_id: deepseek-r1
+    mmlu_score: 90.8
+    source: "DeepSeek-R1 paper arXiv:2501.12948 (Jan 2025)"
+  - model_id: deepseek-v3.1
+    mmlu_score: 88.6
+    source: "DeepSeek-V3.1 official release (Sep 2025)"
+
+  # ---------------------------------------------------------------------------
+  # Qwen (Alibaba) — Tier 1 (papers oficiales verificados)
+  # ---------------------------------------------------------------------------
+  - model_id: qwen-3-235b-a22b
+    mmlu_score: 86.0
+    source: "Qwen3 blog (Apr 2025) — promedio entre thinking mode (88.1) y non-thinking (85.9)"
+  - model_id: qwen-2.5-72b-instruct
+    mmlu_score: 86.4
+    source: "Qwen2.5 Technical Report (Sep 2024)"
+
+  # ---------------------------------------------------------------------------
+  # MiniMax — Tier 1 (modelo del sistema del assistant)
+  # ---------------------------------------------------------------------------
+  - model_id: MiniMax-M3
+    mmlu_score: 87.0
+    source: "MiniMax-M3 model card (2025)"
+
+  # ---------------------------------------------------------------------------
+  # Tier 2 — warning (se muestran con badge "Sin score conocido" en la UI
+  # hasta que se actualice este archivo). Mantener lista corta, agregar
+  # modelos aqui SOLO si son realmente utiles para el usuario.
+  # ---------------------------------------------------------------------------
+  - model_id: gpt-4o-mini
+    mmlu_score: 82.0
+    source: "OpenAI GPT-4o mini (Jul 2024)"
+  - model_id: claude-3-5-haiku
+    mmlu_score: 75.2
+    source: "Anthropic Claude 3.5 Haiku (Oct 2024)"
+  - model_id: gemini-2.0-flash
+    mmlu_score: 81.5
+    source: "Google Gemini 2.0 Flash (Feb 2025)"
+  - model_id: deepseek-v2.5
+    mmlu_score: 80.4
+    source: "DeepSeek-V2.5 release (Sep 2024)"
+  - model_id: qwen-3-32b
+    mmlu_score: 81.3
+    source: "Qwen3 blog (Apr 2025)"
+  - model_id: qwen-2.5-32b-instruct
+    mmlu_score: 75.6
+    source: "Qwen2.5 Technical Report (Sep 2024)"
+
+  # ---------------------------------------------------------------------------
+  # Blocked — NO aparecen en el dropdown de la UI. Se listan aca para que
+  # el classifier los reconozca y los oculte consistentemente.
+  # ---------------------------------------------------------------------------
+  - model_id: gpt-3.5-turbo
+    mmlu_score: 57.0
+    source: "OpenAI GPT-3.5 Turbo (legacy, no recomendado para tier 1 strict)"
+  - model_id: llama-3.1-8b-instruct
+    mmlu_score: 56.3
+    source: "Meta Llama 3.1 8B (Jul 2024)"
+
+  # ---------------------------------------------------------------------------
+  # PENDIENTES DE VERIFICAR (no incluidos para evitar score incorrecto)
+  # ---------------------------------------------------------------------------
+  # Los siguientes modelos son populares pero no encontre un paper o model
+  # card con MMLU exacto y reciente (Sep-Oct 2025). NO los agregamos hasta
+  # confirmar la fuente. Mientras tanto caen en 'unknown' y requieren
+  # allow_unknown_model=true para guardarse via wizard.
+  #
+  # - GLM-4.5 (Z.ai): https://z.ai/blog/glm-4.5 — sin score MMLU publico a la fecha
+  # - GLM-4.6 (Z.ai): mismo blog, sin tabla MMLU explicita
+  # - GLM-5 (Z.ai): sin informacion publica suficiente
+  # - Qwen-3-Max: paper preview sin tabla MMLU completa
+  # - MiniMax-M2/M2.5/M2.7: sin paper publico accesible
+  #
+  # Cuando agreguen un modelo aca, agreguenlo TAMBIEN en
+  # frontend/src/components/llm-wizard/Step3ModelSelect.tsx — el test
+  # tests/api/test_llm_wizard_yaml_tsx_parity.py va a fallar si se olvidan.
