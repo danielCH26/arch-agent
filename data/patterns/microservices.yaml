@@ -1,0 +1,25 @@
+pattern_name: "Microservicios"
+category: "Distribuida"
+description: >
+  Divide el sistema en servicios pequeños e independientes, cada uno con su
+  propia base de datos y ciclo de despliegue, comunicados por red.
+use_cases: >
+  Productos con múltiples equipos trabajando en paralelo, módulos con
+  necesidades de escalado muy distintas entre sí.
+when_not_to_use: >
+  No es buena opción para equipos pequeños, presupuesto operativo limitado o
+  dominios que todavía no tienen límites claros.
+tradeoffs:
+  ventajas:
+    - "Escalado y despliegue independiente por servicio"
+    - "Equipos pueden trabajar y liberar en paralelo sin bloquearse entre sí"
+  desventajas:
+    - "Alta complejidad operativa: red, observabilidad, consistencia de datos"
+    - "Requiere más infraestructura y experiencia DevOps desde el día uno"
+decision_signals:
+  - pregunta: "¿Hay varios equipos que necesitan desplegar dominios distintos sin coordinar cada release?"
+    señal_patron: "sí -> Microservicios"
+  - pregunta: "¿Algunos módulos tienen necesidades de escalado muy diferentes al resto?"
+    señal_patron: "sí -> Microservicios"
+  - pregunta: "¿El equipo ya cuenta con observabilidad, CI/CD y operación distribuida maduras?"
+    señal_patron: "sí -> Microservicios"

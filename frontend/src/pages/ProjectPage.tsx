@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { ApiError } from '../api/client'
 import { getProject, Project } from '../api/projects'
 import { projectsStore } from '../stores/projectsStore'
 
@@ -27,6 +28,14 @@ export function ProjectPage() {
         navigate(`/projects/${projectId}/chat`, { replace: true })
       })
       .catch((err) => {
+        if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+          projectsStore.getState().setCurrentProject(null)
+          navigate('/projects', {
+            replace: true,
+            state: { message: 'Ese proyecto ya no está disponible para tu usuario.' },
+          })
+          return
+        }
         setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')
       })
       .finally(() => {

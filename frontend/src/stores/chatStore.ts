@@ -1,10 +1,14 @@
 import { create } from 'zustand'
-import { createChatStream } from '../api/chat'
+import { createChatStream, type RagSource } from '../api/chat'
 
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  // Fuentes RAG (PGVector) usadas para generar esta respuesta. undefined
+  // mientras no ha llegado el evento 'sources'; [] si llego pero no hubo
+  // match relevante.
+  sources?: RagSource[]
 }
 
 interface ChatState {
@@ -53,6 +57,13 @@ export const chatStore = create<ChatState>((set) => ({
 
     // Start the stream - cleanup is handled internally
     createChatStream(text, projectId, {
+      onSources: (sources) => {
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === assistantMessageId ? { ...msg, sources } : msg
+          ),
+        }))
+      },
       onToken: (token: string) => {
         fullResponse += token
         set((state) => ({

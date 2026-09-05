@@ -1,0 +1,25 @@
+pattern_name: "Arquitectura en capas (Layered)"
+category: "Monolítica"
+description: >
+  Organiza el sistema en capas horizontales (presentación, lógica de negocio,
+  acceso a datos), cada una dependiendo solo de la capa inmediatamente inferior.
+use_cases: >
+  Aplicaciones CRUD de tamaño pequeño a mediano, equipos pequeños, proyectos con
+  alcance bien definido y bajo requerimiento de escalar módulos por separado.
+when_not_to_use: >
+  No conviene cuando los dominios necesitan evolucionar de forma independiente o
+  cuando varios módulos requieren escalado, despliegue o ownership separado.
+tradeoffs:
+  ventajas:
+    - "Curva de aprendizaje baja, fácil de entender para equipos nuevos"
+    - "Despliegue único, sin complejidad de infraestructura distribuida"
+  desventajas:
+    - "Escala como una sola unidad, no permite escalar módulos por separado"
+    - "Tiende a acoplarse y volverse difícil de mantener a medida que crece"
+decision_signals:
+  - pregunta: "¿El producto es principalmente CRUD y será mantenido por un equipo pequeño?"
+    señal_patron: "sí -> Arquitectura en capas (Layered)"
+  - pregunta: "¿Puedes desplegar toda la aplicación como una sola unidad sin bloquear al negocio?"
+    señal_patron: "sí -> Arquitectura en capas (Layered)"
+  - pregunta: "¿El alcance está bien definido y no exige separar dominios con ownership distinto?"
+    señal_patron: "sí -> Arquitectura en capas (Layered)"
