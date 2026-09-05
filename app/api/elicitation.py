@@ -2,6 +2,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES, _require_project
@@ -54,9 +55,35 @@ class ElicitationDecisionOut(BaseModel):
 
 
 # --- Helpers -----------------------------------------------------------------
+#
+# BUG (encontrado en revisión de PR): `sessions` tiene una sola fila por
+# usuario (UNIQUE en user_id, ver migration 0003), no una por proyecto. Si
+# engram_state se indexa solo por fase ({"requerimientos": {...}}), dos
+# proyectos distintos del mismo usuario comparten el mismo espacio y se
+# pisan entre sí -- eso rompía reject/modify en la práctica (el estado que
+# "reject" limpiaba, o "modify" reabría, no era el del proyecto correcto).
+#
+# Fix: anidar también por project_id dentro del mismo engram_state
+# ({"3": {"requerimientos": {...}}, "5": {"requerimientos": {...}}}), sin
+# tocar el esquema de `sessions` ni su semántica de "una sesión por
+# usuario" -- ese cambio más profundo (una sesión por proyecto) queda como
+# follow-up si hace falta, pero tiene mucho más blast radius (afecta
+# session_store.py, chat.py, y las migraciones de `sessions`).
 
-def _phase_data_from_engram(engram_state: Optional[dict]) -> dict:
-    return (engram_state or {}).get(PHASE, {})
+def _project_key(project_id: int) -> str:
+    # Claves de dict en JSON siempre son string -- explícito para que quede
+    # claro que no es un descuido, no porque project_id deje de ser int.
+    return str(project_id)
+
+
+def _phase_data_from_engram(engram_state: Optional[dict], project_id: int) -> dict:
+    return (engram_state or {}).get(_project_key(project_id), {}).get(PHASE, {})
+
+
+def _set_phase_data(engram_state: dict, project_id: int, phase_data: dict) -> dict:
+    project_state = engram_state.setdefault(_project_key(project_id), {})
+    project_state[PHASE] = phase_data
+    return engram_state
 
 
 # --- Routes --------------------------------------------------------------------
@@ -74,7 +101,7 @@ async def get_elicitation_state(
     _require_project(current_user["user_id"], project_id)
 
     state = load_session_state(current_user["user_id"]) or {}
-    phase_data = _phase_data_from_engram(state.get("engram_state"))
+    phase_data = _phase_data_from_engram(state.get("engram_state"), project_id)
     resumen = phase_data.get("resumen")
 
     return ElicitationMessageOut(
@@ -99,14 +126,15 @@ async def send_elicitation_message(
     400 — no hay pregunta pendiente para responder, o ya existe un resumen
           (hay que pasar por /elicitation/decision antes de seguir)
     409 — LLM no configurado para este usuario
-    502 — el modelo no devolvió una respuesta parseable
+    502 — el modelo respondió pero con contenido no parseable
+    503 — la llamada al modelo falló (rate limit, timeout, proveedor caído)
     """
     user_id = current_user["user_id"]
     project = _require_project(user_id, project_id)
 
     state = load_session_state(user_id) or {}
     engram_state = state.get("engram_state") or {}
-    phase_data = _phase_data_from_engram(engram_state)
+    phase_data = _phase_data_from_engram(engram_state, project_id)
 
     if phase_data.get("resumen") is not None:
         raise HTTPException(
@@ -147,6 +175,15 @@ async def send_elicitation_message(
             resumen = elicitation_agent.generate_summary(model, history, project.description or "")
         else:
             resumen = None
+    except elicitation_agent.ElicitationLLMError as e:
+        # Falla real de la llamada (rate limit, timeout, proveedor caído) --
+        # el usuario puede reintentar, no es un problema con lo que respondió.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"El modelo de IA no está disponible en este momento "
+            f"(posible límite de tasa del proveedor). Intenta de nuevo en "
+            f"unos segundos. Detalle: {e}",
+        )
     except elicitation_agent.ElicitationAgentError as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -158,7 +195,7 @@ async def send_elicitation_message(
         "pending_question": None if decision.done else decision.question,
         "resumen": resumen,
     }
-    engram_state[PHASE] = phase_data
+    engram_state = _set_phase_data(engram_state, project_id, phase_data)
     save_session_state(
         user_id, project_id=project.id, active_phase=PHASE, engram_state=engram_state
     )
@@ -205,8 +242,10 @@ async def decide_elicitation(
                 detail="No hay una sesión de elicitación activa para este proyecto.",
             )
 
-        engram_state = session_row.engram_state or {}
-        phase_data = _phase_data_from_engram(engram_state)
+        # Copia nueva del dict, no una referencia al mismo objeto que
+        # session_row.engram_state -- ver nota de flag_modified() más abajo.
+        engram_state = dict(session_row.engram_state or {})
+        phase_data = _phase_data_from_engram(engram_state, project_id)
         if phase_data.get("resumen") is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -234,18 +273,20 @@ async def decide_elicitation(
             history = history + [
                 {"pregunta": "(ajuste solicitado por el usuario)", "respuesta": body.feedback.strip()}
             ]
-            engram_state[PHASE] = {
-                "preguntas_respuestas": history,
-                "pending_question": None,
-                "resumen": None,
-            }
+            engram_state = _set_phase_data(
+                engram_state,
+                project_id,
+                {"preguntas_respuestas": history, "pending_question": None, "resumen": None},
+            )
             session_row.engram_state = engram_state
+            flag_modified(session_row, "engram_state")
             project.phase_ready = False
             message = "Se registró tu ajuste. Llama a /elicitation/message para continuar."
 
         else:  # reject
-            engram_state[PHASE] = {}
+            engram_state = _set_phase_data(engram_state, project_id, {})
             session_row.engram_state = engram_state
+            flag_modified(session_row, "engram_state")
             project.phase_ready = False
             message = "Elicitación rechazada. Se reinició esta fase, puedes empezar de nuevo."
 

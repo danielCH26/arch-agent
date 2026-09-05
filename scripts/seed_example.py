@@ -1,8 +1,9 @@
+#!/usr/bin/env python3
 """
 Seed del caso de ejemplo end-to-end.
 
 Issue: Caso de ejemplo (seed)
-Responsable: Sofía
+Responsable: Sofía (Backend / Agente)
 Sprint: 1
 
 Crea un proyecto de ejemplo completo — "Sistema de Gestión de Tareas" —
@@ -95,21 +96,22 @@ ELICITATION_QA = [
     },
 ]
 
-# Misma forma que app/core/elicitation_agent.SUMMARY_SYSTEM_PROMPT espera.
+# Misma forma que app/core/elicitation_agent.SUMMARY_SYSTEM_PROMPT espera
+# (HU5: usuarios / funcionalidades / restricciones / calidad).
 REQUIREMENTS_SUMMARY = {
     "problema": "Permitir que equipos pequeños creen, asignen y sigan tareas sin usar hojas de cálculo.",
-    "usuarios_y_escala": "Entre 20 y 50 usuarios concurrentes, distribuidos en unos 5 equipos.",
-    "requerimientos_funcionales": [
+    "usuarios": "Entre 20 y 50 usuarios concurrentes, distribuidos en unos 5 equipos.",
+    "funcionalidades": [
         "Crear, asignar y dar seguimiento a tareas",
         "Notificar cuando una tarea cambia de estado o se asigna a alguien",
-    ],
-    "requerimientos_no_funcionales": [
-        "Notificaciones en tiempo real",
-        "Simplicidad sobre escalabilidad prematura (proyecto de un semestre)",
     ],
     "restricciones": [
         "Alcance de un semestre académico",
         "Equipo de 4 personas",
+    ],
+    "calidad": [
+        "Notificaciones en tiempo real",
+        "Simplicidad sobre escalabilidad prematura (proyecto de un semestre)",
     ],
 }
 
@@ -222,8 +224,16 @@ def ensure_demo_session(conn, user_id: int, project_id: int):
     return session_id, {}
 
 
-def save_phase(conn, session_id: int, engram_state: dict, phase: str, active_phase: str):
-    """Persiste engram_state (ya con la fase actualizada) y mueve active_phase."""
+def save_phase(conn, session_id: int, engram_state: dict, project_id: int, phase: str, active_phase: str):
+    """
+    Persiste engram_state (ya con la fase actualizada, anidada por
+    project_id) y mueve active_phase.
+
+    Nota (fix del bug de aislamiento por proyecto, ver app/api/elicitation.py):
+    engram_state ahora se indexa como {"<project_id>": {"<fase>": {...}}},
+    no solo {"<fase>": {...}} -- si no, este proyecto demo quedaría
+    invisible para GET /elicitation una vez aplicado el fix real.
+    """
     cur = conn.cursor()
     cur.execute(
         """
@@ -233,7 +243,7 @@ def save_phase(conn, session_id: int, engram_state: dict, phase: str, active_pha
         """,
         (json.dumps(engram_state), active_phase, session_id),
     )
-    log(f"Fase '{phase}' guardada en engram_state", "OK")
+    log(f"Fase '{phase}' guardada en engram_state[{project_id}]", "OK")
 
 
 def set_project_phase(conn, project_id: int, phase: str, phase_ready: bool):
@@ -316,14 +326,16 @@ def seed_example_project(conn) -> tuple:
     user_id = ensure_demo_user(conn)
     project_id = ensure_demo_project(conn, user_id)
     session_id, engram_state = ensure_demo_session(conn, user_id, project_id)
+    project_key = str(project_id)
+    project_state = engram_state.setdefault(project_key, {})
 
     # --- Fase 1: requerimientos (elicitación) ---------------------------
-    engram_state["requerimientos"] = {
+    project_state["requerimientos"] = {
         "preguntas_respuestas": ELICITATION_QA,
         "pending_question": None,
         "resumen": REQUIREMENTS_SUMMARY,
     }
-    save_phase(conn, session_id, engram_state, "requerimientos", active_phase="propuesta")
+    save_phase(conn, session_id, engram_state, project_id, "requerimientos", active_phase="propuesta")
     record_approval(
         conn, session_id, "requerimientos",
         "Requerimientos completos, se aprueba avanzar a propuesta.",
@@ -332,11 +344,11 @@ def seed_example_project(conn) -> tuple:
 
     # --- Fase 2: propuesta (consulta real al RAG) -----------------------
     relevant_patterns = retrieve_relevant_patterns(conn)
-    engram_state["propuesta"] = {
+    project_state["propuesta"] = {
         "patrones_consultados": relevant_patterns,
         "patron_recomendado": relevant_patterns[0]["pattern_name"],
     }
-    save_phase(conn, session_id, engram_state, "propuesta", active_phase="refinamiento")
+    save_phase(conn, session_id, engram_state, project_id, "propuesta", active_phase="refinamiento")
     record_approval(
         conn, session_id, "propuesta",
         "Propuesta alineada con el alcance de un semestre, se aprueba.",
@@ -344,8 +356,8 @@ def seed_example_project(conn) -> tuple:
     set_project_phase(conn, project_id, "refinamiento", phase_ready=False)
 
     # --- Fase 3: refinamiento (diagrama) ---------------------------------
-    engram_state["refinamiento"] = {"diagrama_mermaid": DIAGRAM_MERMAID}
-    save_phase(conn, session_id, engram_state, "refinamiento", active_phase="revision")
+    project_state["refinamiento"] = {"diagrama_mermaid": DIAGRAM_MERMAID}
+    save_phase(conn, session_id, engram_state, project_id, "refinamiento", active_phase="revision")
     record_approval(
         conn, session_id, "refinamiento",
         "Diagrama claro, se aprueba sin cambios.",
@@ -353,8 +365,8 @@ def seed_example_project(conn) -> tuple:
     set_project_phase(conn, project_id, "revision", phase_ready=False)
 
     # --- Fase 4: revision (trade-offs) -------------------------------------
-    engram_state["revision"] = dict(TRADEOFFS)
-    save_phase(conn, session_id, engram_state, "revision", active_phase="revision")
+    project_state["revision"] = dict(TRADEOFFS)
+    save_phase(conn, session_id, engram_state, project_id, "revision", active_phase="revision")
     record_approval(
         conn, session_id, "revision",
         "Trade-offs entendidos y aceptados por el equipo.",
@@ -379,9 +391,10 @@ def verify_end_to_end(conn, project_id: int, user_id: int, session_id: int):
         sys.exit(1)
 
     engram_state = row[0]
-    missing = [p for p in EXPECTED_PHASES if p not in engram_state]
+    project_state = engram_state.get(str(project_id), {})
+    missing = [p for p in EXPECTED_PHASES if p not in project_state]
     if missing:
-        log(f"Faltan fases en engram_state: {missing}", "ERROR")
+        log(f"Faltan fases en engram_state[{project_id}]: {missing}", "ERROR")
         sys.exit(1)
 
     cur.execute(
