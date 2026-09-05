@@ -164,6 +164,7 @@ CREATE TABLE architect_pattern_chunks (
     chunk_type VARCHAR(50) NOT NULL,
     chunk_text TEXT NOT NULL,
     embedding vector(384),
+    chunk_metadata JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
