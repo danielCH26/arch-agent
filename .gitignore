@@ -42,6 +42,8 @@ temp/
 !.atl/**/*.md
 !openspec/
 !openspec/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
@@ -49,4 +51,4 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec + .atl/ artifacts: versioned via *.md exceptions above
+# OpenSpec + .atl/ + docs/adr/ artifacts: versioned via *.md exceptions above
