@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS architect_pattern_chunks (
     chunk_type VARCHAR(50) NOT NULL,
     chunk_text TEXT NOT NULL,
     embedding vector(384),
+    chunk_metadata JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -138,4 +139,7 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- architect_pattern_chunks.chunk_metadata (migration 0009)
+ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;
 
