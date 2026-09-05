@@ -60,6 +60,7 @@ from app.api.documents import router as documents_router
 from app.api.chat import router as chat_router
 from app.api.users import router as users_router
 from app.api.rag import router as rag_router
+from app.api.patterns import router as patterns_router
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -68,6 +69,7 @@ app.include_router(documents_router)
 app.include_router(chat_router)
 app.include_router(users_router)
 app.include_router(rag_router)
+app.include_router(patterns_router)
 
 # Serve SPA static files (built by Vite)
 # Mount AFTER specific routes so /api/* and /register work first

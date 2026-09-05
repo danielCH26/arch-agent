@@ -1,250 +1,37 @@
 """
-Seed de patrones de arquitectura para la base RAG (architect_patterns).
+Seed de patrones de arquitectura para la base RAG.
 
-Issue: Caso de ejemplo (seed)
-Responsable: Sofía
-Sprint: 1
-
-Carga un conjunto inicial de patrones de arquitectura de software, cada uno
-con su embedding (multilingual-e5-small, 384d — ADR-003), para que el
-agente pueda consultarlos por similitud semántica durante la fase de
-propuesta.
-
-Uso:
-    docker compose exec backend python scripts/seed_patterns.py
-
-Requiere:
-    sentence-transformers (para generar los embeddings)
+Lee el contenido desde data/patterns/*.yaml y mantiene pobladas:
+- architect_patterns, para el catalogo y compatibilidad con scripts existentes.
+- architect_pattern_chunks, para busqueda semantica por contexto especifico.
 """
 
 import json
 import sys
+from pathlib import Path
+
+import yaml
 
 from seed_common import connect_db, log
 
-# ---------------------------------------------------------------------------
-# Patrones de ejemplo
-# ---------------------------------------------------------------------------
-# Cada patrón sigue las columnas de architect_patterns. "tradeoffs" incluye
-# mínimo 2 ventajas y 2 desventajas, el mismo criterio de aceptación que ya
-# usa HU7 (tabla comparativa de trade-offs) en el backlog del equipo.
-PATTERNS = [
-    {
-        "pattern_name": "Arquitectura en capas (Layered)",
-        "category": "Monolítica",
-        "description": (
-            "Organiza el sistema en capas horizontales (presentación, "
-            "lógica de negocio, acceso a datos), cada una dependiendo "
-            "solo de la capa inmediatamente inferior."
-        ),
-        "use_cases": (
-            "Aplicaciones CRUD de tamaño pequeño a mediano, equipos "
-            "pequeños, proyectos con alcance bien definido y bajo "
-            "requerimiento de escalar módulos por separado."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Curva de aprendizaje baja, fácil de entender para equipos nuevos",
-                "Despliegue único, sin complejidad de infraestructura distribuida",
-            ],
-            "desventajas": [
-                "Escala como una sola unidad, no permite escalar módulos por separado",
-                "Tiende a acoplarse y volverse difícil de mantener a medida que crece",
-            ],
-        },
-    },
-    {
-        "pattern_name": "Arquitectura hexagonal (Puertos y Adaptadores)",
-        "category": "Monolítica",
-        "description": (
-            "Aísla la lógica de negocio del núcleo mediante puertos "
-            "(interfaces) y adaptadores, de forma que la tecnología externa "
-            "(DB, UI, APIs) se pueda cambiar sin tocar el dominio."
-        ),
-        "use_cases": (
-            "Sistemas donde se anticipan cambios de tecnología externa "
-            "(DB, proveedor de mensajería) o que requieren alta cobertura "
-            "de tests unitarios del dominio."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Dominio testeable de forma aislada, sin dependencias externas",
-                "Cambiar de tecnología externa (DB, cola, UI) no afecta la lógica de negocio",
-            ],
-            "desventajas": [
-                "Más código repetitivo (boilerplate) que una arquitectura en capas simple",
-                "Curva de aprendizaje más alta para equipos sin experiencia previa",
-            ],
-        },
-    },
-    {
-        "pattern_name": "Monolito modular (Modular Monolith)",
-        "category": "Monolítica",
-        "description": (
-            "Un único despliegue, pero organizado internamente en módulos "
-            "con límites explícitos (bounded contexts), como paso "
-            "intermedio antes de migrar a microservicios."
-        ),
-        "use_cases": (
-            "Equipos que quieren orden y límites claros entre dominios sin "
-            "asumir todavía el costo operativo de microservicios."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Mantiene la simplicidad operativa de un solo despliegue",
-                "Facilita una futura migración a microservicios si el proyecto crece",
-            ],
-            "desventajas": [
-                "Requiere disciplina del equipo para no romper los límites entre módulos",
-                "No resuelve el escalado independiente de módulos, solo lo organiza",
-            ],
-        },
-    },
-    {
-        "pattern_name": "Microservicios",
-        "category": "Distribuida",
-        "description": (
-            "Divide el sistema en servicios pequeños e independientes, "
-            "cada uno con su propia base de datos y ciclo de despliegue, "
-            "comunicados por red."
-        ),
-        "use_cases": (
-            "Productos con múltiples equipos trabajando en paralelo, "
-            "módulos con necesidades de escalado muy distintas entre sí."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Escalado y despliegue independiente por servicio",
-                "Equipos pueden trabajar y liberar en paralelo sin bloquearse entre sí",
-            ],
-            "desventajas": [
-                "Alta complejidad operativa: red, observabilidad, consistencia de datos",
-                "Requiere más infraestructura y experiencia DevOps desde el día uno",
-            ],
-        },
-    },
-    {
-        "pattern_name": "Arquitectura orientada a eventos (Event-Driven)",
-        "category": "Distribuida",
-        "description": (
-            "Los componentes se comunican mediante eventos publicados a un "
-            "bus o cola, en vez de llamadas directas, favoreciendo el bajo "
-            "acoplamiento temporal."
-        ),
-        "use_cases": (
-            "Sistemas con notificaciones en tiempo real, flujos "
-            "asíncronos, o integraciones entre módulos que no deben "
-            "bloquearse entre sí."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Bajo acoplamiento: los productores no conocen a los consumidores",
-                "Buen ajuste natural para notificaciones y procesamiento asíncrono",
-            ],
-            "desventajas": [
-                "Depurar el flujo completo de un evento es más difícil (trazabilidad)",
-                "Requiere infraestructura de mensajería adicional (cola o bus de eventos)",
-            ],
-        },
-    },
-    {
-        "pattern_name": "Event sourcing",
-        "category": "Patrón de datos",
-        "description": (
-            "Persiste eventos inmutables como fuente de verdad y "
-            "reconstruye el estado actual reproduciendo esos eventos."
-        ),
-        "use_cases": (
-            "Auditoría fuerte, historial completo, dominios financieros o "
-            "transaccionales."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Auditoría completa: cada cambio queda registrado como evento inmutable",
-                "Permite reconstruir el estado en cualquier punto del tiempo (replay)",
-            ],
-            "desventajas": [
-                "Modelo mental más complejo que CRUD tradicional",
-                "Las consultas requieren proyecciones separadas del log de eventos",
-            ],
-        },
-    },
-    {
-        "pattern_name": "CQRS (Command Query Responsibility Segregation)",
-        "category": "Patrón de datos",
-        "description": (
-            "Separa el modelo de escritura (comandos) del modelo de "
-            "lectura (consultas), permitiendo optimizar cada uno de forma "
-            "independiente."
-        ),
-        "use_cases": (
-            "Sistemas con patrones de lectura y escritura muy distintos "
-            "entre sí, o con necesidad de escalar las lecturas por separado."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Permite optimizar y escalar lecturas y escrituras de forma independiente",
-                "Modelos de lectura simplificados, adaptados exactamente a cada vista",
-            ],
-            "desventajas": [
-                "Añade complejidad de sincronización entre el modelo de escritura y de lectura",
-                "Sobredimensionado para sistemas con carga de lectura/escritura simple",
-            ],
-        },
-    },
-    {
-        "pattern_name": "Serverless (Function-as-a-Service)",
-        "category": "Distribuida",
-        "description": (
-            "La lógica se despliega como funciones individuales que "
-            "ejecuta el proveedor cloud bajo demanda, sin gestionar "
-            "servidores directamente."
-        ),
-        "use_cases": (
-            "Cargas de trabajo intermitentes o impredecibles, equipos sin "
-            "capacidad de operar infraestructura propia."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Sin gestión de servidores; se paga solo por ejecución real",
-                "Escala automáticamente ante picos de tráfico sin intervención manual",
-            ],
-            "desventajas": [
-                "Cold starts pueden afectar la latencia en funciones poco usadas",
-                "Dependencia fuerte del proveedor cloud (vendor lock-in)",
-            ],
-        },
-    },
-    {
-        "pattern_name": "API Gateway + Backend for Frontend (BFF)",
-        "category": "Distribuida / Integración",
-        "description": (
-            "Un punto de entrada único (API Gateway) enruta y agrega "
-            "llamadas a servicios internos, con una capa BFF adaptada a "
-            "las necesidades de cada tipo de cliente (web, móvil)."
-        ),
-        "use_cases": (
-            "Sistemas con múltiples clientes (web, móvil) que consumen "
-            "varios servicios backend y necesitan una capa de agregación."
-        ),
-        "tradeoffs": {
-            "ventajas": [
-                "Simplifica el cliente: una sola llamada agrega varios servicios internos",
-                "Permite adaptar la respuesta a cada tipo de cliente sin duplicar lógica de negocio",
-            ],
-            "desventajas": [
-                "El gateway puede volverse un cuello de botella o un punto único de fallo",
-                "Solo tiene sentido si ya existen varios servicios internos que agregar",
-            ],
-        },
-    },
-]
+PATTERNS_DIR = Path(__file__).parent.parent / "data" / "patterns"
+
+
+def load_patterns() -> list[dict]:
+    files = sorted(PATTERNS_DIR.glob("*.yaml"))
+    if not files:
+        log(f"No se encontraron archivos .yaml en {PATTERNS_DIR}", "ERROR")
+        sys.exit(1)
+    return [yaml.safe_load(path.read_text(encoding="utf-8")) for path in files]
+
+
+PATTERNS = load_patterns()
 
 _model = None
 
 
 def get_model():
-    """Carga (una sola vez) el modelo de embeddings multilingual-e5-small."""
+    """Carga una sola vez el modelo de embeddings multilingual-e5-small."""
     global _model
     if _model is None:
         try:
@@ -263,14 +50,14 @@ def get_model():
 
 
 def embed_passage(text: str) -> list:
-    """Embedding de un texto tipo 'documento' (prefijo e5 'passage: ')."""
+    """Embedding de un texto tipo documento con prefijo e5."""
     model = get_model()
     vector = model.encode(f"passage: {text}", normalize_embeddings=True)
     return vector.tolist()
 
 
 def embed_query(text: str) -> list:
-    """Embedding de un texto tipo 'consulta' (prefijo e5 'query: ')."""
+    """Embedding de un texto tipo consulta con prefijo e5."""
     model = get_model()
     vector = model.encode(f"query: {text}", normalize_embeddings=True)
     return vector.tolist()
@@ -281,28 +68,26 @@ def to_pgvector_literal(vector: list) -> str:
     return "[" + ",".join(f"{v:.8f}" for v in vector) + "]"
 
 
-def seed_patterns(conn):
-    """Inserta los patrones que aún no existan (idempotente por pattern_name)."""
-    cur = conn.cursor()
-    inserted = 0
-    skipped = 0
-    for pattern in PATTERNS:
-        cur.execute(
-            "SELECT 1 FROM architect_patterns WHERE pattern_name = %s",
-            (pattern["pattern_name"],),
-        )
-        if cur.fetchone():
-            skipped += 1
-            continue
+def upsert_pattern(cur, pattern: dict) -> int:
+    """Inserta o actualiza el patron y devuelve su id."""
+    cur.execute(
+        "SELECT id FROM architect_patterns WHERE pattern_name = %s",
+        (pattern["pattern_name"],),
+    )
+    row = cur.fetchone()
 
-        embedding_text = f"{pattern['description']} {pattern['use_cases']}"
-        embedding = to_pgvector_literal(embed_passage(embedding_text))
+    embedding_text = f"{pattern['description']} {pattern['use_cases']}"
+    embedding = to_pgvector_literal(embed_passage(embedding_text))
+    decision_signals = json.dumps(pattern.get("decision_signals", []))
 
+    if row is None:
         cur.execute(
             """
             INSERT INTO architect_patterns
-                (pattern_name, category, description, use_cases, tradeoffs, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s::vector)
+                (pattern_name, category, description, use_cases, tradeoffs,
+                 when_not_to_use, decision_signals, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
+            RETURNING id
             """,
             (
                 pattern["pattern_name"],
@@ -310,22 +95,98 @@ def seed_patterns(conn):
                 pattern["description"],
                 pattern["use_cases"],
                 json.dumps(pattern["tradeoffs"]),
+                pattern.get("when_not_to_use"),
+                decision_signals,
                 embedding,
             ),
         )
-        inserted += 1
+        return cur.fetchone()[0]
 
-    log(f"Patrones insertados: {inserted}, ya existentes (omitidos): {skipped}", "OK")
-    return inserted, skipped
+    cur.execute(
+        """
+        UPDATE architect_patterns
+        SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
+            when_not_to_use = %s, decision_signals = %s, embedding = %s::vector
+        WHERE id = %s
+        """,
+        (
+            pattern["category"],
+            pattern["description"],
+            pattern["use_cases"],
+            json.dumps(pattern["tradeoffs"]),
+            pattern.get("when_not_to_use"),
+            decision_signals,
+            embedding,
+            row[0],
+        ),
+    )
+    return row[0]
+
+
+def seed_pattern_chunks(cur, pattern_id: int, pattern: dict) -> int:
+    """Recrea los chunks indexables del patron."""
+    cur.execute("DELETE FROM architect_pattern_chunks WHERE pattern_id = %s", (pattern_id,))
+    name = pattern["pattern_name"]
+
+    tradeoffs_text = None
+    if pattern.get("tradeoffs"):
+        ventajas = "; ".join(pattern["tradeoffs"].get("ventajas", []))
+        desventajas = "; ".join(pattern["tradeoffs"].get("desventajas", []))
+        tradeoffs_text = f"{name} - ventajas: {ventajas}. Desventajas: {desventajas}."
+
+    signals_text = None
+    if pattern.get("decision_signals"):
+        preguntas = "; ".join(
+            f"{signal['pregunta']} -> {signal['señal_patron']}"
+            for signal in pattern["decision_signals"]
+        )
+        signals_text = f"{name} - señales de decision: {preguntas}"
+
+    candidates = {
+        "summary": f"{name}: {pattern['description']} {pattern['use_cases']}",
+        "tradeoffs": tradeoffs_text,
+        "when_not_to_use": (
+            f"{name} - no usar cuando: {pattern['when_not_to_use']}"
+            if pattern.get("when_not_to_use")
+            else None
+        ),
+        "decision_signals": signals_text,
+    }
+
+    created = 0
+    for chunk_type, text in candidates.items():
+        if not text:
+            continue
+        embedding = to_pgvector_literal(embed_passage(text))
+        cur.execute(
+            """
+            INSERT INTO architect_pattern_chunks (pattern_id, chunk_type, chunk_text, embedding)
+            VALUES (%s, %s, %s, %s::vector)
+            """,
+            (pattern_id, chunk_type, text, embedding),
+        )
+        created += 1
+    return created
+
+
+def seed_patterns(conn):
+    cur = conn.cursor()
+    total_chunks = 0
+    for pattern in PATTERNS:
+        pattern_id = upsert_pattern(cur, pattern)
+        total_chunks += seed_pattern_chunks(cur, pattern_id, pattern)
+    log(f"Patrones procesados: {len(PATTERNS)}. Chunks (re)generados: {total_chunks}", "OK")
+    return len(PATTERNS), total_chunks
 
 
 def main():
     log("=" * 60)
-    log("Seed de patrones de arquitectura (architect_patterns)")
+    log("Seed de patrones de arquitectura (architect_patterns + chunks)")
     log("=" * 60)
     conn = connect_db()
     try:
         seed_patterns(conn)
+        conn.commit()
     finally:
         conn.close()
 

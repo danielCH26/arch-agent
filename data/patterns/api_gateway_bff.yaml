@@ -1,0 +1,26 @@
+pattern_name: "API Gateway + Backend for Frontend (BFF)"
+category: "Distribuida / Integración"
+description: >
+  Un punto de entrada único (API Gateway) enruta y agrega llamadas a servicios
+  internos, con una capa BFF adaptada a las necesidades de cada tipo de cliente
+  (web, móvil).
+use_cases: >
+  Sistemas con múltiples clientes (web, móvil) que consumen varios servicios
+  backend y necesitan una capa de agregación.
+when_not_to_use: >
+  No conviene cuando hay un solo cliente simple o cuando el backend todavía no
+  está dividido en servicios que requieran agregación.
+tradeoffs:
+  ventajas:
+    - "Simplifica el cliente: una sola llamada agrega varios servicios internos"
+    - "Permite adaptar la respuesta a cada tipo de cliente sin duplicar lógica de negocio"
+  desventajas:
+    - "El gateway puede volverse un cuello de botella o un punto único de fallo"
+    - "Solo tiene sentido si ya existen varios servicios internos que agregar"
+decision_signals:
+  - pregunta: "¿Web y móvil necesitan respuestas distintas a partir de los mismos servicios internos?"
+    señal_patron: "sí -> API Gateway + Backend for Frontend (BFF)"
+  - pregunta: "¿Cada pantalla del cliente requiere combinar datos de varios servicios?"
+    señal_patron: "sí -> API Gateway + Backend for Frontend (BFF)"
+  - pregunta: "¿Necesitas centralizar autenticación, rate limiting o enrutamiento hacia varios backends?"
+    señal_patron: "sí -> API Gateway + Backend for Frontend (BFF)"
