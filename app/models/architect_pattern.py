@@ -16,5 +16,7 @@ class ArchitectPattern(Base):
     description = Column(Text)
     use_cases = Column(Text)
     tradeoffs = Column(JSONB)
+    when_not_to_use = Column(Text)
+    decision_signals = Column(JSONB)
     embedding = Column(Vector(384))
     created_at = Column(TIMESTAMP, server_default=func.now())
