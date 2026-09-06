@@ -4,6 +4,11 @@ Seed de patrones de arquitectura para la base RAG.
 Lee el contenido desde data/patterns/*.yaml y mantiene pobladas:
 - architect_patterns, para el catalogo y compatibilidad con scripts existentes.
 - architect_pattern_chunks, para busqueda semantica por contexto especifico.
+
+Cada corrida reconcilia la tabla contra el YAML actual: cualquier fila que
+no corresponda a un pattern_name presente en data/patterns/*.yaml se borra
+(residuo de scripts/seed_bench_vectors.py, filas huerfanas de versiones
+anteriores, etc.). Los chunks asociados se borran en cascada por el FK.
 """
 
 import json
@@ -24,8 +29,6 @@ def load_patterns() -> list[dict]:
         sys.exit(1)
     return [yaml.safe_load(path.read_text(encoding="utf-8")) for path in files]
 
-
-PATTERNS = load_patterns()
 
 _model = None
 
@@ -170,13 +173,28 @@ def seed_pattern_chunks(cur, pattern_id: int, pattern: dict) -> int:
 
 
 def seed_patterns(conn):
+    patterns = load_patterns()
     cur = conn.cursor()
     total_chunks = 0
-    for pattern in PATTERNS:
+    curated_names = [p["pattern_name"] for p in patterns]
+
+    for pattern in patterns:
         pattern_id = upsert_pattern(cur, pattern)
         total_chunks += seed_pattern_chunks(cur, pattern_id, pattern)
-    log(f"Patrones procesados: {len(PATTERNS)}. Chunks (re)generados: {total_chunks}", "OK")
-    return len(PATTERNS), total_chunks
+
+    # Reconciliacion: borra todo lo que no venga del YAML actual (contaminacion
+    # de scripts/seed_bench_vectors.py, filas huerfanas de versiones previas
+    # del script, etc). Los chunks se borran en cascada por el FK.
+    cur.execute(
+        "DELETE FROM architect_patterns WHERE NOT (pattern_name = ANY(%s))",
+        (curated_names,),
+    )
+    removed = cur.rowcount
+    if removed:
+        log(f"Eliminadas {removed} filas no-curadas (residuo de benchmark/versiones previas)", "WARN")
+
+    log(f"Patrones procesados: {len(patterns)}. Chunks (re)generados: {total_chunks}", "OK")
+    return len(patterns), total_chunks
 
 
 def main():
