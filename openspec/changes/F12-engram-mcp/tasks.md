@@ -126,11 +126,11 @@ Chain strategy: **stacked-to-main**
 
 ### 2. Backend Chat Integration (F12.2)
 
-- [ ] **2.1** Wrap `app/api/chat.py::event_generator` to insert `Message(user)` + `Message(assistant)` in one Postgres tx BEFORE `yield event: done` (+60 lines). **[F12.2 · MOD · 60 LoC]** · target: REQ-4, REQ-6, SCN-1, SCN-7 · acceptance: test asserts `db.commit()` called before the `done` yield · commit: `feat(chat): persist user+assistant rows before done event`.
-- [ ] **2.2** Add `GET /api/chat/history` endpoint to `app/api/chat.py` (+40 lines; `limit` clamp [1,50]; 404 cross-user; 200 `[]` on DB-down). **[F12.2 · MOD · 40 LoC]** · target: REQ-7, REQ-11, SCN-3, SCN-5 · acceptance: contract test covers defaults/clamp/404/DB-down · commit: `feat(chat): add GET /api/chat/history endpoint`.
-- [ ] **2.3** Extend `tests/api/test_chat.py` with commit-before-yield + Engram-down path (+50 LoC). **[F12.2 · MOD · 50 LoC]** · target: REQ-4, REQ-10, SCN-1, SCN-4, SCN-7 · acceptance: `EngramError` does not propagate to caller · commit: `test(chat): assert commit-before-yield and engram-down resilience`.
-- [ ] **2.4** Create `tests/api/test_chat_history.py` (140 LoC). **[F12.2 · NEW · 140 LoC]** · target: REQ-7, REQ-11, SCN-3, SCN-5 · acceptance: default N=5, limit clamp, 404 cross-user, 200 `[]` on `OperationalError` · commit: `test(chat): add history endpoint contract tests`.
-- [ ] **2.5** Patch `tests/test_llm_validator.py` mock to expose `search`/`get_observation`/`save`/`delete` (+10 lines). **[F12.2 · MOD · 10 LoC]** · target: REQ-12 · acceptance: `pytest tests/test_llm_validator.py` passes unchanged semantics · commit: `test(llm-validator): add 4 engram mock methods`.
+- [x] **2.1** Wrap `app/api/chat.py::event_generator` to insert `Message(user)` + `Message(assistant)` in one Postgres tx BEFORE `yield event: done` (+60 lines). **[F12.2 · MOD · 60 LoC]** · target: REQ-4, REQ-6, SCN-1, SCN-7 · acceptance: test asserts `db.commit()` called before the `done` yield · commit: `feat(chat): persist user+assistant rows before done event`.
+- [x] **2.2** Add `GET /api/chat/history` endpoint to `app/api/chat.py` (+40 lines; `limit` clamp [1,50]; 404 cross-user; 200 `[]` on DB-down). **[F12.2 · MOD · 40 LoC]** · target: REQ-7, REQ-11, SCN-3, SCN-5 · acceptance: contract test covers defaults/clamp/404/DB-down · commit: `feat(chat): add GET /api/chat/history endpoint`.
+- [x] **2.3** Extend `tests/api/test_chat.py` with commit-before-yield + Engram-down path (+50 LoC). **[F12.2 · MOD · 50 LoC]** · target: REQ-4, REQ-10, SCN-1, SCN-4, SCN-7 · acceptance: `EngramError` does not propagate to caller · commit: `test(chat): assert commit-before-yield and engram-down resilience`.
+- [x] **2.4** Create `tests/api/test_chat_history.py` (140 LoC). **[F12.2 · NEW · 140 LoC]** · target: REQ-7, REQ-11, SCN-3, SCN-5 · acceptance: default N=5, limit clamp, 404 cross-user, 200 `[]` on `OperationalError` · commit: `test(chat): add history endpoint contract tests`.
+- [x] **2.5** Patch `tests/test_llm_validator.py` mock to expose `search`/`get_observation`/`save`/`delete` (+10 lines). **[F12.2 · MOD · 10 LoC]** · target: REQ-12 · acceptance: `pytest tests/test_llm_validator.py` passes unchanged semantics · commit: `test(llm-validator): add 4 engram mock methods`.
 
 ### 3. Frontend Persistence (F12.3)
 
