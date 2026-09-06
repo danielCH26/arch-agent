@@ -6,3 +6,4 @@ from app.models.session import UserSession  # noqa: F401
 from app.models.uploaded_document import UploadedDocument, DocumentChunk  # noqa: F401
 from app.models.architect_pattern import ArchitectPattern  # noqa: F401
 from app.models.approval import Approval  # noqa: F401
+from app.models.message import Message  # noqa: F401
