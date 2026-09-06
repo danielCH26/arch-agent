@@ -287,28 +287,28 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 4. F11.3a — Agent factory (backend/core)
 
-- [ ] **4.1 — Implement `format_rag_context()`**
+- [x] **4.1 — Implement `format_rag_context()`**
   - Slice: F11.3a · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\agent.py`
   - LoC: ≈45 (±15%) · REQ-3, REQ-8
   - Content: numbered prompt block from `list[Document]`, `k≤5` cap, `"(sin contexto RAG)"` for the empty list; flag when any doc has `metadata["source_type"] == "architect_pattern"` so `run_agent` can drop tools per REQ-8
   - Acceptance: `pytest tests/core/test_agent.py -q -k format_rag_context` passes
   - Commit hint: `feat(f11): format RAG documents into the agent system prompt`
 
-- [ ] **4.2 — Implement `build_agent()`**
+- [x] **4.2 — Implement `build_agent()`**
   - Slice: F11.3a · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\agent.py`
   - LoC: ≈45 (±15%) · REQ-3
   - Content: `create_agent(model, tools or [], system_prompt=...)`; compose `ARCHITECT_PERSONA` + RAG block + `LIBRARY_HINT`; must accept an empty tools list (RAG-only mode)
   - Acceptance: `pytest tests/core/test_agent.py -q -k build_agent` passes for both empty and populated tool lists
   - Commit hint: `feat(f11): build the LangChain agent with Context7 tools and RAG prompt`
 
-- [ ] **4.3 — Implement `run_agent()` streaming with the degraded path**
+- [x] **4.3 — Implement `run_agent()` streaming with the degraded path**
   - Slice: F11.3a · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\agent.py`
   - LoC: ≈90 (±15%) · REQ-4, REQ-6, REQ-8 / SCN-1 (partial), SCN-2, SCN-3
   - Content: `await get_context7_tools()` guarded by try/except `Context7Unavailable` → yield exactly one `{"event": "degraded", "data": {...,"fallback":"rag_only"}}` then continue with `tools=[]`; skip Context7 entirely when the architect-pattern flag is set (REQ-8); drive `agent.astream_events({"messages": [...]}, version="v2")`; truncate any tool result over 4000 chars with the ADR-010 marker
   - Acceptance: `pytest tests/core/test_agent.py -q -k "run_agent or degraded"` passes; degraded event is emitted at most once and before the first token
   - Commit hint: `feat(f11): stream agent events with RAG-only degradation on Context7 failure`
 
-- [ ] **4.4 — Agent unit tests**
+- [x] **4.4 — Agent unit tests**
   - Slice: F11.3a · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\tests\core\test_agent.py`
   - LoC: 0 prod / ≈160 test (±15%) · REQ-3, REQ-8, REQ-9 / SCN-1 (partial), SCN-2
   - Content: mock `BaseChatModel` + empty tools → tokens only, zero tool events (SCN-2); one synthetic `BaseTool` → exactly one `tool_start` + one `tool_end`; architect-pattern doc → `get_context7_tools` never awaited (REQ-8); `Context7Unavailable` → one `degraded` event then tokens (SCN-3)
