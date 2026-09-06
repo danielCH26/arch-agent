@@ -37,8 +37,6 @@ temp/
 *.pdf
 *.md
 !README.md
-!README_hu2.md
-!QA_criterios_aceptacion_RAG_final.md
 !.atl/
 !.atl/**/*.md
 !openspec/
@@ -46,6 +44,8 @@ temp/
 !docs/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
+!README_hu2.md
+!QA_criterios_aceptacion_RAG_final.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
@@ -53,4 +53,5 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec + .atl/ + docs/ artifacts: versioned via *.md exceptions above
+# OpenSpec artifacts: versioned via !openspec/ exception above (legacy
+# `openspec/` ignore removed in F11 to enable SDD artifacts in PRs).
