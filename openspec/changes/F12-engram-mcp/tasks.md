@@ -134,11 +134,11 @@ Chain strategy: **stacked-to-main**
 
 ### 3. Frontend Persistence (F12.3)
 
-- [ ] **3.1** Add `fetchChatHistory(projectId, limit=5)` to `frontend/src/api/chat.ts` (+30 lines). **[F12.3 · MOD · 30 LoC]** · target: REQ-7 · acceptance: returns parsed `Message[]`; respects `authStore.token` · commit: `feat(chat-api): add fetchChatHistory client`.
-- [ ] **3.2** Extend `frontend/src/stores/chatStore.ts` with `loadHistory(projectId)` + `loadingHistory` flag; atomic `set({messages, loadingHistory:false})` (+40 lines). **[F12.3 · MOD · 40 LoC]** · target: REQ-8 · acceptance: Vitest covers loading/error/success · commit: `feat(chat-store): add loadHistory action with loadingHistory flag`.
-- [ ] **3.3** Add `useEffect(..., [])` to `frontend/src/components/ChatWindow.tsx` invoking `loadHistory(projectId)` guarded by `isStreaming === false && loadingHistory === false` (+20 lines). **[F12.3 · MOD · 20 LoC]** · target: REQ-9, SCN-2 · acceptance: StrictMode-safe Vitest · commit: `feat(chat-window): load history on mount with streaming guard`.
-- [ ] **3.4** Create `frontend/src/stores/__tests__/chatStore.test.ts` (50 LoC). **[F12.3 · NEW · 50 LoC]** · target: REQ-8 · acceptance: `loadHistory(42)` sets flag, replaces messages atomically, clears on error · commit: `test(chat-store): cover loadHistory success and error paths`.
-- [ ] **3.5** Create `frontend/src/components/__tests__/ChatWindow.test.tsx` (50 LoC). **[F12.3 · NEW · 50 LoC]** · target: REQ-9, SCN-2 · acceptance: mount fires once under StrictMode; `isStreaming=true` blocks fetch · commit: `test(chat-window): assert StrictMode-safe mount fetch`.
+- [x] **3.1** Add `fetchChatHistory(projectId, limit=5)` to `frontend/src/api/chat.ts` (+30 lines). **[F12.3 · MOD · 30 LoC]** · target: REQ-7 · acceptance: returns parsed `Message[]`; respects `authStore.token` · commit: `feat(chat-api): add fetchChatHistory client`.
+- [x] **3.2** Extend `frontend/src/stores/chatStore.ts` with `loadHistory(projectId)` + `loadingHistory` flag; atomic `set({messages, loadingHistory:false})` (+40 lines). **[F12.3 · MOD · 40 LoC]** · target: REQ-8 · acceptance: Vitest covers loading/error/success · commit: `feat(chat-store): add loadHistory action with loadingHistory flag`.
+- [x] **3.3** Add `useEffect(..., [])` to `frontend/src/components/ChatWindow.tsx` invoking `loadHistory(projectId)` guarded by `isStreaming === false && loadingHistory === false` (+20 lines). **[F12.3 · MOD · 20 LoC]** · target: REQ-9, SCN-2 · acceptance: StrictMode-safe Vitest · commit: `feat(chat-window): load history on mount with streaming guard`.
+- [x] **3.4** Create `frontend/src/stores/__tests__/chatStore.test.ts` (50 LoC). **[F12.3 · NEW · 50 LoC]** · target: REQ-8 · acceptance: `loadHistory(42)` sets flag, replaces messages atomically, clears on error · commit: `test(chat-store): cover loadHistory success and error paths`.
+- [x] **3.5** Create `frontend/src/components/__tests__/ChatWindow.test.tsx` (50 LoC). **[F12.3 · NEW · 50 LoC]** · target: REQ-9, SCN-2 · acceptance: mount fires once under StrictMode; `isStreaming=true` blocks fetch · commit: `test(chat-window): assert StrictMode-safe mount fetch`.
 
 ---
 
