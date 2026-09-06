@@ -14,6 +14,17 @@ export interface RagSource {
   similarity: number | null
 }
 
+// F12 (REQ-7 / REQ-8): una fila persistida por el backend, devuelta por
+// GET /api/chat/history. Coincide con la forma del payload que arma
+// app/api/chat.py::chat_history.
+export interface ChatHistoryMessage {
+  id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  citations: RagSource[]
+  created_at: string | null
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: () => void
@@ -154,4 +165,42 @@ export function createChatStream(
   return () => {
     controller.abort()
   }
+}
+
+// -----------------------------------------------------------------------------
+// F12 (REQ-7, REQ-8): history endpoint client
+// -----------------------------------------------------------------------------
+
+/**
+ * GET /api/chat/history?project_id=<int>&limit=<int>
+ *
+ * Returns the last ``limit`` messages (default 5, max 50) for the
+ * authenticated user + project, ordered newest-first. The backend is
+ * expected to return 200 with `{messages: []}` when Postgres is down
+ * (REQ-11 / SCN-5), so any non-ok response is normalised into an empty
+ * array rather than throwing — keeps the frontend mount resilient.
+ */
+export async function fetchChatHistory(
+  projectId: number,
+  limit: number = 5,
+): Promise<ChatHistoryMessage[]> {
+  const token = authStore.getState().token
+  const clampedLimit = Math.max(1, Math.min(50, Math.floor(limit)))
+
+  const response = await fetch(
+    `/api/chat/history?project_id=${encodeURIComponent(String(projectId))}&limit=${clampedLimit}`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  )
+
+  if (!response.ok) {
+    // Treat 4xx/5xx as "no history to render" — the store handles the
+    // empty case (REQ-8: error path leaves messages untouched and clears
+    // loadingHistory).
+    return []
+  }
+
+  const payload = (await response.json()) as { messages?: ChatHistoryMessage[] }
+  return Array.isArray(payload.messages) ? payload.messages : []
 }

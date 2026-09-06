@@ -1,5 +1,10 @@
 import { create } from 'zustand'
-import { createChatStream, type RagSource } from '../api/chat'
+import {
+  createChatStream,
+  fetchChatHistory,
+  type ChatHistoryMessage,
+  type RagSource,
+} from '../api/chat'
 
 export interface Message {
   id: string
@@ -15,6 +20,9 @@ interface ChatState {
   messages: Message[]
   isStreaming: boolean
   error: string | null
+  // F12 (REQ-8): true while loadHistory is in flight so the mount-time
+  // useEffect can avoid double-firing under React StrictMode.
+  loadingHistory: boolean
 
   sendMessage: (projectId: number | null, text: string) => Promise<void>
   addUserMessage: (content: string) => void
@@ -23,12 +31,15 @@ interface ChatState {
   appendToLastAssistantMessage: (content: string) => void
   clearMessages: () => void
   setError: (error: string | null) => void
+  // F12 (REQ-8): replaces messages atomically with the backend history.
+  loadHistory: (projectId: number, limit?: number) => Promise<void>
 }
 
 export const chatStore = create<ChatState>((set) => ({
   messages: [],
   isStreaming: false,
   error: null,
+  loadingHistory: false,
 
   sendMessage: async (projectId: number | null, text: string) => {
     // Add user message
@@ -148,5 +159,30 @@ export const chatStore = create<ChatState>((set) => ({
 
   setError: (error: string | null) => {
     set({ error })
+  },
+
+  // F12 (REQ-8): fetch history for (user, project) and replace messages
+  // atomically. On error: leave messages untouched and clear the flag.
+  loadHistory: async (projectId: number, limit: number = 5) => {
+    set({ loadingHistory: true })
+    try {
+      const rows = await fetchChatHistory(projectId, limit)
+      // The backend returns rows newest-first; the chat UI shows them in
+      // chronological order so the conversation reads top-to-bottom.
+      const ordered = [...rows].reverse()
+      const messages: Message[] = ordered.map((row: ChatHistoryMessage) => ({
+        id: `history-${row.id}`,
+        role: row.role,
+        content: row.content,
+        sources: row.citations,
+      }))
+      // Atomic replacement: do not interleave with in-flight streaming
+      // tokens (REQ-9 guards in ChatWindow ensure this is a no-op while
+      // a stream is active).
+      set({ messages, loadingHistory: false })
+    } catch {
+      // Per REQ-8: on error, clear loadingHistory and leave messages untouched.
+      set({ loadingHistory: false })
+    }
   },
 }))
