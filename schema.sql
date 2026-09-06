@@ -99,11 +99,15 @@ CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
 -- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
 -- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
 -- migration 0007, mismo criterio que architect_patterns arriba (C2).
+-- decision usa CHECK en vez de solo confiar en la validación de Pydantic
+-- (migration 0008, revisión de PR #63) -- valores en pasado (participio),
+-- que son los que realmente inserta app/api/elicitation.py, no los verbos
+-- del body del request (approve/modify/reject).
 CREATE TABLE IF NOT EXISTS approvals (
     id SERIAL PRIMARY KEY,
     session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
     phase VARCHAR(50) NOT NULL,
-    decision VARCHAR(20) NOT NULL,  -- 'approved' | 'modified' | 'rejected'
+    decision VARCHAR(20) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
     feedback TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
