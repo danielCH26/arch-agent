@@ -363,28 +363,28 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 7. F11.4b — Chat route swap (backend/api)
 
-- [ ] **7.1 — Wire tools, handler and callbacks into the chat route**
+- [x] **7.1 — Wire tools, handler and callbacks into the chat route**
   - Slice: F11.4b · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\api\chat.py`
   - LoC: ≈40 (±15%) · REQ-4, REQ-5
   - Content: import `run_agent` and `get_langfuse_handler`; build `callbacks = [SSEStreamCallbackHandler()] + ([lf] if lf else [])`; keep ownership validation, `build_langchain_model(user_id)`, `similarity_search`, and the `event: sources` emission byte-for-byte identical to F08
   - Acceptance: `pytest tests/api/test_chat.py -q -k "sources or auth or ownership"` passes; HTTP 400/401/404/409 paths untouched
   - Commit hint: `feat(f11): wire agent callbacks into the chat route`
 
-- [ ] **7.2 — Swap `model.astream(prompt)` for `run_agent(...)`**
+- [x] **7.2 — Swap `model.astream(prompt)` for `run_agent(...)`**
   - Slice: F11.4b · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\api\chat.py`
   - LoC: ≈50 (±15%) · REQ-4, REQ-6 / SCN-1, SCN-2, SCN-3
   - Content: replace the `astream` loop (around `app/api/chat.py:182`) with `async for sse_dict in run_agent(...)`; log a WARNING when the event is `degraded`; keep `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`; keep the outer try/except `event: error` fallback and guarantee `done` fires
   - Acceptance: `pytest tests/api/test_chat.py -q` green; `Select-String -Path app\api\chat.py -Pattern "X-Accel-Buffering","no-cache","text/event-stream"` returns all three
   - Commit hint: `refactor(f11): stream chat responses through the agent runtime`
 
-- [ ] **7.3 — Chat integration tests for the three scenarios**
+- [x] **7.3 — Chat integration tests for the three scenarios**
   - Slice: F11.4b · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\tests\api\test_chat.py`
   - LoC: 0 prod / ≈150 test (±15%) · REQ-4, REQ-6, REQ-7, REQ-9 / SCN-1, SCN-2, SCN-3
   - Content: patch `app.core.agent.run_agent` at the module boundary and drive synthetic sequences — SCN-1 two tool pairs then tokens in exact order; SCN-2 zero tool events (assert the `tool_start` substring is absent); SCN-3 `degraded` between `sources` and the first `token`; extend `TestSSEFormat` without deleting existing assertions
   - Acceptance: `pytest tests/api/test_chat.py -q` green; `pytest -q` shows no NEW failures beyond the 6 known from issue #66
   - Commit hint: `test(f11): cover chat SSE tool, RAG-only and degraded flows`
 
-- [ ] **7.4 — Frontend parity and manual smoke**
+- [x] **7.4 — Frontend parity and manual smoke**
   - Slice: F11.4b · Files: none (verification only)
   - LoC: 0 · REQ-10
   - Content: confirm zero frontend changes; unknown SSE events ignored by Chainlit
