@@ -89,6 +89,23 @@ async def chat(
 
     user_id = current_user["user_id"]
 
+    # F12 liveness check (REQ-11 / SCN-5): return 503 BEFORE any other DB op.
+    # Must run BEFORE project validation (which uses SessionLocal) and BEFORE
+    # build_langchain_model (which reads LLM config and would otherwise 500).
+    try:
+        with SessionLocal() as _db_probe:
+            from sqlalchemy import text as _text
+            _db_probe.execute(_text("SELECT 1")).scalar()
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Postgres liveness check failed user_id=%s: %s",
+            user_id, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable; chat cannot persist turns right now.",
+        )
+
     # Validate project ownership if provided
     if body.project_id is not None:
         db = SessionLocal()
