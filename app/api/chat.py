@@ -1,10 +1,12 @@
 import asyncio
 import json
 import logging
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
@@ -12,8 +14,10 @@ from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
+from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
 from app.models.project import Project
+from app.models.session import UserSession
 
 # Umbral MINIMO de similitud para considerar un chunk/patron "relevante".
 # Sin esto, similarity_search() siempre devuelve los top-k mas cercanos
@@ -65,20 +69,20 @@ async def chat(
     """
     Stream agent chat responses as SSE.
 
-    POST /api/chat  →  text/event-stream
+    POST /api/chat  ΓåÆ  text/event-stream
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream — "sources" event (metadata RAG) +
+        200 text/event-stream ΓÇö "sources" event (metadata RAG) +
             ("tool_start" / "tool_end")* + tokens as "event: token" +
             optional "event: degraded" + final "event: done".
             On hard failure, "event: error" terminates the stream.
-        400 — no message provided
-        401 — invalid JWT
-        404 — project not found or not owned
-        409 — LLM not configured for user
+        400 ΓÇö no message provided
+        401 ΓÇö invalid JWT
+        404 ΓÇö project not found or not owned
+        409 ΓÇö LLM not configured for user
 
-    F11 changes (issue #13, design.md §6.5):
+    F11 changes (issue #13, design.md ┬º6.5):
       - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
         callbacks=..., rag_documents=...)`` which drives a
         ``create_agent`` runtime.
@@ -92,9 +96,15 @@ async def chat(
       - The optional Langfuse handler (``get_langfuse_handler``) is
         appended to the callback list when env vars are present, else
         skipped (REQ-5 / SCN-6).
+        503 -- Postgres unreachable (REQ-11)
+
+    Behaviour change (F12, REQ-4 / REQ-6): each turn inserts a Message(role=user)
+    + Message(role=assistant) row in ONE Postgres transaction that commits BEFORE
+    the SSE handler yields ``event: done``; fire-and-forget Engram mirror fires
+    AFTER the commit. Either store degrades gracefully when the other is down.
     """
     if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacío")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vac├¡o")
 
     user_id = current_user["user_id"]
 
@@ -179,7 +189,7 @@ async def chat(
         """
         SSE generator that yields events as they arrive from the agent runtime.
 
-        Ordering (design.md §5.2):
+        Ordering (design.md ┬º5.2):
           sources -> (tool_start/tool_end)* -> token*N -> done
 
         ``sources`` is emitted by this route BEFORE the agent runs (the agent
@@ -187,6 +197,11 @@ async def chat(
         ``run_agent`` may also emit exactly one ``degraded`` event between
         ``sources`` and the first ``token`` (REQ-6 / SCN-3); the route logs
         a WARNING when that happens but lets the stream continue.
+
+        F12 (REQ-4, REQ-6): before yielding ``event: done``, persists both Message
+        rows (user + assistant) in ONE Postgres transaction; on SQLAlchemyError,
+        yields ``event: error`` instead of ``done`` (REQ-11). After the commit,
+        fire-and-forgets the Engram mirror.
         """
         try:
             docs, rag_context = await retrieve_context()
@@ -195,6 +210,7 @@ async def chat(
             yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
 
             emitted_done = False
+            full_response = ""
             async for sse_dict in run_agent(
                 model=model,
                 message=body.message,
@@ -223,11 +239,54 @@ async def chat(
                     break
 
                 if event_name == "done":
+                    # F12 (REQ-4): persist both rows in ONE Postgres tx BEFORE
+                    # yielding done. On SQLAlchemyError, emit error and skip done
+                    # (REQ-11). Engram mirror is fire-and-forget after the commit.
+                    try:
+                        db = SessionLocal()
+                        try:
+                            session_id = ensure_user_session(db, user_id)
+                            user_msg = save_message(
+                                db,
+                                session_id=session_id,
+                                project_id=body.project_id,
+                                user_id=user_id,
+                                role="user",
+                                content=body.message,
+                            )
+                            asst_msg = save_message(
+                                db,
+                                session_id=session_id,
+                                project_id=body.project_id,
+                                user_id=user_id,
+                                role="assistant",
+                                content=full_response,
+                                citations=sources,
+                            )
+                            db.commit()
+
+                            engram_mirror(user_msg, user_id=user_id, project_id=body.project_id)
+                            engram_mirror(asst_msg, user_id=user_id, project_id=body.project_id)
+                        finally:
+                            db.close()
+                    except SQLAlchemyError as exc:
+                        logger.error(
+                            "messages insert failed user_id=%s project_id=%s: %s",
+                            user_id,
+                            body.project_id,
+                            exc,
+                        )
+                        yield f"event: error\ndata: {json.dumps('messages store unavailable', ensure_ascii=False)}\n\n"
+                        emitted_done = True
+                        return
+
                     yield format_done_event()
                     emitted_done = True
                     continue
 
                 if event_name == "token":
+                    if payload:
+                        full_response += payload
                     yield f"event: token\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     continue
 
@@ -246,7 +305,7 @@ async def chat(
             if not emitted_done:
                 # Defensive: if ``run_agent`` returned without yielding
                 # ``done`` or ``error``, fire ``done`` to keep the FE
-                # contract stable (design.md §9).
+                # contract stable (design.md ┬º9).
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
@@ -260,3 +319,69 @@ async def chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/history")
+def chat_history(
+    project_id: int = Query(..., ge=1),
+    limit: int = Query(5, ge=1, le=50),
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, list[dict[str, Any]]]:
+    """
+    GET /api/chat/history?project_id=<int>&limit=<int:1..50,default=5>
+
+    Returns the last ``limit`` messages for ``(user_id, project_id)`` ordered
+    newest-first. Cross-user access returns 404 (REQ-7, do not leak existence).
+    Postgres unreachable returns 200 ``{"messages": []}`` per REQ-11 / SCN-5.
+    """
+    user_id = current_user["user_id"]
+    # FastAPI already clamps via Query(ge=1, le=50); defensive clamp too.
+    limit = max(1, min(50, int(limit)))
+
+    db = SessionLocal()
+    try:
+        # Ownership check: 404 cross-user (REQ-7). Do NOT leak existence.
+        project = (
+            db.query(Project)
+            .filter(Project.id == project_id, Project.user_id == user_id)
+            .first()
+        )
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado",
+            )
+
+        # Resolve the user's session id (lazy-upsert so a fresh user still
+        # gets an empty list, not an exception). REQ-11: any DB failure on
+        # the read path ΓåÆ 200 with empty messages (graceful degradation).
+        try:
+            session = (
+                db.query(UserSession).filter(UserSession.user_id == user_id).first()
+            )
+            if session is None:
+                return {"messages": []}
+
+            rows = list_recent(db, session.id, limit=limit)
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "history read skipped, Postgres unreachable user_id=%s: %s",
+                user_id,
+                exc,
+            )
+            return {"messages": []}
+
+        return {
+            "messages": [
+                {
+                    "id": row.id,
+                    "role": row.role,
+                    "content": row.content,
+                    "citations": row.citations or [],
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
+        }
+    finally:
+        db.close()
