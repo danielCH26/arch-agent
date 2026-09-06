@@ -45,6 +45,83 @@ class EngramClient:
             return str(response.get("context", ""))
         return ""
 
+    # ------------------------------------------------------------------
+    # F12 extensions (REQ-5): retrieval-side methods. Existing methods
+    # above are unchanged so ADR-005 / ADR-011 callers stay intact.
+    # ------------------------------------------------------------------
+
+    def search(
+        self,
+        scope: str,
+        query: str,
+        project: str | None,
+        user_id: int | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search observations scoped to ``project`` + ``user_id``.
+
+        Defensive: ``project`` is REQUIRED (REQ-5 / SCN-6). A missing
+        ``project`` raises ``ValueError`` immediately so a caller that
+        forgot to scope the call cannot accidentally leak across users.
+        """
+        if not project:
+            raise ValueError("project is required")
+
+        params: dict[str, Any] = {
+            "scope": scope,
+            "project": project,
+            "query": query,
+            "limit": limit,
+        }
+        if user_id is not None:
+            params["user_id"] = user_id
+
+        response = self._request("GET", f"/observations?{urlencode(params)}")
+        if isinstance(response, dict):
+            return list(response.get("observations") or response.get("results") or [])
+        if isinstance(response, list):
+            return response
+        return []
+
+    def get_observation(self, observation_id: int) -> dict:
+        """Fetch a single observation by id. Raises ``EngramError`` on miss."""
+        response = self._request("GET", f"/observations/{observation_id}")
+        if isinstance(response, dict):
+            return response
+        return {}
+
+    def save(
+        self,
+        topic_key: str,
+        content: str,
+        *,
+        title: str = "",
+        observation_type: str = "chat_message",
+        project: str | None = None,
+        scope: str = "project",
+    ) -> dict:
+        """Fire-and-forget sibling observation (REQ-6 / ADR-011).
+
+        Returns the parsed JSON response (typically ``{"id": <int>}``).
+        The chat route catches ``EngramError`` and continues without
+        surfacing the failure to the SSE stream (REQ-6, REQ-10).
+        """
+        body: dict[str, Any] = {
+            "topic_key": topic_key,
+            "content": content,
+            "title": title,
+            "type": observation_type,
+            "scope": scope,
+        }
+        if project is not None:
+            body["project"] = project
+        response = self._request("POST", "/observations", body)
+        return response if isinstance(response, dict) else {}
+
+    def delete(self, observation_id: int) -> None:
+        """Best-effort delete of an observation. Used by retention jobs."""
+        self._request("DELETE", f"/observations/{observation_id}")
+
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = Request(
