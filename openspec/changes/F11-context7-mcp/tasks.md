@@ -340,21 +340,21 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 6. F11.4a — SSE tool events (backend/api)
 
-- [ ] **6.1 — Add tool callbacks to `SSEStreamCallbackHandler`**
+- [x] **6.1 — Add tool callbacks to `SSEStreamCallbackHandler`**
   - Slice: F11.4a · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\api\sse.py`
   - LoC: ≈45 (±15%) · REQ-7 / SCN-1
   - Content: `on_tool_start` → `{"tool": "<name>"}` and start the latency clock; `on_tool_end` → `{"tool","result_length","latency_ms","status":"ok"}` with `result_length` capped at 4000; `on_tool_error` → the same payload with `status:"error"`, never aborting the stream
   - Acceptance: `pytest tests/api/test_sse_tool_events.py -q` passes; `Select-String -Path app\api\sse.py -Pattern "tool_start","tool_end"` returns hits
   - Commit hint: `feat(f11): emit tool_start and tool_end SSE events from the handler`
 
-- [ ] **6.2 — Add the dual-channel `aevents()` iterator**
+- [x] **6.2 — Add the dual-channel `aevents()` iterator**
   - Slice: F11.4a · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\api\sse.py`
   - LoC: ≈15 (±15%) · REQ-7
   - Content: yield SSE-ready dicts so tool events and tokens never interleave mid-token; guarantee each `tool_end` follows its own `tool_start`
   - Acceptance: `pytest tests/api/test_sse_tool_events.py -q -k order` passes
   - Commit hint: `feat(f11): serialize tool and token events through one SSE queue`
 
-- [ ] **6.3 — SSE handler tests**
+- [x] **6.3 — SSE handler tests**
   - Slice: F11.4a · Files: NEW `C:\Users\danie\Downloads\arch-agent\tests\api\test_sse_tool_events.py`
   - LoC: 0 prod / ≈120 test (±15%) · REQ-7, REQ-9
   - Content: exact byte assertions `event: tool_start\ndata: {"tool":"resolve-library-id"}\n\n`; `ensure_ascii=False` preserved; pairing order; `status:"error"` on `on_tool_error`; existing `token`/`done` bytes unchanged
