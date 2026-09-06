@@ -220,35 +220,35 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 2. F11.1 — Dependencies and module stubs (backend/core)
 
-- [ ] **2.1 — Pin the four new dependencies**
+- [x] **2.1 — Pin the four new dependencies**
   - Slice: F11.1 · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\requirements.txt`
   - LoC: 4 · REQ-1
   - Content: `langchain-mcp-adapters==0.3.2`, `mcp>=1.0`, `langfuse>=2.0.0`, `langchain>=0.3,<0.4`
   - Acceptance: `pip install -r requirements.txt` exits 0 and `pip show langchain-mcp-adapters` reports `0.3.2`
   - Commit hint: `build(f11): pin Context7 MCP adapter, mcp, langfuse and langchain`
 
-- [ ] **2.2 — Create `context7_mcp.py` stub with pinned signatures**
+- [x] **2.2 — Create `context7_mcp.py` stub with pinned signatures**
   - Slice: F11.1 · Files: NEW `C:\Users\danie\Downloads\arch-agent\app\core\context7_mcp.py`
   - LoC: ≈30 (±15%) · REQ-2
   - Content: module constants `_BASE_URL`, `_TIMEOUT_SECONDS = 5.0`, `_CLIENT = None`, `_LOGGER`; `build_context7_client()` and `async get_context7_tools()` raising `NotImplementedError`; third-party import guarded inside a `try/except ImportError` so collection never breaks
   - Acceptance: `python -c "import app.core.context7_mcp"` exits 0 with `langchain_mcp_adapters` absent
   - Commit hint: `feat(f11): add Context7 MCP client module skeleton`
 
-- [ ] **2.3 — Create `agent.py` stub with pinned signatures**
+- [x] **2.3 — Create `agent.py` stub with pinned signatures**
   - Slice: F11.1 · Files: NEW `C:\Users\danie\Downloads\arch-agent\app\core\agent.py`
   - LoC: ≈55 (±15%) · REQ-3
   - Content: `build_agent(model, system_prompt, tools=None)`, `format_rag_context(rag_documents)`, `async run_agent(model, message, *, callbacks, rag_documents=None)` — all `NotImplementedError`; `ARCHITECT_PERSONA` / `LIBRARY_HINT` prompt constants declared; `create_agent` import guarded
   - Acceptance: `python -c "import app.core.agent"` exits 0
   - Commit hint: `feat(f11): add agent runtime module skeleton`
 
-- [ ] **2.4 — Create `langfuse_tracer.py` stub with pinned signatures**
+- [x] **2.4 — Create `langfuse_tracer.py` stub with pinned signatures**
   - Slice: F11.1 · Files: NEW `C:\Users\danie\Downloads\arch-agent\app\core\langfuse_tracer.py`
   - LoC: ≈25 (±15%) · REQ-5
   - Content: `get_langfuse_handler()`, `_env_present()`, `_LOGGER`; `from langfuse.langchain import CallbackHandler` guarded so `CallbackHandler = None` when the package is absent
   - Acceptance: `python -c "import app.core.langfuse_tracer"` exits 0
   - Commit hint: `feat(f11): add Langfuse tracer module skeleton`
 
-- [ ] **2.5 — Add import-smoke tests for the three new modules**
+- [x] **2.5 — Add import-smoke tests for the three new modules**
   - Slice: F11.1 · Files: NEW `tests\core\test_context7_mcp.py`, `tests\core\test_agent.py`, `tests\core\test_langfuse_tracer.py`
   - LoC: 6 prod / ≈90 test (±15%) · REQ-9
   - Content: per module assert import succeeds, the public callables exist, and the pinned constants (`_BASE_URL == "https://mcp.context7.com/mcp"`, `_TIMEOUT_SECONDS == 5.0`) hold
