@@ -7,39 +7,26 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
-from app.api.sse import SSEStreamCallbackHandler
+from app.core.elicitation_agent import (
+    ElicitationAgentError,
+    FIRST_QUESTION,
+    generate_summary,
+    next_step,
+)
+from app.core.elicitation_state import (
+    get_project_elicitation_state,
+    save_project_elicitation_state,
+)
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.rag import similarity_search
 from app.models.project import Project
-
-# Umbral MINIMO de similitud para considerar un chunk/patron "relevante".
-# Sin esto, similarity_search() siempre devuelve los top-k mas cercanos
-# aunque ninguno tenga relacion real con la query.
-#
-# Es un UNICO umbral global (no diferenciado por tipo) -- se intento
-# diferenciar por source_type (patrones vs. documentos) pero la evidencia
-# real termino contradiciendolo: un falso positivo de un documento
-# (PDF de matematicas, en una pregunta de microservicios) salio a 83%,
-# por ENCIMA de un verdadero positivo de otro documento real (PDF de
-# grafos/MapReduce, en su propia pregunta, a 80-81%). Con este modelo de
-# embeddings (multilingual-e5-small), la similitud coseno sola no separa
-# limpiamente relevante/irrelevante en la banda 80-88%; no existe un
-# numero (global o por tipo) que acierte siempre en esa zona gris.
-#
-# 0.85 es un punto intermedio elegido con la evidencia acumulada:
-#   Verdaderos positivos medidos: 88% (patron), 89-92% (documento).
-#   Falsos positivos medidos:     75-78%, 81-83% (ambos tipos).
-# Es una heuristica "best effort", no una garantia -- puede ocasionalmente
-# dejar pasar ruido cerca del limite, o descartar un match debil pero
-# legitimo. Si se necesita precision real en esa zona gris, la solucion
-# correcta es un paso de re-ranking (ej. que el LLM juzgue relevancia
-# real de cada candidato, o un cross-encoder), no seguir ajustando este
-# numero -- quedo fuera del alcance de esta HU, ver docs/QA_criterios_aceptacion_RAG.md.
-RAG_MIN_SIMILARITY = 0.85
+from app.models.session import UserSession
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+
+RAG_MIN_SIMILARITY = 0.85
 
 
 def _is_relevant(doc) -> bool:
@@ -51,6 +38,92 @@ def _is_relevant(doc) -> bool:
 class ChatRequest(BaseModel):
     project_id: int | None = None
     message: str
+
+
+class ElicitationStatus(BaseModel):
+    history: list[dict]
+    current_question: str | None
+    summary: dict | None
+    completed: bool
+    approved: bool
+
+
+def _summary_text(summary: dict) -> str:
+    """Formato legible y revisable del resumen estructurado para el chat."""
+    def items(values: list[str]) -> str:
+        return "\n".join(f"- {value}" for value in values) or "- No especificado"
+
+    return (
+        "Resumen de requerimientos para validar\n\n"
+        f"Problema\n{summary.get('problema', 'No especificado')}\n\n"
+        f"Usuarios\n{summary.get('usuarios', 'No especificado')}\n\n"
+        f"Funcionalidades\n{items(summary.get('funcionalidades', []))}\n\n"
+        f"Restricciones\n{items(summary.get('restricciones', []))}\n\n"
+        f"Calidad\n{items(summary.get('calidad', []))}\n\n"
+        "Revísalo y apruébalo cuando refleje tus necesidades."
+    )
+
+
+def _require_project(db, user_id: int, project_id: int) -> Project:
+    project = db.query(Project).filter(
+        Project.id == project_id, Project.user_id == user_id
+    ).first()
+    if project is not None:
+        return project
+    exists = db.query(Project).filter(Project.id == project_id).first()
+    if exists:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a este proyecto")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
+
+
+@router.get("/{project_id}/elicitation", response_model=ElicitationStatus)
+async def get_elicitation_status(project_id: int, current_user: dict = Depends(get_current_user)):
+    """Recupera la pregunta pendiente o el resumen de HU05 al reabrir el chat."""
+    db = SessionLocal()
+    try:
+        project = _require_project(db, current_user["user_id"], project_id)
+        if project.current_phase != "requerimientos":
+            return ElicitationStatus(
+                history=[], current_question=None, summary=None,
+                completed=False, approved=False,
+            )
+        session = db.query(UserSession).filter(UserSession.user_id == current_user["user_id"]).first()
+        state = get_project_elicitation_state(session, project_id)
+        completed = bool(state.get("completed", False))
+        return ElicitationStatus(
+            history=state.get("history", []),
+            current_question=None if completed else state.get("current_question", FIRST_QUESTION),
+            summary=state.get("summary"),
+            completed=completed,
+            approved=bool(state.get("approved", False)),
+        )
+    finally:
+        db.close()
+
+
+@router.post("/{project_id}/elicitation/approve")
+async def approve_elicitation(project_id: int, current_user: dict = Depends(get_current_user)):
+    """La persona responsable valida el catálogo y habilita la siguiente fase."""
+    db = SessionLocal()
+    try:
+        project = _require_project(db, current_user["user_id"], project_id)
+        session = db.query(UserSession).filter(UserSession.user_id == current_user["user_id"]).first()
+        state = get_project_elicitation_state(session, project_id)
+        if not state.get("completed") or not state.get("summary"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Aún no hay un resumen de requerimientos para aprobar")
+        state["approved"] = True
+        save_project_elicitation_state(db, current_user["user_id"], project_id, state)
+        project.phase_ready = True
+        db.commit()
+        return {"phase_ready": True, "message": "Requerimientos aprobados y fase lista para avanzar"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+    finally:
+        db.close()
 
 
 # --- Route -----------------------------------------------------------------
@@ -67,8 +140,7 @@ async def chat(
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream — "sources" event (metadata RAG) + tokens
-            como "event: token" + final "event: done"
+        200 text/event-stream — tokens as "event: token" + final "event: done"
         400 — no message provided
         401 — invalid JWT
         404 — project not found or not owned
@@ -79,111 +151,99 @@ async def chat(
 
     user_id = current_user["user_id"]
 
-    # Validate project ownership if provided
-    if body.project_id is not None:
-        db = SessionLocal()
-        try:
-            project = db.query(Project).filter(
-                Project.id == body.project_id,
-                Project.user_id == user_id,
-            ).first()
-            if project is None:
-                exists = db.query(Project).filter(
-                    Project.id == body.project_id
-                ).first()
-                if exists:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="No tienes acceso a este proyecto",
-                    )
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Proyecto no encontrado",
-                )
-        finally:
-            db.close()
+    if body.project_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La elicitación requiere un proyecto")
+
+    db = SessionLocal()
+    try:
+        project = _require_project(db, user_id, body.project_id)
+        session = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+        elicitation_state = get_project_elicitation_state(session, body.project_id)
+    finally:
+        db.close()
+
+    is_elicitation = project.current_phase == "requerimientos"
+    if is_elicitation and elicitation_state.get("completed"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La elicitación ya terminó; aprueba el resumen o crea una nueva sesión")
 
     # Build the LLM model (raises LLMConfigError if not configured)
     try:
         model = build_langchain_model(user_id)
-    except LLMConfigError as e:
-        if e.reason == "initialization_failed":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            )
+    except LLMConfigError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler
-    handler = SSEStreamCallbackHandler()
-
-    async def retrieve_context() -> tuple[list, str]:
-        try:
-            docs, _metrics = await asyncio.to_thread(
-                similarity_search,
-                query=body.message,
-                user_id=user_id,
-                project_id=body.project_id,
-                k=5,
-                scope="all",
-            )
-        except Exception as e:
-            logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
-            return [], ""
-
-        # Descarta lo que quedo por debajo del umbral de relevancia -- ver
-        # comentario junto a RAG_MIN_SIMILARITY.
-        relevant_docs = [doc for doc in docs if _is_relevant(doc)]
-
-        context_blocks = []
-        for index, doc in enumerate(relevant_docs, start=1):
-            source = doc.metadata.get("pattern_name") or doc.metadata.get("filename") or doc.metadata.get("source_type")
-            context_blocks.append(f"[{index}] {source}\n{doc.page_content}")
-        return relevant_docs, "\n\n".join(context_blocks)
-
-    def _doc_to_source(doc) -> dict:
-        """Metadata minima para que el frontend pueda mostrar/loguear que fuente se uso."""
-        return {
-            "source_type": doc.metadata.get("source_type"),
-            "name": doc.metadata.get("pattern_name") or doc.metadata.get("filename"),
-            "similarity": doc.metadata.get("similarity"),
-        }
-
     async def event_generator():
-        """
-        SSE generator that yields tokens as they arrive from the model.
-
-        Recupera contexto RAG desde PGVector y lo agrega al prompt.
-        Antes de los tokens, emite un evento 'sources' con la metadata de
-        los documentos recuperados (o [] si no hubo match / hubo error),
-        asi el frontend puede mostrar/loguear si la respuesta se apoyo
-        realmente en la base vectorial.
-        """
+        """Procesa una respuesta y emite la siguiente pregunta o el resumen."""
         try:
-            docs, rag_context = await retrieve_context()
+            if not is_elicitation:
+                try:
+                    docs, _metrics = await asyncio.to_thread(
+                        similarity_search, query=body.message, user_id=user_id,
+                        project_id=body.project_id, k=5, scope="all",
+                    )
+                    relevant_docs = [doc for doc in docs if _is_relevant(doc)]
+                except Exception as exc:
+                    logger.warning("RAG retrieval skipped for project_id=%s: %s", body.project_id, exc)
+                    relevant_docs = []
 
-            sources = [_doc_to_source(doc) for doc in docs]
-            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
+                sources = [
+                    {
+                        "source_type": doc.metadata.get("source_type"),
+                        "name": doc.metadata.get("pattern_name") or doc.metadata.get("filename"),
+                        "similarity": doc.metadata.get("similarity"),
+                    }
+                    for doc in relevant_docs
+                ]
+                context = "\n\n".join(
+                    f"[{index}] {doc.page_content}"
+                    for index, doc in enumerate(relevant_docs, start=1)
+                )
+                prompt = (
+                    "Eres un asistente de arquitectura de software. Responde en español, "
+                    "de forma clara y accionable.\n\n"
+                    f"Contexto recuperado desde RAG:\n{context or 'No se encontró contexto relevante.'}\n\n"
+                    f"Mensaje del usuario: {body.message}"
+                )
+                yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
+                async for event in model.astream(prompt):
+                    if event.content:
+                        yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: null\n\n"
+                return
 
-            prompt = (
-                "Eres un asistente de arquitectura de software. "
-                "Responde en español, de forma clara y accionable.\n\n"
-                "Formato: usa markdown (encabezados, negritas, tablas) libremente, "
-                "pero NUNCA envuelvas la respuesta completa dentro de un bloque de "
-                "codigo (```). Usa ``` unicamente para fragmentos de codigo real o "
-                "diagramas ASCII puntuales, nunca para el mensaje entero.\n\n"
-                "Contexto recuperado desde RAG:\n"
-                f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
-                f"Mensaje del usuario: {body.message}"
-            )
-            async for event in model.astream(prompt):
-                if event.content:
-                    # Yield the token as SSE
-                    yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
+            history = elicitation_state.get("history", [])
+            question = elicitation_state.get("current_question", FIRST_QUESTION)
+            history.append({"pregunta": question, "respuesta": body.message.strip()})
+            decision = next_step(model, history, project.description or "")
+
+            if decision.done:
+                summary = generate_summary(model, history, project.description or "")
+                elicitation_state.update({
+                    "history": history, "current_question": None,
+                    "summary": summary, "completed": True, "approved": False,
+                })
+                response = _summary_text(summary)
+            else:
+                elicitation_state.update({"history": history, "current_question": decision.question})
+                response = decision.question or FIRST_QUESTION
+
+            db = SessionLocal()
+            try:
+                save_project_elicitation_state(db, user_id, body.project_id, elicitation_state)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+
+            yield f"event: token\ndata: {json.dumps(response, ensure_ascii=False)}\n\n"
             yield f"event: done\ndata: null\n\n"
+        except ElicitationAgentError as exc:
+            yield f"event: error\ndata: {json.dumps('No pude procesar la respuesta del modelo: ' + str(exc), ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
 
