@@ -257,28 +257,28 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 3. F11.2 — Context7 MCP client (backend/core)
 
-- [ ] **3.1 — Implement `build_context7_client()` with runtime auth header**
+- [x] **3.1 — Implement `build_context7_client()` with runtime auth header**
   - Slice: F11.2 · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\context7_mcp.py`
   - LoC: ≈45 (±15%) · REQ-2 / SCN-4, SCN-5
   - Content: build `Context7ServerConfig` (`transport="http"`, `url=_BASE_URL`, `headers`); read `CONTEXT7_API_KEY` at CALL time (not import time) and `.strip()`; non-empty → `{"Authorization": f"Bearer {key}"}`, else `{}`; memoize into `_CLIENT`
   - Acceptance: `pytest tests/core/test_context7_mcp.py -q -k "headers or singleton"` passes
   - Commit hint: `feat(f11): build Context7 MCP client with runtime bearer auth`
 
-- [ ] **3.2 — Implement `get_context7_tools()` with a 5s timeout boundary**
+- [x] **3.2 — Implement `get_context7_tools()` with a 5s timeout boundary**
   - Slice: F11.2 · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\context7_mcp.py`
   - LoC: ≈40 (±15%) · REQ-2, REQ-6
   - Content: `asyncio.wait_for(client.get_tools(), timeout=_TIMEOUT_SECONDS)`; on `TimeoutError` / `ConnectionError` / HTTP 4xx-5xx raise a typed `Context7Unavailable(reason=...)` carrying `context7_timeout` | `context7_unavailable` | `context7_rate_limited`; WARNING log on every failure path
   - Acceptance: `pytest tests/core/test_context7_mcp.py -q -k "timeout or unavailable"` passes
   - Commit hint: `feat(f11): fetch Context7 tools with a 5s timeout and typed failures`
 
-- [ ] **3.3 — Record the tool-name pin fixture**
+- [x] **3.3 — Record the tool-name pin fixture**
   - Slice: F11.2 · Files: NEW `C:\Users\danie\Downloads\arch-agent\tests\fixtures\context7_tools.py`
   - LoC: 0 prod / ≈30 test · SCN-8
   - Content: offline recorded tool list exposing exactly `resolve-library-id` and `query-docs`
   - Acceptance: `pytest tests/core/test_context7_mcp.py -q -k tool_names_pinned` passes and fails if either name is renamed
   - Commit hint: `test(f11): pin Context7 tool names with a recorded fixture`
 
-- [ ] **3.4 — Unit + live-gated tests for the client**
+- [x] **3.4 — Unit + live-gated tests for the client**
   - Slice: F11.2 · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\tests\core\test_context7_mcp.py`
   - LoC: 0 prod / ≈180 test (±15%) · REQ-2, REQ-6, REQ-9 / SCN-4, SCN-5, SCN-8
   - Content: `monkeypatch.setenv` → bearer header; `monkeypatch.delenv` → `{}`; singleton identity across two calls; `asyncio.TimeoutError` side-effect → `Context7Unavailable(reason="context7_timeout")`; `@pytest.mark.skipif(not os.getenv("CONTEXT7_API_KEY"))` live test against the real endpoint
