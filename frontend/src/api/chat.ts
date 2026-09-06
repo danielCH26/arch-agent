@@ -21,6 +21,7 @@ export interface ElicitationStatus {
 }
 
 interface StreamCallbacks {
+  onSources: (sources: RagSource[]) => void
   onToken: (token: string) => void
   onDone: () => void
   onError: (error: string) => void
@@ -41,7 +42,7 @@ export function createChatStream(
   projectId: number | null,
   callbacks: StreamCallbacks
 ): () => void {
-  const { onToken, onDone, onError } = callbacks
+  const { onSources, onToken, onDone, onError } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -92,7 +93,13 @@ export function createChatStream(
           if (!line.trim()) continue
 
           const parsed = parseSSELine(line)
-          if (parsed.event === 'token' && parsed.data) {
+          if (parsed.event === 'sources' && parsed.data) {
+            try {
+              onSources(JSON.parse(parsed.data) as RagSource[])
+            } catch {
+              onSources([])
+            }
+          } else if (parsed.event === 'token' && parsed.data) {
             try {
               const data = JSON.parse(parsed.data)
               onToken(data.delta || data)
