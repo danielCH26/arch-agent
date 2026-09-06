@@ -7,7 +7,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
-from app.api.sse import SSEStreamCallbackHandler
+from app.api.sse import SSEStreamCallbackHandler, format_done_event
+from app.core.agent import run_agent
+from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.rag import similarity_search
@@ -67,12 +69,29 @@ async def chat(
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream — "sources" event (metadata RAG) + tokens
-            como "event: token" + final "event: done"
+        200 text/event-stream — "sources" event (metadata RAG) +
+            ("tool_start" / "tool_end")* + tokens as "event: token" +
+            optional "event: degraded" + final "event: done".
+            On hard failure, "event: error" terminates the stream.
         400 — no message provided
         401 — invalid JWT
         404 — project not found or not owned
         409 — LLM not configured for user
+
+    F11 changes (issue #13, design.md §6.5):
+      - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
+        callbacks=..., rag_documents=...)`` which drives a
+        ``create_agent`` runtime.
+      - The route owns RAG retrieval (unchanged) and emits ``sources``
+        before invoking ``run_agent`` so the FE gets a stable ordering.
+      - ``run_agent`` may emit ``tool_start`` / ``tool_end`` pairs and,
+        on Context7 unavailability, exactly one ``degraded`` event
+        (REQ-6). Tokens and ``done`` come from ``run_agent``.
+      - The SSE handler (``SSEStreamCallbackHandler``) remains the source
+        of truth for tool event bytes (F11.4a).
+      - The optional Langfuse handler (``get_langfuse_handler``) is
+        appended to the callback list when env vars are present, else
+        skipped (REQ-5 / SCN-6).
     """
     if not body.message or not body.message.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacío")
@@ -117,8 +136,12 @@ async def chat(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler
+    # Build SSE streaming handler + optional Langfuse callback
     handler = SSEStreamCallbackHandler()
+    langfuse_handler = get_langfuse_handler()
+    callbacks: list = [handler]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
         try:
@@ -154,13 +177,16 @@ async def chat(
 
     async def event_generator():
         """
-        SSE generator that yields tokens as they arrive from the model.
+        SSE generator that yields events as they arrive from the agent runtime.
 
-        Recupera contexto RAG desde PGVector y lo agrega al prompt.
-        Antes de los tokens, emite un evento 'sources' con la metadata de
-        los documentos recuperados (o [] si no hubo match / hubo error),
-        asi el frontend puede mostrar/loguear si la respuesta se apoyo
-        realmente en la base vectorial.
+        Ordering (design.md §5.2):
+          sources -> (tool_start/tool_end)* -> token*N -> done
+
+        ``sources`` is emitted by this route BEFORE the agent runs (the agent
+        reuses the pre-fetched ``relevant_docs`` for system-prompt injection).
+        ``run_agent`` may also emit exactly one ``degraded`` event between
+        ``sources`` and the first ``token`` (REQ-6 / SCN-3); the route logs
+        a WARNING when that happens but lets the stream continue.
         """
         try:
             docs, rag_context = await retrieve_context()
@@ -168,23 +194,62 @@ async def chat(
             sources = [_doc_to_source(doc) for doc in docs]
             yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
 
-            prompt = (
-                "Eres un asistente de arquitectura de software. "
-                "Responde en español, de forma clara y accionable.\n\n"
-                "Formato: usa markdown (encabezados, negritas, tablas) libremente, "
-                "pero NUNCA envuelvas la respuesta completa dentro de un bloque de "
-                "codigo (```). Usa ``` unicamente para fragmentos de codigo real o "
-                "diagramas ASCII puntuales, nunca para el mensaje entero.\n\n"
-                "Contexto recuperado desde RAG:\n"
-                f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
-                f"Mensaje del usuario: {body.message}"
-            )
-            async for event in model.astream(prompt):
-                if event.content:
-                    # Yield the token as SSE
-                    yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: null\n\n"
+            emitted_done = False
+            async for sse_dict in run_agent(
+                model=model,
+                message=body.message,
+                callbacks=callbacks,
+                rag_documents=docs,
+                user_id=user_id,
+                project_id=body.project_id,
+            ):
+                event_name = sse_dict.get("event")
+                payload = sse_dict.get("data")
+
+                if event_name == "degraded":
+                    logger.warning(
+                        "Context7 unavailable for user_id=%s project_id=%s; "
+                        "falling back to RAG-only: %s",
+                        user_id,
+                        body.project_id,
+                        payload,
+                    )
+                    yield f"event: degraded\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "error":
+                    yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    emitted_done = True  # error is terminal
+                    break
+
+                if event_name == "done":
+                    yield format_done_event()
+                    emitted_done = True
+                    continue
+
+                if event_name == "token":
+                    yield f"event: token\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "tool_start":
+                    yield f"event: tool_start\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "tool_end":
+                    yield f"event: tool_end\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                # Unknown event types are ignored on purpose (forward-compat
+                # for future F12+ events).
+                continue
+
+            if not emitted_done:
+                # Defensive: if ``run_agent`` returned without yielding
+                # ``done`` or ``error``, fire ``done`` to keep the FE
+                # contract stable (design.md §9).
+                yield format_done_event()
         except Exception as e:
+            logger.exception("event_generator failed: %s", e)
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
