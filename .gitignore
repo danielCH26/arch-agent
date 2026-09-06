@@ -37,6 +37,12 @@ temp/
 *.pdf
 *.md
 !README.md
+!.atl/
+!.atl/**/*.md
+!openspec/
+!openspec/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
 
@@ -46,5 +52,5 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec artifacts (experimental workflow - not for production)
-openspec/
+# OpenSpec artifacts: versioned via !openspec/ exception above (legacy
+# `openspec/` ignore removed in F11 to enable SDD artifacts in PRs).
