@@ -205,18 +205,20 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 1. F11.0 — Documentation (docs)
 
-- [ ] **1.1 — Document `CONTEXT7_API_KEY` and `LANGFUSE_*` in README**
+- [x] **1.1 — Document `CONTEXT7_API_KEY` and `LANGFUSE_*` in README**
   - Slice: F11.0 · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\README.md`
   - LoC: 0 prod (≈25 doc lines, excluded)
   - REQ/SCN: support for REQ-1, REQ-5
   - Acceptance: `Select-String -Path README.md -Pattern "CONTEXT7_API_KEY"` returns ≥1 hit and states the free-tier-without-key default
   - Commit hint: `docs(f11): document Context7 and Langfuse env vars`
+  - **Status (archive reconciliation 2026-09-05):** README.md line 135 documents `CONTEXT7_API_KEY` as optional; lines 132-134 already cover `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/`LANGFUSE_BASE_URL`. Confirmed in commit `3526122` (slice-0 docs commit, alongside the F11 proposal). Orchestrator launch prompt confirms: "F11.0 docs-only (already merged at 3526122 — no PR needed)".
 
-- [ ] **1.2 — Sync F11 openspec artifacts into the slice-0 commit**
+- [x] **1.2 — Sync F11 openspec artifacts into the slice-0 commit**
   - Slice: F11.0 · Files: `openspec\changes\F11-context7-mcp\{explore,proposal,design,tasks}.md`, `openspec\specs\context7-mcp-integration\spec.md`
   - LoC: 0 (excluded from budget)
   - Acceptance: `git status --short openspec` clean after commit; ADR-010 already present at `docs\adr\010-context7-agent-runtime.md`
   - Commit hint: `docs(f11): add SDD artifacts for Context7 MCP integration`
+  - **Status (archive reconciliation 2026-09-05):** Slice-0 commit `3526122` shipped `docs/adr/010-context7-agent-runtime.md`, `openspec/changes/F11-context7-mcp/explore.md`, and `openspec/changes/F11-context7-mcp/proposal.md`. The remaining artifacts (`design.md @ 72b1b21`, `tasks.md @ de484fb`, `openspec/specs/context7-mcp-integration/spec.md @ 223f7b4`) landed as separate docs-only commits before F11.1 (`89a93a7`). All five SDD artifacts present at HEAD `284bac1`. Apply-progress observation #41 explicitly records "All 23 tasks marked [x] in tasks.md. Ready for verify phase" — proving the orchestrator treated F11.0 as complete.
 
 ### 2. F11.1 — Dependencies and module stubs (backend/core)
 
