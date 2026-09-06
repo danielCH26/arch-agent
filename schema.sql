@@ -73,7 +73,11 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-    ON document_chunks USING ivfflat (embedding vector_cosine_ops);
+    ON document_chunks USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
+    ON document_chunks(document_id);
 
 -- architect_patterns (issue "Caso de ejemplo (seed)" / comentario C2 de PR):
 -- agregada acá también, no solo en migration 0005, para que una DB
@@ -116,4 +120,4 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+

@@ -23,7 +23,8 @@ class LLMConfigError(Exception):
         super().__init__(message)
         # Sub-tipo del error. Call sites pueden inspeccionarlo para
         # distinguir entre "no config" y otros modos de falla.
-        # Valores esperados: "missing", "decryption_failed", "user_not_found".
+        # Valores esperados: "missing", "decryption_failed", "user_not_found",
+        # "initialization_failed".
         self.reason = reason
 
 
@@ -93,7 +94,7 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
         return UserLLMConfig(
             user_id=user_id,
             base_url=user.llm_base_url,
-            model=user.llm_model,
+            model=user.llm_model or "",
             api_key=api_key,
         )
     finally:
@@ -140,6 +141,13 @@ def build_langchain_model(
 
 def _init_model(config: UserLLMConfig) -> BaseChatModel:
     """Inicializa el modelo LangChain con la config del usuario."""
+    if not config.model:
+        raise LLMConfigError(
+            f"Usuario {config.user_id} no tiene modelo configurado. "
+            "Completa el paso 3 del wizard primero.",
+            reason="missing",
+        )
+
     try:
         model = init_chat_model(
             model=config.model,
@@ -150,7 +158,8 @@ def _init_model(config: UserLLMConfig) -> BaseChatModel:
         return model
     except Exception as e:
         raise LLMConfigError(
-            f"No se pudo inicializar el modelo {config.model}: {e}"
+            f"No se pudo inicializar el modelo {config.model}: {e}",
+            reason="initialization_failed",
         )
 
 

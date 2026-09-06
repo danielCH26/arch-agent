@@ -73,7 +73,7 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
     Si falla, el documento queda con processed=False y se loguea el error.
     """
     try:
-        texts = [c.page_content for c in chunks]
+        texts = [f"passage: {c.page_content}" for c in chunks]
         embeddings = get_embeddings().embed_documents(texts)
         save_chunks_and_mark_processed(doc_id, chunks, embeddings)
         logger.info("Background embeddings completed for doc_id=%d (%d chunks)", doc_id, len(chunks))
