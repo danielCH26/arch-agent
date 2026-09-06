@@ -317,21 +317,21 @@ Diff-cleanliness gate before every PR: `git diff <previous-slice-tip> --stat` mu
 
 ### 5. F11.3b — Langfuse tracer (backend/core)
 
-- [ ] **5.1 — Implement `get_langfuse_handler()` and `_env_present()`**
+- [x] **5.1 — Implement `get_langfuse_handler()` and `_env_present()`**
   - Slice: F11.3b · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\langfuse_tracer.py`
   - LoC: ≈50 (±15%) · REQ-5 / SCN-6
   - Content: both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` non-empty after `.strip()` → `CallbackHandler()`; otherwise `logger.warning("Langfuse env vars missing; agent will run without tracing.")` and return `None`; swallow SDK construction errors into the same `None` + WARNING path
   - Acceptance: `pytest tests/core/test_langfuse_tracer.py -q` passes
   - Commit hint: `feat(f11): return an optional Langfuse callback handler from env`
 
-- [ ] **5.2 — Attach trace metadata inside `run_agent`**
+- [x] **5.2 — Attach trace metadata inside `run_agent`**
   - Slice: F11.3b · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\app\core\agent.py`
   - LoC: ≈20 (±15%) · REQ-5 / SCN-7
   - Content: pass `callbacks` straight through to `astream_events`; include `user_id`, `project_id` (literal `"none"` when null) and model name in the run config metadata / trace name
   - Acceptance: `pytest tests/core/test_agent.py -q -k "callbacks or metadata"` passes; `None` handler leaves behavior identical to F11.3a
   - Commit hint: `feat(f11): tag agent runs with user, project and model metadata`
 
-- [ ] **5.3 — Tracer unit tests**
+- [x] **5.3 — Tracer unit tests**
   - Slice: F11.3b · Files: MODIFIED `C:\Users\danie\Downloads\arch-agent\tests\core\test_langfuse_tracer.py`
   - LoC: 0 prod / ≈70 test (±15%) · REQ-5, REQ-9 / SCN-6
   - Content: `delenv` both keys → `is None` AND the WARNING captured via `caplog` (SCN-6); both set → non-`None` handler (or a patched double when `langfuse` is absent); whitespace-only values treated as unset
