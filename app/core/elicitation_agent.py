@@ -207,4 +207,14 @@ def generate_summary(
         f"{project_description or '(no proporcionada)'}\n\n"
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
     )
-    return _invoke_json(model, SUMMARY_SYSTEM_PROMPT, context)
+    summary = _invoke_json(model, SUMMARY_SYSTEM_PROMPT, context)
+    required_keys = ("problema", "usuarios", "funcionalidades", "restricciones", "calidad")
+    missing = [key for key in required_keys if key not in summary]
+    if missing:
+        raise ElicitationAgentError(
+            "El resumen no contiene todas las categorías requeridas: " + ", ".join(missing)
+        )
+    for key in ("funcionalidades", "restricciones", "calidad"):
+        if not isinstance(summary[key], list):
+            raise ElicitationAgentError(f"El campo '{key}' del resumen debe ser una lista")
+    return summary

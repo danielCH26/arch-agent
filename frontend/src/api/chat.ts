@@ -1,78 +1,39 @@
 import { authStore } from '../stores/authStore'
+import { apiFetch } from './client'
 
 export interface ChatRequest {
   project_id: number | null
   message: string
 }
 
-// Metadata de un documento/patron recuperado por el pipeline RAG (PGVector).
-// Se usa para poder mostrar/loguear si una respuesta realmente se apoyo en
-// contenido recuperado, en vez de solo confiar en lo que el LLM "dice".
 export interface RagSource {
   source_type: string | null
   name: string | null
   similarity: number | null
 }
 
+export interface ElicitationStatus {
+  history: Array<{ pregunta: string; respuesta: string }>
+  current_question: string | null
+  summary: Record<string, unknown> | null
+  completed: boolean
+  approved: boolean
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: () => void
   onError: (error: string) => void
-  // Se dispara UNA vez, antes de los primeros tokens, con la lista de
-  // fuentes recuperadas (puede venir vacia si no hubo match o si el
-  // retrieval fallo silenciosamente en el backend).
-  onSources?: (sources: RagSource[]) => void
 }
 
-function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
-  let eventName = 'message'
-  const dataLines: string[] = []
-
-  for (const line of rawEvent.split('\n')) {
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim())
-    }
+function parseSSELine(line: string): { event?: string; data?: string } {
+  if (line.startsWith('event:')) {
+    return { event: line.slice(6).trim() }
   }
-
-  const rawData = dataLines.join('\n')
-
-  if (eventName === 'sources' && rawData) {
-    try {
-      callbacks.onSources?.(JSON.parse(rawData) as RagSource[])
-    } catch {
-      // Si viene mal formado, no bloqueamos el resto del stream por esto.
-      callbacks.onSources?.([])
-    }
-    return false
+  if (line.startsWith('data:')) {
+    return { data: line.slice(5).trim() }
   }
-
-  if (eventName === 'token' && rawData) {
-    try {
-      const data = JSON.parse(rawData)
-      callbacks.onToken(data.delta || data)
-    } catch {
-      callbacks.onToken(rawData)
-    }
-    return false
-  }
-
-  if (eventName === 'done') {
-    callbacks.onDone()
-    return true
-  }
-
-  if (eventName === 'error' && rawData) {
-    try {
-      callbacks.onError(JSON.parse(rawData))
-    } catch {
-      callbacks.onError(rawData)
-    }
-    return true
-  }
-
-  return false
+  return {}
 }
 
 export function createChatStream(
@@ -80,7 +41,7 @@ export function createChatStream(
   projectId: number | null,
   callbacks: StreamCallbacks
 ): () => void {
-  const { onToken, onDone, onError, onSources } = callbacks
+  const { onToken, onDone, onError } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -124,19 +85,33 @@ export function createChatStream(
 
         buffer += decoder.decode(value, { stream: true })
 
-        const events = buffer.split(/\r?\n\r?\n/)
-        buffer = events.pop() || ''
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
 
-        for (const event of events) {
-          if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources })
-          if (shouldStop) return
+        for (const line of lines) {
+          if (!line.trim()) continue
+
+          const parsed = parseSSELine(line)
+          if (parsed.event === 'token' && parsed.data) {
+            try {
+              const data = JSON.parse(parsed.data)
+              onToken(data.delta || data)
+            } catch {
+              onToken(parsed.data)
+            }
+          } else if (parsed.event === 'done') {
+            onDone()
+            return
+          } else if (parsed.event === 'error' && parsed.data) {
+            try {
+              const data = JSON.parse(parsed.data)
+              onError(data)
+            } catch {
+              onError(parsed.data)
+            }
+            return
+          }
         }
-      }
-
-      if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources })
-        if (shouldStop) return
       }
 
       // Stream ended without explicit done event
@@ -154,4 +129,14 @@ export function createChatStream(
   return () => {
     controller.abort()
   }
+}
+
+export async function getElicitationStatus(projectId: number): Promise<ElicitationStatus> {
+  return apiFetch<ElicitationStatus>(`/api/chat/${projectId}/elicitation`)
+}
+
+export async function approveElicitation(projectId: number): Promise<{ phase_ready: boolean; message: string }> {
+  return apiFetch<{ phase_ready: boolean; message: string }>(`/api/chat/${projectId}/elicitation/approve`, {
+    method: 'POST',
+  })
 }
