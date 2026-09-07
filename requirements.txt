@@ -2,7 +2,7 @@ sqlalchemy>=2.0
 psycopg2-binary
 fastapi
 uvicorn[standard]>=0.30
-langchain>=0.3.0
+langchain>=1.0,<2.0
 langchain-community>=0.3.0
 langchain-openai>=0.2.0
 langchain-postgres
@@ -18,3 +18,10 @@ email-validator
 python-dotenv
 jinja2
 pyjwt
+# F11 — Context7 MCP integration (https://github.com/danielCH26/arch-agent/issues/13)
+# Pinned to the exact versions locked at design.md §2.
+langchain-mcp-adapters==0.3.2
+mcp>=1.0
+langfuse>=2.0.0
+# langchain floor relaxed to 1.x because the F11 code path uses langchain.agents.create_agent
+# and astream_events(version="v2") which exist only in langchain 1.x (verify report W-4).
