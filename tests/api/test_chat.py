@@ -860,38 +860,38 @@ class TestPostgresLivenessCheck:
     raises SQLAlchemyError, the route returns HTTP 503 (NOT 200 + event: error).
     """
 
-def test_postgres_down_returns_503(self):
-    """Liveness probe raises SQLAlchemyError -> route raises HTTPException(503)."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from sqlalchemy.exc import SQLAlchemyError
+    def test_postgres_down_returns_503(self):
+        """Liveness probe raises SQLAlchemyError -> route raises HTTPException(503)."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from sqlalchemy.exc import SQLAlchemyError
 
-    from app.api.chat import router
-    from app.api.dependencies import get_current_user
+        from app.api.chat import router
+        from app.api.dependencies import get_current_user
 
-    app = FastAPI()
-    app.include_router(router)
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": 1, "username": "test"}
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_current_user] = lambda: {"user_id": 1, "username": "test"}
 
-    client = TestClient(app)
+        client = TestClient(app)
 
-    # Patch the reference the ROUTE uses (chat module imports SessionLocal
-    # by name), not only the source module.
-    with patch("app.api.chat.SessionLocal") as mock_session_local:
-        # SessionLocal() returns a context manager whose .execute raises.
-        mock_db = MagicMock()
-        mock_db.__enter__ = MagicMock(return_value=mock_db)
-        mock_db.__exit__ = MagicMock(return_value=False)
-        mock_db.execute.side_effect = SQLAlchemyError("connection refused")
-        mock_session_local.return_value = mock_db
+        # Patch the reference the ROUTE uses (chat module imports SessionLocal
+        # by name), not only the source module.
+        with patch("app.api.chat.SessionLocal") as mock_session_local:
+            # SessionLocal() returns a context manager whose .execute raises.
+            mock_db = MagicMock()
+            mock_db.__enter__ = MagicMock(return_value=mock_db)
+            mock_db.__exit__ = MagicMock(return_value=False)
+            mock_db.execute.side_effect = SQLAlchemyError("connection refused")
+            mock_session_local.return_value = mock_db
 
-        response = client.post(
-            "/api/chat",
-            json={"project_id": None, "message": "hello"},
-        )
+            response = client.post(
+                "/api/chat",
+                json={"project_id": None, "message": "hello"},
+            )
 
-        assert response.status_code == 503
-        assert "Database unavailable" in response.json()["detail"]
+            assert response.status_code == 503
+            assert "Database unavailable" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
