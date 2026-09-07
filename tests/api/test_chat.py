@@ -819,7 +819,7 @@ class TestEventGeneratorPersistence:
                 ordering.append("yield_done")
                 yield "event: done\ndata: null\n\n"
 
-            asyncio.run(_drain(run()))
+            _drain(run())
 
         assert ordering.index("commit") < ordering.index("yield_done")
         # And engram_mirror fires after commit.
@@ -847,7 +847,7 @@ class TestEventGeneratorPersistence:
                 )
                 yield "event: done\ndata: null\n\n"
 
-            events = asyncio.run(_drain(run()))
+            events = _drain(run())
 
         assert events[-1].startswith("event: done")
         session.commit.assert_called_once()
