@@ -241,9 +241,19 @@ def build_puppeteer_client() -> Any:
 
 
 def reset_client_for_tests() -> None:
-    """Clear the module-level singleton. Tests use this to start clean."""
+    """Clear the module-level singleton AND the in-memory rate limiter.
+
+    Tests call this (directly or via the autouse ``reset_puppeteer_state``
+    fixture in ``tests/conftest.py``) to start each test with a fresh
+    client cache AND a fresh rate-limit window. Without the limiter reset,
+    an F11 test that runs after several earlier F11 tests accumulates
+    ``user_id=None`` requests and the 6th call hits
+    ``puppeteer_rate_limited``, leaking a ``degraded`` event into tests
+    that assert a clean event stream.
+    """
     global _CLIENT
     _CLIENT = None
+    _RATE_LIMITER.clear()
 
 
 # ---------------------------------------------------------------------------
