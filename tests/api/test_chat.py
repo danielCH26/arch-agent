@@ -777,8 +777,6 @@ def _attachment_event(kind="screenshot", mime="image/png", url="/api/chat/attach
         "bytes": 1024,
     }
     return f"event: attachment\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
 def test_chat_stream_emits_attachment_event_between_token_and_done(monkeypatch):
     """REQ-PMCP-1 / SCN-PMCP-1: ``event: attachment`` arrives AFTER the last
     ``event: token`` and BEFORE ``event: done``. The on-wire payload

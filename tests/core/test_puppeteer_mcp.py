@@ -272,9 +272,10 @@ def test_rate_limit_window_pruning_after_60s(monkeypatch):
 
     # Simulate time control via direct manipulation of the window. We
     # don't use freezegun (not in requirements); the pruning logic is
-    # time-driven so we just push the timestamps back > 60s.
+    # time-driven so we just push the timestamps back FAR (>100s) to be
+    # safely outside the 60s boundary on every platform.
     base = puppeteer_mcp._time.time()
-    puppeteer_mcp._RATE_LIMITER[42] = [base - 70, base - 65, base - 62, base - 61, base - 60]
+    puppeteer_mcp._RATE_LIMITER[42] = [base - 200, base - 180, base - 150, base - 120, base - 100]
 
     # Now the next call should succeed (all 5 old entries get pruned).
     puppeteer_mcp._check_rate_limit(user_id=42)
@@ -284,11 +285,11 @@ def test_rate_limit_window_pruning_after_60s(monkeypatch):
 def test_rate_limit_handler_in_try_get_puppeteer_tools(monkeypatch):
     """End-to-end: ``_try_get_puppeteer_tools`` emits a degraded payload
     with ``source="puppeteer"`` and ``reason="puppeteer_rate_limited"``."""
-    from app.core import agent
+    from app.core import puppeteer_mcp
+    import app.core.agent as agent_module
 
     monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
-    agent_module = __import__("app.core.agent", fromlist=["_try_get_puppeteer_tools"])
-    agent_module.puppeteer_mcp._RATE_LIMITER.clear()
+    puppeteer_mcp._RATE_LIMITER.clear()
 
     async def _drive():
         # Burn the quota.
