@@ -7,6 +7,14 @@ ADR-011). Either store degrades gracefully when the other is unreachable.
 The helpers accept an explicit ``db: Session`` instead of opening one
 internally so the chat route can wrap both ``save_message`` calls in one
 transaction (REQ-4: single Postgres tx before ``yield event: done``).
+
+F13 (REQ-ATT-1) adds:
+  * ``save_attachment`` / ``list_attachments`` — typed dict helpers for
+    persisting PNG screenshots produced by the Puppeteer MCP sidecar.
+  * ``attachments`` kwarg on ``save_message`` — merges new attachments
+    into the row's JSONB column inside the same flush so a failure on
+    either side rolls back both the message row AND the new entries
+    (atomicity, REQ-ATT-1).
 """
 
 from __future__ import annotations
@@ -51,6 +59,29 @@ def _coerce_citations(citations: Any) -> list:
         return []
 
 
+def _coerce_attachments(attachments: Any) -> list:
+    """Normalise ``attachments`` into a JSON-serialisable list.
+
+    Mirrors ``_coerce_citations`` — accepts None / list / dict; defensive
+    against non-JSON input. F13 stores typed dicts (UUID, kind, mime,
+    filename, storage_path, source_url, bytes) in this column.
+    """
+    if attachments is None:
+        return []
+    if isinstance(attachments, list):
+        return attachments
+    if isinstance(attachments, dict):
+        return [attachments]
+    try:
+        parsed = json.loads(attachments)
+        return parsed if isinstance(parsed, list) else [parsed]
+    except (TypeError, ValueError):
+        logger.warning(
+            "message_store: dropping non-serialisable attachments=%r", attachments
+        )
+        return []
+
+
 def ensure_user_session(db: Session, user_id: int) -> int:
     """Lazy-upsert the per-user ``UserSession`` row and return its id.
 
@@ -86,11 +117,15 @@ def save_message(
     role: str,
     content: str,
     citations: Any = None,
+    attachments: Any = None,
 ) -> Message:
     """Insert a single ``Message`` row.
 
     Does NOT commit — the caller owns the transaction so both user +
-    assistant rows can be persisted atomically (REQ-4).
+    assistant rows can be persisted atomically (REQ-4). F13: ``attachments``
+    is merged into the row's JSONB column inside the same ``flush`` so a
+    later SQLAlchemy failure rolls back BOTH the row and the merged
+    attachment entries (REQ-ATT-1 atomicity).
     """
     _validate_role(role)
     msg = Message(
@@ -100,10 +135,81 @@ def save_message(
         role=role,
         content=content,
         citations=_coerce_citations(citations),
+        attachments=_coerce_attachments(attachments),
     )
     db.add(msg)
     db.flush()  # populate msg.id without committing
     return msg
+
+
+def save_attachment(
+    db: Session,
+    message_id: int,
+    kind: str,
+    mime: str,
+    storage_path: str,
+    source_url: str | None,
+    size_bytes: int,
+    *,
+    filename: str | None = None,
+    attachment_id: str | None = None,
+) -> dict[str, Any]:
+    """Append one ``Attachment`` typed dict to ``Message.attachments``.
+
+    Returns the appended dict so the caller can pass it straight to the
+    SSE ``event: attachment`` payload (after stripping ``storage_path``).
+    Idempotent on the merge: the JSONB column may already contain entries
+    from a previous ``save_message`` invocation on the same row.
+    """
+    import uuid
+
+    if kind != "screenshot":
+        # F13 only ships screenshots (REQ-PMCP-1 / spec scope confirmation).
+        # Reject anything else early so a future caller does not silently
+        # store an unsupported type.
+        raise ValueError(f"unsupported attachment kind={kind!r}; F13 supports 'screenshot' only")
+
+    att_id = attachment_id or str(uuid.uuid4())
+    att_filename = filename or f"diagram-{int.from_bytes(uuid.uuid4().bytes, 'big')}.png"
+    attachment = {
+        "id": att_id,
+        "kind": kind,
+        "mime": mime,
+        "filename": att_filename,
+        "storage_path": storage_path,
+        "source_url": source_url,
+        "bytes": int(size_bytes),
+    }
+
+    row = db.get(Message, message_id)
+    if row is None:
+        raise ValueError(f"message_id={message_id} not found; cannot append attachment")
+
+    existing = list(row.attachments or [])
+    # Defensive: skip if same id already present (idempotency on retries).
+    if any(a.get("id") == att_id for a in existing):
+        logger.info(
+            "save_attachment: attachment id=%s already on message_id=%s; skipping",
+            att_id,
+            message_id,
+        )
+        return attachment
+
+    row.attachments = existing + [attachment]
+    db.flush()
+    return attachment
+
+
+def list_attachments(db: Session, message_id: int) -> list[dict[str, Any]]:
+    """Return the ``attachments`` JSONB column for a single message row.
+
+    Returns ``[]`` when the row is missing or the column is unset (defensive
+    against pre-F13 rows where the column did not exist).
+    """
+    row = db.get(Message, message_id)
+    if row is None:
+        return []
+    return list(row.attachments or [])
 
 
 def list_recent(
