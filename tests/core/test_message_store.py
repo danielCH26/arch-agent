@@ -128,7 +128,7 @@ class TestSaveMessage:
         Session = sessionmaker(bind=Engine)
         fresh = Session()
         try:
-            assert list_recent(fresh, sid, limit=10) == []
+            assert list_recent(fresh, sid, project_id=1, limit=10) == []
         finally:
             fresh.close()
 
@@ -142,7 +142,7 @@ class TestListRecent:
             save_message(db, sid, project_id=None, user_id=1, role="user", content=text)
             db.commit()
 
-        rows = list_recent(db, sid, limit=5)
+        rows = list_recent(db, sid, project_id=1, limit=5)
         contents = [r.content for r in rows]
         assert contents == ["third", "second", "first"]
 
@@ -153,7 +153,7 @@ class TestListRecent:
             save_message(db, sid, project_id=None, user_id=1, role="user", content=f"m{i}")
             db.commit()
 
-        rows = list_recent(db, sid)
+        rows = list_recent(db, sid, project_id=1)
         assert len(rows) == 5
 
     def test_limit_clamped_to_min_1(self, db):
@@ -162,7 +162,7 @@ class TestListRecent:
         save_message(db, sid, project_id=None, user_id=1, role="user", content="only")
         db.commit()
 
-        rows = list_recent(db, sid, limit=0)
+        rows = list_recent(db, sid, project_id=1, limit=0)
         assert len(rows) == 1
 
     def test_session_id_scopes_results(self, db):
@@ -202,3 +202,47 @@ class TestEnsureUserSession:
         sid = ensure_user_session(db, 99)
         assert isinstance(sid, int)
         assert sid > 0
+
+class TestProjectIdScoping:
+    """F12 fix: list_recent must scope by project_id (not just session_id).
+
+    Regression test for the bug where one user's two projects shared the
+    same chat history (UserSession is one-per-user, so session_id alone
+    is not enough; project_id is required for per-project isolation).
+    """
+
+    def test_project_id_scopes_results(self, fresh):
+        """With ONE session and TWO projects, list_recent must return
+        only messages belonging to the requested project_id."""
+        from app.models.message import Message
+
+        db = fresh
+        # One shared session (one per user) — the bug repro scenario.
+        sess = db.execute(
+            __import__("sqlalchemy").text(
+                "INSERT INTO sessions (user_id, active_phase, engram_state, last_seen_at, created_at, updated_at) "
+                "VALUES (1, 'propuesta', '{}'::jsonb, now(), now(), now()) RETURNING id"
+            )
+        ).first()
+        sess_id = sess[0] if sess else 1
+
+        # Two projects (different project_ids, same session).
+        db.execute(text("INSERT INTO projects (id, user_id, name) VALUES (10, 1, 'P-A')"))
+        db.execute(text("INSERT INTO projects (id, user_id, name) VALUES (20, 1, 'P-B')"))
+        db.commit()
+
+        # Save 2 messages in project 10 + 1 message in project 20.
+        db.add(Message(role="user", user_id=1, session_id=sess_id, project_id=10, content="proj10 msg1"))
+        db.add(Message(role="assistant", user_id=1, session_id=sess_id, project_id=10, content="proj10 msg2"))
+        db.add(Message(role="user", user_id=1, session_id=sess_id, project_id=20, content="proj20 msg1"))
+        db.commit()
+
+        # Without project_id scoping (the bug): list_recent returned BOTH.
+        # With the fix: project_id=10 returns ONLY proj10 messages.
+        rows_a = list_recent(db, sess_id, project_id=10, limit=10)
+        rows_b = list_recent(db, sess_id, project_id=20, limit=10)
+        contents_a = sorted(r.content for r in rows_a)
+        contents_b = sorted(r.content for r in rows_b)
+        assert contents_a == ["proj10 msg1", "proj10 msg2"], f"got {contents_a}"
+        assert contents_b == ["proj20 msg1"], f"got {contents_b}"
+
