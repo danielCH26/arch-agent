@@ -64,6 +64,77 @@ _SERVER_NAME: str = "puppeteer"
 # source of truth.
 _PUPPETEER_ALLOWED_TOOLS: frozenset = frozenset({"puppeteer_screenshot"})
 
+# REQ-PMCP-4: per-user render rate limit. In-memory sliding window keyed
+# by ``user_id``. Window = 60s; limit = ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE``
+# (default 5). 6th call → ``PuppeteerUnavailable(reason="puppeteer_rate_limited")``
+# → SSE ``event: degraded`` with ``reason="puppeteer_rate_limited"``.
+#
+# Single-replica only — resets on backend restart; promote to Redis in
+# F14 if horizontal scaling arrives (R-SPEC-4 mitigation in ADR-013 §Security).
+_RATE_LIMIT_WINDOW_SECONDS: int = 60
+_RATE_LIMITER: dict[int, list[float]] = {}
+_RATE_LIMIT_LOCK = None  # lazily created; see ``_check_rate_limit``
+
+
+def _rate_limit_per_minute() -> int:
+    """Read ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE`` at call-time.
+
+    ``0`` disables the limiter (useful for the design §7 Phase-1 rollout:
+    every call is rejected, the agent emits exactly one ``degraded`` event
+    and falls back to text).
+    """
+    raw = os.getenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE")
+    if raw is None or not raw.strip():
+        return 5
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 5
+
+
+def _check_rate_limit(user_id: int | None) -> None:
+    """Sliding-window rate limiter (REQ-PMCP-4).
+
+    Raises ``PuppeteerUnavailable(reason="puppeteer_rate_limited")`` when the
+    call would exceed ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE`` within the
+    last 60s. ``user_id=None`` (anonymous) is treated as ``user_id=0`` for
+    keying purposes.
+
+    On success: appends the current epoch timestamp to the user's window
+    AFTER pruning entries older than ``_RATE_LIMIT_WINDOW_SECONDS``.
+    """
+    limit = _rate_limit_per_minute()
+    if limit <= 0:
+        # Limiter disabled — never raise.
+        return
+
+    key = int(user_id) if user_id is not None else 0
+    now = _time.time()
+    cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+
+    window = _RATE_LIMITER.get(key)
+    if window is None:
+        window = []
+        _RATE_LIMITER[key] = window
+
+    # Prune timestamps older than the window.
+    while window and window[0] < cutoff:
+        window.pop(0)
+
+    if len(window) >= limit:
+        _LOGGER.warning(
+            "Puppeteer rate limit hit for user_id=%s (limit=%d / %ds)",
+            key,
+            limit,
+            _RATE_LIMIT_WINDOW_SECONDS,
+        )
+        raise PuppeteerUnavailable(
+            f"Puppeteer render rate limit exceeded ({limit}/{_RATE_LIMIT_WINDOW_SECONDS}s)",
+            reason="puppeteer_rate_limited",
+        )
+
+    window.append(now)
+
 
 class PuppeteerUnavailable(Exception):
     """Raised when the Puppeteer MCP endpoint cannot be reached or returns
