@@ -6,13 +6,15 @@ vi.mock('../../api/chat', async (importOriginal) => {
   return {
     ...actual,
     fetchChatHistory: vi.fn(),
+    createChatStream: vi.fn(),
   }
 })
 
-import { fetchChatHistory } from '../../api/chat'
+import { createChatStream, fetchChatHistory } from '../../api/chat'
 import { chatStore } from '../chatStore'
 
 const fetchChatHistoryMock = vi.mocked(fetchChatHistory)
+const createChatStreamMock = vi.mocked(createChatStream)
 
 describe('chatStore.loadHistory', () => {
   beforeEach(() => {
@@ -95,5 +97,122 @@ describe('chatStore.loadHistory', () => {
     await chatStore.getState().loadHistory(7)
 
     expect(fetchChatHistoryMock).toHaveBeenCalledWith(7, 5)
+  })
+
+  // ----- F13 (REQ-ATT-3): loadHistory propagates attachments ------------
+
+  it('propagates attachments from the history payload', async () => {
+    fetchChatHistoryMock.mockResolvedValue([
+      {
+        id: 5,
+        role: 'assistant',
+        content: 'a5',
+        citations: [],
+        attachments: [
+          {
+            kind: 'screenshot',
+            mime: 'image/png',
+            url: '/api/chat/attachments/abc?token=t',
+            filename: 'diagram-5.png',
+          },
+        ],
+        created_at: '2024-01-01T12:00:05Z',
+      },
+    ])
+
+    await chatStore.getState().loadHistory(42)
+
+    const state = chatStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0].attachments).toEqual([
+      {
+        kind: 'screenshot',
+        mime: 'image/png',
+        url: '/api/chat/attachments/abc?token=t',
+        filename: 'diagram-5.png',
+      },
+    ])
+  })
+})
+
+describe('chatStore.sendMessage attachments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    chatStore.setState({
+      messages: [],
+      isStreaming: false,
+      error: null,
+      loadingHistory: false,
+    })
+    localStorage.clear()
+  })
+
+  it('appends an attachment received via onAttachment to the in-flight assistant message', async () => {
+    // Capture the StreamCallbacks so we can drive onAttachment manually.
+    type Cb = { onAttachment?: (a: unknown) => void }
+    let captured: Cb | undefined
+    createChatStreamMock.mockImplementation((_msg, _pid, callbacks) => {
+      captured = callbacks as unknown as Cb
+      return () => undefined
+    })
+
+    await chatStore.getState().sendMessage(1, 'dame un diagrama')
+
+    const assistant = chatStore
+      .getState()
+      .messages.find((m) => m.role === 'assistant')
+    expect(assistant).toBeDefined()
+    expect(assistant!.attachments ?? []).toEqual([])
+
+    // Simulate the SSE ``event: attachment`` arriving mid-stream.
+    captured!.onAttachment?.({
+      kind: 'screenshot',
+      mime: 'image/png',
+      url: '/api/chat/attachments/uuid?token=jwt',
+      filename: 'diagram-12345.png',
+    })
+
+    const assistantAfter = chatStore
+      .getState()
+      .messages.find((m) => m.role === 'assistant')
+    expect(assistantAfter!.attachments).toEqual([
+      {
+        kind: 'screenshot',
+        mime: 'image/png',
+        url: '/api/chat/attachments/uuid?token=jwt',
+        filename: 'diagram-12345.png',
+      },
+    ])
+  })
+
+  it('preserves attachment order across multiple onAttachment calls', async () => {
+    type Cb = { onAttachment?: (a: unknown) => void }
+    let captured: Cb | undefined
+    createChatStreamMock.mockImplementation((_msg, _pid, callbacks) => {
+      captured = callbacks as unknown as Cb
+      return () => undefined
+    })
+
+    await chatStore.getState().sendMessage(1, 'dos diagramas')
+
+    const a1 = {
+      kind: 'screenshot' as const,
+      mime: 'image/png' as const,
+      url: '/api/chat/attachments/a1?token=t',
+      filename: 'a1.png',
+    }
+    const a2 = {
+      kind: 'screenshot' as const,
+      mime: 'image/png' as const,
+      url: '/api/chat/attachments/a2?token=t',
+      filename: 'a2.png',
+    }
+    captured!.onAttachment?.(a1)
+    captured!.onAttachment?.(a2)
+
+    const assistant = chatStore
+      .getState()
+      .messages.find((m) => m.role === 'assistant')
+    expect(assistant!.attachments).toEqual([a1, a2])
   })
 })
