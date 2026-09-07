@@ -239,3 +239,131 @@ class TestProjectIdScoping:
         assert contents_a == ["proj10 msg1", "proj10 msg2"], f"got {contents_a}"
         assert contents_b == ["proj20 msg1"], f"got {contents_b}"
 
+
+# ---------------------------------------------------------------------------
+# F13 (REQ-ATT-1, REQ-EM-DELTA-1) — attachments JSONB column + helpers
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentsColumn:
+    """F13: ``Message.attachments`` JSONB column + save_message kwarg."""
+
+    def test_save_message_defaults_attachments_to_empty_list(self, db):
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        msg = save_message(db, sess_id, project_id=1, user_id=1, role="user", content="hi")
+        assert msg.attachments == []
+
+    def test_save_message_round_trips_attachments_kwarg(self, db):
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        atts = [
+            {
+                "id": "att-1",
+                "kind": "screenshot",
+                "mime": "image/png",
+                    "filename": "diagram-1.png",
+                    "storage_path": "/app/uploads/screenshots/att-1.png",
+                    "source_url": "data:image/png;base64,xxx",
+                    "bytes": 1024,
+                }
+            ]
+        msg = save_message(
+            db, sess_id, project_id=1, user_id=1,
+            role="assistant", content="see below", attachments=atts,
+        )
+        db.commit()
+        assert msg.attachments == atts
+
+    def test_save_message_attachments_none_normalises_to_empty(self, db):
+        from app.core.message_store import _coerce_attachments
+        assert _coerce_attachments(None) == []
+
+    def test_save_message_attachments_invalid_falls_back_to_empty(self, db):
+        from app.core.message_store import _coerce_attachments
+        class NotJsonable:
+            pass
+        assert _coerce_attachments(NotJsonable()) == []
+
+
+class TestSaveAttachment:
+    """F13: ``save_attachment`` appends one typed dict to ``Message.attachments``."""
+
+    def test_save_attachment_appends_to_message_row(self, db):
+        from app.core.message_store import save_attachment, list_attachments
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        msg = save_message(db, sess_id, project_id=1, user_id=1, role="assistant", content="hi")
+        db.commit()
+
+        att = save_attachment(
+            db, msg.id,
+            kind="screenshot", mime="image/png",
+            storage_path="/app/uploads/screenshots/x.png",
+            source_url="data:image/png;base64,...",
+            size_bytes=42,
+            filename="diagram-1.png",
+            attachment_id="att-x",
+        )
+        db.commit()
+
+        assert att["id"] == "att-x"
+        assert att["kind"] == "screenshot"
+        # list_attachments returns the JSONB column as a list of dicts.
+        stored = list_attachments(db, msg.id)
+        assert len(stored) == 1
+        assert stored[0]["id"] == "att-x"
+        assert stored[0]["filename"] == "diagram-1.png"
+
+    def test_save_attachment_rejects_unsupported_kind(self, db):
+        from app.core.message_store import save_attachment
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        msg = save_message(db, sess_id, project_id=1, user_id=1, role="assistant", content="hi")
+        db.commit()
+
+        with pytest.raises(ValueError, match="unsupported attachment kind"):
+            save_attachment(
+                db, msg.id,
+                kind="pdf", mime="application/pdf",
+                storage_path="x", source_url=None, size_bytes=1,
+            )
+
+    def test_save_attachment_unknown_message_raises(self, db):
+        from app.core.message_store import save_attachment
+        with pytest.raises(ValueError, match="message_id=999 not found"):
+            save_attachment(
+                db, 999,
+                kind="screenshot", mime="image/png",
+                storage_path="x", source_url=None, size_bytes=1,
+            )
+
+    def test_save_attachment_is_idempotent_on_repeat_id(self, db):
+        """Same attachment id appended twice → second call is skipped (idempotent)."""
+        from app.core.message_store import save_attachment, list_attachments
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        msg = save_message(db, sess_id, project_id=1, user_id=1, role="assistant", content="hi")
+        db.commit()
+
+        save_attachment(
+            db, msg.id,
+            kind="screenshot", mime="image/png",
+            storage_path="x", source_url=None, size_bytes=1,
+            attachment_id="att-repeat",
+        )
+        db.commit()
+        save_attachment(
+            db, msg.id,
+            kind="screenshot", mime="image/png",
+            storage_path="x", source_url=None, size_bytes=1,
+            attachment_id="att-repeat",
+        )
+        db.commit()
+
+        assert len(list_attachments(db, msg.id)) == 1
+
+    def test_list_attachments_unknown_message_returns_empty(self, db):
+        from app.core.message_store import list_attachments
+        assert list_attachments(db, 999) == []
+
