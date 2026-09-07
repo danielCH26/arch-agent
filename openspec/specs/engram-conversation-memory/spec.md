@@ -54,6 +54,9 @@ Pytest MUST cover REQ-1 through REQ-11. `tests/test_llm_validator.py` mocks MUST
 ### REQ-13 — Frontend build regression
 `npm run build` in `frontend/` MUST succeed with no new TypeScript errors introduced by F12.
 
+### REQ-EM-DELTA-1 (F13 delta) — `attachments` JSONB column on `messages`
+The `messages` table SHALL gain an `attachments JSONB NOT NULL DEFAULT '[]'::jsonb` column via migration `migrations/0009_add_message_attachments.sql`, mirrored verbatim in `schema.sql`. The migration SHALL be idempotent (`ADD COLUMN IF NOT EXISTS`) so re-running it against an F12-era database that lacks the column adds it without data loss, and re-running it against an F13-era database is a no-op.
+
 ## Scenarios
 
 ### SCN-1 — Happy path: POST persists both rows + mirrors
@@ -103,6 +106,16 @@ Pytest MUST cover REQ-1 through REQ-11. `tests/test_llm_validator.py` mocks MUST
 ### SCN-8 — Migration idempotency
 - GIVEN migration `0008_add_messages_table.sql` has been applied
 - WHEN the migration runs a second time THEN `CREATE TABLE IF NOT EXISTS messages (...)` succeeds with no error
+
+### SCN-EM-DELTA-1 (F13 delta) — `attachments` column on a fresh migration
+- GIVEN a freshly migrated database at `4c5a9d3` + `migrations/0009_add_message_attachments.sql`
+- WHEN `\d messages` is run in psql
+- THEN the `attachments` column SHALL exist with type `jsonb` AND `NOT NULL DEFAULT '[]'::jsonb`
+
+### SCN-EM-DELTA-2 (F13 delta) — additive / idempotent upgrade from F12
+- GIVEN an existing message row from F12 (no `attachments` column yet)
+- WHEN migration `0009_add_message_attachments.sql` runs
+- THEN the column SHALL be added with `DEFAULT '[]'::jsonb NOT NULL` AND the existing row SHALL remain readable with `attachments=[]` (idempotent, no data loss)
 
 ## Data Model
 
