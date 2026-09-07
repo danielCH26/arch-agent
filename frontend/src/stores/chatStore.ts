@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import {
   createChatStream,
   fetchChatHistory,
+  type Attachment,
   type ChatHistoryMessage,
   type RagSource,
 } from '../api/chat'
@@ -14,6 +15,11 @@ export interface Message {
   // mientras no ha llegado el evento 'sources'; [] si llego pero no hubo
   // match relevante.
   sources?: RagSource[]
+  // F13 (REQ-PMCP-1 / REQ-ATT-3): uno o mas attachments inline (PNG de
+  // un diagrama Mermaid renderizado). El backend emite ``event: attachment``
+  // despues del ultimo token; el callback los apendea aqui para que el
+  // componente MessageBubble los renderice bajo el bloque de markdown.
+  attachments?: Attachment[]
 }
 
 interface ChatState {
@@ -85,6 +91,22 @@ export const chatStore = create<ChatState>((set) => ({
           ),
         }))
       },
+      // F13: append each `` event: attachment`` payload to the in-flight
+    // assistant message's ``attachments`` list. The order in which the
+    // events arrive is preserved so the UI can stack the screenshots
+    // chronologically under the source code.
+    onAttachment: (attachment: Attachment) => {
+      set((state) => ({
+        messages: state.messages.map((msg) =>
+          msg.id === assistantMessageId
+            ? {
+                ...msg,
+                attachments: [...(msg.attachments ?? []), attachment],
+              }
+            : msg
+        ),
+      }))
+    },
       onDone: () => {
         set({ isStreaming: false })
       },
@@ -175,6 +197,7 @@ export const chatStore = create<ChatState>((set) => ({
         role: row.role,
         content: row.content,
         sources: row.citations,
+        attachments: row.attachments,
       }))
       // Atomic replacement: do not interleave with in-flight streaming
       // tokens (REQ-9 guards in ChatWindow ensure this is a no-op while

@@ -14,6 +14,17 @@ export interface RagSource {
   similarity: number | null
 }
 
+// F13 (REQ-PMCP-1 / REQ-ATT-3): un attachment servido por el backend
+// (render Puppeteer → PNG inline). El ``url`` lleva un token firmado
+// (TTL 5 min, ver app/core/attachment_tokens.py) — el <img src=...> no
+// puede llevar Authorization, por eso va en la query string.
+export interface Attachment {
+  kind: 'screenshot'
+  mime: 'image/png'
+  url: string
+  filename: string
+}
+
 // F12 (REQ-7 / REQ-8): una fila persistida por el backend, devuelta por
 // GET /api/chat/history. Coincide con la forma del payload que arma
 // app/api/chat.py::chat_history.
@@ -22,6 +33,7 @@ export interface ChatHistoryMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   citations: RagSource[]
+  attachments?: Attachment[]
   created_at: string | null
 }
 
@@ -33,6 +45,10 @@ interface StreamCallbacks {
   // fuentes recuperadas (puede venir vacia si no hubo match o si el
   // retrieval fallo silenciosamente en el backend).
   onSources?: (sources: RagSource[]) => void
+  // F13: el backend emite un evento ``attachment`` despues del ultimo
+  // token y antes del done cuando el agente renderizo un diagrama
+  // Mermaid. El callback recibe el payload publico (sin storage_path).
+  onAttachment?: (attachment: Attachment) => void
 }
 
 function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
@@ -69,6 +85,15 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     return false
   }
 
+  if (eventName === 'attachment' && rawData && callbacks.onAttachment) {
+    try {
+      callbacks.onAttachment(JSON.parse(rawData) as Attachment)
+    } catch {
+      // Si viene mal formado, lo descartamos — el resto del stream sigue.
+    }
+    return false
+  }
+
   if (eventName === 'done') {
     callbacks.onDone()
     return true
@@ -91,7 +116,7 @@ export function createChatStream(
   projectId: number | null,
   callbacks: StreamCallbacks
 ): () => void {
-  const { onToken, onDone, onError, onSources } = callbacks
+  const { onToken, onDone, onError, onSources, onAttachment } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -140,13 +165,13 @@ export function createChatStream(
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources })
+          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources, onAttachment })
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources })
+        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources, onAttachment })
         if (shouldStop) return
       }
 
@@ -203,4 +228,18 @@ export async function fetchChatHistory(
 
   const payload = (await response.json()) as { messages?: ChatHistoryMessage[] }
   return Array.isArray(payload.messages) ? payload.messages : []
+}
+
+// F13 history-parsing helper: defensively coerce a row's ``attachments``
+// field into the typed ``Attachment[]`` shape. Older rows (pre-F13) will
+// not have the column; missing / non-array values are normalised to ``[]``.
+function _normaliseHistoryAttachments(raw: unknown): Attachment[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter(
+    (item): item is Attachment =>
+      typeof item === 'object' &&
+      item !== null &&
+      (item as Attachment).kind === 'screenshot' &&
+      typeof (item as Attachment).url === 'string'
+  )
 }
