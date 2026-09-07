@@ -46,6 +46,20 @@ LIBRARY_HINT: str = (
     "directamente sin gastar herramientas."
 )
 
+# REQ-PMCP-1 / ADR-013 — instructs the model to render each fenced
+# ``mermaid`` block it emits via ``puppeteer_screenshot``. The hard cap
+# (one render per turn) keeps the SSE channel quiet and matches the
+# pre-``done`` transaction semantics.
+DIAGRAM_HINT: str = (
+    "Dispones de la herramienta ``puppeteer_screenshot`` para renderizar "
+    "diagramas Mermaid a PNG. Despues de emitir un bloque ```mermaid ...```, "
+    "invocala exactamente UNA vez por turno con el bloque completo para "
+    "que el frontend pueda mostrar la imagen inline. NO uses "
+    "``puppeteer_screenshot`` para nada que no sea un diagrama Mermaid, "
+    "y NO invoques otras herramientas de Puppeteer: la superficie de "
+    "herramientas esta limitada a un unico render de screenshot."
+)
+
 # REQ-9 / ADR-010 §"Precedencia RAG ↔ Context7" — cap to keep tool result
 # within budget on 8k-context models (Ollama llama3).
 _TOOL_RESULT_MAX_CHARS: int = 4000
@@ -111,8 +125,12 @@ def format_rag_context(rag_documents: list[Any]) -> str:
 
 
 def _build_system_prompt(rag_documents: list[Any]) -> str:
-    """Compose the final system prompt from persona + RAG block + hint."""
-    return f"{ARCHITECT_PERSONA}\n\nContexto RAG recuperado:\n{format_rag_context(rag_documents)}\n\n{LIBRARY_HINT}"
+    """Compose the final system prompt from persona + RAG block + hints."""
+    return (
+        f"{ARCHITECT_PERSONA}\n\n"
+        f"Contexto RAG recuperado:\n{format_rag_context(rag_documents)}\n\n"
+        f"{LIBRARY_HINT}\n\n{DIAGRAM_HINT}"
+    )
 
 
 def _create_agent(model: Any, tools: list[Any], system_prompt: str) -> Any:
@@ -208,6 +226,58 @@ async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
             "reason": reason,
             "fallback": "rag_only",
             "message": message,
+        }
+
+
+async def _try_get_puppeteer_tools(
+    user_id: int | None = None,
+) -> tuple[list[Any], dict[str, Any] | None]:
+    """Fetch Puppeteer tools; on failure return ``([], degraded_event_dict)``.
+
+    Mirrors ``_try_get_context7_tools`` so the agent layer degrades uniformly
+    on any MCP outage (REQ-PMCP-1 / REQ-PMCP-4). The rate-limit check
+    (``puppeteer_mcp._check_rate_limit``) runs FIRST so a rate-limited user
+    sees the degraded event before the expensive MCP round-trip.
+
+    The route is responsible for emitting the ``degraded`` SSE event when
+    ``degraded_event_dict`` is not ``None``.
+    """
+    try:
+        from app.core.puppeteer_mcp import (
+            PuppeteerUnavailable,
+            _check_rate_limit,
+            get_puppeteer_tools,
+        )
+
+        # REQ-PMCP-4: rate-limit check BEFORE the MCP call so a 6th request
+        # within 60s emits degraded immediately without paying the
+        # streamable_http round-trip.
+        _check_rate_limit(user_id)
+        tools = await get_puppeteer_tools()
+        return tools, None
+    except PuppeteerUnavailable as e:
+        reason = getattr(e, "reason", "puppeteer_unavailable") or "puppeteer_unavailable"
+        message = str(e) or "Puppeteer unavailable"
+        _LOGGER.warning(
+            "Puppeteer unavailable for user_id=%s; degrading: %s",
+            user_id,
+            message,
+        )
+        return [], {
+            "source": "puppeteer",
+            "reason": reason,
+            "fallback": "text_only",
+            "message": message,
+        }
+    except Exception as e:  # pragma: no cover — defensive belt-and-braces
+        _LOGGER.warning(
+            "Puppeteer tool fetch crashed for user_id=%s: %s", user_id, e
+        )
+        return [], {
+            "source": "puppeteer",
+            "reason": "puppeteer_unavailable",
+            "fallback": "text_only",
+            "message": str(e),
         }
 
 
@@ -324,7 +394,7 @@ async def run_agent(
     # REQ-8 precedence rule: when RAG already covers an architect pattern,
     # skip the Context7 tool fetch entirely (cost + latency on small models).
     if _has_architect_pattern(docs):
-        tools: list[Any] = []
+        context7_tools: list[Any] = []
         _LOGGER.info(
             "RAG contains an architect_pattern; skipping Context7 tool fetch "
             "(user_id=%s, project_id=%s)",
@@ -332,10 +402,21 @@ async def run_agent(
             project_id,
         )
     else:
-        tools, degraded = await _try_get_context7_tools()
+        context7_tools, degraded = await _try_get_context7_tools()
         if degraded is not None:
             # REQ-6: emit exactly one degraded event before any token.
             yield {"event": "degraded", "data": degraded}
+
+    # F13 (REQ-PMCP-1): compose Puppeteer tools alongside Context7. The
+    # rate-limit check lives inside ``_try_get_puppeteer_tools`` so a 6th
+    # request in 60s emits degraded BEFORE the expensive MCP round-trip.
+    puppeteer_tools, puppeteer_degraded = await _try_get_puppeteer_tools(
+        user_id=user_id,
+    )
+    if puppeteer_degraded is not None:
+        yield {"event": "degraded", "data": puppeteer_degraded}
+
+    tools: list[Any] = list(context7_tools) + list(puppeteer_tools)
 
     agent = build_agent(model=model, system_prompt=system_prompt, tools=tools)
 
@@ -366,6 +447,7 @@ async def run_agent(
 __all__ = [
     "ARCHITECT_PERSONA",
     "LIBRARY_HINT",
+    "DIAGRAM_HINT",
     "_TOOL_RESULT_MAX_CHARS",
     "build_agent",
     "format_rag_context",
