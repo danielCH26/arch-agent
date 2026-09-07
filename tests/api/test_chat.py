@@ -860,35 +860,193 @@ class TestPostgresLivenessCheck:
     raises SQLAlchemyError, the route returns HTTP 503 (NOT 200 + event: error).
     """
 
-    def test_postgres_down_returns_503(self):
-        """Liveness probe raises SQLAlchemyError -> route raises HTTPException(503)."""
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from sqlalchemy.exc import SQLAlchemyError
+def test_postgres_down_returns_503(self):
+    """Liveness probe raises SQLAlchemyError -> route raises HTTPException(503)."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy.exc import SQLAlchemyError
 
-        from app.api.chat import router
-        from app.api.dependencies import get_current_user
+    from app.api.chat import router
+    from app.api.dependencies import get_current_user
 
-        app = FastAPI()
-        app.include_router(router)
-        app.dependency_overrides[get_current_user] = lambda: {"user_id": 1, "username": "test"}
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": 1, "username": "test"}
 
-        client = TestClient(app)
+    client = TestClient(app)
 
-        # Patch the reference the ROUTE uses (chat module imports SessionLocal
-        # by name), not only the source module.
-        with patch("app.api.chat.SessionLocal") as mock_session_local:
-            # SessionLocal() returns a context manager whose .execute raises.
-            mock_db = MagicMock()
-            mock_db.__enter__ = MagicMock(return_value=mock_db)
-            mock_db.__exit__ = MagicMock(return_value=False)
-            mock_db.execute.side_effect = SQLAlchemyError("connection refused")
-            mock_session_local.return_value = mock_db
+    # Patch the reference the ROUTE uses (chat module imports SessionLocal
+    # by name), not only the source module.
+    with patch("app.api.chat.SessionLocal") as mock_session_local:
+        # SessionLocal() returns a context manager whose .execute raises.
+        mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
+        mock_db.execute.side_effect = SQLAlchemyError("connection refused")
+        mock_session_local.return_value = mock_db
 
-            response = client.post(
-                "/api/chat",
-                json={"project_id": None, "message": "hello"},
-            )
+        response = client.post(
+            "/api/chat",
+            json={"project_id": None, "message": "hello"},
+        )
 
-            assert response.status_code == 503
-            assert "Database unavailable" in response.json()["detail"]
+        assert response.status_code == 503
+        assert "Database unavailable" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# F13 (REQ-PMCP-1 / REQ-ATT-1) — event: attachment on the SSE channel
+# ---------------------------------------------------------------------------
+
+
+def _attachment_event(kind="screenshot", mime="image/png", url="/api/chat/attachments/abc?token=xyz",
+ storage_path=):
+    payload = {
+        "kind": kind,
+        "mime": mime,
+        "url": url,
+        "filename": "diagram-12345.png",
+        "storage_path": "/app/uploads/screenshots/abc.png",
+        "source_url": "data:image/png;base64,xxx",
+        "bytes": 1024,
+    }
+    return f"event: attachment\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def test_chat_stream_emits_attachment_event_between_token_and_done(monkeypatch):
+    """REQ-PMCP-1 / SCN-PMCP-1: ``event: attachment`` arrives AFTER the last
+    ``event: token`` and BEFORE ``event: done``. The on-wire payload
+    strips server-only fields (storage_path, source_url, bytes).
+    """
+    from app.api import chat as chat_module
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "Aquí va el diagrama:"},
+            {"event": "attachment", "data": {
+                "kind": "screenshot",
+                "mime": "image/png",
+                "url": "/api/chat/attachments/abc-uuid?token=signed.jwt",
+                "filename": "diagram-12345.png",
+                "storage_path": "/app/uploads/screenshots/abc-uuid.png",
+                "source_url": "data:image/png;base64,xxx",
+                "bytes": 1024,
+            }},
+            {"event": "done", "data": None},
+        ],
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="diagrama de secuencia")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        chunks = asyncio.run(_drive())
+        body_text = "".join(chunks)
+        assert "event: attachment" in body_text
+        # The on-wire payload must contain the URL with the signed token.
+        assert "/api/chat/attachments/abc-uuid?token=signed.jwt" in body_text
+        # Storage path / source URL / bytes must NOT leak to the wire.
+        assert "/app/uploads/" not in body_text
+        assert "data:image/png;base64,xxx" not in body_text
+        # Attachment event ordering: AFTER token, BEFORE done.
+        idx_token = body_text.find(_token("Aquí va el diagrama:"))
+        idx_attach = body_text.find("event: attachment")
+        idx_done = body_text.find(_done())
+        assert 0 <= idx_token < idx_attach < idx_done
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_chat_stream_no_attachment_event_when_no_mermaid(monkeypatch):
+    """SCN-PMCP-2: no ``event: attachment`` when run_agent yields no Mermaid block."""
+    from app.api import chat as chat_module
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "Sin diagrama, solo texto."},
+            {"event": "done", "data": None},
+        ],
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hola")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        chunks = asyncio.run(_drive())
+        body_text = "".join(chunks)
+        assert "event: attachment" not in body_text
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_chat_stream_attachments_persisted_atomically_in_pre_done_tx(monkeypatch):
+    """REQ-ATT-1: when an attachment SSE event arrives, the route persists
+    it on the assistant message in the SAME pre-``done`` transaction. We
+    assert that ``save_message`` was invoked with an ``attachments=``
+    kwarg carrying the collected dict.
+    """
+    from app.api import chat as chat_module
+
+    captured_attachments: list = []
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "hola"},
+            {"event": "attachment", "data": {
+                "kind": "screenshot",
+                "mime": "image/png",
+                "url": "/api/chat/attachments/x?token=t",
+                "filename": "diagram.png",
+                "storage_path": "/app/uploads/screenshots/x.png",
+                "source_url": None,
+                "bytes": 1,
+            }},
+            {"event": "done", "data": None},
+        ],
+    )
+
+    real_save_message = chat_module.save_message
+
+    def _capture_save_message(_db, **kw):
+        if kw.get("role") == "assistant":
+            captured_attachments.extend(kw.get("attachments") or [])
+        return real_save_message(_db, **kw)
+
+    patches.append(
+        patch.object(
+            chat_module, "save_message",
+            side_effect=lambda _db, **_kw: _capture_save_message(_db, **_kw),
+        )
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="diagrama")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert len(captured_attachments) == 1
+    assert captured_attachments[0]["filename"] == "diagram.png"
