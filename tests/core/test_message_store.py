@@ -136,10 +136,11 @@ class TestSaveMessage:
 class TestListRecent:
     def test_orders_newest_first(self, db):
         _seed_user(db)
+        _seed_user_project(db, user_id=1, project_id=1)
         sid = ensure_user_session(db, 1)
 
         for text in ["first", "second", "third"]:
-            save_message(db, sid, project_id=None, user_id=1, role="user", content=text)
+            save_message(db, sid, project_id=1, user_id=1, role="user", content=text)
             db.commit()
 
         rows = list_recent(db, sid, project_id=1, limit=5)
@@ -148,9 +149,10 @@ class TestListRecent:
 
     def test_default_limit_is_5(self, db):
         _seed_user(db)
+        _seed_user_project(db, user_id=1, project_id=1)
         sid = ensure_user_session(db, 1)
         for i in range(8):
-            save_message(db, sid, project_id=None, user_id=1, role="user", content=f"m{i}")
+            save_message(db, sid, project_id=1, user_id=1, role="user", content=f"m{i}")
             db.commit()
 
         rows = list_recent(db, sid, project_id=1)
@@ -158,8 +160,9 @@ class TestListRecent:
 
     def test_limit_clamped_to_min_1(self, db):
         _seed_user(db)
+        _seed_user_project(db, user_id=1, project_id=1)
         sid = ensure_user_session(db, 1)
-        save_message(db, sid, project_id=None, user_id=1, role="user", content="only")
+        save_message(db, sid, project_id=1, user_id=1, role="user", content="only")
         db.commit()
 
         rows = list_recent(db, sid, project_id=1, limit=0)
@@ -179,8 +182,8 @@ class TestListRecent:
         save_message(db, sid2, project_id=2, user_id=2, role="user", content="user2-msg")
         db.commit()
 
-        rows_u1 = list_recent(db, sid1, limit=10)
-        rows_u2 = list_recent(db, sid2, limit=10)
+        rows_u1 = list_recent(db, sid1, project_id=1, limit=10)
+        rows_u2 = list_recent(db, sid2, project_id=2, limit=10)
 
         assert [r.content for r in rows_u1] == ["user1-msg"]
         assert [r.content for r in rows_u2] == ["user2-msg"]
@@ -211,30 +214,20 @@ class TestProjectIdScoping:
     is not enough; project_id is required for per-project isolation).
     """
 
-    def test_project_id_scopes_results(self, fresh):
+    def test_project_id_scopes_results(self, db):
         """With ONE session and TWO projects, list_recent must return
         only messages belonging to the requested project_id."""
-        from app.models.message import Message
+        _seed_user(db, user_id=1)
+        _seed_user_project(db, user_id=1, project_id=10)
+        _seed_user_project(db, user_id=1, project_id=20)
 
-        db = fresh
         # One shared session (one per user) — the bug repro scenario.
-        sess = db.execute(
-            __import__("sqlalchemy").text(
-                "INSERT INTO sessions (user_id, active_phase, engram_state, last_seen_at, created_at, updated_at) "
-                "VALUES (1, 'propuesta', '{}'::jsonb, now(), now(), now()) RETURNING id"
-            )
-        ).first()
-        sess_id = sess[0] if sess else 1
-
-        # Two projects (different project_ids, same session).
-        db.execute(text("INSERT INTO projects (id, user_id, name) VALUES (10, 1, 'P-A')"))
-        db.execute(text("INSERT INTO projects (id, user_id, name) VALUES (20, 1, 'P-B')"))
-        db.commit()
+        sess_id = ensure_user_session(db, 1)
 
         # Save 2 messages in project 10 + 1 message in project 20.
-        db.add(Message(role="user", user_id=1, session_id=sess_id, project_id=10, content="proj10 msg1"))
-        db.add(Message(role="assistant", user_id=1, session_id=sess_id, project_id=10, content="proj10 msg2"))
-        db.add(Message(role="user", user_id=1, session_id=sess_id, project_id=20, content="proj20 msg1"))
+        save_message(db, sess_id, project_id=10, user_id=1, role="user", content="proj10 msg1")
+        save_message(db, sess_id, project_id=10, user_id=1, role="assistant", content="proj10 msg2")
+        save_message(db, sess_id, project_id=20, user_id=1, role="user", content="proj20 msg1")
         db.commit()
 
         # Without project_id scoping (the bug): list_recent returned BOTH.
