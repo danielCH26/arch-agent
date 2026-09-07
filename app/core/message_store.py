@@ -109,10 +109,14 @@ def save_message(
 def list_recent(
     db: Session,
     session_id: int,
+    project_id: int,
     limit: int = 5,
 ) -> list[Message]:
-    """Return the last ``limit`` messages for ``session_id`` ordered newest-first.
+    """Return the last ``limit`` messages for (session_id, project_id) newest-first.
 
+    Scopes by BOTH session_id (cross-user isolation) and project_id (REQ-7).
+    Without the project_id predicate this leaks messages across projects
+    of the same user (UserSession is one-per-user, not one-per-project).
     Ordering is ``created_at DESC, id DESC`` so two messages inserted in
     the same millisecond keep a stable, deterministic order (REQ-3).
     """
@@ -121,6 +125,7 @@ def list_recent(
     stmt = (
         select(Message)
         .where(Message.session_id == session_id)
+        .where(Message.project_id == project_id)
         .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(limit)
     )

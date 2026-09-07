@@ -379,7 +379,7 @@ def chat_history(
             if session is None:
                 return {"messages": []}
 
-            rows = list_recent(db, session.id, limit=limit)
+            rows = list_recent(db, session.id, project_id=project_id, limit=limit)
         except SQLAlchemyError as exc:
             logger.warning(
                 "history read skipped, Postgres unreachable user_id=%s: %s",
