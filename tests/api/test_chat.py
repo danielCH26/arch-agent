@@ -899,20 +899,6 @@ def test_postgres_down_returns_503(self):
 # ---------------------------------------------------------------------------
 
 
-def _attachment_event(kind="screenshot", mime="image/png", url="/api/chat/attachments/abc?token=xyz",
- storage_path=):
-    payload = {
-        "kind": kind,
-        "mime": mime,
-        "url": url,
-        "filename": "diagram-12345.png",
-        "storage_path": "/app/uploads/screenshots/abc.png",
-        "source_url": "data:image/png;base64,xxx",
-        "bytes": 1024,
-    }
-    return f"event: attachment\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
 def test_chat_stream_emits_attachment_event_between_token_and_done(monkeypatch):
     """REQ-PMCP-1 / SCN-PMCP-1: ``event: attachment`` arrives AFTER the last
     ``event: token`` and BEFORE ``event: done``. The on-wire payload
