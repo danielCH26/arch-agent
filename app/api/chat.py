@@ -69,20 +69,20 @@ async def chat(
     """
     Stream agent chat responses as SSE.
 
-    POST /api/chat  ΓåÆ  text/event-stream
+    POST /api/chat  ╬ô├Ñ├å  text/event-stream
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream ΓÇö "sources" event (metadata RAG) +
+        200 text/event-stream ╬ô├ç├╢ "sources" event (metadata RAG) +
             ("tool_start" / "tool_end")* + tokens as "event: token" +
             optional "event: degraded" + final "event: done".
             On hard failure, "event: error" terminates the stream.
-        400 ΓÇö no message provided
-        401 ΓÇö invalid JWT
-        404 ΓÇö project not found or not owned
-        409 ΓÇö LLM not configured for user
+        400 ╬ô├ç├╢ no message provided
+        401 ╬ô├ç├╢ invalid JWT
+        404 ╬ô├ç├╢ project not found or not owned
+        409 ╬ô├ç├╢ LLM not configured for user
 
-    F11 changes (issue #13, design.md ┬º6.5):
+    F11 changes (issue #13, design.md Γö¼┬║6.5):
       - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
         callbacks=..., rag_documents=...)`` which drives a
         ``create_agent`` runtime.
@@ -104,7 +104,7 @@ async def chat(
     AFTER the commit. Either store degrades gracefully when the other is down.
     """
     if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vac├¡o")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacΓö£┬ío")
 
     user_id = current_user["user_id"]
 
@@ -206,7 +206,7 @@ async def chat(
         """
         SSE generator that yields events as they arrive from the agent runtime.
 
-        Ordering (design.md ┬º5.2):
+        Ordering (design.md Γö¼┬║5.2):
           sources -> (tool_start/tool_end)* -> token*N -> done
 
         ``sources`` is emitted by this route BEFORE the agent runs (the agent
@@ -228,6 +228,51 @@ async def chat(
 
             emitted_done = False
             full_response = ""
+            # F13 (REQ-ATT-1 / REQ-PMCP-1): collected attachment dicts from
+            # ``event: attachment`` SSE payloads. Persisted alongside the
+            # assistant row in the same pre-``done`` transaction so a
+            # failure on either side rolls back BOTH rows atomically.
+            collected_attachments: list[dict] = []
+
+            def _persist_turn() -> None:
+                """F12 (REQ-4/REQ-6) + F13 (REQ-ATT-1): persist user+
+                assistant rows AND any attachments in ONE transaction.
+
+                Called BEFORE ``event: done`` is yielded so a persistence
+                failure surfaces as ``event: error`` instead of a completed
+                turn. Engram mirror fires only AFTER a successful commit.
+                """
+                db = SessionLocal()
+                try:
+                    session_id = ensure_user_session(db, user_id)
+                    user_msg = save_message(
+                        db,
+                        session_id=session_id,
+                        project_id=body.project_id,
+                        user_id=user_id,
+                        role="user",
+                        content=body.message,
+                    )
+                    asst_msg = save_message(
+                        db,
+                        session_id=session_id,
+                        project_id=body.project_id,
+                        user_id=user_id,
+                        role="assistant",
+                        content=full_response,
+                        citations=sources,
+                        attachments=collected_attachments,
+                    )
+                    db.commit()
+
+                    # Fire-and-forget Engram mirror AFTER the commit (REQ-6,
+                    # REQ-10). Failures are logged inside engram_mirror and
+                    # never raised back to the SSE stream.
+                    engram_mirror(user_msg, user_id=user_id, project_id=body.project_id)
+                    engram_mirror(asst_msg, user_id=user_id, project_id=body.project_id)
+                finally:
+                    db.close()
+
             async for sse_dict in run_agent(
                 model=model,
                 message=body.message,
@@ -256,36 +301,9 @@ async def chat(
                     break
 
                 if event_name == "done":
-                    # F12 (REQ-4): persist both rows in ONE Postgres tx BEFORE
-                    # yielding done. On SQLAlchemyError, emit error and skip done
-                    # (REQ-11). Engram mirror is fire-and-forget after the commit.
+                    # F12 + F13: persist in ONE tx; on error yield error instead of done (REQ-11).
                     try:
-                        db = SessionLocal()
-                        try:
-                            session_id = ensure_user_session(db, user_id)
-                            user_msg = save_message(
-                                db,
-                                session_id=session_id,
-                                project_id=body.project_id,
-                                user_id=user_id,
-                                role="user",
-                                content=body.message,
-                            )
-                            asst_msg = save_message(
-                                db,
-                                session_id=session_id,
-                                project_id=body.project_id,
-                                user_id=user_id,
-                                role="assistant",
-                                content=full_response,
-                                citations=sources,
-                            )
-                            db.commit()
-
-                            engram_mirror(user_msg, user_id=user_id, project_id=body.project_id)
-                            engram_mirror(asst_msg, user_id=user_id, project_id=body.project_id)
-                        finally:
-                            db.close()
+                        _persist_turn()
                     except SQLAlchemyError as exc:
                         logger.error(
                             "messages insert failed user_id=%s project_id=%s: %s",
@@ -315,6 +333,29 @@ async def chat(
                     yield f"event: tool_end\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     continue
 
+                if event_name == "attachment":
+                    # F13 (REQ-PMCP-1 / REQ-ATT-1): the agent yields an
+                    # ``attachment`` SSE event after a successful
+                    # ``puppeteer_screenshot`` call. We strip the server-only
+                    # ``storage_path`` / ``source_url`` from the on-wire
+                    # payload (these would leak the server filesystem to the
+                    # browser) and queue the full dict for the pre-``done``
+                    # transaction so the assistant row + attachments land
+                    # atomically (REQ-ATT-1).
+                    if isinstance(payload, dict):
+                        public_payload = {
+                            "kind": payload.get("kind", "screenshot"),
+                            "mime": payload.get("mime", "image/png"),
+                            "url": payload.get("url"),
+                            "filename": payload.get("filename"),
+                        }
+                        collected_attachments.append(dict(payload))
+                        yield (
+                            f"event: attachment\ndata: "
+                            f"{json.dumps(public_payload, ensure_ascii=False)}\n\n"
+                        )
+                    continue
+
                 # Unknown event types are ignored on purpose (forward-compat
                 # for future F12+ events).
                 continue
@@ -322,7 +363,7 @@ async def chat(
             if not emitted_done:
                 # Defensive: if ``run_agent`` returned without yielding
                 # ``done`` or ``error``, fire ``done`` to keep the FE
-                # contract stable (design.md ┬º9).
+                # contract stable (design.md Γö¼┬║9).
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
@@ -371,7 +412,7 @@ def chat_history(
 
         # Resolve the user's session id (lazy-upsert so a fresh user still
         # gets an empty list, not an exception). REQ-11: any DB failure on
-        # the read path ΓåÆ 200 with empty messages (graceful degradation).
+        # the read path ╬ô├Ñ├å 200 with empty messages (graceful degradation).
         try:
             session = (
                 db.query(UserSession).filter(UserSession.user_id == user_id).first()
