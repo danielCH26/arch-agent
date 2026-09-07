@@ -187,6 +187,9 @@ def test_run_agent_no_degraded_when_context7_ok():
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools", AsyncMock(
              return_value=([MagicMock(name="resolve-library-id"), MagicMock(name="query-docs")], None),
+         )), \
+         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(
+             return_value=([], None),
          )):
         async def _drive():
             events = []
@@ -235,7 +238,8 @@ def test_run_agent_skips_context7_when_architect_pattern_present():
     ]
 
     with patch.object(agent, "build_agent", side_effect=_capture_build), \
-         patch.object(agent, "_try_get_context7_tools", AsyncMock()) as c7:
+         patch.object(agent, "_try_get_context7_tools", AsyncMock()) as c7, \
+         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
 
         async def _drive():
             events = []
@@ -254,7 +258,7 @@ def test_run_agent_skips_context7_when_architect_pattern_present():
 
     # Context7 fetch must NOT have been called.
     c7.assert_not_called()
-    # Agent must have been built with empty tools.
+    # Agent must have been built with empty tools (puppeteer mocked to empty too).
     assert captured_tools["tools"] == []
 
 
@@ -291,7 +295,8 @@ def test_run_agent_streams_tokens_then_done():
     fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
-         patch.object(agent, "_try_get_context7_tools", AsyncMock(return_value=([], None))):
+         patch.object(agent, "_try_get_context7_tools", AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
 
         async def _drive():
             events = []
@@ -342,7 +347,8 @@ def test_run_agent_emits_tool_start_and_end_around_tokens():
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([MagicMock(name="t1")], None))):
+                      AsyncMock(return_value=([MagicMock(name="t1")], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
 
         async def _drive():
             events = []
@@ -410,7 +416,8 @@ def test_run_agent_yields_error_when_astream_raises():
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))):
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
 
         async def _drive():
             events = []
