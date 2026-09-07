@@ -60,6 +60,14 @@ class Message(Base):
         nullable=False,
         server_default=text("'[]'"),
     )
+    # F13 (REQ-ATT-1 / REQ-EM-DELTA-1): one or more typed attachment dicts
+    # (UUID, kind, mime, filename, storage_path, source_url, bytes). Mirrors
+    # the ``citations`` pattern above; served via GET /api/chat/attachments/{id}.
+    attachments = Column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+        server_default=text("'[]'"),
+    )
     # BIGINT NULL — populated only when the Engram mirror succeeds.
     engram_observation_id = Column(
         BigInteger().with_variant(Integer, "sqlite"),

@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role VARCHAR(16) NOT NULL,
     content TEXT NOT NULL,
     citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+    attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
     engram_observation_id BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -162,4 +163,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
     ON messages (user_id, project_id, created_at DESC);
+
+-- =============================================================================
+-- F13 — capability chat-attachments (issue #17, migration 0009, REQ-EM-DELTA-1)
+-- Idempotent ALTER for DBs created by init_db.py BEFORE migration 0009 ran.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
 
