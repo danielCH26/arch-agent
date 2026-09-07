@@ -14,7 +14,13 @@ from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
-from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
+from app.core.message_store import (
+    ensure_user_session,
+    engram_mirror,
+    list_recent,
+    save_attachment,
+    save_message,
+)
 from app.core.rag import similarity_search
 from app.models.project import Project
 from app.models.session import UserSession
@@ -228,9 +234,15 @@ async def chat(
 
             emitted_done = False
             full_response = ""
+            # F13 (REQ-ATT-1 / REQ-PMCP-1): collected attachment dicts from
+            # ``event: attachment`` SSE payloads. Persisted alongside the
+            # assistant row in the same pre-``done`` transaction so a
+            # failure on either side rolls back BOTH rows atomically.
+            collected_attachments: list[dict] = []
 
             def _persist_turn() -> None:
-                """F12 (REQ-4/REQ-6): persist user+assistant rows in ONE tx.
+                """F12 (REQ-4/REQ-6) + F13 (REQ-ATT-1): persist user+
+                assistant rows AND any attachments in ONE transaction.
 
                 Called BEFORE ``event: done`` is yielded so a persistence
                 failure surfaces as ``event: error`` instead of a completed
@@ -255,6 +267,7 @@ async def chat(
                         role="assistant",
                         content=full_response,
                         citations=sources,
+                        attachments=collected_attachments,
                     )
                     db.commit()
 
@@ -324,6 +337,29 @@ async def chat(
 
                 if event_name == "tool_end":
                     yield f"event: tool_end\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "attachment":
+                    # F13 (REQ-PMCP-1 / REQ-ATT-1): the agent yields an
+                    # ``attachment`` SSE event after a successful
+                    # ``puppeteer_screenshot`` call. We strip the server-only
+                    # ``storage_path`` / ``source_url`` from the on-wire
+                    # payload (these would leak the server filesystem to the
+                    # browser) and queue the full dict for the pre-``done``
+                    # transaction so the assistant row + attachments land
+                    # atomically (REQ-ATT-1).
+                    if isinstance(payload, dict):
+                        public_payload = {
+                            "kind": payload.get("kind", "screenshot"),
+                            "mime": payload.get("mime", "image/png"),
+                            "url": payload.get("url"),
+                            "filename": payload.get("filename"),
+                        }
+                        collected_attachments.append(dict(payload))
+                        yield (
+                            f"event: attachment\ndata: "
+                            f"{json.dumps(public_payload, ensure_ascii=False)}\n\n"
+                        )
                     continue
 
                 # Unknown event types are ignored on purpose (forward-compat
