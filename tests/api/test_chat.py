@@ -195,7 +195,7 @@ def _error(message):
     return f"event: error\ndata: {json.dumps(message, ensure_ascii=False)}\n\n"
 
 
-def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
+def _patch_chat_route(*, rag_docs=None, run_agent_events=None, ordering=None):
     """Patch ``build_langchain_model``, ``similarity_search`` and ``run_agent``.
 
     Returns a list of patches applied so the caller can pop them in teardown.
@@ -230,6 +230,34 @@ def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
 
     p_lf = patch.object(chat_module, "get_langfuse_handler", return_value=None)
     patches.append(p_lf)
+
+    # F12 persistence collaborators: the pre-done persistence block must
+    # never touch a real Postgres or Engram in unit tests. When ``ordering``
+    # is a list, side effects append to it so tests can assert ordering.
+    mock_db = MagicMock(name="fake-db")
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+    mock_db.execute.return_value.scalar.return_value = 1  # liveness probe
+    patches.append(patch.object(chat_module, "SessionLocal", return_value=mock_db))
+    patches.append(patch.object(chat_module, "ensure_user_session", return_value=1))
+    patches.append(
+        patch.object(
+            chat_module,
+            "save_message",
+            side_effect=lambda _db, **_kw: MagicMock(id=99),
+        )
+    )
+    if ordering is None:
+        patches.append(patch.object(chat_module, "engram_mirror", return_value=None))
+    else:
+        mock_db.commit.side_effect = lambda: ordering.append("commit")
+        patches.append(
+            patch.object(
+                chat_module,
+                "engram_mirror",
+                side_effect=lambda *_a, **_kw: ordering.append("engram_mirror"),
+            )
+        )
 
     return patches
 
@@ -605,3 +633,262 @@ def test_chat_stream_sources_event_carries_doc_metadata(monkeypatch):
     finally:
         for p in patches:
             p.stop()
+
+
+# ---------------------------------------------------------------------------
+# F12 persistence on the merged F11 run_agent flow (merge integration)
+# ---------------------------------------------------------------------------
+
+
+def test_f12_commit_happens_before_done_on_agent_flow():
+    """Merge invariant: F12 REQ-4 survives the F11 run_agent flow.
+
+    Drives the REAL event_generator (patched collaborators) and records, in
+    real time, the commit, the Engram mirror and every yielded chunk. The
+    commit must land BEFORE the ``event: done`` chunk is produced.
+    """
+    from app.api import chat as chat_module
+
+    ordering: list[str] = []
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "Hola"},
+            {"event": "done", "data": None},
+        ],
+        ordering=ordering,
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hola")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            async for chunk in response.body_iterator:
+                ordering.append(chunk)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    done_idx = next(
+        i for i, item in enumerate(ordering)
+        if isinstance(item, str) and item.startswith("event: done")
+    )
+    assert ordering.index("commit") < done_idx
+    assert ordering.index("commit") < ordering.index("engram_mirror")
+
+
+def test_f12_persistence_failure_on_done_yields_error_not_done():
+    """Merge invariant: if the persistence tx fails at done-time, the stream
+    terminates with ``event: error`` and never emits ``event: done``."""
+    from app.api import chat as chat_module
+    from sqlalchemy.exc import SQLAlchemyError
+
+    mock_db = MagicMock(name="failing-db")
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+    mock_db.execute.return_value.scalar.return_value = 1  # liveness probe OK
+    mock_db.commit.side_effect = SQLAlchemyError("insert failed")
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "Hola"},
+            {"event": "done", "data": None},
+        ],
+    )
+    # Override the default (successful) persistence mocks with a failing tx.
+    patches.append(patch.object(chat_module, "SessionLocal", return_value=mock_db))
+    patches.append(patch.object(chat_module, "ensure_user_session", return_value=1))
+    patches.append(
+        patch.object(
+            chat_module,
+            "save_message",
+            side_effect=lambda _db, **_kw: MagicMock(id=1),
+        )
+    )
+    patches.append(patch.object(chat_module, "engram_mirror", return_value=None))
+
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hola")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        chunks = asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    body_text = "".join(chunks)
+    assert "event: error" in body_text
+    assert "event: done" not in body_text
+
+
+# ---------------------------------------------------------------------------
+# F12.2 (ported onto the merged flow): SCN-1, SCN-4, SCN-7 — commit-before-
+# yield + Engram-down resilience, replicated inline (no Postgres needed).
+# ---------------------------------------------------------------------------
+
+
+class TestEventGeneratorPersistence:
+    """F12.2: SCN-1, SCN-4, SCN-7 — commit-before-yield + Engram-down resilience.
+
+    We replicate the persistence block inline rather than instantiating the
+    FastAPI app — the goal is to assert the orchestration contract (commit
+    happens BEFORE the 'done' yield; EngramError does not abort the stream)
+    without spinning up Postgres.
+    """
+
+    @staticmethod
+    def _run_persistence_block(
+        *,
+        session,
+        engram_mirror,
+        user_msg_content: str,
+        assistant_content: str,
+        user_id: int,
+        project_id,
+        ordering: list[str],
+    ):
+        """Mimic the chat route's pre-``done`` persistence block."""
+        from app.models.message import Message
+
+        session.add(
+            Message(
+                role="user",
+                user_id=user_id,
+                project_id=project_id,
+                session_id=1,
+                content=user_msg_content,
+            )
+        )
+        session.add(
+            Message(
+                role="assistant",
+                user_id=user_id,
+                project_id=project_id,
+                session_id=1,
+                content=assistant_content,
+                citations=[],
+            )
+        )
+        session.commit()
+        ordering.append("commit")
+        try:
+            engram_mirror("u", user_id=user_id, project_id=project_id)
+            engram_mirror("a", user_id=user_id, project_id=project_id)
+        except Exception:
+            # Must NOT propagate — REQ-6 / REQ-10 / SCN-4.
+            pass
+
+    def test_commit_happens_before_done_yield(self):
+        """REQ-4 / SCN-1 / SCN-7: ordering invariant."""
+        ordering: list[str] = []
+
+        session = MagicMock()
+        # Track commit vs yield-done ordering.
+
+        # Patch engram_mirror where chat.py imports it.
+        with patch("app.api.chat.engram_mirror") as fake_mirror:
+            fake_mirror.side_effect = lambda *_a, **_kw: ordering.append("engram_mirror")
+
+            # Build a tiny async generator that yields tokens then runs the
+            # persistence block then yields 'done'.
+            async def run():
+                yield "event: sources\ndata: []\n\n"
+                yield "event: token\ndata: \"hi\"\n\n"
+                self._run_persistence_block(
+                    session=session,
+                    engram_mirror=fake_mirror,
+                    user_msg_content="hola",
+                    assistant_content="hi",
+                    user_id=1,
+                    project_id=1,
+                    ordering=ordering,
+                )
+                ordering.append("yield_done")
+                yield "event: done\ndata: null\n\n"
+
+            asyncio.run(_drain(run()))
+
+        assert ordering.index("commit") < ordering.index("yield_done")
+        # And engram_mirror fires after commit.
+        assert ordering.index("commit") < ordering.index("engram_mirror")
+
+    def test_engram_error_does_not_abort_stream(self):
+        """REQ-6 / REQ-10 / SCN-4: Engram failure must NOT raise to caller."""
+        from app.core.engram_client import EngramError
+
+        session = MagicMock()
+
+        with patch("app.api.chat.engram_mirror") as fake_mirror:
+            fake_mirror.side_effect = EngramError("Engram caído")
+
+            async def run():
+                yield "event: sources\ndata: []\n\n"
+                self._run_persistence_block(
+                    session=session,
+                    engram_mirror=fake_mirror,
+                    user_msg_content="hola",
+                    assistant_content="hi",
+                    user_id=1,
+                    project_id=1,
+                    ordering=[],
+                )
+                yield "event: done\ndata: null\n\n"
+
+            events = asyncio.run(_drain(run()))
+
+        assert events[-1].startswith("event: done")
+        session.commit.assert_called_once()
+
+
+class TestPostgresLivenessCheck:
+    """F12 (REQ-11 / SCN-5): liveness check returns 503 when Postgres unreachable.
+
+    The route must run a SELECT 1 BEFORE opening the SSE stream. If that probe
+    raises SQLAlchemyError, the route returns HTTP 503 (NOT 200 + event: error).
+    """
+
+    def test_postgres_down_returns_503(self):
+        """Liveness probe raises SQLAlchemyError -> route raises HTTPException(503)."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.api.chat import router
+        from app.api.dependencies import get_current_user
+
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_current_user] = lambda: {"user_id": 1, "username": "test"}
+
+        client = TestClient(app)
+
+        # Patch the reference the ROUTE uses (chat module imports SessionLocal
+        # by name), not only the source module.
+        with patch("app.api.chat.SessionLocal") as mock_session_local:
+            # SessionLocal() returns a context manager whose .execute raises.
+            mock_db = MagicMock()
+            mock_db.__enter__ = MagicMock(return_value=mock_db)
+            mock_db.__exit__ = MagicMock(return_value=False)
+            mock_db.execute.side_effect = SQLAlchemyError("connection refused")
+            mock_session_local.return_value = mock_db
+
+            response = client.post(
+                "/api/chat",
+                json={"project_id": None, "message": "hello"},
+            )
+
+            assert response.status_code == 503
+            assert "Database unavailable" in response.json()["detail"]
