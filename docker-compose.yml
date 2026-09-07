@@ -32,6 +32,8 @@ services:
         condition: service_started
       langfuse-web:
         condition: service_started
+      puppeteer-mcp:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -50,6 +52,12 @@ services:
       # LLM defaults (configurables luego en UI por usuario)
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_MODEL: ${LLM_MODEL}
+
+      # F13 — Puppeteer MCP sidecar (issue #17).
+      PUPPETEER_MCP_URL: ${PUPPETEER_MCP_URL:-http://puppeteer-mcp:8931/mcp}
+      PUPPETEER_RENDER_TIMEOUT_SECONDS: ${PUPPETEER_RENDER_TIMEOUT_SECONDS:-15}
+      PUPPETEER_MAX_RENDER_BYTES: ${PUPPETEER_MAX_RENDER_BYTES:-2097152}
+      PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE: ${PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE:-5}
 
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -108,6 +116,30 @@ services:
     depends_on:
       engram:
         condition: service_started
+    restart: unless-stopped
+
+  # ===========================================================================
+  # PUPPETEER MCP — Sidecar para render de diagramas Mermaid (F13, issue #17)
+  # ===========================================================================
+  # Sirve @modelcontextprotocol/server-puppeteer sobre streamable_http en
+  # :8931. Un unico Chromium por sidecar (warm-on-start en entrypoint.sh).
+  # Sin replica multi: el rate-limit in-memory vive en backend (R-SPEC-4).
+  puppeteer-mcp:
+    container_name: puppeteer-mcp
+    build:
+      context: ./infrastructure/puppeteer-mcp
+    image: arch-agent-puppeteer-mcp:latest
+    environment:
+      NODE_ENV: production
+    mem_limit: 512m
+    healthcheck:
+      # El server oficial responde 404 a /health pero el connection-refused
+      # ya dispara unhealthy, asi que spider + exit-0 es suficiente.
+      test: ["CMD-SHELL", "wget -q --tries=1 --spider http://127.0.0.1:8931/health || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   # ===========================================================================
