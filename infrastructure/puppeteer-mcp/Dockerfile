@@ -28,8 +28,30 @@ ENV NODE_ENV=production \
     PUPPETEER_CACHE_DIR=/root/.cache/puppeteer
 
 # Chromium runtime dependencies + ca-certificates (HTTPS to upstream).
-# ``fonts-liberation`` so Mermaid text renders with sane glyphs; without it
-# headless Chromium falls back to tofu boxes.
+#
+# The ``lib*`` set below is the canonical ``@sparticuz/chromium`` / headless
+# Chromium on Debian-slim list. Each one fixes a known crash signature on a
+# fresh ``node:20-bookworm-slim`` image:
+#
+#   libnss3, libnssutil3, libsmime3, libnssckbi.so  -- TLS / cert chain
+#   libatk1.0-0, libatk-bridge2.0-0                  -- accessibility stack
+#   libatspi2.0-0                                   -- AT-SPI bus
+#   libcups2                                        -- printer enumeration
+#   libdbus-1-3                                     -- D-Bus (Chromium IPC)
+#   libxcomposite1, libxdamage1, libxfixes3,
+#   libxrandr2, libxkbcommon0                       -- X11 window system
+#   libxext6, libxi6, libxrender1                   -- X11 extensions
+#   libxtst6, libxshmfence1                         -- input + GPU fences
+#   libxss1                                         -- X screensaver (used by puppeteer)
+#   libgbm1, libpangocairo-1.0-0, libpango-1.0-0,
+#   libcairo2                                       -- renderers
+#   libasound2                                      -- ALSA audio
+#   fonts-liberation                                -- Latin font fallback (Mermaid glyphs)
+#
+# Without ``libxcomposite1`` (PR #76 review finding) Chromium crashes on
+# first paint with ``libXcomposite.so.1: cannot open shared object file``.
+# ``fonts-liberation`` keeps Mermaid text rendering readable instead of as
+# tofu boxes when no system font is installed.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -37,10 +59,26 @@ RUN apt-get update \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \
+        libatspi2.0-0 \
         libcups2 \
+        libdbus-1-3 \
         libgbm1 \
         libnss3 \
+        libnssutil3 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libsmime3 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxkbcommon0 \
+        libxrandr2 \
+        libxrender1 \
+        libxshmfence1 \
         libxss1 \
+        libxtst6 \
         wget \
     && rm -rf /var/lib/apt/lists/*
 
