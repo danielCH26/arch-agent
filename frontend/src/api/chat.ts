@@ -227,13 +227,37 @@ export async function fetchChatHistory(
   }
 
   const payload = (await response.json()) as { messages?: ChatHistoryMessage[] }
-  return Array.isArray(payload.messages) ? payload.messages : []
+  if (!Array.isArray(payload.messages)) return []
+
+  // PR #76 review fix #6a: apply ``_normaliseHistoryAttachments`` to every
+  // row before handing the array to the chatStore. Pre-F13 rows have no
+  // ``attachments`` column at all (so ``row.attachments`` is undefined);
+  // corrupted transport payloads could deliver ``null``, a string, or a
+  // dict instead of the expected array — passing those through raw
+  // crashes the renderer's ``message.attachments.map(...)`` downstream.
+  // The helper already lives at the bottom of this file and is exported
+  // (see the export modifier on its declaration); this is the call-site
+  // it was designed for.
+  return payload.messages.map((row) => ({
+    ...row,
+    attachments: _normaliseHistoryAttachments(row.attachments),
+  }))
 }
 
 // F13 history-parsing helper: defensively coerce a row's ``attachments``
 // field into the typed ``Attachment[]`` shape. Older rows (pre-F13) will
 // not have the column; missing / non-array values are normalised to ``[]``.
-function _normaliseHistoryAttachments(raw: unknown): Attachment[] {
+//
+// Public so the test suite (frontend/src/api/__tests__/chat.test.ts) can
+// exercise the contract directly. PR #76 review fix #6a: previously
+// declared but never called from ``fetchChatHistory`` — that meant an
+// unknown-shape value (``null`` from a pre-F13 row, a string from a
+// legacy schema, or a dict the backend forgot to wrap in an array)
+// would land verbatim in the chatStore and crash the renderer when it
+// tried to map over ``message.attachments``.
+export function _normaliseHistoryAttachments(
+  raw: unknown,
+): Attachment[] {
   if (!Array.isArray(raw)) return []
   return raw.filter(
     (item): item is Attachment =>
