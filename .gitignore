@@ -37,8 +37,20 @@ temp/
 *.pdf
 *.md
 !README.md
+!.atl/
+!.atl/**/*.md
+!openspec/
+!openspec/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
+!.atl/
+!.atl/**/*.md
+!openspec/
+!openspec/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
@@ -46,5 +58,8 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec artifacts (experimental workflow - not for production)
-openspec/
+# OpenSpec artifacts: versioned via !openspec/ exception above (legacy
+# `openspec/` ignore removed in F12 to enable SDD artifacts in PRs).
+
+# CodeGraph local index (per-worktree, never shared)
+.codegraph/

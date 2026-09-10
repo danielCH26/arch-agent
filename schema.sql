@@ -135,3 +135,41 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- =============================================================================
+-- F12 — capability engram-conversation-memory (issue #14, migration 0008)
+-- Tabla messages: source-of-truth para el historial de chat.
+-- Postgres guarda cada turn (user + assistant) en una sola transacción
+-- antes del yield 'event: done'; Engram recibe un mirror fire-and-forget.
+-- Ver docs/adr/011-engram-conversation-mirror.md y openspec/specs/engram-conversation-memory.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGSERIAL PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(16) NOT NULL,
+    content TEXT NOT NULL,
+    citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+    attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    engram_observation_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT messages_role_check CHECK (role IN ('user','assistant','system'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_id_created_at
+    ON messages (session_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
+    ON messages (user_id, project_id, created_at DESC);
+
+-- =============================================================================
+-- F13 — capability chat-attachments (issue #17, migration 0011, REQ-EM-DELTA-1)
+-- Filename renumbered from 0009 in PR #76 review fix #3 to avoid collision
+-- with PR #63's 0008_add_approvals_decision_check.sql.
+-- Idempotent ALTER for DBs created by init_db.py BEFORE migration 0011 ran.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
+
