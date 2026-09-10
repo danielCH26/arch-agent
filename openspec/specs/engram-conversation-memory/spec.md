@@ -16,7 +16,9 @@ Persist every chat turn (user + assistant) so a user resumes exactly where they 
 ## Requirements
 
 ### REQ-1 — Messages table schema
-The system MUST add a Postgres `messages` table via `migrations/0008_add_messages_table.sql` AND mirror it verbatim in `schema.sql`. Columns MUST be `id BIGSERIAL PK, session_id INT NOT NULL, project_id INT NULL, user_id INT NOT NULL, role TEXT NOT NULL CHECK (role IN ('user','assistant','system')), content TEXT NOT NULL, citations JSONB NOT NULL DEFAULT '[]', engram_observation_id BIGINT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`. FKs MUST be `session_id → sessions(id) ON DELETE CASCADE`, `project_id → projects(id) ON DELETE SET NULL`, `user_id → users(id) ON DELETE CASCADE`. Migration MUST be idempotent (`CREATE TABLE IF NOT EXISTS`).
+The system MUST add a Postgres `messages` table via `migrations/0010_add_messages_table.sql` AND mirror it verbatim in `schema.sql`. Columns MUST be `id BIGSERIAL PK, session_id INT NOT NULL, project_id INT NULL, user_id INT NOT NULL, role TEXT NOT NULL CHECK (role IN ('user','assistant','system')), content TEXT NOT NULL, citations JSONB NOT NULL DEFAULT '[]', engram_observation_id BIGINT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`. FKs MUST be `session_id → sessions(id) ON DELETE CASCADE`, `project_id → projects(id) ON DELETE SET NULL`, `user_id → users(id) ON DELETE CASCADE`. Migration MUST be idempotent (`CREATE TABLE IF NOT EXISTS`).
+
+> **Note (PR #76 fix #3):** Migration filename was renumbered from `0008_add_messages_table.sql` → `0010_add_messages_table.sql` to avoid filename collision with PR #63 (F05 elicitación) which already ships `0008_add_approvals_decision_check.sql`. SQL DDL is unchanged.
 
 ### REQ-2 — Message ORM model
 `app/models/message.py` MUST expose a SQLAlchemy 2.0 `Message` ORM mapping REQ-1 columns. `app/models/__init__.py` MUST register it.
@@ -55,7 +57,9 @@ Pytest MUST cover REQ-1 through REQ-11. `tests/test_llm_validator.py` mocks MUST
 `npm run build` in `frontend/` MUST succeed with no new TypeScript errors introduced by F12.
 
 ### REQ-EM-DELTA-1 (F13 delta) — `attachments` JSONB column on `messages`
-The `messages` table SHALL gain an `attachments JSONB NOT NULL DEFAULT '[]'::jsonb` column via migration `migrations/0009_add_message_attachments.sql`, mirrored verbatim in `schema.sql`. The migration SHALL be idempotent (`ADD COLUMN IF NOT EXISTS`) so re-running it against an F12-era database that lacks the column adds it without data loss, and re-running it against an F13-era database is a no-op.
+The `messages` table SHALL gain an `attachments JSONB NOT NULL DEFAULT '[]'::jsonb` column via migration `migrations/0011_add_message_attachments.sql`, mirrored verbatim in `schema.sql`. The migration SHALL be idempotent (`ADD COLUMN IF NOT EXISTS`) so re-running it against an F12-era database that lacks the column adds it without data loss, and re-running it against an F13-era database is a no-op.
+
+> **Note (PR #76 fix #3):** Migration filename was renumbered from `0009_add_message_attachments.sql` → `0011_add_message_attachments.sql`, paired with REQ-1. SQL DDL is unchanged.
 
 ## Scenarios
 
@@ -104,17 +108,17 @@ The `messages` table SHALL gain an `attachments JSONB NOT NULL DEFAULT '[]'::jso
 - AND the Postgres transaction for both message rows commits BEFORE the `event: done` yield
 
 ### SCN-8 — Migration idempotency
-- GIVEN migration `0008_add_messages_table.sql` has been applied
+- GIVEN migration `0010_add_messages_table.sql` has been applied
 - WHEN the migration runs a second time THEN `CREATE TABLE IF NOT EXISTS messages (...)` succeeds with no error
 
 ### SCN-EM-DELTA-1 (F13 delta) — `attachments` column on a fresh migration
-- GIVEN a freshly migrated database at `4c5a9d3` + `migrations/0009_add_message_attachments.sql`
+- GIVEN a freshly migrated database at `4c5a9d3` + `migrations/0011_add_message_attachments.sql`
 - WHEN `\d messages` is run in psql
 - THEN the `attachments` column SHALL exist with type `jsonb` AND `NOT NULL DEFAULT '[]'::jsonb`
 
 ### SCN-EM-DELTA-2 (F13 delta) — additive / idempotent upgrade from F12
 - GIVEN an existing message row from F12 (no `attachments` column yet)
-- WHEN migration `0009_add_message_attachments.sql` runs
+- WHEN migration `0011_add_message_attachments.sql` runs
 - THEN the column SHALL be added with `DEFAULT '[]'::jsonb NOT NULL` AND the existing row SHALL remain readable with `attachments=[]` (idempotent, no data loss)
 
 ## Data Model
@@ -143,7 +147,7 @@ No schema changes on the Engram server side (Engram v2 HTTP is write-only for ob
 2. Engram v2.0.0-rc.6 HTTP has no list-by-session endpoint — mitigated by Postgres-as-truth (REQ-4).
 3. Cross-user leakage via `engram_client.search` — mitigated by REQ-5 defensive `project` check + SCN-6 cross-user test.
 4. Zustand hydration under React StrictMode — mitigated by REQ-9 `isStreaming` + `loadingHistory` guards.
-5. Migration drift between `schema.sql` and `migrations/0008_*` — REQ-1 mirrors verbatim.
+5. Migration drift between `schema.sql` and `migrations/0010_*` (paired with `migrations/0011_*` for the F13 delta) — REQ-1 / REQ-EM-DELTA-1 mirror verbatim.
 6. Token growth in LLM context — hard cap N=5 default; `?limit=` max 50; long-range recall via `engram_client.get_context()` only on explicit request.
 7. TTFT regression from synchronous save before yield — benchmark in F12.2 PR; fall back to fire-and-forget if >100ms.
 8. Forward-looking tests assume a richer Engram API — REQ-12 closes the gap with 4 new mocks.

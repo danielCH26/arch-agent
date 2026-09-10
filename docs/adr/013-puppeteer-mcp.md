@@ -126,7 +126,9 @@ Decisiones de diseño que viajan con esta elección:
 ### 7. Storage (JSONB → tabla)
 
 - F13 guarda attachments como dicts JSONB dentro de `messages.attachments`
-  (columna `migrations/0009_add_message_attachments.sql`). Es MVP
+  (columna `migrations/0011_add_message_attachments.sql` — renumbered from
+  `0009_*` in PR #76 review fix #3 to avoid collision with PR #63's
+  `0008_add_approvals_decision_check.sql`). Es MVP
   simple: una sola fila con un array, una sola transacción por turno.
 - **Cuándo promover a tabla normalizada** (`message_attachments
   (id, message_id, storage_path, mime, bytes, created_at, ...)`):
@@ -213,7 +215,7 @@ docker compose up -d backend
 - `app/models/message.py:58-62` — `citations` JSONB precedent mirrored by
   `attachments`.
 - `app/api/chat.py:232-267` — `_persist_turn` pre-`done` transaction seam extended.
-- `migrations/0009_add_message_attachments.sql` — F13 migration, idempotent.
+- `migrations/0011_add_message_attachments.sql` — F13 migration, idempotent (renumbered from `0009_*` in PR #76 review fix #3).
 - `docs/adr/007-six-mcps.md:78` — names the Puppeteer package; F13 implements.
 - `docs/adr/010-context7-agent-runtime.md` — F11 `MultiServerMCPClient` runtime precedent.
 - `docs/adr/011-engram-conversation-mirror.md` — F12 persistence seam; F13 sits next to it.
