@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0008: tabla messages (chat history)
+-- Migration 0010: tabla messages (chat history)
 -- =============================================================================
 -- Capability: engram-conversation-memory (F12, issue #14).
 -- Source of truth: Postgres. Engram receives a fire-and-forget sibling
@@ -12,6 +12,10 @@
 -- Note on schema.sql sync: a CI guard (tests/test_schema_sync.py) is
 -- documented as future work — F12 keeps the two definitions in lock-step
 -- manually. See design.md §15 risk #10.
+--
+-- Renumbered 0008 -> 0010 in PR #76 review fix #3 to avoid filename
+-- collisions with PR #63 (F05 elicitación) which already ships
+-- ``0008_add_approvals_decision_check.sql``. SQL DDL is unchanged.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS messages (

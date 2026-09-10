@@ -47,7 +47,8 @@ session_id de Engram: scope **per-(user, project)** con clave deterministica `ar
 - Cumple los dos ACs de issue #14 simultaneamente: persistencia del historial de chat (Postgres) + memoria semantica cross-session (Engram).
 - Chat UI nunca se bloquea por Engram — degrada silenciosamente.
 - Postgres queda preparado para FTS futuro (`tsvector` sobre `content`) sin coupling con Engram.
-- Migracion nueva (`0008_add_messages_table.sql`) es idempotente y reversible.
+- Migracion nueva (`0010_add_messages_table.sql`, renumerada de `0008_*` en el
+  PR #76 review fix #3) es idempotente y reversible.
 
 ### Negativas
 

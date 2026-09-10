@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0009: messages.attachments JSONB (F13, issue #17)
+-- Migration 0011: messages.attachments JSONB (F13, issue #17)
 -- =============================================================================
 -- Capability: chat-attachments (REQ-ATT-1) + engram-conversation-memory DELTA-1.
 --
@@ -11,6 +11,9 @@
 -- kind, mime, filename, storage_path, source_url, bytes). See
 -- ``app/core/message_store.py`` for the helper API and
 -- ``app/core/attachment_tokens.py`` for the signed-token auth.
+--
+-- Renumbered 0009 -> 0011 in PR #76 review fix #3, paired with
+-- ``0010_add_messages_table.sql`` (was 0008). SQL DDL is unchanged.
 -- =============================================================================
 
 ALTER TABLE messages
