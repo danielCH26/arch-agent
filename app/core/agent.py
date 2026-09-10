@@ -289,6 +289,7 @@ async def _astream_agent(
     user_id: int | None = None,
     project_id: int | None = None,
     model_name: str | None = None,
+    tool_call_tracker: dict[str, int] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive ``agent.astream_events`` and yield SSE-ready dicts.
 
@@ -299,6 +300,13 @@ async def _astream_agent(
 
     ``user_id`` / ``project_id`` / ``model_name`` flow into the run config
     metadata so Langfuse can label the trace (REQ-5 / SCN-7).
+
+    ``tool_call_tracker`` (optional): a mutable dict whose ``"count"`` key
+    is incremented every time a ``tool_start`` event is yielded. ``run_agent``
+    uses it to detect the "tools were available but the model never called
+    one" case and emit a ``degraded`` event with
+    ``reason="tool_calls_missing"`` (PR #76 review fix #2b). Callers that
+    don't care can pass ``None``.
     """
     config: dict[str, Any] = {}
     if callbacks:
@@ -339,6 +347,8 @@ async def _astream_agent(
                 yield {"event": "token", "data": text}
         elif ev_type == "on_tool_start":
             name = raw.get("name") or (raw.get("data", {}).get("input") or {}).get("name") or "tool"
+            if tool_call_tracker is not None:
+                tool_call_tracker["count"] = tool_call_tracker.get("count", 0) + 1
             yield {"event": "tool_start", "data": {"tool": name}}
         elif ev_type == "on_tool_end":
             name = raw.get("name") or "tool"
@@ -424,6 +434,19 @@ async def run_agent(
     if not isinstance(model_name, str):
         model_name = None
 
+    # PR #76 review fix #2b: when tools are advertised to the agent but the
+    # model emits no ``tool_calls`` (e.g. ``llama3`` default, which has weak
+    # Tool Calling support and falls back to free-form text), the user gets
+    # a successful 200 stream with ZERO ``event: attachment`` for F13 (no
+    # Mermaid rendered) and ZERO ``event: tool_start`` for F11 — the failure
+    # is invisible. We detect this in-band: ``_astream_agent`` increments
+    # ``tracker["count"]`` for every ``on_tool_start`` it sees. After the
+    # stream completes, if ``tools`` was non-empty AND no tool fired, emit
+    # exactly one ``degraded`` event with ``reason="tool_calls_missing"``
+    # so the frontend can surface a non-blocking diagnostic. We do NOT
+    # surface this as an error (the chat still has a useful text answer).
+    tool_call_tracker: dict[str, int] = {"count": 0}
+
     # Forward each event from the agent stream to the SSE channel.
     async for sse_dict in _astream_agent(
         agent,
@@ -432,8 +455,39 @@ async def run_agent(
         user_id=user_id,
         project_id=project_id,
         model_name=model_name,
+        tool_call_tracker=tool_call_tracker,
     ):
         yield sse_dict
+
+    # PR #76 fix #2b: emit ``tool_calls_missing`` BEFORE ``done`` so the
+    # frontend sees it in-band (mirrors the existing ``degraded`` contract
+    # from REQ-6). Scope: only when tools were advertised AND zero fired.
+    # Not an error: the model produced a useful text answer, we just
+    # couldn't get it to take the tool path.
+    if tools and tool_call_tracker["count"] == 0:
+        model_label = model_name or "unknown"
+        _LOGGER.warning(
+            "model=%s user_id=%s project_id=%s produced no tool_calls despite "
+            "tools_available=%d (likely weak Tool Calling support); "
+            "emitting event: degraded reason=tool_calls_missing",
+            model_label,
+            user_id,
+            project_id,
+            len(tools),
+        )
+        yield {
+            "event": "degraded",
+            "data": {
+                "source": "agent",
+                "reason": "tool_calls_missing",
+                "fallback": "text_only",
+                "message": (
+                    f"model '{model_label}' did not emit any tool_calls; "
+                    f"tools were advertised but never invoked"
+                ),
+                "tools_available": len(tools),
+            },
+        }
 
     # ``done`` is the last event on success — design.md §5.2 ordering rule.
     yield {"event": "done", "data": None}
