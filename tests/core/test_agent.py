@@ -172,8 +172,18 @@ def test_run_agent_emits_degraded_when_context7_fails():
     assert events[-1]["event"] == "done"
 
 
-def test_run_agent_no_degraded_when_context7_ok():
-    """When Context7 returns tools, no degraded event is emitted."""
+def test_run_agent_no_context7_degraded_when_context7_ok():
+    """When Context7 returns tools, no ``degraded`` event whose ``source``
+    is ``context7`` is emitted.
+
+    NOTE: PR #76 review fix #2b added ``reason="tool_calls_missing"`` to the
+    ``degraded`` event when tools were advertised but never invoked. The
+    empty-astream fixture here produces zero tool calls, so a
+    ``tool_calls_missing`` degraded IS expected and is asserted separately
+    in the dedicated test below. The original assertion
+    ("no degraded at all") is replaced with the precise contract:
+    "no degraded from a source other than the agent's own tool tracker".
+    """
     from app.core import agent
 
     fake_agent = MagicMock()
@@ -206,8 +216,19 @@ def test_run_agent_no_degraded_when_context7_ok():
 
         events = asyncio.run(_drive())
 
-    assert all(ev["event"] != "degraded" for ev in events)
+    # No degraded event coming from the Context7 MCP layer.
+    context7_degraded = [
+        ev for ev in events
+        if ev["event"] == "degraded"
+        and (ev.get("data") or {}).get("source") == "context7"
+    ]
+    assert context7_degraded == [], (
+        f"unexpected context7_degraded events: {context7_degraded}"
+    )
+    # ``done`` is still the final event.
     assert events[-1]["event"] == "done"
+    # tool_calls_missing degraded from the agent layer is allowed
+    # (covered by ``test_run_agent_emits_tool_calls_missing_*`` below).
 
 
 # ---------------------------------------------------------------------------
@@ -574,3 +595,183 @@ def test_run_agent_records_none_project_as_string_none():
 
     assert captured["config"]["metadata"]["project_id"] == "none"
     assert captured["config"]["run_name"] == "chat/user-1/project-none"
+
+
+# ---------------------------------------------------------------------------
+# PR #76 review fix #2b — ``degraded`` event when model never invokes tools
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_emits_tool_calls_missing_when_tools_available_unused():
+    """PR #76 fix #2b / SCN-B-1: tools were advertised but the model emitted
+    no ``tool_calls`` (typical for ``llama3`` on Ollama). The agent must
+    surface ONE ``degraded`` event with ``reason="tool_calls_missing"``
+    BEFORE the final ``done``, so the frontend can show a diagnostic.
+
+    The text answer is still yielded (text is not dropped) — only the
+    degraded marker is added. The test exercises the contract documented
+    in README §"Tool Calling y modelos para F13".
+    """
+    from app.core import agent
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    # Model produces text only — NO ``on_tool_start`` events at all.
+    raw_events = [
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk("No invoque tools")}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    advertised_tools = [MagicMock(name="puppeteer_screenshot")]
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools",
+                      AsyncMock(return_value=(advertised_tools, None))):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="llama3"),
+                message="render a mermaid diagram",
+                callbacks=[],
+                rag_documents=[],
+                user_id=1,
+                project_id=42,
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    types = [ev["event"] for ev in events]
+
+    # Exactly one tool_calls_missing degraded event appears.
+    degraded_events = [
+        ev for ev in events
+        if ev["event"] == "degraded" and ev["data"].get("reason") == "tool_calls_missing"
+    ]
+    assert len(degraded_events) == 1, f"expected 1 tool_calls_missing degraded, got {types}"
+
+    payload = degraded_events[0]["data"]
+    assert payload["source"] == "agent"
+    assert payload["fallback"] == "text_only"
+    assert payload["tools_available"] == 1
+    assert "llama3" in payload["message"]
+
+    # Ordering: degraded appears BEFORE done; tokens (if any) come between.
+    assert types[-1] == "done"
+    idx_degraded = types.index("degraded")
+    idx_done = types.index("done")
+    assert idx_degraded < idx_done
+
+
+def test_run_agent_does_not_emit_tool_calls_missing_when_a_tool_was_used():
+    """PR #76 fix #2b — negative case: when the model DOES invoke a tool,
+    no spurious ``tool_calls_missing`` degraded event is emitted."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    raw_events = [
+        {"event": "on_tool_start", "name": "puppeteer_screenshot",
+         "data": {"input": {"mermaid": "graph TD\nA-->B"}}},
+        {"event": "on_tool_end", "name": "puppeteer_screenshot",
+         "data": {"output": "ok"}},
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk("Diagrama renderizado")}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools",
+                      AsyncMock(return_value=([MagicMock(name="t")], None))):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="qwen2.5-coder"),
+                message="render a mermaid diagram",
+                callbacks=[],
+                rag_documents=[],
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    types = [ev["event"] for ev in events]
+    # No tool_calls_missing degraded when the tool fired.
+    assert not any(
+        ev["event"] == "degraded" and ev.get("data", {}).get("reason") == "tool_calls_missing"
+        for ev in events
+    ), f"unexpected tool_calls_missing degraded: {types}"
+    assert types[-1] == "done"
+    assert "tool_start" in types
+    assert "tool_end" in types
+
+
+def test_run_agent_does_not_emit_tool_calls_missing_when_no_tools_advertised():
+    """PR #76 fix #2b — edge case: RAG-only mode (no tools). The check must
+    NOT fire when there were no tools to begin with, only when tools were
+    advertised and ignored."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    raw_events = [
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk("Respuesta RAG-only")}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="llama3"),
+                message="pregunta sin tools",
+                callbacks=[],
+                rag_documents=[],
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    types = [ev["event"] for ev in events]
+    assert not any(
+        ev["event"] == "degraded" and ev.get("data", {}).get("reason") == "tool_calls_missing"
+        for ev in events
+    ), f"unexpected tool_calls_missing in RAG-only mode: {types}"
+    assert types[-1] == "done"
