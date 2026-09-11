@@ -73,11 +73,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-    ON document_chunks USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-
-CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
-    ON document_chunks(document_id);
+    ON document_chunks USING ivfflat (embedding vector_cosine_ops);
 
 -- architect_patterns (issue "Caso de ejemplo (seed)" / comentario C2 de PR):
 -- agregada acá también, no solo en migration 0005, para que una DB
@@ -118,6 +114,24 @@ CREATE INDEX IF NOT EXISTS idx_pattern_chunks_embedding
 
 CREATE INDEX IF NOT EXISTS idx_pattern_chunks_pattern_id
     ON architect_pattern_chunks (pattern_id);
+-- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
+-- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
+-- migration 0007, mismo criterio que architect_patterns arriba (C2).
+-- decision usa CHECK en vez de solo confiar en la validación de Pydantic
+-- (migration 0008, revisión de PR #63) -- valores en pasado (participio),
+-- que son los que realmente inserta app/api/elicitation.py, no los verbos
+-- del body del request (approve/modify/reject).
+CREATE TABLE IF NOT EXISTS approvals (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    phase VARCHAR(50) NOT NULL,
+    decision VARCHAR(20) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
+    feedback TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_session_phase
+    ON approvals (session_id, phase);
 
 -- =============================================================================
 -- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
