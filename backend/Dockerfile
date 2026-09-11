@@ -81,6 +81,7 @@ COPY --from=builder /install /usr/local
 # Copiar el codigo del backend
 COPY server.py ./
 COPY app/ ./app/
+COPY data/ ./data/
 COPY schema.sql ./
 COPY scripts/ ./scripts/
 COPY migrations/ ./migrations/

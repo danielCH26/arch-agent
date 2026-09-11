@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { projectsStore } from '../stores/projectsStore'
 import { ProjectCard } from '../components/ProjectCard'
 import { CreateProjectDialog } from '../components/CreateProjectDialog'
 
 export function ProjectsPage() {
+  const location = useLocation()
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const { projects, status, error, fetchProjects } = projectsStore()
+  const routeMessage = (location.state as { message?: string } | null)?.message
 
   useEffect(() => {
     fetchProjects()
@@ -29,6 +32,12 @@ export function ProjectsPage() {
       {error && (
         <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
           {error}
+        </div>
+      )}
+
+      {routeMessage && (
+        <div className="mb-4 p-4 bg-yellow-50 text-yellow-800 rounded-lg">
+          {routeMessage}
         </div>
       )}
 
