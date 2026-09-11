@@ -26,8 +26,7 @@ from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.rag import similarity_search
-from app.models import InteractionLog, Proposal, UserSession
-from app.models.approval import Approval
+from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
 from app.models.project import Project
 from app.models.user import User
 
@@ -483,12 +482,13 @@ def _persist_proposal_and_log(
                 f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})"
             )
 
-        # For modify path, freeze the prior content in an approvals row BEFORE
-        # inserting the new proposal so the audit trail is intact even on crash.
+        # For modify path, freeze the prior content in a proposal_approvals row
+        # BEFORE inserting the new proposal so the audit trail is intact even
+        # on crash.
         if prior_proposal_id is not None and prior_content is not None:
             prior_row = db.get(Proposal, prior_proposal_id)
             if prior_row is not None:
-                approval = Approval(
+                approval = ProposalApproval(
                     proposal_id=prior_proposal_id,
                     decision="modified",
                     previous_output=prior_row.content,

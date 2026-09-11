@@ -1,4 +1,5 @@
-﻿-- Migration 0008: proposal generation, interaction auditing, and approvals
+﻿-- Migration 0014: proposal generation, interaction auditing, and proposal_approvals (F08)
+-- Renamed from 0008 to avoid number collision with F05's 0007/0008 approvals migrations.
 
 CREATE TABLE IF NOT EXISTS proposals (
     id SERIAL PRIMARY KEY,
@@ -29,7 +30,7 @@ CREATE TABLE IF NOT EXISTS interaction_logs (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS approvals (
+CREATE TABLE IF NOT EXISTS proposal_approvals (
     id SERIAL PRIMARY KEY,
     proposal_id INTEGER NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
     decision VARCHAR(16) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
@@ -41,4 +42,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_project_iter ON proposals (proje
 CREATE INDEX IF NOT EXISTS idx_proposals_project_lifecycle ON proposals (project_id, lifecycle);
 CREATE INDEX IF NOT EXISTS idx_interaction_logs_project_phase_created ON interaction_logs (project_id, phase, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_interaction_logs_proposal ON interaction_logs (project_id, phase) WHERE phase = 'propuesta';
-CREATE INDEX IF NOT EXISTS idx_approvals_proposal ON approvals (proposal_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_proposal_approvals_proposal ON proposal_approvals (proposal_id, created_at DESC);

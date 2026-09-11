@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from app.api.dependencies import get_current_user
 from app.core.database import SessionLocal
 from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
-from app.models import Approval, InteractionLog, Proposal
+from app.models import InteractionLog, Proposal
 from app.models.project import Project
 
 logger = logging.getLogger(__name__)

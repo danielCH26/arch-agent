@@ -28,11 +28,11 @@ import pytest
 
 
 def test_proposal_models_import_and_constraints_compile():
-    from app.models import Approval, InteractionLog, Proposal
+    from app.models import InteractionLog, Proposal, ProposalApproval
 
     assert Proposal.__tablename__ == "proposals"
     assert InteractionLog.__tablename__ == "interaction_logs"
-    assert Approval.__tablename__ == "approvals"
+    assert ProposalApproval.__tablename__ == "proposal_approvals"
     assert Proposal.__table__.c.content.type.__class__.__name__ == "JSONB"
 
 
