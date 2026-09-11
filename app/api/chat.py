@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler
+from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.rag import similarity_search
@@ -117,8 +118,12 @@ async def chat(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler
+    # Build SSE streaming handler + optional Langfuse callback
     handler = SSEStreamCallbackHandler()
+    langfuse_handler = get_langfuse_handler()
+    callbacks: list = [handler]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
         try:
@@ -179,7 +184,7 @@ async def chat(
                 f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
                 f"Mensaje del usuario: {body.message}"
             )
-            async for event in model.astream(prompt):
+            async for event in model.astream(prompt,config={"callbacks": callbacks}):
                 if event.content:
                     # Yield the token as SSE
                     yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
