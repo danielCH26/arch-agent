@@ -59,7 +59,7 @@ export function ChatPage() {
         </div>
       </div>
       <div className="flex-1 overflow-hidden">
-        <ChatWindow projectId={Number(id)} />
+        <ChatWindow projectId={Number(id)} phase={project?.current_phase || null} />
       </div>
     </div>
   )

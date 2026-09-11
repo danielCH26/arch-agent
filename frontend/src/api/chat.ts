@@ -12,12 +12,47 @@ export interface RagSource {
   similarity: number | null
 }
 
-export interface ElicitationStatus {
+// F05: contrato de la elicitación guiada. Estos endpoints viven bajo el
+// proyecto, no bajo /api/chat: el backend conserva el historial, genera el
+// resumen y registra decisiones en la tabla approvals.
+export interface ElicitationState {
+  done: boolean
+  question: string | null
+  resumen: Record<string, unknown> | null
   history: Array<{ pregunta: string; respuesta: string }>
-  current_question: string | null
-  summary: Record<string, unknown> | null
-  completed: boolean
-  approved: boolean
+}
+
+export type ElicitationDecision = 'approve' | 'modify' | 'reject'
+
+export interface ElicitationDecisionResult {
+  decision: ElicitationDecision
+  phase_ready: boolean
+  message: string
+}
+
+export function getElicitationState(projectId: number): Promise<ElicitationState> {
+  return apiFetch<ElicitationState>(`/api/projects/${projectId}/elicitation`)
+}
+
+export function sendElicitationMessage(
+  projectId: number,
+  answer?: string,
+): Promise<ElicitationState> {
+  return apiFetch<ElicitationState>(`/api/projects/${projectId}/elicitation/message`, {
+    method: 'POST',
+    body: JSON.stringify(answer ? { answer } : {}),
+  })
+}
+
+export function submitElicitationDecision(
+  projectId: number,
+  decision: ElicitationDecision,
+  feedback?: string,
+): Promise<ElicitationDecisionResult> {
+  return apiFetch<ElicitationDecisionResult>(`/api/projects/${projectId}/elicitation/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, feedback }),
+  })
 }
 
 interface StreamCallbacks {
@@ -136,14 +171,4 @@ export function createChatStream(
   return () => {
     controller.abort()
   }
-}
-
-export async function getElicitationStatus(projectId: number): Promise<ElicitationStatus> {
-  return apiFetch<ElicitationStatus>(`/api/chat/${projectId}/elicitation`)
-}
-
-export async function approveElicitation(projectId: number): Promise<{ phase_ready: boolean; message: string }> {
-  return apiFetch<{ phase_ready: boolean; message: string }>(`/api/chat/${projectId}/elicitation/approve`, {
-    method: 'POST',
-  })
 }
