@@ -6,9 +6,38 @@ import { MessageBubble } from './MessageBubble'
 
 interface ChatWindowProps { projectId: number; phase: string | null }
 
-function formatSummary(summary: Record<string, unknown>): string {
-  const list = (value: unknown) => Array.isArray(value) && value.length ? value.map((item) => `- ${String(item)}`).join('\n') : '- No especificado'
-  return `Resumen de requerimientos para validar\n\nProblema\n${String(summary.problema || 'No especificado')}\n\nUsuarios\n${String(summary.usuarios || 'No especificado')}\n\nFuncionalidades\n${list(summary.funcionalidades)}\n\nRestricciones\n${list(summary.restricciones)}\n\nCalidad\n${list(summary.calidad)}`
+function SummaryList({ items }: { items: unknown }) {
+  const values = Array.isArray(items) ? items : []
+  if (!values.length) return <p className="text-sm italic text-gray-500">No especificado</p>
+  return (
+    <ul className="list-disc space-y-0.5 pl-5 text-sm text-gray-800">
+      {values.map((item, index) => <li key={index}>{String(item)}</li>)}
+    </ul>
+  )
+}
+
+function SummaryView({ resumen }: { resumen: Record<string, unknown> }) {
+  return (
+    <div className="rounded-lg bg-gray-100 p-4 text-gray-900">
+      <h2 className="text-lg font-bold">Resumen de requerimientos para validar</h2>
+      <div className="mt-3 space-y-1 text-sm">
+        <p><span className="font-semibold">Problema:</span> {String(resumen.problema || 'No especificado')}</p>
+        <p><span className="font-semibold">Usuarios:</span> {String(resumen.usuarios || 'No especificado')}</p>
+      </div>
+      <div className="mt-3">
+        <h3 className="text-base font-bold">Funcionalidades</h3>
+        <SummaryList items={resumen.funcionalidades} />
+      </div>
+      <div className="mt-3">
+        <h3 className="text-base font-bold">Restricciones</h3>
+        <SummaryList items={resumen.restricciones} />
+      </div>
+      <div className="mt-3">
+        <h3 className="text-base font-bold">Calidad</h3>
+        <SummaryList items={resumen.calidad} />
+      </div>
+    </div>
+  )
 }
 
 export function ChatWindow({ projectId, phase }: ChatWindowProps) {
@@ -21,6 +50,7 @@ export function ChatWindow({ projectId, phase }: ChatWindowProps) {
   const [feedback, setFeedback] = useState('')
   const [awaitingDecision, setAwaitingDecision] = useState(false)
   const [done, setDone] = useState(false)
+  const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
   const isElicitation = phase === 'requerimientos'
 
   const renderElicitationState = useCallback((state: ElicitationState) => {
@@ -28,10 +58,15 @@ export function ChatWindow({ projectId, phase }: ChatWindowProps) {
       { id: `elicitation-question-${index}`, role: 'assistant' as const, content: item.pregunta },
       { id: `elicitation-answer-${index}`, role: 'user' as const, content: item.respuesta },
     ])
-    if (state.resumen) restored.push({ id: 'elicitation-summary', role: 'assistant' as const, content: formatSummary(state.resumen) })
-    else if (state.question) restored.push({ id: 'elicitation-question-current', role: 'assistant' as const, content: state.question })
+    if (!state.resumen && state.question) restored.push({ id: 'elicitation-question-current', role: 'assistant' as const, content: state.question })
     chatStore.setState({ messages: restored, error: null })
+    setSummary(state.resumen)
     setDone(state.done)
+    // La confirmación de una decisión previa (aprobar/modificar/rechazar) ya
+    // cumplió su propósito una vez que el nuevo estado terminó de cargar:
+    // si queda pegada, tapa los botones de decisión del siguiente resumen
+    // (o el input, si la elicitación reinició desde cero).
+    setDecisionMessage(''); setDecisionError('')
   }, [])
 
   const loadElicitation = useCallback(async () => {
@@ -48,7 +83,7 @@ export function ChatWindow({ projectId, phase }: ChatWindowProps) {
 
   useEffect(() => {
     chatStore.setState({ messages: [], error: null })
-    setDone(false); setDecisionMessage(''); setDecisionError(''); setShowModify(false)
+    setDone(false); setSummary(null); setDecisionMessage(''); setDecisionError(''); setShowModify(false)
     if (isElicitation) void loadElicitation()
   }, [isElicitation, loadElicitation, projectId])
 
@@ -80,6 +115,7 @@ export function ChatWindow({ projectId, phase }: ChatWindowProps) {
         {loadingElicitation && messages.length === 0 && <div className="text-center text-gray-500 py-8">Preparando la elicitación…</div>}
         {messages.length === 0 && !busy && <div className="text-center text-gray-500 py-8"><p>Envía un mensaje para comenzar la conversación</p></div>}
         {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+        {isElicitation && summary && <SummaryView resumen={summary} />}
         {busy && <div className="flex justify-start"><div className="bg-gray-100 px-4 py-2 rounded-lg text-sm text-gray-500">Procesando…</div></div>}
         {error && <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>}
         {isElicitation && done && !decisionMessage && <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
