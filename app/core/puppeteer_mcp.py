@@ -321,3 +321,30 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
         [t.name for t in filtered],
     )
     return filtered
+
+
+async def get_puppeteer_navigate_tool(client: Any | None = None) -> Any | None:
+    """Obtiene la tool CRUDA ``puppeteer_navigate`` (SIN pasar por el
+    allow-list) para uso EXCLUSIVAMENTE server-side.
+
+    El LLM NUNCA ve esta tool (REQ-PMCP-2 sigue intacto: el allow-list de
+    ``get_puppeteer_tools`` no cambia). Se usa solo internamente para
+    cargar la página HTML con el diagrama Mermaid renderizado ANTES de
+    invocar ``puppeteer_screenshot`` -- sin este paso, el screenshot
+    siempre captura la pantalla en blanco por defecto del browser
+    (bug: "diagrama sale en blanco").
+    """
+    if client is None:
+        client = build_puppeteer_client()
+    try:
+        raw = await asyncio.wait_for(
+            client.get_tools(server_name=_SERVER_NAME),
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        _LOGGER.warning("No se pudo obtener puppeteer_navigate interno: %s", e)
+        return None
+    for t in raw:
+        if getattr(t, "name", None) == "puppeteer_navigate":
+            return t
+    return None

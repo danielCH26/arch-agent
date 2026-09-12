@@ -10,7 +10,9 @@ the 404 case for the same reason.
 """
 from __future__ import annotations
 
+import glob
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -131,6 +133,32 @@ def get_attachment(
                 break
 
         if attachment is None or owner_row is None:
+            # F13 fix: durante el streaming, el frontend puede pedir la
+            # imagen ANTES de que ``_persist_turn()`` inserte la fila en
+            # Postgres (eso solo pasa en "done"). El PNG ya se escribió a
+            # disco de forma síncrona antes de emitir "event: attachment",
+            # y el token ya autenticó (aid, uid) arriba — así que servimos
+            # directo desde disco como fallback en vez de 404 prematuro.
+            # La fila de Postgres igual llega poco después, para el
+            # historial; esto solo cubre la ventana de la carrera.
+            uploads_dir = _ensure_uploads_dir()
+            matches = glob.glob(os.path.join(uploads_dir, f"{id}.*"))
+            if matches:
+                fallback_path = matches[0]
+                ext = fallback_path.rsplit(".", 1)[-1].lower()
+                fallback_mime = (
+                    "image/png" if ext == "png"
+                    else "image/jpeg" if ext in ("jpg", "jpeg")
+                    else "application/octet-stream"
+                )
+                return FileResponse(
+                    path=fallback_path,
+                    media_type=fallback_mime,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{os.path.basename(fallback_path)}"',
+                        "Cache-Control": "private, max-age=300",
+                    },
+                )
             # 404, NOT 403 — avoid existence leak (REQ-ATT-2 / SCN-ATT-4).
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Not found"

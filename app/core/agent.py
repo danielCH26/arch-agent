@@ -15,11 +15,14 @@ ADR: docs/adr/010-context7-agent-runtime.md.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import uuid
 from typing import Any, AsyncIterator
 
+from app.core.attachment_tokens import _ensure_uploads_dir, sign_attachment_token
 from app.core.mermaid_validator import extract_mermaid_block, validate_mermaid
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,7 +70,11 @@ DIAGRAM_HINT: str = (
     "mostrar la imagen inline. NO uses ``puppeteer_screenshot`` para nada "
     "que no sea un diagrama Mermaid, y NO invoques otras herramientas de "
     "Puppeteer: la superficie de herramientas esta limitada a un unico "
-    "render de screenshot."
+    "render de screenshot. IMPORTANTE: nunca escribas vos mismo una "
+    "etiqueta markdown de imagen (``![...](...)``) ni ningun data-URI "
+    "base64 en tu respuesta -- el sistema ya muestra la imagen "
+    "renderizada automaticamente despues de que invoques la tool; "
+    "escribir la etiqueta vos mismo produce una imagen rota."
 )
 
 # REQ-9 / ADR-010 §"Precedencia RAG ↔ Context7" — cap to keep tool result
@@ -134,12 +141,15 @@ def format_rag_context(rag_documents: list[Any]) -> str:
     return "\n\n".join(blocks)
 
 
-def _build_system_prompt(rag_documents: list[Any]) -> str:
+def _build_system_prompt(rag_documents: list[Any], puppeteer_available: bool = True) -> str:
     """Compose the final system prompt from persona + RAG block + hints."""
+    hints = LIBRARY_HINT
+    if puppeteer_available:
+        hints = f"{hints}\n\n{DIAGRAM_HINT}"
     return (
         f"{ARCHITECT_PERSONA}\n\n"
         f"Contexto RAG recuperado:\n{format_rag_context(rag_documents)}\n\n"
-        f"{LIBRARY_HINT}\n\n{DIAGRAM_HINT}"
+        f"{hints}"
     )
 
 
@@ -197,9 +207,6 @@ def _truncate_tool_result(output: Any) -> tuple[str, int]:
 
 def _extract_token_text(chunk: Any) -> str | None:
     """Pull the textual token from a chat-model stream chunk."""
-    # LangChain >=0.3 emits ``AIMessageChunk`` with ``content`` as either a
-    # plain string or a list of content-part dicts. We only forward string
-    # content (text tokens); tool-call deltas are surfaced via tool events.
     content = getattr(chunk, "content", None)
     if isinstance(content, str) and content:
         return content
@@ -216,12 +223,7 @@ def _extract_token_text(chunk: Any) -> str | None:
 
 
 async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
-    """Fetch Context7 tools; on failure return ``([], degraded_event_dict)``.
-
-    The route is responsible for emitting the ``degraded`` SSE event when
-    ``degraded_event_dict`` is not ``None``. ``run_agent`` always continues
-    with an empty tools list so the chat response still streams (REQ-6).
-    """
+    """Fetch Context7 tools; on failure return ``([], degraded_event_dict)``."""
     try:
         from app.core.context7_mcp import get_context7_tools
 
@@ -242,16 +244,7 @@ async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
 async def _try_get_puppeteer_tools(
     user_id: int | None = None,
 ) -> tuple[list[Any], dict[str, Any] | None]:
-    """Fetch Puppeteer tools; on failure return ``([], degraded_event_dict)``.
-
-    Mirrors ``_try_get_context7_tools`` so the agent layer degrades uniformly
-    on any MCP outage (REQ-PMCP-1 / REQ-PMCP-4). The rate-limit check
-    (``puppeteer_mcp._check_rate_limit``) runs FIRST so a rate-limited user
-    sees the degraded event before the expensive MCP round-trip.
-
-    The route is responsible for emitting the ``degraded`` SSE event when
-    ``degraded_event_dict`` is not ``None``.
-    """
+    """Fetch Puppeteer tools; on failure return ``([], degraded_event_dict)``."""
     try:
         from app.core.puppeteer_mcp import (
             PuppeteerUnavailable,
@@ -259,9 +252,6 @@ async def _try_get_puppeteer_tools(
             get_puppeteer_tools,
         )
 
-        # REQ-PMCP-4: rate-limit check BEFORE the MCP call so a 6th request
-        # within 60s emits degraded immediately without paying the
-        # streamable_http round-trip.
         _check_rate_limit(user_id)
         tools = await get_puppeteer_tools()
         return tools, None
@@ -291,6 +281,129 @@ async def _try_get_puppeteer_tools(
         }
 
 
+def _build_mermaid_preview_html(mermaid_code: str) -> str:
+    """Pagina HTML autocontenida que renderiza un bloque Mermaid via
+    mermaid.js (CDN).
+
+    FIX (bug: "el diagrama sale en blanco"): el backend navega el browser
+    de Puppeteer a esta pagina ANTES de tomar el screenshot. Sin este
+    paso, ``puppeteer_screenshot`` capturaba lo que estuviera cargado en
+    ese momento -- por defecto, una pagina en blanco -- porque el modelo
+    nunca tiene acceso a ``puppeteer_navigate`` (REQ-PMCP-2 allow-list).
+    Esta funcion se usa SOLO server-side, nunca es invocada por el LLM.
+    """
+    import html as _html
+
+    escaped = _html.escape(mermaid_code)
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js'></script>"
+        "<style>body{margin:0;padding:16px;background:#fff;}</style>"
+        "</head><body><pre class='mermaid'>" + escaped + "</pre>"
+        "<script>mermaid.initialize({startOnLoad:true});</script>"
+        "</body></html>"
+    )
+
+
+def _mermaid_html_to_data_url(html: str) -> str:
+    """Codifica el HTML del preview como ``data:text/html;base64,...``
+    para navegar sin depender de un servidor estatico adicional."""
+    encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
+    return f"data:text/html;base64,{encoded}"
+
+
+def _wrap_screenshot_tool_for_groq_compat(
+    tool: Any,
+    attachment_sink: dict[str, Any],
+    *,
+    navigate_coroutine: Any | None = None,
+    response_parts: list[str] | None = None,
+) -> None:
+    """Parcha ``puppeteer_screenshot`` para que el content que vuelve al
+    modelo sea siempre un string plano (Groq/proveedores OpenAI-compatible
+    rechazan bloques de imagen en mensajes de rol tool: ``messages[N].content
+    must be a string``), y guarda el PNG real en disco para que
+    ``_astream_agent`` pueda emitir ``event: attachment`` después.
+
+    FIX 1 (bug: "aparece un base64 gigante pegado en el chat"): forzamos
+    ``encoded=False`` en los kwargs sin importar lo que pida el modelo.
+    Con ``encoded=true`` el server oficial de Puppeteer devuelve la
+    imagen como TEXTO (data-URI plano) en vez de un bloque
+    ``type: "image"``; nuestro parser solo entiende bloques ``image``, y
+    si no los encuentra reenvia el texto crudo (el base64 completo) de
+    vuelta al modelo, que termina copiandolo en su respuesta final.
+
+    FIX 2 (bug: "el diagrama sale en blanco"): si nos pasaron
+    ``navigate_coroutine`` (la tool CRUDA ``puppeteer_navigate``, NUNCA
+    expuesta al LLM) y ya hay un bloque ```mermaid``` completo en
+    ``response_parts`` (el texto acumulado de la respuesta hasta ahora),
+    navegamos el browser a una pagina generada server-side que renderiza
+    ese diagrama con mermaid.js ANTES de tomar el screenshot real.
+    """
+    original_coroutine = tool.coroutine
+
+    async def wrapped(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
+        # FIX 1: nunca dejamos que el modelo pida el modo "encoded".
+        kwargs["encoded"] = False
+        if "selector" not in kwargs or not kwargs["selector"]:
+            kwargs.pop("selector", None)  # Puppeteer no soporta selector vacío, solo None.
+        # FIX 2: pre-navegar a la pagina con el mermaid renderizado.
+        if navigate_coroutine is not None and response_parts is not None:
+            full_text_so_far = "".join(response_parts)
+            mermaid_code = extract_mermaid_block(full_text_so_far)
+            if mermaid_code:
+                preview_html = _build_mermaid_preview_html(mermaid_code)
+                data_url = _mermaid_html_to_data_url(preview_html)
+                try:
+                    await navigate_coroutine(url=data_url)
+                except Exception as e:
+                    _LOGGER.warning(
+                        "Pre-navigate a preview de Mermaid fallo: %s", e
+                    )
+                    # No abortamos el turno por esto -- peor caso, el
+                    # screenshot sale en blanco como antes del fix, pero
+                    # el chat sigue funcionando.
+
+        content, artifact = await original_coroutine(*args, **kwargs)
+        blocks = content if isinstance(content, list) else []
+
+        image_block = next(
+            (b for b in blocks if isinstance(b, dict) and b.get("type") == "image"),
+            None,
+        )
+        if image_block is None:
+            text = "\n".join(
+                b.get("text", "")
+                for b in blocks
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+            return (text or "Puppeteer no devolvió una imagen."), artifact
+
+        attachment_id = str(uuid.uuid4())
+        mime = image_block.get("mime_type") or "image/png"
+        ext = "png" if "png" in mime else "jpg"
+        filename = f"{attachment_id}.{ext}"
+        raw_bytes = base64.b64decode(image_block["base64"])
+
+        uploads_dir = _ensure_uploads_dir()
+        storage_path = os.path.join(uploads_dir, filename)
+        with open(storage_path, "wb") as f:
+            f.write(raw_bytes)
+
+        attachment_sink["pending"] = {
+            "id": attachment_id,
+            "kind": "screenshot",
+            "mime": mime,
+            "filename": filename,
+            "storage_path": storage_path,
+        }
+
+        # Texto corto y plano: esto es lo que ve el modelo, no la imagen.
+        return "Diagrama renderizado correctamente.", artifact
+
+    tool.coroutine = wrapped
+
+
 async def _astream_agent(
     agent: Any,
     message: str,
@@ -300,6 +413,7 @@ async def _astream_agent(
     project_id: int | None = None,
     model_name: str | None = None,
     tool_call_tracker: dict[str, int] | None = None,
+    attachment_sink: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive ``agent.astream_events`` and yield SSE-ready dicts.
 
@@ -330,8 +444,6 @@ async def _astream_agent(
         metadata["model"] = model_name
     if metadata:
         config["metadata"] = metadata
-        # Langfuse picks up ``run_name`` from the config; default to a
-        # human-readable identifier for cross-trace filtering.
         config.setdefault(
             "run_name",
             f"chat/user-{user_id if user_id is not None else 'anon'}/project-{metadata['project_id']}",
@@ -368,8 +480,22 @@ async def _astream_agent(
                 "event": "tool_end",
                 "data": {"tool": name, "result_length": length, "status": "ok"},
             }
-        # All other events (on_chain_*, on_chat_model_end, on_prompt_*, etc.)
-        # are intentionally not surfaced to the SSE channel.
+            if name == "puppeteer_screenshot" and attachment_sink is not None:
+                pending = attachment_sink.pop("pending", None)
+                if pending is not None:
+                    token = (
+                        sign_attachment_token(pending["id"], user_id)
+                        if user_id is not None
+                        else ""
+                    )
+                    yield {
+                        "event": "attachment",
+                        "data": {
+                            **pending,
+                            "url": f"/api/chat/attachments/{pending['id']}?token={token}",
+                        },
+                    }
+
         continue
 
 
@@ -387,33 +513,9 @@ async def run_agent(
     Yields dicts of shape ``{"event": str, "data": <json-safe>}``. The caller
     (``app/api/chat.py``) serializes each dict to the wire using
     ``json.dumps(..., ensure_ascii=False)``.
-
-    Ordering guarantee:
-      ``sources`` is yielded by the route BEFORE ``run_agent`` is invoked
-      (it owns the RAG retrieval). ``run_agent`` yields ``tool_start`` /
-      ``tool_end`` pairs (possibly zero), then ``token`` events, then (F09)
-      exactly one ``diagram_validated`` event if the turn contained a
-```mermaid``` block, and ends with ``done``. On Context7/Puppeteer
-      failure it yields one ``degraded`` event before continuing.
-
-    Args:
-        model: ``BaseChatModel``.
-        message: User prompt.
-        callbacks: List of ``BaseCallbackHandler`` (SSE handler plus optional
-            Langfuse handler).
-        rag_documents: Pre-fetched RAG ``Document`` list (so the route keeps
-            ownership of retrieval and can emit ``sources`` first).
-        user_id: Optional user id; used by Langfuse trace-name metadata.
-        project_id: Optional project id; ``None`` is recorded as ``"none"``.
-
-    Yields:
-        SSE-ready dicts.
     """
     docs = _coerce_documents(rag_documents)
-    system_prompt = _build_system_prompt(docs)
 
-    # REQ-8 precedence rule: when RAG already covers an architect pattern,
-    # skip the Context7 tool fetch entirely (cost + latency on small models).
     if _has_architect_pattern(docs):
         context7_tools: list[Any] = []
         _LOGGER.info(
@@ -425,17 +527,36 @@ async def run_agent(
     else:
         context7_tools, degraded = await _try_get_context7_tools()
         if degraded is not None:
-            # REQ-6: emit exactly one degraded event before any token.
             yield {"event": "degraded", "data": degraded}
 
-    # F13 (REQ-PMCP-1): compose Puppeteer tools alongside Context7. The
-    # rate-limit check lives inside ``_try_get_puppeteer_tools`` so a 6th
-    # request in 60s emits degraded BEFORE the expensive MCP round-trip.
     puppeteer_tools, puppeteer_degraded = await _try_get_puppeteer_tools(
         user_id=user_id,
     )
     if puppeteer_degraded is not None:
         yield {"event": "degraded", "data": puppeteer_degraded}
+
+    # ``response_parts`` se crea ACA (antes de armar el agente) porque el
+    # wrapper del screenshot necesita leer el texto acumulado para
+    # encontrar el bloque ```mermaid``` ya emitido por el modelo (FIX 2).
+    attachment_sink: dict[str, Any] = {}
+    response_parts: list[str] = []
+
+    navigate_tool = None
+    if puppeteer_tools:
+        from app.core.puppeteer_mcp import get_puppeteer_navigate_tool
+
+        navigate_tool = await get_puppeteer_navigate_tool()
+
+    for _t in puppeteer_tools:
+        if getattr(_t, "name", None) == "puppeteer_screenshot":
+            _wrap_screenshot_tool_for_groq_compat(
+                _t,
+                attachment_sink,
+                navigate_coroutine=(navigate_tool.coroutine if navigate_tool else None),
+                response_parts=response_parts,
+            )
+
+    system_prompt = _build_system_prompt(docs, puppeteer_available=bool(puppeteer_tools))
 
     tools: list[Any] = list(context7_tools) + list(puppeteer_tools)
 
@@ -445,27 +566,8 @@ async def run_agent(
     if not isinstance(model_name, str):
         model_name = None
 
-    # PR #76 review fix #2b: when tools are advertised to the agent but the
-    # model emits no ``tool_calls`` (e.g. ``llama3`` default, which has weak
-    # Tool Calling support and falls back to free-form text), the user gets
-    # a successful 200 stream with ZERO ``event: attachment`` for F13 (no
-    # Mermaid rendered) and ZERO ``event: tool_start`` for F11 — the failure
-    # is invisible. We detect this in-band: ``_astream_agent`` increments
-    # ``tracker["count"]`` for every ``on_tool_start`` it sees. After the
-    # stream completes, if ``tools`` was non-empty AND no tool fired, emit
-    # exactly one ``degraded`` event with ``reason="tool_calls_missing"``
-    # so the frontend can surface a non-blocking diagnostic. We do NOT
-    # surface this as an error (the chat still has a useful text answer).
     tool_call_tracker: dict[str, int] = {"count": 0}
 
-    # F09: acumulamos el texto de cada ``token`` para poder extraer y
-    # validar el bloque ```mermaid``` (si lo hubo) una vez termina el
-    # stream. No se reconstruye desde ``on_tool_end`` porque el bloque
-    # mermaid vive en el texto de la respuesta, no en el resultado de la
-    # tool de Puppeteer.
-    response_parts: list[str] = []
-
-    # Forward each event from the agent stream to the SSE channel.
     async for sse_dict in _astream_agent(
         agent,
         message,
@@ -474,6 +576,7 @@ async def run_agent(
         project_id=project_id,
         model_name=model_name,
         tool_call_tracker=tool_call_tracker,
+        attachment_sink=attachment_sink,
     ):
         if sse_dict.get("event") == "token":
             token_text = sse_dict.get("data")
@@ -481,11 +584,6 @@ async def run_agent(
                 response_parts.append(token_text)
         yield sse_dict
 
-    # PR #76 fix #2b: emit ``tool_calls_missing`` BEFORE ``done`` so the
-    # frontend sees it in-band (mirrors the existing ``degraded`` contract
-    # from REQ-6). Scope: only when tools were advertised AND zero fired.
-    # Not an error: the model produced a useful text answer, we just
-    # couldn't get it to take the tool path.
     if tools and tool_call_tracker["count"] == 0:
         model_label = model_name or "unknown"
         _LOGGER.warning(
@@ -511,12 +609,6 @@ async def run_agent(
             },
         }
 
-    # F09 (REQ: "diagramas renderizan sin errores de sintaxis" /
-    # KR ≥75% sin errores): validamos el bloque mermaid del turno, si lo
-    # hubo. Se hace aqui (sobre el texto ya completo) y no tool por tool,
-    # porque el LLM puede emitir el bloque mermaid en el mismo turno en
-    # que invoca ``puppeteer_screenshot`` -- necesitamos el texto final,
-    # no un chunk parcial.
     full_response = "".join(response_parts)
     mermaid_code = extract_mermaid_block(full_response)
     if mermaid_code is not None:
@@ -533,13 +625,7 @@ async def run_agent(
             "data": {"valid": is_valid, "error": error},
         }
 
-    # ``done`` is the last event on success — design.md §5.2 ordering rule.
     yield {"event": "done", "data": None}
-
-
-# ---------------------------------------------------------------------------
-# Internals exposed for tests (NOT part of the public API surface)
-# ---------------------------------------------------------------------------
 
 
 __all__ = [

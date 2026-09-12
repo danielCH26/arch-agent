@@ -131,7 +131,10 @@ services:
     image: arch-agent-puppeteer-mcp:latest
     environment:
       NODE_ENV: production
-    mem_limit: 512m
+      ALLOW_DANGEROUS: "true"
+      DOCKER_CONTAINER: "true"
+      PUPPETEER_LAUNCH_OPTIONS: '{"args":["--no-sandbox","--disable-setuid-sandbox"]}'
+    mem_limit: 768m
     healthcheck:
       # El server oficial responde 404 a /health pero el connection-refused
       # ya dispara unhealthy, asi que spider + exit-0 es suficiente.

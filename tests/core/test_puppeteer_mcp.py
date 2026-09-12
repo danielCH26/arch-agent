@@ -342,3 +342,21 @@ def test_get_puppeteer_tools_live():
     tools = asyncio.run(_drive())
     names = {t.name for t in tools}
     assert "puppeteer_screenshot" in names
+
+
+def test_get_puppeteer_tools_patches_optional_params_to_accept_null():
+    from app.core import puppeteer_mcp
+
+    tool = _fake_tool("puppeteer_screenshot")
+    tool.args_schema = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string"},
+            "selector": {"type": "string"},
+        },
+        "required": ["url"],
+    }
+    puppeteer_mcp._allow_null_for_optional_params(tool)
+
+    assert tool.args_schema["properties"]["url"]["type"] == "string"          # requerido: intacto
+    assert tool.args_schema["properties"]["selector"]["type"] == ["string", "null"]  # opcional: parchado
