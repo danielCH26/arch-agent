@@ -1,8 +1,11 @@
 import type React from 'react'
 import type { Message } from '../stores/chatStore'
+import { submitDiagramDecision } from '../api/diagrams'
 
 interface MessageBubbleProps {
   message: Message
+  projectId?: number
+  onSendMessage?: (text: string) => void
 }
 
 type InlineToken =
@@ -325,7 +328,7 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
@@ -338,7 +341,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
-        {!isUser && renderAttachments(message.attachments)}
+        {!isUser && renderAttachments(message.attachments, projectId, onSendMessage)}
         {!isUser && renderSources(message.sources)}
       </div>
     </div>
@@ -350,18 +353,54 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 // user messages never carry attachments. No download button in v1 (see
 // design §8 Q-NEW-DOWNLOAD-PNG). The URL already carries the signed
 // token, so no Authorization header is needed.
-function renderAttachments(attachments: Message['attachments']) {
+//
+// HU6 (F09): los botones de Aprobar/Solicitar cambios ademas de mandar el
+// mensaje de texto al chat (UX original), registran la decision en la
+// tabla `approvals` via `submitDiagramDecision` (mismo mecanismo que
+// app/api/elicitation.py usa para la fase de requerimientos, fase="diagram").
+function renderAttachments(
+  attachments: Message['attachments'],
+  projectId?: number,
+  onSendMessage?: (text: string) => void,
+) {
   if (!attachments || attachments.length === 0) return null
+
+  const handleDecision = (decision: 'approve' | 'modify' | 'reject', text: string) => {
+    if (projectId) {
+      void submitDiagramDecision(projectId, decision)
+    }
+    onSendMessage?.(text)
+  }
+
   return (
     <div className="mt-2 space-y-2">
       {attachments.map((attachment, index) => (
-        <img
-          key={`${attachment.url}-${index}`}
-          src={attachment.url}
-          alt={attachment.filename}
-          className="max-w-md rounded-lg my-2"
-          loading="lazy"
-        />
+        <div key={`${attachment.url}-${index}`}>
+          <img
+            src={attachment.url}
+            alt={attachment.filename}
+            className="max-w-md rounded-lg my-2"
+            loading="lazy"
+          />
+          {onSendMessage && (
+            <div className="flex gap-2 mt-1">
+              <button
+                type="button"
+                onClick={() => handleDecision('approve', 'Apruebo el diagrama, continuemos.')}
+                className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+              >
+                ✅ Aprobar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDecision('modify', 'Necesito modificar el diagrama: ')}
+                className="text-xs px-2 py-1 rounded bg-gray-300 text-gray-800 hover:bg-gray-400"
+              >
+                ✏️ Solicitar cambios
+              </button>
+            </div>
+          )}
+        </div>
       ))}
     </div>
   )
