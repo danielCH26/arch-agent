@@ -251,12 +251,30 @@ def engram_mirror(
     """
     try:
         from app.core.engram_client import EngramClient, EngramError
+        from app import get_engram_project_key
 
         client = EngramClient()
         # topic_key per (user, project) — ADR-005 / proposal §6 row 4.
         topic_key = f"arch-agent-user-{user_id}"
         if project_id is not None:
             topic_key = f"{topic_key}-project-{project_id}-chat"
+        project_key = get_engram_project_key(user_id)
+
+        # Engram's POST /observations requires session_id to reference an
+        # already-registered session (strict FK, verified against the real
+        # server — see EngramClient.save docstring). We reuse the same
+        # deterministic id as the session identity, so this is a no-op
+        # register-if-missing on every call. create_session errors (e.g.
+        # "already exists") are swallowed: registration is best-effort,
+        # same as the mirror itself.
+        try:
+            client.create_session(session_id=topic_key, project=project_key, directory=".")
+        except EngramError as exc:
+            logger.debug(
+                "Engram create_session no-op/failed for session_id=%s: %s",
+                topic_key,
+                exc,
+            )
 
         try:
             result = client.save(
@@ -264,6 +282,8 @@ def engram_mirror(
                 content=message.content,
                 title=f"{message.role}:{message.id or 'pending'}",
                 observation_type="chat_message",
+                project=project_key,
+                session_id=topic_key,
             )
             observation_id = result.get("id") if isinstance(result, dict) else None
             if observation_id is not None:

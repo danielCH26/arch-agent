@@ -281,6 +281,9 @@ async def _try_get_puppeteer_tools(
         }
 
 
+_MERMAID_RENDER_DELAY_SECONDS: float = 3.0
+
+
 def _build_mermaid_preview_html(mermaid_code: str) -> str:
     """Pagina HTML autocontenida que renderiza un bloque Mermaid via
     mermaid.js (CDN).
@@ -300,7 +303,18 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
         "<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js'></script>"
         "<style>body{margin:0;padding:16px;background:#fff;}</style>"
         "</head><body><pre class='mermaid'>" + escaped + "</pre>"
-        "<script>mermaid.initialize({startOnLoad:true});</script>"
+        "<script>"
+        # ``startOnLoad`` depende de que el DOM llegue a
+        # DOMContentLoaded/load exactamente cuando mermaid espera, lo cual
+        # es fragil dentro de una pagina ``data:`` navegada por Puppeteer.
+        # Llamamos a ``mermaid.run()`` a mano (API recomendada en mermaid
+        # v10+) e imprimimos en consola cuando termina, para poder
+        # diagnosticar via logs si el render nunca llega a completarse.
+        "mermaid.initialize({startOnLoad:false});"
+        "mermaid.run({querySelector:'.mermaid'})"
+        ".then(()=>{document.title='mermaid-rendered';})"
+        ".catch((e)=>{document.title='mermaid-error';console.error(e);});"
+        "</script>"
         "</body></html>"
     )
 
@@ -343,19 +357,63 @@ def _wrap_screenshot_tool_for_groq_compat(
     original_coroutine = tool.coroutine
 
     async def wrapped(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
+        # Import lazy (mismo patron que el resto del modulo) para no atar
+        # este archivo a langchain_mcp_adapters en tiempo de import.
+        from app.core.puppeteer_mcp import _FETCH_TIMEOUT_SECONDS
+
         # FIX 1: nunca dejamos que el modelo pida el modo "encoded".
         kwargs["encoded"] = False
         if "selector" not in kwargs or not kwargs["selector"]:
             kwargs.pop("selector", None)  # Puppeteer no soporta selector vacío, solo None.
+
+        # FIX 4 (bug: "el diagrama sale en blanco" — causa raiz real):
+        # el modelo a veces NUNCA emite el bloque ```mermaid``` como texto
+        # visible antes de invocar la tool -- en cambio, cuela el codigo
+        # crudo en un kwarg ``content`` que ni siquiera existe en el
+        # schema real de ``puppeteer_screenshot`` (propiedad extra, el
+        # servidor MCP la ignora). Si eso pasa, ``response_parts`` esta
+        # vacio en este punto y el FIX 2 de abajo se salteaba en
+        # silencio -- sin excepcion, sin warning -- dejando el screenshot
+        # sacado sobre lo que sea que estuviera cargado en el browser.
+        # Sacamos el kwarg (no es parte del schema real; no debe
+        # reenviarse) y lo usamos como fuente si no hay nada mejor.
+        raw_content_kwarg = kwargs.pop("content", None)
+
         # FIX 2: pre-navegar a la pagina con el mermaid renderizado.
-        if navigate_coroutine is not None and response_parts is not None:
-            full_text_so_far = "".join(response_parts)
+        if navigate_coroutine is not None:
+            full_text_so_far = "".join(response_parts) if response_parts is not None else ""
             mermaid_code = extract_mermaid_block(full_text_so_far)
+            if mermaid_code is None and isinstance(raw_content_kwarg, str) and raw_content_kwarg.strip():
+                # Puede venir ya con fences ```mermaid``` o crudo.
+                mermaid_code = extract_mermaid_block(raw_content_kwarg) or raw_content_kwarg.strip()
             if mermaid_code:
                 preview_html = _build_mermaid_preview_html(mermaid_code)
                 data_url = _mermaid_html_to_data_url(preview_html)
                 try:
-                    await navigate_coroutine(url=data_url)
+                    nav_result = await asyncio.wait_for(
+                        navigate_coroutine(url=data_url),
+                        timeout=_FETCH_TIMEOUT_SECONDS,
+                    )
+                    # DIAGNOSTIC: algunos servidores MCP devuelven un error
+                    # de aplicacion (p.ej. "scheme data: no permitido") como
+                    # contenido normal (``isError``/texto) en vez de lanzar
+                    # una excepcion Python. Si eso pasa, este ``except`` de
+                    # abajo NUNCA se dispara y el fallo queda invisible —
+                    # logueamos el resultado crudo para poder distinguir
+                    # "navego pero mermaid no termino de renderizar" de
+                    # "el navigate fue rechazado en silencio".
+                    _LOGGER.info(
+                        "Pre-navigate a preview de Mermaid devolvio: %r",
+                        nav_result,
+                    )
+                    # FIX 3 (bug: "el diagrama sale en blanco" — parte 2):
+                    # ``navigate`` resuelve en el evento ``load`` del
+                    # documento, pero mermaid.js todavia esta parseando y
+                    # renderizando el SVG de forma asincrona en ese momento
+                    # (fetch del CDN + mermaid.run() interno). Sin este
+                    # margen el screenshot se toma antes de que el <pre
+                    # class="mermaid"> se reemplace por el SVG renderizado.
+                    await asyncio.sleep(_MERMAID_RENDER_DELAY_SECONDS)
                 except Exception as e:
                     _LOGGER.warning(
                         "Pre-navigate a preview de Mermaid fallo: %s", e
@@ -364,7 +422,17 @@ def _wrap_screenshot_tool_for_groq_compat(
                     # screenshot sale en blanco como antes del fix, pero
                     # el chat sigue funcionando.
 
-        content, artifact = await original_coroutine(*args, **kwargs)
+        try:
+            content, artifact = await asyncio.wait_for(
+                original_coroutine(*args, **kwargs),
+                timeout=_FETCH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "puppeteer_screenshot no respondió después de %.1fs",
+                _FETCH_TIMEOUT_SECONDS,
+            )
+            return "Puppeteer no devolvió una imagen (timeout).", None
         blocks = content if isinstance(content, list) else []
 
         image_block = next(

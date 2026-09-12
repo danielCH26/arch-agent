@@ -99,8 +99,16 @@ class EngramClient:
         observation_type: str = "chat_message",
         project: str | None = None,
         scope: str = "project",
+        session_id: str | None = None,
     ) -> dict:
         """Fire-and-forget sibling observation (REQ-6 / ADR-011).
+
+        ``session_id`` MUST reference a session already registered via
+        ``create_session`` — Engram's ``/observations`` FK is strict and
+        rejects an unregistered explicit ``session_id`` with 400 (verified
+        against the real server, not just the mocked test contract).
+        ``topic_key`` is a *separate*, optional upsert/dedup key — it does
+        NOT satisfy the session FK on its own.
 
         Returns the parsed JSON response (typically ``{"id": <int>}``).
         The chat route catches ``EngramError`` and continues without
@@ -115,6 +123,8 @@ class EngramClient:
         }
         if project is not None:
             body["project"] = project
+        if session_id is not None:
+            body["session_id"] = session_id
         response = self._request("POST", "/observations", body)
         return response if isinstance(response, dict) else {}
 

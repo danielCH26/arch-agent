@@ -314,6 +314,8 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
             len(dropped),
             dropped,
         )
+    for t in filtered:
+        _allow_null_for_optional_params(t)
     _LOGGER.info(
         "Puppeteer returned %d raw tool(s); %d allowed after filter: %s",
         len(raw),
@@ -321,6 +323,47 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
         [t.name for t in filtered],
     )
     return filtered
+
+
+def _allow_null_for_optional_params(tool: Any) -> None:
+    """Parcha ``tool.args_schema`` in-place para que cada parametro NO
+    requerido acepte ``null`` ademas de su tipo declarado.
+
+    Bug (visto con ``openai/gpt-oss-120b`` via Groq): el modelo rellena
+    argumentos opcionales que no quiere usar con JSON ``null`` en vez de
+    omitirlos del todo. Groq valida el tool call contra el JSON Schema
+    ANTES de que nuestro codigo (``_wrap_screenshot_tool_for_groq_compat``)
+    llegue a ejecutarse, asi que el saneo de kwargs que ya haciamos ahi
+    (``kwargs.pop("selector", None)``) nunca alcanza a correr — la API
+    rechaza el tool call de entrada con
+    ``.../selector: expected string, but got null`` y el turno entero
+    explota (``openai.APIError`` sin catch en el loop del agente).
+
+    El fix real va en el schema que le mostramos al modelo, no en el
+    codigo que consume la llamada: si ``selector`` declara
+    ``type: ["string", "null"]`` en vez de ``type: "string"``, Groq acepta
+    ``null`` como valor valido y el tool call pasa la validacion. De ahi
+    en mas, el saneo existente en ``_wrap_screenshot_tool_for_groq_compat``
+    sigue haciendo su trabajo (convierte ``None`` en "sin selector").
+
+    No-op defensivo: si ``tool`` no tiene ``args_schema`` como dict con
+    ``properties``, no hace nada (evita romper con tools de otros MCPs).
+    """
+    schema = getattr(tool, "args_schema", None)
+    if not isinstance(schema, dict):
+        return
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    required = set(schema.get("required") or [])
+    for name, prop in properties.items():
+        if name in required or not isinstance(prop, dict):
+            continue
+        prop_type = prop.get("type")
+        if isinstance(prop_type, str) and prop_type != "null":
+            prop["type"] = [prop_type, "null"]
+        elif isinstance(prop_type, list) and "null" not in prop_type:
+            prop["type"] = [*prop_type, "null"]
 
 
 async def get_puppeteer_navigate_tool(client: Any | None = None) -> Any | None:
