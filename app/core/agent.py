@@ -20,6 +20,8 @@ import logging
 import os
 from typing import Any, AsyncIterator
 
+from app.core.mermaid_validator import extract_mermaid_block, validate_mermaid
+
 _LOGGER = logging.getLogger(__name__)
 
 # Persona prompt that frames the agent as a software-architecture assistant.
@@ -50,14 +52,22 @@ LIBRARY_HINT: str = (
 # ``mermaid`` block it emits via ``puppeteer_screenshot``. The hard cap
 # (one render per turn) keeps the SSE channel quiet and matches the
 # pre-``done`` transaction semantics.
+# F09: se agrega guia de que tipo de diagrama Mermaid usar segun lo que
+# pida el usuario (flujo / componentes / secuencia).
 DIAGRAM_HINT: str = (
     "Dispones de la herramienta ``puppeteer_screenshot`` para renderizar "
-    "diagramas Mermaid a PNG. Despues de emitir un bloque ```mermaid ...```, "
-    "invocala exactamente UNA vez por turno con el bloque completo para "
-    "que el frontend pueda mostrar la imagen inline. NO uses "
-    "``puppeteer_screenshot`` para nada que no sea un diagrama Mermaid, "
-    "y NO invoques otras herramientas de Puppeteer: la superficie de "
-    "herramientas esta limitada a un unico render de screenshot."
+    "diagramas Mermaid a PNG. Elige el tipo de diagrama Mermaid segun lo "
+    "que el usuario pida ver:\n"
+    "- flujo de proceso -> ``flowchart`` o ``graph``\n"
+    "- componentes/arquitectura -> ``flowchart`` con subgraphs por "
+    "componente\n"
+    "- interaccion entre servicios en el tiempo -> ``sequenceDiagram``\n"
+    "Despues de emitir un bloque ```mermaid ...```, invocala exactamente "
+    "UNA vez por turno con el bloque completo para que el frontend pueda "
+    "mostrar la imagen inline. NO uses ``puppeteer_screenshot`` para nada "
+    "que no sea un diagrama Mermaid, y NO invoques otras herramientas de "
+    "Puppeteer: la superficie de herramientas esta limitada a un unico "
+    "render de screenshot."
 )
 
 # REQ-9 / ADR-010 §"Precedencia RAG ↔ Context7" — cap to keep tool result
@@ -381,9 +391,10 @@ async def run_agent(
     Ordering guarantee:
       ``sources`` is yielded by the route BEFORE ``run_agent`` is invoked
       (it owns the RAG retrieval). ``run_agent`` yields ``tool_start`` /
-      ``tool_end`` pairs (possibly zero), then ``token`` events, and ends
-      with ``done``. On Context7 failure it yields exactly one
-      ``degraded`` event before continuing with RAG-only tokens.
+      ``tool_end`` pairs (possibly zero), then ``token`` events, then (F09)
+      exactly one ``diagram_validated`` event if the turn contained a
+```mermaid``` block, and ends with ``done``. On Context7/Puppeteer
+      failure it yields one ``degraded`` event before continuing.
 
     Args:
         model: ``BaseChatModel``.
@@ -447,6 +458,13 @@ async def run_agent(
     # surface this as an error (the chat still has a useful text answer).
     tool_call_tracker: dict[str, int] = {"count": 0}
 
+    # F09: acumulamos el texto de cada ``token`` para poder extraer y
+    # validar el bloque ```mermaid``` (si lo hubo) una vez termina el
+    # stream. No se reconstruye desde ``on_tool_end`` porque el bloque
+    # mermaid vive en el texto de la respuesta, no en el resultado de la
+    # tool de Puppeteer.
+    response_parts: list[str] = []
+
     # Forward each event from the agent stream to the SSE channel.
     async for sse_dict in _astream_agent(
         agent,
@@ -457,6 +475,10 @@ async def run_agent(
         model_name=model_name,
         tool_call_tracker=tool_call_tracker,
     ):
+        if sse_dict.get("event") == "token":
+            token_text = sse_dict.get("data")
+            if isinstance(token_text, str):
+                response_parts.append(token_text)
         yield sse_dict
 
     # PR #76 fix #2b: emit ``tool_calls_missing`` BEFORE ``done`` so the
@@ -487,6 +509,28 @@ async def run_agent(
                 ),
                 "tools_available": len(tools),
             },
+        }
+
+    # F09 (REQ: "diagramas renderizan sin errores de sintaxis" /
+    # KR ≥75% sin errores): validamos el bloque mermaid del turno, si lo
+    # hubo. Se hace aqui (sobre el texto ya completo) y no tool por tool,
+    # porque el LLM puede emitir el bloque mermaid en el mismo turno en
+    # que invoca ``puppeteer_screenshot`` -- necesitamos el texto final,
+    # no un chunk parcial.
+    full_response = "".join(response_parts)
+    mermaid_code = extract_mermaid_block(full_response)
+    if mermaid_code is not None:
+        is_valid, error = validate_mermaid(mermaid_code)
+        if not is_valid:
+            _LOGGER.warning(
+                "Mermaid invalido (user_id=%s, project_id=%s): %s",
+                user_id,
+                project_id,
+                error,
+            )
+        yield {
+            "event": "diagram_validated",
+            "data": {"valid": is_valid, "error": error},
         }
 
     # ``done`` is the last event on success — design.md §5.2 ordering rule.

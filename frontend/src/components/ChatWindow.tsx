@@ -51,7 +51,7 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
         )}
 
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+          <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} />
         ))}
 
         {isStreaming && (
