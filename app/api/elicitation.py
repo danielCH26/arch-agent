@@ -1,3 +1,4 @@
+import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,6 +14,8 @@ from app.core.session_store import load_session_state, save_session_state
 from app.models.approval import Approval
 from app.models.project import Project
 from app.models.session import UserSession
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["elicitation"])
 
@@ -185,9 +188,20 @@ async def send_elicitation_message(
             f"unos segundos. Detalle: {e}",
         )
     except elicitation_agent.ElicitationAgentError as e:
+        # El detalle técnico (JSON crudo, a veces con un <think> truncado de
+        # modelos de razonamiento que se quedan sin tokens de salida antes
+        # de llegar al JSON) es ruido para el usuario y no le dice qué
+        # hacer -- se registra para debug y se responde con un mensaje
+        # accionable en su lugar.
+        logger.error(
+            "ElicitationAgentError en project_id=%s: %s", project_id, e
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"El agente no pudo procesar la elicitación: {e}",
+            detail="El modelo de IA no devolvió una respuesta válida esta vez "
+            "(puede pasar con algunos modelos de razonamiento que se quedan "
+            "sin espacio de salida). Intenta de nuevo o prueba con otro "
+            "modelo en la configuración de LLM.",
         )
 
     phase_data = {
