@@ -114,18 +114,22 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     return false
   }
 
-  if (eventName === 'degraded' && rawData && callbacks.onDiagramIssue) {
-    try {
-      const data = JSON.parse(rawData) as { message?: string }
-      callbacks.onDiagramIssue(
-        data.message || 'No se pudo renderizar el diagrama a imagen.'
-      )
-    } catch {
-      callbacks.onDiagramIssue('No se pudo renderizar el diagrama a imagen.')
+  if (eventName === 'degraded' && rawData) {
+  try {
+    const data = JSON.parse(rawData) as { message?: string; source?: string }
+    // Solo mostramos el banner cuando el problema es del renderizado del
+    // diagrama en sí (puppeteer). "context7" y "agent" (tool_calls_missing)
+    // son ruido esperado que no afecta al usuario.
+    if (data.source === 'puppeteer' && callbacks.onDiagramIssue) {
+      callbacks.onDiagramIssue(data.message || 'No se pudo renderizar el diagrama a imagen.')
+    } else {
+      console.warn('[chat] degraded event (no-op para el usuario):', data)
     }
-    return false
+  } catch {
+    // payload inesperado, lo ignoramos
   }
-
+  return false
+}
   if (eventName === 'done') {
     callbacks.onDone()
     return true

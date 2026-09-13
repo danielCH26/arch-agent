@@ -62,6 +62,7 @@ from app.api.users import router as users_router
 from app.api.rag import router as rag_router
 from app.api.elicitation import router as elicitation_router
 from app.api.attachments import router as attachments_router  # F13, issue #17
+from app.api.diagrams import router as diagrams_router  # HU6: historial de diagramas
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -72,6 +73,7 @@ app.include_router(users_router)
 app.include_router(rag_router)
 app.include_router(elicitation_router)
 app.include_router(attachments_router)
+app.include_router(diagrams_router)
 
 # Serve SPA static files (built by Vite)
 # Mount AFTER specific routes so /api/* and /register work first

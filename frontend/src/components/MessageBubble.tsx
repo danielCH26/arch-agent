@@ -1,5 +1,6 @@
 import type React from 'react'
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Message } from '../stores/chatStore'
 import { submitDiagramDecision } from '../api/diagrams'
 
@@ -371,6 +372,11 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
 //     la persona escriba QUE hay que cambiar; solo al confirmar se
 //     registra la decision (con ese feedback) y se envia ese texto real
 //     al chat para que el agente regenere el diagrama.
+//
+// Zoom del diagrama (pedido de Laura): click en la miniatura abre un
+// overlay fullscreen con la imagen en grande; click en cualquier parte
+// del overlay lo cierra. Estado local `expandedUrl` guarda la URL del
+// attachment actualmente ampliado (null = cerrado).
 function DiagramAttachments({
   attachments,
   projectId,
@@ -384,6 +390,7 @@ function DiagramAttachments({
   const [feedback, setFeedback] = useState('')
   const [decisionError, setDecisionError] = useState('')
   const [decidedFor, setDecidedFor] = useState<Record<number, string>>({})
+  const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
 
   if (!attachments || attachments.length === 0) return null
 
@@ -414,8 +421,9 @@ function DiagramAttachments({
           <img
             src={attachment.url}
             alt={attachment.filename}
-            className="max-w-md rounded-lg my-2"
+            className="max-w-md rounded-lg my-2 cursor-zoom-in"
             loading="lazy"
+            onClick={() => setExpandedUrl(attachment.url)}
           />
           {onSendMessage && !decidedFor[index] && (
             <>
@@ -482,6 +490,16 @@ function DiagramAttachments({
           )}
         </div>
       ))}
+      {expandedUrl &&
+        createPortal(
+          <div
+            onClick={() => setExpandedUrl(null)}
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/85 cursor-zoom-out"
+          >
+            <img src={expandedUrl} alt="Diagrama ampliado" className="max-w-[95vw] max-h-[95vh]" />
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

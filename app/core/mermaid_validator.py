@@ -35,6 +35,59 @@ def _label_has_unquoted_specials(label: str) -> bool:
     return any(ch in label for ch in "()\"")
 
 
+def sanitize_mermaid_labels(code: str) -> str:
+    """Auto-corrige labels de nodo que romperian el parser de Mermaid,
+    envolviendolos en comillas. Se llama ANTES de validate_mermaid()
+    para que el caso comun (parentesis/barras sin comillas) no llegue
+    a rechazarse.
+    """
+    def _fix(match: re.Match) -> str:
+        label = match.group(1)
+        if _label_has_unquoted_specials(label):
+            return f'["{label}"]'
+        return match.group(0)
+
+    return _NODE_LABEL_PATTERN.sub(_fix, code)
+
+
+_CLASS_STATEMENT_PATTERN = re.compile(r"^(\s*class\s+)([^;\n]+?)(\s+\w+\s*;?\s*)$", re.MULTILINE)
+_VALID_ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def sanitize_class_statements(code: str) -> str:
+    """Corrige sentencias `class` invalidas.
+
+    Bug real (visto en produccion): el LLM a veces mezcla, en la misma
+    linea `class`, IDs cortos de nodo (validos) con las ETIQUETAS del
+    nodo (invalido, rompe el parser en cuanto aparece un espacio):
+
+        class B,G,F,API Gateway,Microservicio Orders service
+
+    Mermaid solo acepta IDs de nodo (sin espacios) en esa lista. Esta
+    funcion filtra cada lista `class X,Y,Z nombreClase`, descartando
+    cualquier token que no sea un identificador valido (con espacios,
+    con simbolos, etc.). Si no queda ningun ID valido, se elimina la
+    linea entera (mejor sin colorear esos nodos que romper el diagrama
+    completo).
+    """
+    def _fix(match: re.Match) -> str:
+        prefix, ids_part, suffix = match.group(1), match.group(2), match.group(3)
+        tokens = [t.strip() for t in ids_part.split(",")]
+        valid = [t for t in tokens if _VALID_ID_PATTERN.match(t)]
+        if not valid:
+            return ""  # elimina la linea completa
+        return f"{prefix}{','.join(valid)}{suffix}"
+
+    return _CLASS_STATEMENT_PATTERN.sub(_fix, code)
+
+
+def sanitize_mermaid(code: str) -> str:
+    """Aplica todos los sanitizadores conocidos, en orden."""
+    code = sanitize_mermaid_labels(code)
+    code = sanitize_class_statements(code)
+    return code
+
+
 def validate_mermaid(code: str) -> tuple[bool, str | None]:
     stripped = code.strip()
     if not stripped:

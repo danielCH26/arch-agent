@@ -28,7 +28,11 @@ import uuid
 from typing import Any, AsyncIterator
 
 from app.core.attachment_tokens import _ensure_uploads_dir, build_attachment_url
-from app.core.mermaid_validator import extract_mermaid_block, validate_mermaid
+from app.core.mermaid_validator import (
+    extract_mermaid_block,
+    sanitize_mermaid,
+    validate_mermaid,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -315,10 +319,38 @@ async def _render_mermaid_server_side(
                         if getattr(b, "type", None) == "text"
                     )
                     if "mermaid-error" in title_text:
+                        # Antes solo mirabamos el title ("mermaid-error"), que
+                        # no dice NADA sobre la causa real. El HTML de preview
+                        # ya guarda el mensaje real de mermaid.run() en
+                        # #status (ver _build_mermaid_preview_html) -- lo
+                        # leemos aca para poder debuggear sin adivinar.
+                        status_text = "(no se pudo leer #status)"
+                        try:
+                            status_result = await asyncio.wait_for(
+                                session.call_tool(
+                                    "puppeteer_evaluate",
+                                    {
+                                        "script": (
+                                            "document.getElementById('status')"
+                                            "?.textContent || ''"
+                                        )
+                                    },
+                                ),
+                                timeout=fetch_timeout,
+                            )
+                            status_blocks = getattr(status_result, "content", None) or []
+                            status_text = " ".join(
+                                getattr(b, "text", "") or ""
+                                for b in status_blocks
+                                if getattr(b, "type", None) == "text"
+                            ) or "(vacio)"
+                        except Exception as status_exc:
+                            status_text = f"(fallo leyendo #status: {status_exc})"
+
                         _LOGGER.warning(
                             "Render server-side: mermaid.run() fallo en el "
-                            "navegador (title=mermaid-error), descartando "
-                            "screenshot. Mermaid: %.200s",
+                            "navegador. Error real: %s | Mermaid completo:\n%s",
+                            status_text,
                             mermaid_code,
                         )
                         return None
@@ -543,6 +575,7 @@ async def run_agent(
     full_response = "".join(response_parts)
     mermaid_code = extract_mermaid_block(full_response)
     if mermaid_code is not None:
+        mermaid_code = sanitize_mermaid(mermaid_code)
         is_valid, error = validate_mermaid(mermaid_code)
         if not is_valid:
             _LOGGER.warning(
