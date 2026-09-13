@@ -332,95 +332,81 @@ def _wrap_screenshot_tool_for_groq_compat(
     *,
     navigate_coroutine: Any | None = None,
     response_parts: list[str] | None = None,
+    user_message: str | None = None,
+    attachment_emitted: dict[str, bool] | None = None,
 ) -> None:
-    """Parcha ``puppeteer_screenshot`` para que el content que vuelve al
-    modelo sea siempre un string plano (Groq/proveedores OpenAI-compatible
-    rechazan bloques de imagen en mensajes de rol tool: ``messages[N].content
-    must be a string``), y guarda el PNG real en disco para que
-    ``_astream_agent`` pueda emitir ``event: attachment`` después.
-
-    FIX 1 (bug: "aparece un base64 gigante pegado en el chat"): forzamos
-    ``encoded=False`` en los kwargs sin importar lo que pida el modelo.
-    Con ``encoded=true`` el server oficial de Puppeteer devuelve la
-    imagen como TEXTO (data-URI plano) en vez de un bloque
-    ``type: "image"``; nuestro parser solo entiende bloques ``image``, y
-    si no los encuentra reenvia el texto crudo (el base64 completo) de
-    vuelta al modelo, que termina copiandolo en su respuesta final.
-
-    FIX 2 (bug: "el diagrama sale en blanco"): si nos pasaron
-    ``navigate_coroutine`` (la tool CRUDA ``puppeteer_navigate``, NUNCA
-    expuesta al LLM) y ya hay un bloque ```mermaid``` completo en
-    ``response_parts`` (el texto acumulado de la respuesta hasta ahora),
-    navegamos el browser a una pagina generada server-side que renderiza
-    ese diagrama con mermaid.js ANTES de tomar el screenshot real.
-    """
     original_coroutine = tool.coroutine
 
     async def wrapped(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
-        # Import lazy (mismo patron que el resto del modulo) para no atar
-        # este archivo a langchain_mcp_adapters en tiempo de import.
         from app.core.puppeteer_mcp import _FETCH_TIMEOUT_SECONDS
 
         # FIX 1: nunca dejamos que el modelo pida el modo "encoded".
         kwargs["encoded"] = False
         if "selector" not in kwargs or not kwargs["selector"]:
-            kwargs.pop("selector", None)  # Puppeteer no soporta selector vacío, solo None.
+            kwargs.pop("selector", None)
 
-        # FIX 4 (bug: "el diagrama sale en blanco" — causa raiz real):
-        # el modelo a veces NUNCA emite el bloque ```mermaid``` como texto
-        # visible antes de invocar la tool -- en cambio, cuela el codigo
-        # crudo en un kwarg ``content`` que ni siquiera existe en el
-        # schema real de ``puppeteer_screenshot`` (propiedad extra, el
-        # servidor MCP la ignora). Si eso pasa, ``response_parts`` esta
-        # vacio en este punto y el FIX 2 de abajo se salteaba en
-        # silencio -- sin excepcion, sin warning -- dejando el screenshot
-        # sacado sobre lo que sea que estuviera cargado en el browser.
-        # Sacamos el kwarg (no es parte del schema real; no debe
-        # reenviarse) y lo usamos como fuente si no hay nada mejor.
         raw_content_kwarg = kwargs.pop("content", None)
 
         # FIX 2: pre-navegar a la pagina con el mermaid renderizado.
+        _LOGGER.warning("DEBUG navigate_coroutine is None: %s", navigate_coroutine is None)
+
+        mermaid_code = None
         if navigate_coroutine is not None:
             full_text_so_far = "".join(response_parts) if response_parts is not None else ""
             mermaid_code = extract_mermaid_block(full_text_so_far)
+            source = "response_parts"
             if mermaid_code is None and isinstance(raw_content_kwarg, str) and raw_content_kwarg.strip():
-                # Puede venir ya con fences ```mermaid``` o crudo.
                 mermaid_code = extract_mermaid_block(raw_content_kwarg) or raw_content_kwarg.strip()
-            if mermaid_code:
-                preview_html = _build_mermaid_preview_html(mermaid_code)
-                data_url = _mermaid_html_to_data_url(preview_html)
-                try:
-                    nav_result = await asyncio.wait_for(
-                        navigate_coroutine(url=data_url),
-                        timeout=_FETCH_TIMEOUT_SECONDS,
-                    )
-                    # DIAGNOSTIC: algunos servidores MCP devuelven un error
-                    # de aplicacion (p.ej. "scheme data: no permitido") como
-                    # contenido normal (``isError``/texto) en vez de lanzar
-                    # una excepcion Python. Si eso pasa, este ``except`` de
-                    # abajo NUNCA se dispara y el fallo queda invisible —
-                    # logueamos el resultado crudo para poder distinguir
-                    # "navego pero mermaid no termino de renderizar" de
-                    # "el navigate fue rechazado en silencio".
-                    _LOGGER.info(
-                        "Pre-navigate a preview de Mermaid devolvio: %r",
-                        nav_result,
-                    )
-                    # FIX 3 (bug: "el diagrama sale en blanco" — parte 2):
-                    # ``navigate`` resuelve en el evento ``load`` del
-                    # documento, pero mermaid.js todavia esta parseando y
-                    # renderizando el SVG de forma asincrona en ese momento
-                    # (fetch del CDN + mermaid.run() interno). Sin este
-                    # margen el screenshot se toma antes de que el <pre
-                    # class="mermaid"> se reemplace por el SVG renderizado.
-                    await asyncio.sleep(_MERMAID_RENDER_DELAY_SECONDS)
-                except Exception as e:
-                    _LOGGER.warning(
-                        "Pre-navigate a preview de Mermaid fallo: %s", e
-                    )
-                    # No abortamos el turno por esto -- peor caso, el
-                    # screenshot sale en blanco como antes del fix, pero
-                    # el chat sigue funcionando.
+                source = "raw_content_kwarg"
+
+            # FIX 5: último recurso, buscar en el mensaje original del usuario.
+            if mermaid_code is None and user_message:
+                mermaid_code = extract_mermaid_block(user_message)
+                if mermaid_code is None:
+                    lowered = user_message.lower()
+                    for keyword in ("flowchart", "graph ", "sequencediagram", "classdiagram"):
+                        idx = lowered.find(keyword)
+                        if idx != -1:
+                            mermaid_code = user_message[idx:].strip()
+                            break
+                source = "user_message"
+
+            _LOGGER.warning(
+                "DEBUG mermaid_code encontrado=%s fuente=%s len_response=%d preview=%r",
+                mermaid_code is not None, source, len(full_text_so_far),
+                (mermaid_code or "")[:80],
+            )
+
+            if mermaid_code is None:
+                # FIX 6 (bug: "sigue en blanco"): sin código en ningún
+                # lado, el screenshot SIEMPRE va a salir en blanco. En
+                # vez de intentarlo, rechazamos la llamada con un error
+                # accionable para forzar al modelo a escribir el
+                # diagrama primero y reintentar.
+                return (
+                    "ERROR: No escribiste el diagrama Mermaid como texto en tu "
+                    "respuesta antes de llamar a esta herramienta. Escribe primero, "
+                    "como parte normal de tu respuesta, el bloque completo "
+                    "```mermaid\n...\n``` con el diagrama COMPLETO (todos sus nodos "
+                    "y conexiones), y DESPUÉS vuelve a llamar a puppeteer_screenshot."
+                ), None
+
+            preview_html = _build_mermaid_preview_html(mermaid_code)
+            data_url = _mermaid_html_to_data_url(preview_html)
+            try:
+                nav_result = await asyncio.wait_for(
+                    navigate_coroutine(url=data_url),
+                    timeout=_FETCH_TIMEOUT_SECONDS,
+                )
+                _LOGGER.warning(
+                    "Pre-navigate a preview de Mermaid devolvio: %r",
+                    nav_result,
+                )
+                await asyncio.sleep(_MERMAID_RENDER_DELAY_SECONDS)
+            except Exception as e:
+                _LOGGER.warning(
+                    "Pre-navigate a preview de Mermaid fallo: %s", e
+                )
 
         try:
             content, artifact = await asyncio.wait_for(
@@ -465,12 +451,67 @@ def _wrap_screenshot_tool_for_groq_compat(
             "filename": filename,
             "storage_path": storage_path,
         }
+        if attachment_emitted is not None:
+             attachment_emitted["done"] = True
 
-        # Texto corto y plano: esto es lo que ve el modelo, no la imagen.
         return "Diagrama renderizado correctamente.", artifact
 
     tool.coroutine = wrapped
 
+async def _render_mermaid_server_side(
+    mermaid_code: str,
+    *,
+    navigate_coroutine: Any | None,
+    screenshot_coroutine: Any,
+) -> dict[str, Any] | None:
+    """Renderiza un bloque mermaid a PNG directamente, sin pasar por el
+    LLM. Fallback para cuando el modelo escribe el diagrama como texto
+    pero no vuelve a invocar ``puppeteer_screenshot`` (tool-calling débil
+    tras un error previo, FIX 7)."""
+    from app.core.puppeteer_mcp import _FETCH_TIMEOUT_SECONDS
+
+    if navigate_coroutine is not None:
+        preview_html = _build_mermaid_preview_html(mermaid_code)
+        data_url = _mermaid_html_to_data_url(preview_html)
+        try:
+            await asyncio.wait_for(navigate_coroutine(url=data_url), timeout=_FETCH_TIMEOUT_SECONDS)
+            await asyncio.sleep(_MERMAID_RENDER_DELAY_SECONDS)
+        except Exception as e:
+            _LOGGER.warning("Render server-side: pre-navigate fallo: %s", e)
+            return None
+
+    try:
+        content, _artifact = await asyncio.wait_for(
+            screenshot_coroutine(name="diagram", encoded=False),
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        _LOGGER.warning("Render server-side: screenshot fallo: %s", e)
+        return None
+
+    blocks = content if isinstance(content, list) else []
+    image_block = next((b for b in blocks if isinstance(b, dict) and b.get("type") == "image"), None)
+    if image_block is None:
+        return None
+
+    attachment_id = str(uuid.uuid4())
+    mime = image_block.get("mime_type") or "image/png"
+    ext = "png" if "png" in mime else "jpg"
+    filename = f"{attachment_id}.{ext}"
+    raw_bytes = base64.b64decode(image_block["base64"])
+
+    uploads_dir = _ensure_uploads_dir()
+    storage_path = os.path.join(uploads_dir, filename)
+    with open(storage_path, "wb") as f:
+        f.write(raw_bytes)
+
+    return {
+        "id": attachment_id,
+        "kind": "screenshot",
+        "mime": mime,
+        "filename": filename,
+        "storage_path": storage_path,
+    }
 
 async def _astream_agent(
     agent: Any,
@@ -597,9 +638,45 @@ async def run_agent(
         if degraded is not None:
             yield {"event": "degraded", "data": degraded}
 
-    puppeteer_tools, puppeteer_degraded = await _try_get_puppeteer_tools(
-        user_id=user_id,
-    )
+    # FIX 8 (bug: supergateway crashea con "No connection established for
+    # request ID" cuando dos sesiones MCP stateless llegan casi al mismo
+    # tiempo): una sola llamada trae tanto el screenshot filtrado por
+    # allow-list como la tool cruda de navigate, en vez de dos sesiones
+    # separadas.
+    puppeteer_tools: list[Any] = []
+    navigate_tool = None
+    puppeteer_degraded = None
+    try:
+        from app.core.puppeteer_mcp import (
+            PuppeteerUnavailable,
+            _check_rate_limit,
+            get_puppeteer_tools_and_navigate,
+        )
+
+        _check_rate_limit(user_id)
+        puppeteer_tools, navigate_tool = await get_puppeteer_tools_and_navigate()
+    except PuppeteerUnavailable as e:
+        reason = getattr(e, "reason", "puppeteer_unavailable") or "puppeteer_unavailable"
+        message = str(e) or "Puppeteer unavailable"
+        _LOGGER.warning(
+            "Puppeteer unavailable for user_id=%s; degrading: %s", user_id, message
+        )
+        puppeteer_degraded = {
+            "source": "puppeteer",
+            "reason": reason,
+            "fallback": "text_only",
+            "message": message,
+        }
+    except Exception as e:  # pragma: no cover — defensive belt-and-braces
+        _LOGGER.warning(
+            "Puppeteer tool fetch crashed for user_id=%s: %s", user_id, e
+        )
+        puppeteer_degraded = {
+            "source": "puppeteer",
+            "reason": "puppeteer_unavailable",
+            "fallback": "text_only",
+            "message": str(e),
+        }
     if puppeteer_degraded is not None:
         yield {"event": "degraded", "data": puppeteer_degraded}
 
@@ -607,21 +684,20 @@ async def run_agent(
     # wrapper del screenshot necesita leer el texto acumulado para
     # encontrar el bloque ```mermaid``` ya emitido por el modelo (FIX 2).
     attachment_sink: dict[str, Any] = {}
+    attachment_emitted: dict[str, bool] = {"done": False}
     response_parts: list[str] = []
 
-    navigate_tool = None
-    if puppeteer_tools:
-        from app.core.puppeteer_mcp import get_puppeteer_navigate_tool
-
-        navigate_tool = await get_puppeteer_navigate_tool()
-
+    screenshot_tool_original_coroutine = None
     for _t in puppeteer_tools:
         if getattr(_t, "name", None) == "puppeteer_screenshot":
+            screenshot_tool_original_coroutine = _t.coroutine  # guardamos ANTES de envolver
             _wrap_screenshot_tool_for_groq_compat(
                 _t,
                 attachment_sink,
                 navigate_coroutine=(navigate_tool.coroutine if navigate_tool else None),
                 response_parts=response_parts,
+                user_message=message,
+                attachment_emitted=attachment_emitted,
             )
 
     system_prompt = _build_system_prompt(docs, puppeteer_available=bool(puppeteer_tools))
@@ -692,6 +768,28 @@ async def run_agent(
             "event": "diagram_validated",
             "data": {"valid": is_valid, "error": error},
         }
+
+        # FIX 7: el modelo escribió el diagrama pero nunca (re)invocó
+        # puppeteer_screenshot -- lo renderizamos nosotros, server-side.
+        if is_valid and not attachment_emitted["done"] and screenshot_tool_original_coroutine is not None:
+            fallback_attachment = await _render_mermaid_server_side(
+                mermaid_code,
+                navigate_coroutine=(navigate_tool.coroutine if navigate_tool else None),
+                screenshot_coroutine=screenshot_tool_original_coroutine,
+            )
+            if fallback_attachment is not None:
+                token = (
+                    sign_attachment_token(fallback_attachment["id"], user_id)
+                    if user_id is not None
+                    else ""
+                )
+                yield {
+                    "event": "attachment",
+                    "data": {
+                        **fallback_attachment,
+                        "url": f"/api/chat/attachments/{fallback_attachment['id']}?token={token}",
+                    },
+                }
 
     yield {"event": "done", "data": None}
 
