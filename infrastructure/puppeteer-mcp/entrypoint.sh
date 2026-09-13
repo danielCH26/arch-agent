@@ -29,6 +29,8 @@ exec npx -y supergateway \
     --stdio "npx -y @modelcontextprotocol/server-puppeteer" \
     --port 8931 \
     --outputTransport streamableHttp \
+    --stateful \
+    --sessionTimeout 300000 \
     --streamableHttpPath /mcp \
     --healthEndpoint /health \
     --logLevel info
