@@ -27,7 +27,7 @@ import os
 import uuid
 from typing import Any, AsyncIterator
 
-from app.core.attachment_tokens import _ensure_uploads_dir, sign_attachment_token
+from app.core.attachment_tokens import _ensure_uploads_dir, build_attachment_url
 from app.core.mermaid_validator import extract_mermaid_block, validate_mermaid
 
 _LOGGER = logging.getLogger(__name__)
@@ -288,6 +288,46 @@ async def _render_mermaid_server_side(
                 # dependencia de red) a terminar de dibujar el SVG.
                 await asyncio.sleep(_MERMAID_RENDER_DELAY_SECONDS)
 
+                # Bug fix (HU6, "se petó" con diagramas mas complejos): el
+                # validador de mermaid_validator.py es un heuristico, no un
+                # parser real -- puede dejar pasar sintaxis que Mermoid
+                # SI rechaza en el navegador. Antes de este fix, tomabamos
+                # el screenshot sin mirar si mermaid.run() habia tenido
+                # exito o no, asi que un error de Mermaid terminaba
+                # sirviendose como si fuera el diagrama (captura del
+                # mensaje de error en rojo). _build_mermaid_preview_html
+                # ya setea document.title a 'mermaid-rendered' o
+                # 'mermaid-error' segun el resultado -- lo chequeamos aca.
+                # Fail-open: si este chequeo extra falla por lo que sea,
+                # seguimos con el flujo viejo (mejor un screenshot
+                # ocasionalmente malo que romper el caso feliz).
+                try:
+                    title_result = await asyncio.wait_for(
+                        session.call_tool(
+                            "puppeteer_evaluate", {"script": "document.title"}
+                        ),
+                        timeout=fetch_timeout,
+                    )
+                    title_blocks = getattr(title_result, "content", None) or []
+                    title_text = " ".join(
+                        getattr(b, "text", "") or ""
+                        for b in title_blocks
+                        if getattr(b, "type", None) == "text"
+                    )
+                    if "mermaid-error" in title_text:
+                        _LOGGER.warning(
+                            "Render server-side: mermaid.run() fallo en el "
+                            "navegador (title=mermaid-error), descartando "
+                            "screenshot. Mermaid: %.200s",
+                            mermaid_code,
+                        )
+                        return None
+                except Exception as e:
+                    _LOGGER.warning(
+                        "Render server-side: no se pudo verificar el title "
+                        "post-render, sigo igual: %s", e
+                    )
+
                 result = await asyncio.wait_for(
                     session.call_tool(
                         "puppeteer_screenshot", {"name": "diagram", "encoded": False}
@@ -525,8 +565,8 @@ async def run_agent(
                 fetch_timeout=fetch_timeout,
             )
             if attachment is not None:
-                token = (
-                    sign_attachment_token(attachment["id"], user_id)
+                url = (
+                    build_attachment_url(attachment["id"], user_id)
                     if user_id is not None
                     else ""
                 )
@@ -534,7 +574,7 @@ async def run_agent(
                     "event": "attachment",
                     "data": {
                         **attachment,
-                        "url": f"/api/chat/attachments/{attachment['id']}?token={token}",
+                        "url": url,
                     },
                 }
             else:

@@ -88,6 +88,22 @@ def sign_attachment_token(
     return serializer.dumps(payload)
 
 
+def build_attachment_url(attachment_id: str, user_id: int) -> str:
+    """Return a FRESHLY-signed ``/api/chat/attachments/{id}?token=...`` URL.
+
+    Bug fix (HU6): the token has a 5 min TTL (see module docstring). Every
+    place that hands an attachment URL to the frontend — the live SSE
+    ``event: attachment`` emit, ``GET /api/chat/history`` (page reload) and
+    ``GET /api/diagrams/history`` (version panel) — must call this at
+    RESPONSE time instead of re-serving whatever ``url`` was persisted on
+    the message row. A URL signed once at generation time and then stored
+    verbatim goes stale after 5 minutes and the ``<img>`` 401s forever,
+    which is what made diagrams "disappear" from the chat.
+    """
+    token = sign_attachment_token(attachment_id, user_id)
+    return f"/api/chat/attachments/{attachment_id}?token={token}"
+
+
 def verify_attachment_token(
     token: str,
     attachment_id: str,
@@ -149,6 +165,7 @@ def _ensure_uploads_dir() -> str:
 __all__ = [
     "DEFAULT_TTL_SECONDS",
     "sign_attachment_token",
+    "build_attachment_url",
     "verify_attachment_token",
     "reset_serializer_for_tests",
     "_ensure_uploads_dir",

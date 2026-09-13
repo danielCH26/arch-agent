@@ -107,6 +107,20 @@ export const chatStore = create<ChatState>((set) => ({
         ),
       }))
     },
+      // HU6 bug fix: antes esto no existia y una falla de Mermaid
+      // (validacion o render) dejaba al usuario sin diagrama y sin
+      // ninguna pista de que paso. Lo agregamos como una nota al final
+      // del mensaje del asistente, en la misma burbuja.
+      onDiagramIssue: (message: string) => {
+        fullResponse += `\n\n⚠️ ${message}`
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: fullResponse }
+              : msg
+          ),
+        }))
+      },
       onDone: () => {
         set({ isStreaming: false })
       },

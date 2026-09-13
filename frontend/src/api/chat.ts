@@ -49,6 +49,12 @@ interface StreamCallbacks {
   // token y antes del done cuando el agente renderizo un diagrama
   // Mermaid. El callback recibe el payload publico (sin storage_path).
   onAttachment?: (attachment: Attachment) => void
+  // HU6 bug fix: el backend YA emitia ``diagram_validated`` (con
+  // valid=false) y ``degraded`` cuando el Mermaid generado era invalido
+  // o fallaba al renderizarse, pero el frontend nunca los escuchaba —
+  // el usuario se quedaba sin diagrama y sin ninguna explicacion de por
+  // que. Este callback cubre ambos casos con un mensaje legible.
+  onDiagramIssue?: (message: string) => void
 }
 
 function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
@@ -94,6 +100,32 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     return false
   }
 
+  if (eventName === 'diagram_validated' && rawData && callbacks.onDiagramIssue) {
+    try {
+      const data = JSON.parse(rawData) as { valid?: boolean; error?: string | null }
+      if (data.valid === false) {
+        callbacks.onDiagramIssue(
+          `No pude generar el diagrama: ${data.error || 'sintaxis Mermaid inválida'}.`
+        )
+      }
+    } catch {
+      // Payload inesperado — no bloqueamos el resto del stream por esto.
+    }
+    return false
+  }
+
+  if (eventName === 'degraded' && rawData && callbacks.onDiagramIssue) {
+    try {
+      const data = JSON.parse(rawData) as { message?: string }
+      callbacks.onDiagramIssue(
+        data.message || 'No se pudo renderizar el diagrama a imagen.'
+      )
+    } catch {
+      callbacks.onDiagramIssue('No se pudo renderizar el diagrama a imagen.')
+    }
+    return false
+  }
+
   if (eventName === 'done') {
     callbacks.onDone()
     return true
@@ -116,7 +148,7 @@ export function createChatStream(
   projectId: number | null,
   callbacks: StreamCallbacks
 ): () => void {
-  const { onToken, onDone, onError, onSources, onAttachment } = callbacks
+  const { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -165,13 +197,13 @@ export function createChatStream(
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources, onAttachment })
+          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue })
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources, onAttachment })
+        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue })
         if (shouldStop) return
       }
 

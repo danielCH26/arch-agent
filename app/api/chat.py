@@ -14,6 +14,7 @@ from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
+from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
 from app.models.project import Project
@@ -436,6 +437,23 @@ def chat_history(
                     "role": row.role,
                     "content": row.content,
                     "citations": row.citations or [],
+                    # Bug fix (HU6): esta llave nunca se devolvia, asi que un
+                    # reload de la pagina perdia los diagramas del chat por
+                    # completo (el frontend ya los esperaba, ver
+                    # frontend/src/api/chat.ts::_normaliseHistoryAttachments).
+                    # Ademas se re-firma el token de cada attachment aqui
+                    # (no se reusa el ``url`` guardado, que puede tener mas
+                    # de 5 min y estar vencido) via build_attachment_url.
+                    "attachments": [
+                        {
+                            "kind": att.get("kind", "screenshot"),
+                            "mime": att.get("mime", "image/png"),
+                            "filename": att.get("filename"),
+                            "url": build_attachment_url(att["id"], user_id),
+                        }
+                        for att in (row.attachments or [])
+                        if isinstance(att, dict) and att.get("id")
+                    ],
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
                 for row in rows

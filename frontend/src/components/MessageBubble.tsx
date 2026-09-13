@@ -1,4 +1,5 @@
 import type React from 'react'
+import { useState } from 'react'
 import type { Message } from '../stores/chatStore'
 import { submitDiagramDecision } from '../api/diagrams'
 
@@ -341,7 +342,13 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
-        {!isUser && renderAttachments(message.attachments, projectId, onSendMessage)}
+        {!isUser && (
+          <DiagramAttachments
+            attachments={message.attachments}
+            projectId={projectId}
+            onSendMessage={onSendMessage}
+          />
+        )}
         {!isUser && renderSources(message.sources)}
       </div>
     </div>
@@ -354,22 +361,50 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
 // design §8 Q-NEW-DOWNLOAD-PNG). The URL already carries the signed
 // token, so no Authorization header is needed.
 //
-// HU6 (F09): los botones de Aprobar/Solicitar cambios ademas de mandar el
-// mensaje de texto al chat (UX original), registran la decision en la
-// tabla `approvals` via `submitDiagramDecision` (mismo mecanismo que
-// app/api/elicitation.py usa para la fase de requerimientos, fase="diagram").
-function renderAttachments(
-  attachments: Message['attachments'],
-  projectId?: number,
-  onSendMessage?: (text: string) => void,
-) {
+// HU6 (F09): mismo patron que el companero implemento para la fase de
+// requerimientos en ChatWindow.tsx (ver handleDecision + showModify de
+// HU5) pero a nivel de attachment individual:
+//   - "Aprobar" no necesita texto libre -> se registra la decision y se
+//     manda un mensaje de confirmacion fijo al chat (igual que antes).
+//   - "Solicitar cambios" YA NO manda un mensaje a medio escribir apenas
+//     se hace click. Abre un textarea inline (como el de HU5) para que
+//     la persona escriba QUE hay que cambiar; solo al confirmar se
+//     registra la decision (con ese feedback) y se envia ese texto real
+//     al chat para que el agente regenere el diagrama.
+function DiagramAttachments({
+  attachments,
+  projectId,
+  onSendMessage,
+}: {
+  attachments: Message['attachments']
+  projectId?: number
+  onSendMessage?: (text: string) => void
+}) {
+  const [openFeedbackFor, setOpenFeedbackFor] = useState<number | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [decisionError, setDecisionError] = useState('')
+  const [decidedFor, setDecidedFor] = useState<Record<number, string>>({})
+
   if (!attachments || attachments.length === 0) return null
 
-  const handleDecision = (decision: 'approve' | 'modify' | 'reject', text: string) => {
-    if (projectId) {
-      void submitDiagramDecision(projectId, decision)
+  const handleApprove = (index: number) => {
+    if (projectId) void submitDiagramDecision(projectId, 'approve')
+    setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama aprobado.' }))
+    onSendMessage?.('Apruebo el diagrama, continuemos.')
+  }
+
+  const handleSendAdjustment = (index: number) => {
+    const trimmed = feedback.trim()
+    if (!trimmed) {
+      setDecisionError('Describe el cambio que necesitas antes de enviarlo.')
+      return
     }
-    onSendMessage?.(text)
+    if (projectId) void submitDiagramDecision(projectId, 'modify', trimmed)
+    setDecidedFor((prev) => ({ ...prev, [index]: 'Se registró tu solicitud de cambios.' }))
+    onSendMessage?.(trimmed)
+    setOpenFeedbackFor(null)
+    setFeedback('')
+    setDecisionError('')
   }
 
   return (
@@ -382,23 +417,68 @@ function renderAttachments(
             className="max-w-md rounded-lg my-2"
             loading="lazy"
           />
-          {onSendMessage && (
-            <div className="flex gap-2 mt-1">
-              <button
-                type="button"
-                onClick={() => handleDecision('approve', 'Apruebo el diagrama, continuemos.')}
-                className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
-              >
-                ✅ Aprobar
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDecision('modify', 'Necesito modificar el diagrama: ')}
-                className="text-xs px-2 py-1 rounded bg-gray-300 text-gray-800 hover:bg-gray-400"
-              >
-                ✏️ Solicitar cambios
-              </button>
-            </div>
+          {onSendMessage && !decidedFor[index] && (
+            <>
+              <div className="flex gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => handleApprove(index)}
+                  className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                >
+                  ✅ Aprobar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenFeedbackFor(index)
+                    setFeedback('')
+                    setDecisionError('')
+                  }}
+                  className="text-xs px-2 py-1 rounded bg-gray-300 text-gray-800 hover:bg-gray-400"
+                >
+                  ✏️ Solicitar cambios
+                </button>
+              </div>
+              {openFeedbackFor === index && (
+                <div className="mt-2 space-y-2">
+                  <label className="block text-xs font-medium text-gray-700" htmlFor={`diagram-feedback-${index}`}>
+                    ¿Qué debe ajustarse en el diagrama?
+                  </label>
+                  <textarea
+                    id={`diagram-feedback-${index}`}
+                    value={feedback}
+                    onChange={(event) => setFeedback(event.target.value)}
+                    rows={3}
+                    className="w-full rounded border border-gray-300 p-2 text-sm text-gray-900"
+                    placeholder="Describe los cambios que necesitas en el diagrama..."
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSendAdjustment(index)}
+                      className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
+                    >
+                      Enviar ajuste
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenFeedbackFor(null)
+                        setFeedback('')
+                        setDecisionError('')
+                      }}
+                      className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                  {decisionError && <p className="text-xs text-red-700">{decisionError}</p>}
+                </div>
+              )}
+            </>
+          )}
+          {decidedFor[index] && (
+            <p className="mt-1 text-xs text-green-700">{decidedFor[index]}</p>
           )}
         </div>
       ))}

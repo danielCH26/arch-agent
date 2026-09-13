@@ -10,6 +10,7 @@ from typing import Any,Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.dependencies import get_current_user
+from app.core.attachment_tokens import build_attachment_url
 from app.core.database import SessionLocal
 from app.models.message import Message
 from app.models.project import Project
@@ -54,11 +55,16 @@ def diagram_history(
         versions: list[dict[str, Any]] = []
         for row in rows:
             for att in row.attachments or []:
-                if att.get("kind") == "screenshot":
+                if att.get("kind") == "screenshot" and att.get("id"):
                     versions.append(
                         {
                             "message_id": row.id,
-                            "url": att["url"],
+                            # Bug fix (HU6): no reusar att["url"] tal cual —
+                            # es el token firmado en el momento en que se
+                            # genero el diagrama (TTL 5 min) y para cuando
+                            # alguien abre el historial de versiones ya esta
+                            # vencido casi siempre. Se re-firma aqui.
+                            "url": build_attachment_url(att["id"], user_id),
                             "filename": att.get("filename"),
                             "created_at": row.created_at.isoformat(),
                         }
