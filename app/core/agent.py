@@ -192,13 +192,8 @@ async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
 
 def _build_mermaid_preview_html(mermaid_code: str) -> str:
     """Pagina HTML autocontenida que renderiza un bloque Mermaid via
-    mermaid.js (CDN).
-
-    DIAGNOSTICO: agrega un <div id="status"> visible en pantalla que
-    muestra "Cargando..." / "OK" / "ERROR: <mensaje>". Como el screenshot
-    es una foto de lo que se VE, y document.title no aparece en la
-    imagen, sin esto un fallo de mermaid.run() era invisible -- la
-    pagina quedaba en blanco sin ninguna pista de por que.
+    mermaid.js (CDN), centrada y agrandada para que se vea bien en el
+    screenshot de 800x600 (o el tamaño que se le pida a la tool).
     """
     import html as _html
 
@@ -207,10 +202,12 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js'></script>"
         "<style>"
-        "html,body{margin:0;padding:0;width:800px;height:600px;background:#fff;"
-        "display:flex;align-items:center;justify-content:center;font-family:sans-serif;}"
-        "#status{position:absolute;top:8px;left:8px;font-size:14px;color:#a00;white-space:pre-wrap;}"
-        ".mermaid svg{max-width:760px;max-height:560px;width:auto;height:auto;}"
+        "body{margin:0;padding:24px;background:#fff;font-family:sans-serif;"
+        "display:flex;align-items:center;justify-content:center;min-height:552px;"
+        "box-sizing:border-box;}"
+        "#status{position:absolute;top:8px;left:8px;font-size:14px;color:#a00;"
+        "white-space:pre-wrap;}"
+        ".mermaid{transform:scale(1.4);}"
         "</style>"
         "</head><body>"
         "<div id='status'>Cargando diagrama...</div>"
