@@ -131,7 +131,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ===========================================================================
+   # ===========================================================================
   # LANGFUSE — Web UI
   # ===========================================================================
   langfuse-web:
@@ -186,6 +186,55 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================================================
+  # LANGFUSE — Worker (procesa la cola de ingestion: Redis/S3 -> ClickHouse)
+  # Sin este servicio, langfuse-web recibe y acepta las trazas pero nunca
+  # las persiste de forma consultable — la UI queda en "Waiting for first
+  # trace" para siempre, sin ningun error visible.
+  # ===========================================================================
+  langfuse-worker:
+    container_name: langfuse-worker
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://${LANGFUSE_DB_USER}:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/${LANGFUSE_DB_NAME}
+      SALT: ${LANGFUSE_SALT}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD}@redis:6379
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3030/api/health"]
       interval: 10s
       timeout: 5s
       retries: 10

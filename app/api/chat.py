@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler
 from app.core.langfuse_tracer import get_langfuse_handler
+from langfuse import get_client
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.rag import similarity_search
@@ -191,6 +192,9 @@ async def chat(
             yield f"event: done\ndata: null\n\n"
         except Exception as e:
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+        finally:
+             if langfuse_handler is not None:
+                 get_client().flush()
 
     return StreamingResponse(
         event_generator(),
