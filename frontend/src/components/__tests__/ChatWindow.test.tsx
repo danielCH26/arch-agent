@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatWindow } from '../ChatWindow'
 import { chatStore } from '../../stores/chatStore'
 import { projectsStore } from '../../stores/projectsStore'
 import { proposalsStore } from '../../stores/proposalsStore'
+import * as proposalsApi from '../../api/proposals'
 
 function resetStores() {
   chatStore.setState({
@@ -27,7 +28,10 @@ function resetStores() {
 
 describe('ChatWindow — SCN-8 ProposalCard mount condition', () => {
   beforeEach(() => resetStores())
-  afterEach(() => resetStores())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    resetStores()
+  })
 
   it('does NOT render ProposalCard when current_phase is not "propuesta" and no proposal is in flight', () => {
     projectsStore.setState({
@@ -107,5 +111,39 @@ describe('ChatWindow — SCN-8 ProposalCard mount condition', () => {
     expect(screen.getByTestId('proposal-card')).toBeInTheDocument()
     expect(screen.getByText('Genera una propuesta')).toBeInTheDocument()
     expect(screen.getByText('OK')).toBeInTheDocument()
+  })
+
+  it('wires projectId into ProposalCard so the "Generar propuesta" trigger is reachable from the propuesta phase', async () => {
+    // Review fix (#68): ChatWindow mounted the card but never handed it the
+    // projectId, so nothing in the UI could dispatch generate(). This pins
+    // the end-to-end wiring: phase=propuesta -> card -> trigger -> store.
+    const spy = vi
+      .spyOn(proposalsApi, 'createProposalStream')
+      .mockImplementation(() => undefined)
+    projectsStore.setState({
+      currentProject: {
+        id: 42,
+        name: 'demo',
+        description: null,
+        current_phase: 'propuesta',
+        phase_ready: false,
+        created_at: '2026-09-05T00:00:00Z',
+      },
+    })
+
+    render(<ChatWindow projectId={42} />)
+
+    const trigger = screen.getByTestId('proposal-generate')
+    expect(trigger).toBeInTheDocument()
+
+    fireEvent.click(trigger)
+
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith(
+        'generate',
+        { project_id: 42 },
+        expect.anything(),
+      )
+    })
   })
 })

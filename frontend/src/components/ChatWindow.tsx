@@ -61,7 +61,7 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
           <MessageBubble key={message.id} message={message} />
         ))}
 
-        {showProposalCard && <ProposalCard forceMount />}
+        {showProposalCard && <ProposalCard forceMount projectId={projectId} />}
 
         {isStreaming && (
           <div className="flex justify-start">

@@ -10,6 +10,13 @@ interface ProposalCardProps {
    * while a proposal is in flight (SCN-8 / REQ-7).
    */
   forceMount?: boolean
+  /**
+   * Project id used by the explicit "Generar propuesta" trigger
+   * (`proposalsStore.generate`). Per proposal.md decision #5 the trigger is
+   * an explicit user action (button), NOT automatic on phase entry. When
+   * omitted the button is hidden (backwards-compatible for embedders).
+   */
+  projectId?: number
 }
 
 /**
@@ -21,10 +28,12 @@ interface ProposalCardProps {
  * so the store stays the single source of truth and the card always reflects
  * the latest streamed chunk.
  */
-export function ProposalCard({ forceMount }: ProposalCardProps) {
+export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
   const currentProposal = proposalsStore((s) => s.currentProposal)
   const inFlight = proposalsStore((s) => s.inFlight)
   const iterations = proposalsStore((s) => s.iterations)
+  const error = proposalsStore((s) => s.error)
+  const generate = proposalsStore((s) => s.generate)
 
   // Empty state when nothing has streamed yet (parent decided to mount us).
   if (!currentProposal && iterations.length === 0 && !forceMount) {
@@ -65,6 +74,28 @@ export function ProposalCard({ forceMount }: ProposalCardProps) {
             ? <p className="italic text-gray-400">Generando propuesta...</p>
             : <p className="italic text-gray-400">Aún no hay propuesta.</p>}
       </div>
+
+      {/* Explicit generation trigger (proposal.md decision #5): when the
+          stream is idle and nothing has been produced yet, offer the
+          "Generar propuesta" action. It also serves as the retry affordance
+          after a failed generation (store error surfaced inline). */}
+      {projectId != null && inFlight === 'idle' && !currentProposal?.content_markdown && (
+        <div className="mt-3 flex flex-col gap-2">
+          {error && (
+            <p className="text-xs text-red-600" data-testid="proposal-generate-error">
+              {error}
+            </p>
+          )}
+          <button
+            type="button"
+            data-testid="proposal-generate"
+            onClick={() => void generate(projectId)}
+            className="self-start rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            Generar propuesta
+          </button>
+        </div>
+      )}
 
       {currentProposal?.citations && (
         <CitationList citations={currentProposal.citations} />
