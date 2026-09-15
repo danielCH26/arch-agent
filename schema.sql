@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS architect_patterns (
     description TEXT,
     use_cases TEXT,
     tradeoffs JSONB,
+    when_not_to_use TEXT,
+    decision_signals JSONB,
     embedding vector(384),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -96,6 +98,22 @@ CREATE INDEX IF NOT EXISTS idx_architect_patterns_embedding
 CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
     ON architect_patterns (category);
 
+CREATE TABLE IF NOT EXISTS architect_pattern_chunks (
+    id SERIAL PRIMARY KEY,
+    pattern_id INTEGER NOT NULL REFERENCES architect_patterns(id) ON DELETE CASCADE,
+    chunk_type VARCHAR(50) NOT NULL,
+    chunk_text TEXT NOT NULL,
+    embedding vector(384),
+    chunk_metadata JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_chunks_embedding
+    ON architect_pattern_chunks USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_chunks_pattern_id
+    ON architect_pattern_chunks (pattern_id);
 -- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
 -- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
 -- migration 0007, mismo criterio que architect_patterns arriba (C2).
@@ -135,3 +153,7 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- architect_pattern_chunks.chunk_metadata (migration 0009)
+ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;
+

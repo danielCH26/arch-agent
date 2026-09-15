@@ -18,6 +18,7 @@ email-validator
 python-dotenv
 jinja2
 pyjwt
+pyyaml>=6.0
 # F11 — Context7 MCP integration (https://github.com/danielCH26/arch-agent/issues/13)
 # Pinned to the exact versions locked at design.md §2.
 langchain-mcp-adapters==0.3.2
