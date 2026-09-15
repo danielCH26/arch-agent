@@ -77,8 +77,8 @@ export function DocumentsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">
-        Documentos {project && `- ${project.name}`}
+      <h1 className="text-3xl text-gray-900 mb-6">
+        Subida de archivos {project && <span className="text-gray-500">— {project.name}</span>}
       </h1>
 
       {error && (
@@ -87,17 +87,14 @@ export function DocumentsPage() {
         </div>
       )}
 
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-lg font-medium text-gray-900 mb-3">Subir documento</h2>
-          <DocumentUploader
-            projectId={projectId}
-            onUploadComplete={fetchDocuments}
-          />
-        </div>
+      <div className="rounded-[10px] border border-gray-200 bg-[#fafafa] p-6 space-y-6">
+        <DocumentUploader
+          projectId={projectId}
+          onUploadComplete={fetchDocuments}
+        />
 
         <div>
-          <h2 className="text-lg font-medium text-gray-900 mb-3">Documentos existentes</h2>
+          <h2 className="text-xl text-gray-900 mb-3">Documentos subidos</h2>
           <DocumentList documents={documents} onRefresh={fetchDocuments} />
         </div>
       </div>

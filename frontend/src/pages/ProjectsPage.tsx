@@ -14,7 +14,10 @@ export function ProjectsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Proyectos</h1>
+        <div>
+          <h1 className="text-3xl font-semibold text-gray-700">Mis proyectos</h1>
+          <p className="mt-1 text-gray-600">Gestiona y revisa tus diseños de arquitectura</p>
+        </div>
         <button
           onClick={() => setShowCreateDialog(true)}
           className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"

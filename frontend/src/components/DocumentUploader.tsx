@@ -87,13 +87,18 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
     setError('')
   }
 
+  const handleUploadMany = async (files: FileList) => {
+    for (const file of Array.from(files)) {
+      await handleUpload(file)
+    }
+  }
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
 
-    const file = e.dataTransfer.files[0]
-    if (file) {
-      handleUpload(file)
+    if (e.dataTransfer.files.length > 0) {
+      handleUploadMany(e.dataTransfer.files)
     }
   }
 
@@ -108,11 +113,10 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      handleUpload(file)
+    if (e.target.files && e.target.files.length > 0) {
+      handleUploadMany(e.target.files)
     }
-    // Reset input so same file can be selected again
+    // Reset input so the same file(s) can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -126,7 +130,7 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
         onDragLeave={handleDragLeave}
         onClick={() => fileInputRef.current?.click()}
         className={`
-          border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors
+          rounded-[10px] border-2 border-dashed p-10 text-center cursor-pointer transition-colors bg-[#fafafa]
           ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}
           ${uploading ? 'pointer-events-none opacity-50' : ''}
         `}
@@ -134,6 +138,7 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           className="hidden"
           accept={ALLOWED_EXTENSIONS.join(',')}
           onChange={handleFileSelect}
@@ -153,14 +158,14 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
           </div>
         ) : (
           <div>
-            <svg className="mx-auto h-10 w-10 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="mx-auto h-10 w-10 text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
-            <p className="text-sm text-gray-600">
-              Arrastra un archivo aquí o haz clic para seleccionar
+            <p className="text-xl text-gray-900">
+              Arrastra y suelta tus archivos o haz clic para subirlos
             </p>
-            <p className="mt-1 text-xs text-gray-400">
-              Archivos permitidos: PDF, Markdown (máx. {MAX_SIZE_MB} MB)
+            <p className="mt-2 text-sm text-gray-500">
+              Límite: {MAX_SIZE_MB} MB por archivo. Formatos soportados: {ALLOWED_EXTENSIONS.join(', ')}
             </p>
           </div>
         )}

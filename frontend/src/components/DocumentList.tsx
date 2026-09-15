@@ -8,7 +8,25 @@ interface DocumentListProps {
 
 export function DocumentList({ documents, onRefresh }: DocumentListProps) {
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
   const [error, setError] = useState('')
+
+  const toggleSelected = (docId: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(docId)) {
+        next.delete(docId)
+      } else {
+        next.add(docId)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => (prev.size === documents.length ? new Set() : new Set(documents.map((d) => d.id))))
+  }
 
   const handleDelete = async (docId: number) => {
     setDeletingId(docId)
@@ -16,11 +34,30 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
 
     try {
       await deleteDocument(docId)
+      setSelected((prev) => {
+        const next = new Set(prev)
+        next.delete(docId)
+        return next
+      })
       onRefresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al eliminar documento')
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    setBulkDeleting(true)
+    setError('')
+    try {
+      await Promise.all(Array.from(selected).map((id) => deleteDocument(id)))
+      setSelected(new Set())
+      onRefresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al eliminar documentos')
+    } finally {
+      setBulkDeleting(false)
     }
   }
 
@@ -33,13 +70,13 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
   const getFileIcon = (fileType: string) => {
     if (fileType === 'pdf') {
       return (
-        <svg className="w-8 h-8 text-red-500" fill="currentColor" viewBox="0 0 24 24">
+        <svg className="w-5 h-5 shrink-0 text-red-500" fill="currentColor" viewBox="0 0 24 24">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM8.5 13c-.55 0-1 .45-1 1v4c0 .55.45 1 1 1s1-.45 1-1v-4c0-.55-.45-1-1-1zm4 0c-.55 0-1 .45-1 1v4c0 .55.45 1 1 1s1-.45 1-1v-4c0-.55-.45-1-1-1zm3 3.5c-.28 0-.5.22-.5.5s.22.5.5.5.5-.22.5-.5-.22-.5-.5-.5z"/>
         </svg>
       )
     }
     return (
-      <svg className="w-8 h-8 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
+      <svg className="w-5 h-5 shrink-0 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM8 12h8v2H8v-2zm0 3h8v2H8v-2z"/>
       </svg>
     )
@@ -64,58 +101,92 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
         </div>
       )}
 
-      <div className="space-y-2">
-        {documents.map((doc) => (
-          <div
-            key={doc.id}
-            className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:shadow-sm transition-shadow"
-          >
-            {getFileIcon(doc.file_type)}
-
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-gray-900 truncate">
-                  {doc.filename}
-                </span>
-                {doc.version > 1 && (
-                  <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">
-                    v{doc.version}
-                  </span>
-                )}
-                <span className={`px-1.5 py-0.5 text-xs rounded uppercase ${
-                  doc.file_type === 'pdf' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
-                }`}>
-                  {doc.file_type}
-                </span>
-                {!doc.processed && (
-                  <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-xs rounded inline-flex items-center gap-1">
-                    <span className="animate-spin inline-block h-3 w-3 border-b border-amber-600 rounded-full"></span>
-                    Procesando...
-                  </span>
-                )}
-              </div>
-              <div className="text-xs text-gray-500 mt-0.5">
-                {formatSize(doc.file_size_bytes)} • {doc.chunk_count} chunks
-              </div>
-            </div>
-
-            <button
-              onClick={() => handleDelete(doc.id)}
-              disabled={deletingId === doc.id}
-              className="p-2 text-gray-400 hover:text-red-600 transition-colors disabled:opacity-50"
-              title="Eliminar documento"
-            >
-              {deletingId === doc.id ? (
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-red-600"></div>
-              ) : (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              )}
-            </button>
-          </div>
-        ))}
+      <div className="overflow-x-auto rounded-[10px] border border-gray-200">
+        <table className="w-full text-left">
+          <thead>
+            <tr className="border-b border-gray-200 bg-gray-50 text-sm text-gray-700">
+              <th className="w-10 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={selected.size === documents.length && documents.length > 0}
+                  onChange={toggleSelectAll}
+                  aria-label="Seleccionar todos"
+                />
+              </th>
+              <th className="px-3 py-2 font-medium">Nombre del documento</th>
+              <th className="px-3 py-2 font-medium">Tamaño</th>
+              <th className="px-3 py-2 font-medium">Estado</th>
+              <th className="w-10 px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {documents.map((doc) => (
+              <tr key={doc.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                <td className="px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(doc.id)}
+                    onChange={() => toggleSelected(doc.id)}
+                    aria-label={`Seleccionar ${doc.filename}`}
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {getFileIcon(doc.file_type)}
+                    <span className="font-medium text-gray-900 truncate">{doc.filename}</span>
+                    {doc.version > 1 && (
+                      <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-xs rounded shrink-0">
+                        v{doc.version}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-sm text-gray-700">{formatSize(doc.file_size_bytes)}</td>
+                <td className="px-3 py-2 text-sm">
+                  {doc.processed ? (
+                    <span className="inline-flex items-center gap-1 text-green-700">
+                      <span aria-hidden="true">✅</span> Subido
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-amber-700">
+                      <span className="animate-spin inline-block h-3 w-3 border-b border-amber-600 rounded-full"></span>
+                      Procesando...
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  <button
+                    onClick={() => handleDelete(doc.id)}
+                    disabled={deletingId === doc.id}
+                    className="p-1 text-gray-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                    title="Eliminar documento"
+                  >
+                    {deletingId === doc.id ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    )}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
+
+      {selected.size > 0 && (
+        <div className="mt-3 flex justify-end">
+          <button
+            onClick={handleDeleteSelected}
+            disabled={bulkDeleting}
+            className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {bulkDeleting ? 'Eliminando...' : `Eliminar seleccionados (${selected.size})`}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -22,23 +22,23 @@ describe('LoginPage', () => {
   it('renders login form', () => {
     renderWithRouter(<LoginPage />)
 
-    expect(screen.getByRole('heading', { name: /iniciar sesión/i })).toBeInTheDocument()
-    expect(screen.getByLabelText(/username/i)).toBeInTheDocument()
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /inicia sesión en arq ?agent/i })).toBeInTheDocument()
+    expect(screen.getByLabelText('Nombre de usuario')).toBeInTheDocument()
+    expect(screen.getByLabelText('Contraseña')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /iniciar sesión/i })).toBeInTheDocument()
   })
 
   it('has link to register page', () => {
     renderWithRouter(<LoginPage />)
 
-    expect(screen.getByRole('link', { name: /crear una nueva cuenta/i })).toHaveAttribute('href', '/register')
+    expect(screen.getByRole('link', { name: /regístrate/i })).toHaveAttribute('href', '/register')
   })
 
   it('has form with required fields', () => {
     renderWithRouter(<LoginPage />)
 
-    const usernameInput = screen.getByLabelText(/username/i)
-    const passwordInput = screen.getByLabelText(/password/i)
+    const usernameInput = screen.getByLabelText('Nombre de usuario')
+    const passwordInput = screen.getByLabelText('Contraseña')
 
     expect(usernameInput).toHaveAttribute('required')
     expect(passwordInput).toHaveAttribute('required')
