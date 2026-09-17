@@ -67,7 +67,18 @@ DIAGRAM_HINT: str = (
     "El sistema se encarga de renderizarlo a imagen automaticamente "
     "despues de que termines de escribir tu respuesta -- vos NUNCA "
     "escribas una etiqueta markdown de imagen (``![...](...)``) ni "
-    "ningun data-URI base64; alcanza con el bloque ```mermaid```."
+    "ningun data-URI base64; alcanza con el bloque ```mermaid```. "
+    "Para maximizar que renderice bien: usa IDs simples sin espacios "
+    "(por ejemplo API_Gateway), pon textos complejos entre comillas "
+    'en los nodos (A["Cliente Web"]), evita caracteres raros dentro de '
+    "labels, no uses HTML, y no envuelvas el diagrama en un bloque de "
+    "codigo sin el lenguaje mermaid. Si el usuario pide modificar un "
+    "diagrama anterior y recibis el Mermaid base, tratá ese bloque como "
+    "fuente de verdad: conserva nodos, conexiones, subgraphs, estilos y "
+    "capas existentes salvo que el usuario pida quitarlos explicitamente; "
+    "aplica solo el cambio pedido y devuelve el diagrama completo. En "
+    "ese caso responde unicamente con el bloque ```mermaid``` actualizado, "
+    "sin tablas, explicaciones, leyendas ni proximos pasos fuera del bloque."
 )
 
 _TOOL_RESULT_MAX_CHARS: int = 4000
@@ -196,8 +207,8 @@ async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
 
 def _build_mermaid_preview_html(mermaid_code: str) -> str:
     """Pagina HTML autocontenida que renderiza un bloque Mermaid via
-    mermaid.js (CDN), centrada y agrandada para que se vea bien en el
-    screenshot de 800x600 (o el tamaño que se le pida a la tool).
+    mermaid.js (CDN), agrandando el SVG resultante antes del screenshot
+    para que los textos sean legibles en la imagen final.
     """
     import html as _html
 
@@ -206,12 +217,12 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js'></script>"
         "<style>"
-        "body{margin:0;padding:24px;background:#fff;font-family:sans-serif;"
-        "display:flex;align-items:center;justify-content:center;min-height:552px;"
-        "box-sizing:border-box;}"
+        "html,body{margin:0;padding:0;background:#fff;font-family:sans-serif;}"
+        "body{display:inline-block;box-sizing:border-box;}"
         "#status{position:absolute;top:8px;left:8px;font-size:14px;color:#a00;"
         "white-space:pre-wrap;}"
-        ".mermaid{transform:scale(1.4);}"
+        ".mermaid{display:inline-block;padding:24px;background:#fff;}"
+        ".mermaid svg{display:block;max-width:none!important;height:auto!important;}"
         "</style>"
         "</head><body>"
         "<div id='status'>Cargando diagrama...</div>"
@@ -224,6 +235,20 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
         "  mermaid.initialize({startOnLoad:false});"
         "  mermaid.run({querySelector:'.mermaid'})"
         "    .then(function(){"
+        "      var svg = document.querySelector('.mermaid svg');"
+        "      if (svg) {"
+        "        var box = svg.getBBox();"
+        "        var scale = 3;"
+        "        var width = Math.ceil((box.width || svg.clientWidth || 800) * scale);"
+        "        var height = Math.ceil((box.height || svg.clientHeight || 600) * scale);"
+        "        if (!svg.getAttribute('viewBox')) {"
+        "          svg.setAttribute('viewBox', [box.x || 0, box.y || 0, box.width || width, box.height || height].join(' '));"
+        "        }"
+        "        svg.setAttribute('width', String(width));"
+        "        svg.setAttribute('height', String(height));"
+        "        svg.style.width = width + 'px';"
+        "        svg.style.height = height + 'px';"
+        "      }"
         "      document.getElementById('status').textContent = '';"
         "      document.title = 'mermaid-rendered';"
         "    })"
@@ -362,7 +387,8 @@ async def _render_mermaid_server_side(
 
                 result = await asyncio.wait_for(
                     session.call_tool(
-                        "puppeteer_screenshot", {"name": "diagram", "encoded": False}
+                        "puppeteer_screenshot",
+                        {"name": "diagram", "encoded": False, "selector": ".mermaid svg"},
                     ),
                     timeout=fetch_timeout,
                 )

@@ -17,6 +17,9 @@ type InlineToken =
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
+const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
+const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
+const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
 
 function splitTableRow(row: string) {
   return row
@@ -70,6 +73,48 @@ function renderInline(content: string) {
 
     return <span key={index}>{token.value}</span>
   })
+}
+
+function extractMermaidFromMessage(content: string): string | null {
+  const explicitMatch = content.match(explicitMermaidFencePattern)
+  if (explicitMatch?.[1]?.trim()) {
+    return explicitMatch[1].trim()
+  }
+
+  let match: RegExpExecArray | null
+  anyCodeFencePattern.lastIndex = 0
+  while ((match = anyCodeFencePattern.exec(content)) !== null) {
+    const code = match[1].trim()
+    const firstLine = code.split(/\r?\n/)[0] ?? ''
+    if (mermaidFirstLinePattern.test(firstLine)) {
+      return code
+    }
+  }
+
+  return null
+}
+
+function buildDiagramAdjustmentPrompt(feedback: string, previousMermaid: string | null): string {
+  if (!previousMermaid) return feedback
+
+  return [
+    'Modifica el siguiente diagrama Mermaid usando mi solicitud de cambio.',
+    'Reglas importantes:',
+    '- Responde UNICAMENTE con un bloque ```mermaid``` que contenga el diagrama completo actualizado.',
+    '- No agregues explicaciones, tablas, leyendas, listas, resumen, recomendaciones ni proximos pasos fuera del bloque Mermaid.',
+    '- Conserva todos los nodos, capas, componentes, relaciones, estilos y subgraphs existentes, salvo que mi cambio pida quitarlos explicitamente.',
+    '- No simplifiques ni reescribas el diagrama desde cero.',
+    '- Aplica solo el cambio solicitado.',
+    '- Usa sintaxis Mermaid robusta: IDs sin espacios, labels complejos entre comillas, y evita HTML o caracteres innecesarios en las etiquetas.',
+    '',
+    'Solicitud de cambio:',
+    feedback,
+    '',
+    'Diagrama Mermaid base:',
+    '```mermaid',
+    previousMermaid,
+    '```',
+  ].join('\n')
 }
 
 function parseHtmlTable(tableMarkup: string) {
@@ -346,6 +391,7 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
         {!isUser && (
           <DiagramAttachments
             attachments={message.attachments}
+            assistantContent={message.content}
             projectId={projectId}
             onSendMessage={onSendMessage}
           />
@@ -379,10 +425,12 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
 // attachment actualmente ampliado (null = cerrado).
 function DiagramAttachments({
   attachments,
+  assistantContent,
   projectId,
   onSendMessage,
 }: {
   attachments: Message['attachments']
+  assistantContent: string
   projectId?: number
   onSendMessage?: (text: string) => void
 }) {
@@ -391,6 +439,7 @@ function DiagramAttachments({
   const [decisionError, setDecisionError] = useState('')
   const [decidedFor, setDecidedFor] = useState<Record<number, string>>({})
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
+  const [diagramZoom, setDiagramZoom] = useState(2)
 
   if (!attachments || attachments.length === 0) return null
 
@@ -408,10 +457,15 @@ function DiagramAttachments({
     }
     if (projectId) void submitDiagramDecision(projectId, 'modify', trimmed)
     setDecidedFor((prev) => ({ ...prev, [index]: 'Se registró tu solicitud de cambios.' }))
-    onSendMessage?.(trimmed)
+    onSendMessage?.(buildDiagramAdjustmentPrompt(trimmed, extractMermaidFromMessage(assistantContent)))
     setOpenFeedbackFor(null)
     setFeedback('')
     setDecisionError('')
+  }
+
+  const openExpandedDiagram = (url: string) => {
+    setDiagramZoom(2)
+    setExpandedUrl(url)
   }
 
   return (
@@ -421,9 +475,10 @@ function DiagramAttachments({
           <img
             src={attachment.url}
             alt={attachment.filename}
-            className="max-w-md rounded-lg my-2 cursor-zoom-in"
+            className="my-2 max-h-[70vh] w-full max-w-3xl rounded-lg object-contain cursor-zoom-in"
             loading="lazy"
-            onClick={() => setExpandedUrl(attachment.url)}
+            title="Click para ampliar"
+            onClick={() => openExpandedDiagram(attachment.url)}
           />
           {onSendMessage && !decidedFor[index] && (
             <>
@@ -493,10 +548,70 @@ function DiagramAttachments({
       {expandedUrl &&
         createPortal(
           <div
-            onClick={() => setExpandedUrl(null)}
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/85 cursor-zoom-out"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Visor de diagrama ampliado"
+            className="fixed inset-0 z-[9999] bg-black/90"
           >
-            <img src={expandedUrl} alt="Diagrama ampliado" className="max-w-[95vw] max-h-[95vh]" />
+            <div className="fixed bottom-4 left-1/2 z-10 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded border border-gray-700 bg-white p-2 text-sm shadow-2xl">
+              <span className="px-2 font-semibold text-gray-800">Controles</span>
+              <button
+                type="button"
+                onClick={() => setDiagramZoom((zoom) => Math.max(1, zoom - 0.5))}
+                className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+                aria-label="Alejar diagrama"
+              >
+                -
+              </button>
+              <span
+                className="min-w-14 text-center font-medium text-gray-700"
+                role="status"
+                aria-label={`Zoom actual ${Math.round(diagramZoom * 100)}%`}
+              >
+                {Math.round(diagramZoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setDiagramZoom((zoom) => Math.min(6, zoom + 0.5))}
+                className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+                aria-label="Acercar diagrama"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                onClick={() => setDiagramZoom(2)}
+                className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+              >
+                200%
+              </button>
+              <a
+                href={expandedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+              >
+                Abrir original
+              </a>
+              <button
+                type="button"
+                onClick={() => setExpandedUrl(null)}
+                className="rounded bg-gray-900 px-3 py-1 text-white hover:bg-gray-700"
+                aria-label="Cerrar visor de diagrama"
+              >
+                Cerrar
+              </button>
+            </div>
+            <div className="h-full w-full overflow-auto px-6 pb-24 pt-6">
+              <div className="flex min-h-full min-w-full items-start justify-center">
+                <img
+                  src={expandedUrl}
+                  alt="Diagrama ampliado"
+                  className="h-auto max-w-none rounded bg-white shadow-2xl"
+                  style={{ width: `${diagramZoom * 100}%` }}
+                />
+              </div>
+            </div>
           </div>,
           document.body,
         )}

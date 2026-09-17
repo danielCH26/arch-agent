@@ -51,6 +51,7 @@ temp/
 !openspec/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
+*.freebuff
 
 # Frontend (Vite + React)
 frontend/node_modules/

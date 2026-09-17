@@ -1,8 +1,10 @@
 from __future__ import annotations
 import re
+import unicodedata
 
 _DIAGRAM_TYPES = ("flowchart", "graph", "sequenceDiagram", "classDiagram")
 _MERMAID_PATTERN = re.compile(r"```mermaid\s*\n([\s\S]*?)```")
+_FENCED_CODE_PATTERN = re.compile(r"```[^\n]*\n([\s\S]*?)```")
 # Etiqueta de nodo entre corchetes simples: A[texto]. No captura across
 # saltos de linea ni corchetes anidados (suficiente para el caso que nos
 # interesa detectar).
@@ -11,7 +13,16 @@ _NODE_LABEL_PATTERN = re.compile(r"\[([^\[\]\n]*)\]")
 
 def extract_mermaid_block(text: str) -> str | None:
     match = _MERMAID_PATTERN.search(text)
-    return match.group(1).strip() if match else None
+    if match:
+        return match.group(1).strip()
+
+    for candidate in _FENCED_CODE_PATTERN.finditer(text):
+        code = candidate.group(1).strip()
+        first_line = code.splitlines()[0] if code else ""
+        if any(first_line.startswith(t) for t in _DIAGRAM_TYPES):
+            return code
+
+    return None
 
 
 def _label_has_unquoted_specials(label: str) -> bool:
@@ -52,6 +63,18 @@ def sanitize_mermaid_labels(code: str) -> str:
 
 _CLASS_STATEMENT_PATTERN = re.compile(r"^(\s*class\s+)([^;\n]+?)(\s+\w+\s*;?\s*)$", re.MULTILINE)
 _VALID_ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SUBGRAPH_PATTERN = re.compile(r"^(\s*subgraph\s+)(.+?)\s*$", re.MULTILINE)
+
+
+def _slug_mermaid_id(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", ascii_only).strip("_")
+    if not slug:
+        slug = "Subgraph"
+    if not re.match(r"^[A-Za-z_]", slug):
+        slug = f"_{slug}"
+    return slug
 
 
 def sanitize_class_statements(code: str) -> str:
@@ -81,9 +104,35 @@ def sanitize_class_statements(code: str) -> str:
     return _CLASS_STATEMENT_PATTERN.sub(_fix, code)
 
 
+def sanitize_subgraph_statements(code: str) -> str:
+    """Convierte subgraphs con IDs no compatibles a ID seguro + label.
+
+    Mermaid puede rechazar lineas como ``subgraph Servicios_Síncronos``
+    porque el identificador interno contiene acentos. La forma robusta es
+    ``subgraph Servicios_Sincronos["Servicios_Síncronos"]``: el ID queda
+    ASCII y la etiqueta visible conserva el texto original.
+    """
+    def _fix(match: re.Match) -> str:
+        prefix, raw = match.group(1), match.group(2).strip()
+
+        # Si ya usa una forma avanzada/rotulada, no tocamos la linea.
+        if any(ch in raw for ch in "[]\""):
+            return match.group(0)
+
+        if _VALID_ID_PATTERN.match(raw):
+            return match.group(0)
+
+        safe_id = _slug_mermaid_id(raw)
+        label = raw.replace('"', '\\"')
+        return f'{prefix}{safe_id}["{label}"]'
+
+    return _SUBGRAPH_PATTERN.sub(_fix, code)
+
+
 def sanitize_mermaid(code: str) -> str:
     """Aplica todos los sanitizadores conocidos, en orden."""
     code = sanitize_mermaid_labels(code)
+    code = sanitize_subgraph_statements(code)
     code = sanitize_class_statements(code)
     return code
 
