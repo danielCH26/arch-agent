@@ -7,7 +7,7 @@ import { submitDiagramDecision } from '../api/diagrams'
 interface MessageBubbleProps {
   message: Message
   projectId?: number
-  onSendMessage?: (text: string) => void
+  onSendMessage?: (text: string, displayText?: string) => void
 }
 
 type InlineToken =
@@ -432,7 +432,7 @@ function DiagramAttachments({
   attachments: Message['attachments']
   assistantContent: string
   projectId?: number
-  onSendMessage?: (text: string) => void
+  onSendMessage?: (text: string, displayText?: string) => void
 }) {
   const [openFeedbackFor, setOpenFeedbackFor] = useState<number | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -443,10 +443,40 @@ function DiagramAttachments({
 
   if (!attachments || attachments.length === 0) return null
 
-  const handleApprove = (index: number) => {
-    if (projectId) void submitDiagramDecision(projectId, 'approve')
+  const handleApprove = async (index: number) => {
+    setDecisionError('')
+    if (projectId) {
+      try {
+        await submitDiagramDecision(projectId, 'approve')
+      } catch (err) {
+        // HU6: antes el error del backend se perdia (void + sin catch) y la
+        // burbuja marcaba "Diagrama aprobado." aunque el POST hubiera fallado.
+        setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+        return
+      }
+    }
     setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama aprobado.' }))
     onSendMessage?.('Apruebo el diagrama, continuemos.')
+  }
+
+  // HU6: el boton "Rechazar" existia solo en DiagramHistoryPanel, asi que
+  // desde el chat no habia forma de rechazar un diagrama. Mismo endpoint
+  // (POST /api/diagrams/decision, phase="diagram"), decision="reject".
+  // A diferencia de "Solicitar cambios", no manda ningun mensaje al chat:
+  // rechazar corta el flujo, no pide una nueva iteracion.
+  const handleReject = async (index: number) => {
+    setDecisionError('')
+    if (projectId) {
+      try {
+        await submitDiagramDecision(projectId, 'reject', feedback.trim() || undefined)
+      } catch (err) {
+        setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+        return
+      }
+    }
+    setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama rechazado.' }))
+    setOpenFeedbackFor(null)
+    setFeedback('')
   }
 
   const handleSendAdjustment = (index: number) => {
@@ -457,7 +487,14 @@ function DiagramAttachments({
     }
     if (projectId) void submitDiagramDecision(projectId, 'modify', trimmed)
     setDecidedFor((prev) => ({ ...prev, [index]: 'Se registró tu solicitud de cambios.' }))
-    onSendMessage?.(buildDiagramAdjustmentPrompt(trimmed, extractMermaidFromMessage(assistantContent)))
+    // El prompt completo (con instrucciones + Mermaid anterior) es lo que
+    // necesita el agente para regenerar el diagrama, pero el usuario solo
+    // escribió su feedback -- eso es lo que debe verse en su propia
+    // burbuja, no el prompt entero (ver nota en chatStore.sendMessage).
+    onSendMessage?.(
+      buildDiagramAdjustmentPrompt(trimmed, extractMermaidFromMessage(assistantContent)),
+      trimmed,
+    )
     setOpenFeedbackFor(null)
     setFeedback('')
     setDecisionError('')
@@ -485,10 +522,17 @@ function DiagramAttachments({
               <div className="flex gap-2 mt-1">
                 <button
                   type="button"
-                  onClick={() => handleApprove(index)}
+                  onClick={() => void handleApprove(index)}
                   className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
                 >
                   ✅ Aprobar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleReject(index)}
+                  className="text-xs px-2 py-1 rounded bg-red-600 text-white hover:bg-red-700"
+                >
+                  ❌ Rechazar
                 </button>
                 <button
                   type="button"
@@ -537,6 +581,9 @@ function DiagramAttachments({
                   </div>
                   {decisionError && <p className="text-xs text-red-700">{decisionError}</p>}
                 </div>
+              )}
+              {openFeedbackFor !== index && decisionError && (
+                <p className="mt-1 text-xs text-red-700">{decisionError}</p>
               )}
             </>
           )}

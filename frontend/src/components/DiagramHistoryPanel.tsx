@@ -7,18 +7,38 @@ interface DiagramHistoryPanelProps {
   onClose: () => void
 }
 
+type Decision = 'approve' | 'modify' | 'reject'
+
+const DECISION_OK: Record<Decision, string> = {
+  approve: 'Diagrama aprobado.',
+  modify: 'Se registro tu solicitud de cambios.',
+  reject: 'Diagrama rechazado.',
+}
+
 export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistoryPanelProps) {
   const [versions, setVersions] = useState<DiagramVersion[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [feedback, setFeedback] = useState('')
-  const [sending, setSending] = useState<'approve' | 'modify' | 'reject' | null>(null)
+  const [sending, setSending] = useState<Decision | null>(null)
+  // HU6: antes el panel no mostraba NADA despues de decidir (ni exito ni
+  // error), asi que era imposible saber desde la UI si la decision quedo
+  // registrada. Ahora se muestra el resultado.
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
 
-  async function handleDecision(decision: 'approve' | 'modify' | 'reject') {
+  async function handleDecision(decision: Decision) {
     if (decision === 'modify' && !feedback.trim()) return
     setSending(decision)
+    setResult(null)
     try {
-      await submitDiagramDecision(projectId, decision, feedback || undefined)
+      await submitDiagramDecision(projectId, decision, feedback.trim() || undefined)
       setFeedback('')
+      setResult({ ok: true, text: DECISION_OK[decision] })
+    } catch (err) {
+      setResult({
+        ok: false,
+        text: err instanceof Error ? err.message : 'No se pudo registrar la decision.',
+      })
     } finally {
       setSending(null)
     }
@@ -27,8 +47,14 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
   useEffect(() => {
     if (!open) return
     setLoading(true)
+    setLoadError('')
+    setResult(null)
     fetchDiagramHistory(projectId)
       .then(setVersions)
+      .catch((err) => {
+        setVersions([])
+        setLoadError(err instanceof Error ? err.message : 'No se pudo cargar el historial.')
+      })
       .finally(() => setLoading(false))
   }, [open, projectId])
 
@@ -46,7 +72,11 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
 
         {loading && <p className="text-sm text-gray-500">Cargando…</p>}
 
-        {!loading && versions.length === 0 && (
+        {!loading && loadError && (
+          <p className="text-sm text-red-700 bg-red-50 rounded p-2">{loadError}</p>
+        )}
+
+        {!loading && !loadError && versions.length === 0 && (
           <p className="text-sm text-gray-500">Todavía no hay diagramas generados en este proyecto.</p>
         )}
 
@@ -101,6 +131,14 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
               Rechazar
             </button>
           </div>
+          {result && (
+            <p
+              role="status"
+              className={`text-xs ${result.ok ? 'text-green-700' : 'text-red-700'}`}
+            >
+              {result.text}
+            </p>
+          )}
         </div>
       </div>
     </div>

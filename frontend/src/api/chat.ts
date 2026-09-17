@@ -116,12 +116,29 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
 
   if (eventName === 'degraded' && rawData) {
   try {
-    const data = JSON.parse(rawData) as { message?: string; source?: string }
-    // Solo mostramos el banner cuando el problema es del renderizado del
-    // diagrama en sí (puppeteer). "context7" y "agent" (tool_calls_missing)
-    // son ruido esperado que no afecta al usuario.
-    if (data.source === 'puppeteer' && callbacks.onDiagramIssue) {
-      callbacks.onDiagramIssue(data.message || 'No se pudo renderizar el diagrama a imagen.')
+    const data = JSON.parse(rawData) as {
+      message?: string
+      source?: string
+      reason?: string
+      nodes?: string[]
+    }
+    // "puppeteer" (falla de render) y el warning de grounding del agente
+    // SI le importan al usuario -- el resto de "agent" (ej. Context7 caido,
+    // tool_calls_missing) es ruido esperado que no afecta lo que ve.
+    // Bug (HU6): antes se filtraba por source==='puppeteer' a secas, lo que
+    // tambien descartaba diagram_grounding_warning (mismo source: 'agent'
+    // que el ruido de Context7), asi que ese warning nunca llegaba a la UI.
+    const isGroundingWarning = data.reason === 'diagram_grounding_warning'
+    if ((data.source === 'puppeteer' || isGroundingWarning) && callbacks.onDiagramIssue) {
+      let text = data.message || 'No se pudo renderizar el diagrama a imagen.'
+      // El criterio de aceptación pide listar los nodos no sustentados, no
+      // solo avisar que hay alguno -- el backend ya los manda en `nodes`.
+      if (isGroundingWarning && data.nodes && data.nodes.length > 0) {
+        text += ` Nodos: ${data.nodes.join(', ')}.`
+      }
+      // chatStore.onDiagramIssue ya antepone "⚠️ " al mostrarlo en la
+      // burbuja -- no lo dupliques acá.
+      callbacks.onDiagramIssue(text)
     } else {
       console.warn('[chat] degraded event (no-op para el usuario):', data)
     }

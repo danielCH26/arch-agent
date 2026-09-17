@@ -34,8 +34,8 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
-  const handleSend = async (text: string) => {
-    await chatStore.getState().sendMessage(projectId, text)
+  const handleSend = async (text: string, displayText?: string) => {
+    await chatStore.getState().sendMessage(projectId, text, displayText)
   }
 
   return (

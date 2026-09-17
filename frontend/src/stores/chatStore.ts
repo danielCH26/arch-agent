@@ -30,7 +30,7 @@ interface ChatState {
   // useEffect can avoid double-firing under React StrictMode.
   loadingHistory: boolean
 
-  sendMessage: (projectId: number | null, text: string) => Promise<void>
+  sendMessage: (projectId: number | null, text: string, displayText?: string) => Promise<void>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
@@ -47,12 +47,18 @@ export const chatStore = create<ChatState>((set) => ({
   error: null,
   loadingHistory: false,
 
-  sendMessage: async (projectId: number | null, text: string) => {
-    // Add user message
+  sendMessage: async (projectId: number | null, text: string, displayText?: string) => {
+    // `text` es lo que se manda al backend (POST /api/chat); `displayText`
+    // es lo que se muestra en la burbuja del usuario. Por defecto son lo
+    // mismo (mensajes tipeados a mano). Ver "Solicitar cambios" en
+    // MessageBubble.tsx: ahi se arma un prompt largo con instrucciones +
+    // el Mermaid anterior para que el agente lo use, pero el usuario solo
+    // escribio su feedback -- eso es lo unico que deberia ver en su propia
+    // burbuja, no el prompt entero.
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: text,
+      content: displayText ?? text,
     }
     set((state) => ({
       messages: [...state.messages, userMessage],
