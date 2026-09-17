@@ -263,4 +263,88 @@ class TestChatHistoryEndpoint:
         response = client.get("/api/chat/history?project_id=1&limit=5")
         assert response.status_code == 200
         msg = response.json()["messages"][0]
-        assert set(msg.keys()) == {"id", "role", "content", "citations", "created_at"}
+        assert set(msg.keys()) == {
+            "id", "role", "content", "citations", "attachments", "created_at",
+        }
+
+
+# ---------------------------------------------------------------------------
+# F14 (migracion 0015) — GET /api/chat/history devuelve display_content or
+# content. Regression coverage for QA_feature-hu6-diagrama seccion 0 punto 7.
+# ---------------------------------------------------------------------------
+
+
+def _insert_message_with_display_content(
+    fake_db, *, session_id: int, user_id: int, project_id: int,
+    content: str, display_content: str | None,
+):
+    """Como ``_insert_messages`` pero para un solo row con display_content."""
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.message import Message
+
+        db.add(
+            Message(
+                session_id=session_id,
+                project_id=project_id,
+                user_id=user_id,
+                role="user",
+                content=content,
+                display_content=display_content,
+                citations=[],
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestChatHistoryDisplayContent:
+    def test_returns_display_content_when_set(self, fake_db):
+        _seed(fake_db)
+        _insert_message_with_display_content(
+            fake_db, session_id=10, user_id=1, project_id=1,
+            content="Instrucciones tecnicas completas + Mermaid anterior...",
+            display_content="Cambiá el color del nodo A",
+        )
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        msg = response.json()["messages"][0]
+        # El frontend nunca debe ver el prompt tecnico cuando hay un
+        # display_content guardado -- eso es lo que soluciona la migracion
+        # 0015 (antes: la burbuja volvia a mostrar el prompt completo tras
+        # un refresh).
+        assert msg["content"] == "Cambiá el color del nodo A"
+
+    def test_falls_back_to_content_when_display_content_is_none(self, fake_db):
+        _seed(fake_db)
+        _insert_message_with_display_content(
+            fake_db, session_id=10, user_id=1, project_id=1,
+            content="mensaje normal, sin diferencia", display_content=None,
+        )
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        msg = response.json()["messages"][0]
+        assert msg["content"] == "mensaje normal, sin diferencia"
+
+    def test_pre_migration_rows_without_display_content_are_unaffected(self, fake_db):
+        """Filas insertadas antes de la migracion 0015 (sin pasar
+        display_content en absoluto, no solo None) siguen devolviendo
+        ``content`` tal cual -- la columna nueva no rompe nada existente."""
+        _seed(fake_db)
+        _insert_messages(fake_db, session_id=10, user_id=1, project_id=1, items=["u1"])
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        assert response.json()["messages"][0]["content"] == "u1"

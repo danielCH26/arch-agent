@@ -15,6 +15,12 @@ F13 (REQ-ATT-1) adds:
     into the row's JSONB column inside the same flush so a failure on
     either side rolls back both the message row AND the new entries
     (atomicity, REQ-ATT-1).
+
+F14 (migracion 0015) adds:
+  * ``display_content`` kwarg on ``save_message`` — texto opcional que
+    difiere de ``content`` cuando lo que el usuario ve en su burbuja no es
+    lo mismo que se le manda al agente (hoy: "Solicitar cambios" sobre un
+    diagrama). NULL por defecto.
 """
 
 from __future__ import annotations
@@ -82,6 +88,25 @@ def _coerce_attachments(attachments: Any) -> list:
         return []
 
 
+def _coerce_display_content(display_content: Any) -> str | None:
+    """Normalise ``display_content`` into ``str | None``.
+
+    Mirrors the defensive style of ``_coerce_citations`` /
+    ``_coerce_attachments``: never raises. Empty/whitespace-only strings
+    collapse to ``None`` so the fallback in ``GET /api/chat/history``
+    (``display_content or content``) behaves the same as "never set".
+    """
+    if display_content is None:
+        return None
+    if not isinstance(display_content, str):
+        logger.warning(
+            "message_store: dropping non-string display_content=%r", display_content
+        )
+        return None
+    stripped = display_content.strip()
+    return stripped or None
+
+
 def ensure_user_session(db: Session, user_id: int) -> int:
     """Lazy-upsert the per-user ``UserSession`` row and return its id.
 
@@ -118,6 +143,7 @@ def save_message(
     content: str,
     citations: Any = None,
     attachments: Any = None,
+    display_content: str | None = None,
 ) -> Message:
     """Insert a single ``Message`` row.
 
@@ -126,6 +152,13 @@ def save_message(
     is merged into the row's JSONB column inside the same ``flush`` so a
     later SQLAlchemy failure rolls back BOTH the row and the merged
     attachment entries (REQ-ATT-1 atomicity).
+
+    F14 (migracion 0015): ``display_content`` es opcional y solo se setea
+    cuando lo que el usuario vio en su burbuja difiere de ``content`` (el
+    texto real mandado al agente) -- hoy, "Solicitar cambios" sobre un
+    diagrama. Se deja en NULL (default) para el resto de los mensajes;
+    ``_coerce_display_content`` normaliza strings vacios/whitespace a None
+    para no guardar basura en la columna.
     """
     _validate_role(role)
     msg = Message(
@@ -136,6 +169,7 @@ def save_message(
         content=content,
         citations=_coerce_citations(citations),
         attachments=_coerce_attachments(attachments),
+        display_content=_coerce_display_content(display_content),
     )
     db.add(msg)
     db.flush()  # populate msg.id without committing

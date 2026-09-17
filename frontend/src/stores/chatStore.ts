@@ -54,7 +54,10 @@ export const chatStore = create<ChatState>((set) => ({
     // MessageBubble.tsx: ahi se arma un prompt largo con instrucciones +
     // el Mermaid anterior para que el agente lo use, pero el usuario solo
     // escribio su feedback -- eso es lo unico que deberia ver en su propia
-    // burbuja, no el prompt entero.
+    // burbuja, no el prompt entero. F14 (migracion 0015): `displayText`
+    // tambien viaja al backend (ver createChatStream mas abajo) y se
+    // persiste en Message.display_content, asi que ya sobrevive a un
+    // refresh — GET /api/chat/history devuelve display_content or content.
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -79,6 +82,10 @@ export const chatStore = create<ChatState>((set) => ({
     let fullResponse = ''
 
     // Start the stream - cleanup is handled internally
+    // F14 (migracion 0015): `displayText` (cuando viene) tambien se manda
+    // al backend como `display_message` para que quede persistido en
+    // Message.display_content — antes solo se usaba para la burbuja local
+    // de arriba, y se perdia en cualquier refresh.
     createChatStream(text, projectId, {
       onSources: (sources) => {
         set((state) => ({
@@ -141,7 +148,7 @@ export const chatStore = create<ChatState>((set) => ({
           ),
         }))
       },
-    })
+    }, displayText)
 
     // Store cleanup function for potential cancellation
     // Note: We don't expose cancellation in this implementation

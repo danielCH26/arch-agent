@@ -1,4 +1,4 @@
--- =============================================================================
+--- =============================================================================
 -- Schema inicial de arch-agent (aplicado por scripts/init_db.py).
 --
 -- Las migraciones incrementales viven en migrations/NNNN_*.sql (ver
@@ -172,4 +172,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
 -- =============================================================================
 ALTER TABLE messages
     ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- =============================================================================
+-- F14 — display_content (migracion 0015). Idempotente para DBs creadas por
+-- init_db.py antes de que corriera la migracion 0015.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS display_content TEXT NULL;
 

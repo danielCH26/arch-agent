@@ -367,3 +367,75 @@ class TestSaveAttachment:
         from app.core.message_store import list_attachments
         assert list_attachments(db, 999) == []
 
+
+# ---------------------------------------------------------------------------
+# F14 (migracion 0015) — messages.display_content
+# ---------------------------------------------------------------------------
+
+
+class TestDisplayContentColumn:
+    """F14: ``Message.display_content`` nullable column + save_message kwarg.
+
+    Regression coverage for QA_feature-hu6-diagrama seccion 0 punto 7:
+    "Solicitar cambios" mandaba el prompt tecnico completo como ``content``
+    (correcto, es lo que necesita el agente) pero no tenia forma de guardar
+    lo que el usuario realmente escribio para mostrarlo tras un refresh.
+    """
+
+    def test_save_message_defaults_display_content_to_none(self, db):
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        msg = save_message(db, sess_id, project_id=1, user_id=1, role="user", content="hi")
+        assert msg.display_content is None
+
+    def test_save_message_round_trips_display_content_kwarg(self, db):
+        _seed_user(db)
+        sess_id = ensure_user_session(db, 1)
+        prompt = "Instrucciones para el agente...\n```mermaid\ngraph TD; A-->B;\n```"
+        msg = save_message(
+            db, sess_id, project_id=1, user_id=1,
+            role="user", content=prompt, display_content="Cambiá el color del nodo A",
+        )
+        db.commit()
+        assert msg.content == prompt
+        assert msg.display_content == "Cambiá el color del nodo A"
+
+    def test_display_content_none_normalises_to_none(self):
+        from app.core.message_store import _coerce_display_content
+        assert _coerce_display_content(None) is None
+
+    def test_display_content_blank_string_normalises_to_none(self):
+        """Un string vacio o solo whitespace no debe "ganarle" al fallback
+        ``display_content or content`` del endpoint de historial."""
+        from app.core.message_store import _coerce_display_content
+        assert _coerce_display_content("") is None
+        assert _coerce_display_content("   ") is None
+
+    def test_display_content_strips_surrounding_whitespace(self):
+        from app.core.message_store import _coerce_display_content
+        assert _coerce_display_content("  hola  ") == "hola"
+
+    def test_display_content_non_string_falls_back_to_none(self):
+        from app.core.message_store import _coerce_display_content
+        assert _coerce_display_content(123) is None
+        assert _coerce_display_content({"a": 1}) is None
+
+    def test_display_content_does_not_affect_other_messages(self, db):
+        """Un mensaje con display_content no debe afectar a los demas —
+        list_recent debe devolver ambos campos intactos por fila."""
+        _seed_user(db)
+        _seed_user_project(db, user_id=1, project_id=1)
+        sid = ensure_user_session(db, 1)
+
+        save_message(
+            db, sid, project_id=1, user_id=1, role="user",
+            content="prompt tecnico completo", display_content="feedback corto",
+        )
+        save_message(db, sid, project_id=1, user_id=1, role="user", content="mensaje normal")
+        db.commit()
+
+        rows = list_recent(db, sid, project_id=1, limit=10)
+        by_content = {r.content: r.display_content for r in rows}
+        assert by_content["prompt tecnico completo"] == "feedback corto"
+        assert by_content["mensaje normal"] is None
+

@@ -52,6 +52,13 @@ class Message(Base):
     # Postgres CHECK constraint enforced both in SQL and Python-side validation.
     role = Column(String(16), nullable=False)
     content = Column(Text, nullable=False)
+    # F14 (migracion 0015): lo que el usuario vio/escribio en su propia
+    # burbuja, cuando difiere de ``content`` (el texto real mandado al
+    # agente). NULL en la inmensa mayoria de los mensajes -- hoy el unico
+    # caso es "Solicitar cambios" sobre un diagrama (ver MessageBubble.tsx /
+    # buildDiagramAdjustmentPrompt). El endpoint de historial resuelve
+    # ``display_content or content`` antes de devolverlo al frontend.
+    display_content = Column(Text, nullable=True)
     # JSONB on Postgres (default '[]'); plain JSON on SQLite for tests.
     # Stores the RAG sources emitted with the assistant response so the
     # frontend / history endpoint can replay them.

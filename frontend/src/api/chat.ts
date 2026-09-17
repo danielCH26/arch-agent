@@ -3,6 +3,10 @@ import { authStore } from '../stores/authStore'
 export interface ChatRequest {
   project_id: number | null
   message: string
+  // F14 (migracion 0015): opcional. Ver createChatStream — solo se manda
+  // cuando lo que el usuario ve en su burbuja difiere de `message` (hoy:
+  // "Solicitar cambios" sobre un diagrama).
+  display_message?: string
 }
 
 // Metadata de un documento/patron recuperado por el pipeline RAG (PGVector).
@@ -167,7 +171,13 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
 export function createChatStream(
   message: string,
   projectId: number | null,
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  // F14 (migracion 0015): lo que el usuario escribio, cuando difiere de
+  // `message` (el texto real que recibe el agente). El backend lo persiste
+  // en Message.display_content para que la burbuja sobreviva a un refresh
+  // (antes solo vivia en el estado de React de chatStore). Omitido/undefined
+  // para el resto de los mensajes.
+  displayMessage?: string
 ): () => void {
   const { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue } = callbacks
   const token = authStore.getState().token
@@ -187,6 +197,7 @@ export function createChatStream(
         body: JSON.stringify({
           project_id: projectId,
           message,
+          ...(displayMessage ? { display_message: displayMessage } : {}),
         } as ChatRequest),
         signal,
       })

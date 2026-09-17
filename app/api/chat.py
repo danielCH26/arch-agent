@@ -181,6 +181,14 @@ def _load_approved_proposal_doc(
 class ChatRequest(BaseModel):
     project_id: int | None = None
     message: str
+    # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
+    # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
+    # el prompt de "Solicitar cambios" sobre un diagrama, que agrega
+    # instrucciones + el Mermaid anterior), este campo lleva SOLO lo que
+    # el usuario tipeo, para persistirlo en Message.display_content y que
+    # sobreviva a un refresh. None/omitido para el resto de los mensajes
+    # (equivale a "display_content == content").
+    display_message: str | None = None
 
 
 # --- Route -----------------------------------------------------------------
@@ -396,6 +404,7 @@ async def chat(
                         user_id=user_id,
                         role="user",
                         content=body.message,
+                        display_content=body.display_message,
                     )
                     asst_msg = save_message(
                         db,
@@ -578,7 +587,15 @@ def chat_history(
                 {
                     "id": row.id,
                     "role": row.role,
-                    "content": row.content,
+                    # F14 (migracion 0015): si el mensaje se guardo con un
+                    # display_content propio (hoy: "Solicitar cambios" sobre
+                    # un diagrama), se lo devolvemos en vez del content real
+                    # -- asi la burbuja del usuario sobrevive a un refresh
+                    # en vez de mostrar el prompt tecnico completo (ver
+                    # QA_feature-hu6-diagrama, seccion 0 punto 7). El agente
+                    # nunca ve esta llave: sigue recibiendo body.message tal
+                    # cual en cada turno nuevo.
+                    "content": row.display_content or row.content,
                     "citations": row.citations or [],
                     # Bug fix (HU6): esta llave nunca se devolvia, asi que un
                     # reload de la pagina perdia los diagramas del chat por

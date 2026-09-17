@@ -986,3 +986,132 @@ def test_chat_stream_attachments_persisted_atomically_in_pre_done_tx(monkeypatch
 
     assert len(captured_attachments) == 1
     assert captured_attachments[0]["filename"] == "diagram.png"
+
+
+# ---------------------------------------------------------------------------
+# F14 (migracion 0015) — ChatRequest.display_message → Message.display_content
+# ---------------------------------------------------------------------------
+
+
+class TestChatRequestDisplayMessage:
+    """ChatRequest model coverage for the new optional field."""
+
+    def test_display_message_defaults_to_none(self):
+        from app.api.chat import ChatRequest
+
+        req = ChatRequest(project_id=1, message="prompt tecnico completo")
+        assert req.display_message is None
+
+    def test_display_message_round_trips(self):
+        from app.api.chat import ChatRequest
+
+        req = ChatRequest(
+            project_id=1,
+            message="prompt tecnico completo + Mermaid anterior",
+            display_message="Cambiá el color del nodo A",
+        )
+        assert req.message == "prompt tecnico completo + Mermaid anterior"
+        assert req.display_message == "Cambiá el color del nodo A"
+
+
+def test_chat_stream_persists_display_message_only_on_user_row(monkeypatch):
+    """F14: ``body.display_message`` (cuando viene) se persiste en
+    ``Message.display_content`` — SOLO en la fila ``role="user"``. La fila
+    ``role="assistant"`` nunca recibe ``display_content`` (el agente no
+    tiene un "mensaje mostrado" distinto del que genera).
+
+    Regression test para QA_feature-hu6-diagrama seccion 0 punto 7: antes
+    de la migracion 0015 no habia ningun campo separado para esto, asi que
+    un refresh volvia a mostrar el prompt tecnico completo en la burbuja
+    del usuario.
+    """
+    from app.api import chat as chat_module
+
+    captured: dict[str, list] = {"user": [], "assistant": []}
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "listo, ajustado"},
+            {"event": "done", "data": None},
+        ],
+    )
+
+    real_save_message = chat_module.save_message
+
+    def _capture_save_message(_db, **kw):
+        captured[kw["role"]].append(kw.get("display_content"))
+        return real_save_message(_db, **kw)
+
+    patches.append(
+        patch.object(
+            chat_module, "save_message",
+            side_effect=lambda _db, **_kw: _capture_save_message(_db, **_kw),
+        )
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(
+            message="Instrucciones tecnicas + Mermaid anterior...",
+            display_message="Cambiá el color del nodo A",
+        )
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["user"] == ["Cambiá el color del nodo A"]
+    assert captured["assistant"] == [None]
+
+
+def test_chat_stream_display_message_omitted_keeps_display_content_none(monkeypatch):
+    """F14: mensajes normales (sin display_message) siguen guardando
+    display_content=None -- no hay regresion para el caso mayoritario."""
+    from app.api import chat as chat_module
+
+    captured: list = []
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "hola"},
+            {"event": "done", "data": None},
+        ],
+    )
+
+    real_save_message = chat_module.save_message
+
+    def _capture_save_message(_db, **kw):
+        if kw.get("role") == "user":
+            captured.append(kw.get("display_content"))
+        return real_save_message(_db, **kw)
+
+    patches.append(
+        patch.object(
+            chat_module, "save_message",
+            side_effect=lambda _db, **_kw: _capture_save_message(_db, **_kw),
+        )
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="mensaje normal, sin diferencia")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured == [None]
