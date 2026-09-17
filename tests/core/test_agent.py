@@ -474,3 +474,96 @@ def test_try_get_context7_tools_emits_typed_degraded_on_failure():
     assert tools == []
     assert degraded["reason"] == "context7_rate_limited"
     assert degraded["fallback"] == "rag_only"
+
+
+# ---------------------------------------------------------------------------
+# Task 5.2 — Langfuse metadata wiring in run_agent
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_threads_metadata_into_astream_config():
+    """REQ-5 / SCN-7: ``user_id`` / ``project_id`` / model land in config."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+
+    async def _empty_astream(*_a, **_kw):
+        if False:  # pragma: no cover
+            yield {}
+
+    fake_agent.astream_events = _empty_astream
+
+    captured: dict = {}
+
+    def _capture_astream(input, config=None, **kwargs):
+        captured["config"] = config
+        captured["input"] = input
+        return _empty_astream()
+
+    fake_agent.astream_events = _capture_astream
+
+    fake_model = MagicMock()
+    fake_model.model_name = "gpt-test-model"
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            async for _ in agent.run_agent(
+                model=fake_model,
+                message="hi",
+                callbacks=[MagicMock()],
+                rag_documents=[],
+                user_id=42,
+                project_id=13,
+            ):
+                pass
+
+        asyncio.run(_drive())
+
+    config = captured["config"]
+    assert "callbacks" in config
+    assert config["metadata"]["user_id"] == 42
+    assert config["metadata"]["project_id"] == "13"
+    assert config["metadata"]["model"] == "gpt-test-model"
+    assert config["run_name"] == "chat/user-42/project-13"
+
+
+def test_run_agent_records_none_project_as_string_none():
+    """REQ-5: project_id=None is recorded as the string 'none' for filterability."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+    captured: dict = {}
+
+    def _capture_astream(input, config=None, **kwargs):
+        captured["config"] = config
+
+        async def _gen():
+            if False:  # pragma: no cover
+                yield {}
+
+        return _gen()
+
+    fake_agent.astream_events = _capture_astream
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            async for _ in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="hi",
+                callbacks=[],
+                rag_documents=[],
+                user_id=1,
+                project_id=None,
+            ):
+                pass
+
+        asyncio.run(_drive())
+
+    assert captured["config"]["metadata"]["project_id"] == "none"
+    assert captured["config"]["run_name"] == "chat/user-1/project-none"

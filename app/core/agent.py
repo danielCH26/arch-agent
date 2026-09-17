@@ -215,6 +215,10 @@ async def _astream_agent(
     agent: Any,
     message: str,
     callbacks: list[Any],
+    *,
+    user_id: int | None = None,
+    project_id: int | None = None,
+    model_name: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive ``agent.astream_events`` and yield SSE-ready dicts.
 
@@ -222,10 +226,28 @@ async def _astream_agent(
     from ``on_tool_start`` / ``on_tool_end``. We don't relay
     ``on_chat_model_end`` (the route emits ``done``) nor ``on_chain_*``
     (internal LangChain scaffolding).
+
+    ``user_id`` / ``project_id`` / ``model_name`` flow into the run config
+    metadata so Langfuse can label the trace (REQ-5 / SCN-7).
     """
     config: dict[str, Any] = {}
     if callbacks:
         config["callbacks"] = callbacks
+
+    metadata: dict[str, Any] = {}
+    if user_id is not None:
+        metadata["user_id"] = user_id
+    metadata["project_id"] = "none" if project_id is None else str(project_id)
+    if model_name:
+        metadata["model"] = model_name
+    if metadata:
+        config["metadata"] = metadata
+        # Langfuse picks up ``run_name`` from the config; default to a
+        # human-readable identifier for cross-trace filtering.
+        config.setdefault(
+            "run_name",
+            f"chat/user-{user_id if user_id is not None else 'anon'}/project-{metadata['project_id']}",
+        )
 
     try:
         event_iter = agent.astream_events(
@@ -317,8 +339,19 @@ async def run_agent(
 
     agent = build_agent(model=model, system_prompt=system_prompt, tools=tools)
 
+    model_name = getattr(model, "model_name", None) or getattr(model, "name", None)
+    if not isinstance(model_name, str):
+        model_name = None
+
     # Forward each event from the agent stream to the SSE channel.
-    async for sse_dict in _astream_agent(agent, message, callbacks):
+    async for sse_dict in _astream_agent(
+        agent,
+        message,
+        callbacks,
+        user_id=user_id,
+        project_id=project_id,
+        model_name=model_name,
+    ):
         yield sse_dict
 
     # ``done`` is the last event on success — design.md §5.2 ordering rule.
