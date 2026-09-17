@@ -51,6 +51,7 @@ temp/
 !openspec/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
+!QA_feature-hu6-diagrama.md
 *.freebuff
 
 # Frontend (Vite + React)
