@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
+import { fetchDiagramHistory, submitDiagramDecision, type DiagramVersion } from '../api/diagrams'
 
 interface DiagramHistoryPanelProps {
   projectId: number
@@ -10,6 +10,19 @@ interface DiagramHistoryPanelProps {
 export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistoryPanelProps) {
   const [versions, setVersions] = useState<DiagramVersion[]>([])
   const [loading, setLoading] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const [sending, setSending] = useState<'approve' | 'modify' | 'reject' | null>(null)
+
+  async function handleDecision(decision: 'approve' | 'modify' | 'reject') {
+    if (decision === 'modify' && !feedback.trim()) return
+    setSending(decision)
+    try {
+      await submitDiagramDecision(projectId, decision, feedback || undefined)
+      setFeedback('')
+    } finally {
+      setSending(null)
+    }
+  }
 
   useEffect(() => {
     if (!open) return
@@ -52,6 +65,43 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
             </li>
           ))}
         </ul>
+
+        <div className="mt-4 border-t pt-4 space-y-2">
+          <p className="text-sm font-medium">¿Qué hacemos con el diagrama actual?</p>
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="Feedback (obligatorio si pedís cambios)"
+            className="w-full text-sm border rounded p-2"
+            rows={2}
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => handleDecision('approve')}
+              disabled={!!sending}
+              className="flex-1 bg-green-600 text-white text-sm rounded py-1 disabled:opacity-50"
+            >
+              Aprobar
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDecision('modify')}
+              disabled={!!sending || !feedback.trim()}
+              className="flex-1 bg-yellow-500 text-white text-sm rounded py-1 disabled:opacity-50"
+            >
+              Pedir cambios
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDecision('reject')}
+              disabled={!!sending}
+              className="flex-1 bg-red-600 text-white text-sm rounded py-1 disabled:opacity-50"
+            >
+              Rechazar
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )
