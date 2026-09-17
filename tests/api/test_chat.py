@@ -234,6 +234,78 @@ def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
     return patches
 
 
+def test_load_approved_proposal_doc_uses_approved_proposal_anchor():
+    from app.api import chat as chat_module
+
+    fake_db = MagicMock()
+    fake_session = MagicMock(id=11)
+    fake_approval = MagicMock(id=22, phase="propuesta", created_at=None)
+    fake_message = MagicMock(
+        id=33,
+        content="Propuesta aprobada: API Gateway -> Servicio de Órdenes",
+    )
+
+    q_session = MagicMock()
+    q_session.filter.return_value.first.return_value = fake_session
+
+    q_approval = MagicMock()
+    q_approval.filter.return_value.order_by.return_value.first.return_value = fake_approval
+
+    q_message = MagicMock()
+    q_message.filter.return_value = q_message
+    q_message.order_by.return_value.first.return_value = fake_message
+
+    fake_db.query.side_effect = [q_session, q_approval, q_message]
+    fake_db.close = MagicMock()
+
+    with patch.object(chat_module, "SessionLocal", return_value=fake_db):
+        doc = chat_module._load_approved_proposal_doc(user_id=7, project_id=5)
+
+    assert doc is not None
+    assert doc.metadata["source_type"] == "approved_proposal"
+    assert doc.metadata["approval_id"] == 22
+    assert doc.metadata["message_id"] == 33
+    assert "API Gateway" in doc.page_content
+    fake_db.close.assert_called_once()
+
+
+def test_load_approved_proposal_doc_prefers_saved_proposal_state():
+    from app.api import chat as chat_module
+
+    fake_db = MagicMock()
+    fake_session = MagicMock(
+        id=11,
+        engram_state={
+            "5": {
+                "propuesta": {
+                    "patron_recomendado": "API Gateway",
+                    "componentes": ["Gateway", "Orders"],
+                }
+            }
+        },
+    )
+    fake_approval = MagicMock(id=22, phase="propuesta", created_at=None)
+
+    q_session = MagicMock()
+    q_session.filter.return_value.first.return_value = fake_session
+
+    q_approval = MagicMock()
+    q_approval.filter.return_value.order_by.return_value.first.return_value = fake_approval
+
+    fake_db.query.side_effect = [q_session, q_approval]
+    fake_db.close = MagicMock()
+
+    with patch.object(chat_module, "SessionLocal", return_value=fake_db):
+        doc = chat_module._load_approved_proposal_doc(user_id=7, project_id=5)
+
+    assert doc is not None
+    assert doc.metadata["source"] == "session_engram_state"
+    assert doc.metadata["source_type"] == "approved_proposal"
+    assert '"patron_recomendado": "API Gateway"' in doc.page_content
+    assert '"Gateway"' in doc.page_content
+    fake_db.close.assert_called_once()
+
+
 async def _call_chat(chat_module, body, current_user):
     """Await the chat route function (it's ``async def``)."""
     return await chat_module.chat(body=body, current_user=current_user)

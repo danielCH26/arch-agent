@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,6 +18,8 @@ from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
+from app.models.approval import Approval
+from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
@@ -48,9 +51,129 @@ RAG_MIN_SIMILARITY = 0.85
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
+DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
+PROPOSAL_PHASES = {"propuesta", "proposal"}
+DIAGRAM_REQUEST_TERMS = ("diagrama", "diagram", "mermaid", "flowchart", "graph")
+
+
+@dataclass
+class SyntheticRagDocument:
+    page_content: str
+    metadata: dict[str, Any]
+
 
 def _is_relevant(doc) -> bool:
     return (doc.metadata.get("similarity") or 0.0) >= RAG_MIN_SIMILARITY
+
+
+def _is_diagram_turn(project: Project | None, message: str) -> bool:
+    if project is not None and (project.current_phase or "").lower() in DIAGRAM_PHASES:
+        return True
+    lowered = message.lower()
+    return any(term in lowered for term in DIAGRAM_REQUEST_TERMS)
+
+
+def _proposal_from_engram_state(session_row: UserSession, project_id: int) -> str | None:
+    project_state = (session_row.engram_state or {}).get(str(project_id), {})
+    if not isinstance(project_state, dict):
+        return None
+
+    proposal_data = project_state.get("propuesta") or project_state.get("proposal")
+    if proposal_data is None:
+        return None
+    if isinstance(proposal_data, str):
+        return proposal_data.strip() or None
+
+    try:
+        return json.dumps(proposal_data, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(proposal_data)
+
+
+def _load_approved_proposal_doc(
+    *,
+    user_id: int,
+    project_id: int | None,
+) -> SyntheticRagDocument | None:
+    """Recover the last approved proposal for this project's diagram turn.
+
+    The approvals table records phase decisions, not the proposal body. The
+    proposal text lives in chat history, so we use the approved proposal
+    decision as an anchor and retrieve the latest assistant message for the
+    same project before that approval.
+    """
+    if project_id is None:
+        return None
+
+    db = SessionLocal()
+    try:
+        session_row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+        if session_row is None:
+            return None
+
+        approval = (
+            db.query(Approval)
+            .filter(
+                Approval.session_id == session_row.id,
+                Approval.phase.in_(PROPOSAL_PHASES),
+                Approval.decision == "approved",
+            )
+            .order_by(Approval.created_at.desc(), Approval.id.desc())
+            .first()
+        )
+        if approval is None:
+            return None
+
+        proposal_from_state = _proposal_from_engram_state(session_row, project_id)
+        if proposal_from_state:
+            return SyntheticRagDocument(
+                page_content=(
+                    "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL "
+                    "DIAGRAMA:\n"
+                    f"{proposal_from_state}"
+                ),
+                metadata={
+                    "source_type": "approved_proposal",
+                    "pattern_name": "Propuesta aprobada",
+                    "similarity": 1.0,
+                    "phase": approval.phase,
+                    "approval_id": approval.id,
+                    "source": "session_engram_state",
+                },
+            )
+
+        message_query = db.query(Message).filter(
+            Message.session_id == session_row.id,
+            Message.project_id == project_id,
+            Message.user_id == user_id,
+            Message.role == "assistant",
+        )
+        if approval.created_at is not None:
+            message_query = message_query.filter(Message.created_at <= approval.created_at)
+
+        proposal_msg = (
+            message_query.order_by(Message.created_at.desc(), Message.id.desc()).first()
+        )
+        if proposal_msg is None or not proposal_msg.content.strip():
+            return None
+
+        return SyntheticRagDocument(
+            page_content=(
+                "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL "
+                "DIAGRAMA:\n"
+                f"{proposal_msg.content}"
+            ),
+            metadata={
+                "source_type": "approved_proposal",
+                "pattern_name": "Propuesta aprobada",
+                "similarity": 1.0,
+                "phase": approval.phase,
+                "approval_id": approval.id,
+                "message_id": proposal_msg.id,
+            },
+        )
+    finally:
+        db.close()
 
 
 # --- Request model ---------------------------------------------------------
@@ -127,6 +250,7 @@ async def chat(
         )
 
     # Validate project ownership if provided
+    current_project: Project | None = None
     if body.project_id is not None:
         db = SessionLocal()
         try:
@@ -147,6 +271,7 @@ async def chat(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Proyecto no encontrado",
                 )
+            current_project = project
         finally:
             db.close()
 
@@ -172,6 +297,22 @@ async def chat(
         callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
+        proposal_doc = None
+        if _is_diagram_turn(current_project, body.message):
+            try:
+                proposal_doc = await asyncio.to_thread(
+                    _load_approved_proposal_doc,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Approved proposal retrieval skipped for user_id=%s project_id=%s: %s",
+                    user_id,
+                    body.project_id,
+                    e,
+                )
+
         try:
             docs, _metrics = await asyncio.to_thread(
                 similarity_search,
@@ -183,11 +324,13 @@ async def chat(
             )
         except Exception as e:
             logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
-            return [], ""
+            docs = []
 
         # Descarta lo que quedo por debajo del umbral de relevancia -- ver
         # comentario junto a RAG_MIN_SIMILARITY.
         relevant_docs = [doc for doc in docs if _is_relevant(doc)]
+        if proposal_doc is not None:
+            relevant_docs = [proposal_doc, *relevant_docs]
 
         context_blocks = []
         for index, doc in enumerate(relevant_docs, start=1):

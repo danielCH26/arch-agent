@@ -85,6 +85,26 @@ def test_build_system_prompt_composes_sections():
     assert "body" in prompt
 
 
+def test_find_ungrounded_mermaid_nodes_warns_on_nodes_absent_from_context():
+    from app.core.agent import find_ungrounded_mermaid_nodes
+
+    docs = [
+        _make_doc(
+            "Propuesta aprobada: API Gateway conecta con Order Service y Payment Service.",
+            source_type="approved_proposal",
+            pattern_name="Propuesta aprobada",
+        )
+    ]
+    mermaid = """
+flowchart TD
+  API_Gateway["API Gateway"] --> Order_Service["Order Service"]
+  Order_Service --> Payment_Service["Payment Service"]
+  Order_Service --> Fraud_Service["Fraud Service"]
+"""
+
+    assert find_ungrounded_mermaid_nodes(mermaid, docs) == ["Fraud Service"]
+
+
 # ---------------------------------------------------------------------------
 # build_agent
 # ---------------------------------------------------------------------------

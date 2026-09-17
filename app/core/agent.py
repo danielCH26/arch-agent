@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, AsyncIterator
 
@@ -90,6 +91,26 @@ _TOOL_RESULT_TRUNCATION_MARKER: str = (
 # Cuanto esperar despues de navegar a la pagina de preview antes de tomar
 # el screenshot, para darle tiempo a mermaid.js a terminar de dibujar.
 _MERMAID_RENDER_DELAY_SECONDS: float = 6.0
+_MERMAID_NODE_DEF_PATTERN = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*\"?([^\"\]\n]+?)\"?\s*\]|\[\(\s*([^)]+?)\s*\)\])"
+)
+_MERMAID_EDGE_ID_PATTERN = re.compile(
+    r"(?:^|[\s])([A-Za-z_][A-Za-z0-9_]*)\s*(?=(?:--|==|-.|<--|<==|<-\.))",
+    re.MULTILINE,
+)
+_GROUNDING_IGNORE_NODE_IDS = {
+    "TD",
+    "TB",
+    "BT",
+    "LR",
+    "RL",
+    "subgraph",
+    "end",
+    "classDef",
+    "class",
+    "style",
+    "linkStyle",
+}
 
 
 def _coerce_documents(rag_documents: list[Any] | None) -> list[Any]:
@@ -106,6 +127,74 @@ def _has_architect_pattern(rag_documents: list[Any]) -> bool:
             if metadata.get("source_type") == "architect_pattern":
                 return True
     return False
+
+
+def _normalise_grounding_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _extract_mermaid_node_names(code: str) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str | None) -> None:
+        if not value:
+            return
+        cleaned = value.strip().strip('"').strip()
+        if not cleaned or cleaned in _GROUNDING_IGNORE_NODE_IDS:
+            return
+        key = cleaned.lower()
+        if key not in seen:
+            seen.add(key)
+            names.append(cleaned)
+
+    for match in _MERMAID_NODE_DEF_PATTERN.finditer(code):
+        node_id, label, cylinder_label = match.groups()
+        _add(label or cylinder_label or node_id.replace("_", " "))
+
+    for match in _MERMAID_EDGE_ID_PATTERN.finditer(code):
+        _add(match.group(1).replace("_", " "))
+
+    return names
+
+
+def _grounding_text_from_docs(rag_documents: list[Any]) -> str:
+    chunks: list[str] = []
+    for doc in rag_documents:
+        metadata = getattr(doc, "metadata", None)
+        if metadata is None and isinstance(doc, dict):
+            metadata = doc.get("metadata")
+        if isinstance(metadata, dict):
+            chunks.extend(
+                str(metadata.get(key) or "")
+                for key in ("pattern_name", "filename", "source_type")
+            )
+
+        page = getattr(doc, "page_content", "")
+        if not page and isinstance(doc, dict):
+            page = doc.get("page_content", "")
+        chunks.append(str(page or ""))
+
+    return _normalise_grounding_text("\n".join(chunks))
+
+
+def find_ungrounded_mermaid_nodes(
+    mermaid_code: str,
+    rag_documents: list[Any],
+) -> list[str]:
+    grounding_text = _grounding_text_from_docs(rag_documents)
+    if not grounding_text:
+        return []
+
+    unknown: list[str] = []
+    for node_name in _extract_mermaid_node_names(mermaid_code):
+        normalised = _normalise_grounding_text(node_name.replace("_", " "))
+        if not normalised:
+            continue
+        if normalised not in grounding_text:
+            unknown.append(node_name)
+
+    return unknown
 
 
 def format_rag_context(rag_documents: list[Any]) -> str:
@@ -614,6 +703,22 @@ async def run_agent(
             "event": "diagram_validated",
             "data": {"valid": is_valid, "error": error},
         }
+        if is_valid:
+            ungrounded_nodes = find_ungrounded_mermaid_nodes(mermaid_code, docs)
+            if ungrounded_nodes:
+                yield {
+                    "event": "degraded",
+                    "data": {
+                        "source": "agent",
+                        "reason": "diagram_grounding_warning",
+                        "fallback": "render_with_warning",
+                        "message": (
+                            "El diagrama contiene nodos que no aparecen "
+                            "claramente en el contexto RAG/propuesta aprobada."
+                        ),
+                        "nodes": ungrounded_nodes[:20],
+                    },
+                }
 
         # UNICO camino para generar el diagrama: siempre server-side.
         if is_valid and screenshot_coroutine is not None:
@@ -656,6 +761,7 @@ __all__ = [
     "DIAGRAM_HINT",
     "_TOOL_RESULT_MAX_CHARS",
     "build_agent",
+    "find_ungrounded_mermaid_nodes",
     "format_rag_context",
     "run_agent",
 ]
