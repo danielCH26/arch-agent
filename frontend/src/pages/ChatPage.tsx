@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
+import { ApiError } from '../api/client'
 import { getProject, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { PhaseBadge } from '../components/PhaseBadge'
@@ -7,6 +8,7 @@ import { projectsStore } from '../stores/projectsStore'
 
 export function ChatPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -27,12 +29,20 @@ export function ChatPage() {
         projectsStore.getState().setCurrentProject(data)
       })
       .catch((err) => {
+        if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+          projectsStore.getState().setCurrentProject(null)
+          navigate('/projects', {
+            replace: true,
+            state: { message: 'Ese proyecto ya no está disponible para tu usuario.' },
+          })
+          return
+        }
         setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')
       })
       .finally(() => {
         setLoading(false)
       })
-  }, [id])
+  }, [id, navigate])
 
   if (loading) {
     return (
