@@ -57,8 +57,6 @@ export async function advancePhase(projectId: number): Promise<PhaseAdvanceRespo
   })
 }
 
-export async function markReady(projectId: number): Promise<{ phase_ready: boolean; message: string }> {
-  return apiFetch<{ phase_ready: boolean; message: string }>(`/api/projects/${projectId}/mark-ready`, {
-    method: 'POST',
-  })
-}
+// HU10 (REQ-SA-23/24): ``markReady`` dev shortcut removed. Use
+// ``api/approvals.ts::decidePhase`` (action='approve') followed by
+// ``advancePhase`` instead.

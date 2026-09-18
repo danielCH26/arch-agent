@@ -307,6 +307,16 @@ async def advance_phase(
 
 
 # ---------------------------------------------------------------------------
+# HU10 (REQ-SA-23/24): ``POST /api/projects/{id}/mark-ready`` removed.
+#
+# The dev shortcut is no longer needed now that the canonical per-phase
+# ``POST /api/projects/{id}/phase/{phase}/decision`` endpoint (above)
+# covers every phase including a 'modify' UX. Anyone POSTing to the old
+# path will get a 422 from FastAPI because no route is registered for it.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # HU10 (REQ-SA-13): POST /api/projects/{id}/phase/{phase}/decision
 # Single canonical decision endpoint covering all 5 phases.
 # ---------------------------------------------------------------------------
@@ -338,8 +348,6 @@ async def phase_decision(
 
     # Ownership pre-flight (mirrors the F08 decide_proposal pattern).
     _require_project(current_user["user_id"], project_id)
-
-    from app.core.database import SessionLocal
 
     db = SessionLocal()
     try:
