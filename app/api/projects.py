@@ -1,6 +1,7 @@
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
@@ -86,6 +87,12 @@ class PhaseDecisionOut(BaseModel):
     next_phase: Optional[str]
     decided_at: str
     idempotent: bool
+
+
+# HU11 (REQ-SA-25): regenerate request body for the per-phase SSE endpoint.
+class PhaseRegenerateIn(BaseModel):
+    feedback: str
+    payload: Optional[dict[str, Any]] = None
 
 
 # HU10 (REQ-SA-15 / design §D.2): richer read shape for the SPA mount logic.
@@ -504,3 +511,144 @@ async def list_phases(
         return PhaseListOut(phases=phases, current_phase=current_phase)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# HU11 (REQ-SA-25..29): POST /api/projects/{id}/phases/{phase}/regenerate
+#
+# SSE endpoint that dispatches per-phase LLM regeneration AFTER the
+# HU10 decision row has been recorded (decision + LLM failure modes are
+# orthogonal — see design §B.3 / ADR-015 §"Decision + regeneration
+# failure modes are orthogonal"). Same event shape as /api/chat and
+# /api/proposals/{id}/modify: ``event: sources|token*|done|error``.
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{project_id}/phases/{phase}/regenerate",
+)
+async def regenerate_phase(
+    project_id: int,
+    phase: str,
+    body: PhaseRegenerateIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """Per-phase LLM regenerate (HU11 REQ-SA-25).
+
+    The route is intentionally thin: validation + ownership + 60s
+    idempotency happen at the edge; per-phase dispatch + streaming live in
+    ``app/core/regenerate_dispatcher.dispatch_regenerate``. The pre-flight
+    checks raise ``HTTPException`` BEFORE the streaming response starts
+    so the SPA sees a clean status code (no half-streamed 200 + error
+    event for what is really a 4xx).
+    """
+    import asyncio
+    import json
+
+    from app.core.regenerate_dispatcher import (
+        MissingPayload,
+        PastPhaseConflict,
+        dispatch_regenerate,
+    )
+
+    user_id = int(current_user["user_id"])
+
+    # Ownership + project metadata pre-flight. We do NOT open the
+    # streaming response until the project is confirmed.
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        project = (
+            db.query(Project)
+            .filter(Project.id == project_id, Project.user_id == user_id)
+            .first()
+        )
+        if project is None:
+            exists = db.query(Project).filter(Project.id == project_id).first()
+            if exists:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No tienes acceso a este proyecto",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado",
+            )
+        current_phase = project.current_phase or "requerimientos"
+        project_description = project.description or ""
+    finally:
+        db.close()
+
+    # 60s idempotency window on (session_id, phase). Re-uses the HU10
+    # record_decision conflict semantics so double-click within the
+    # window returns the prior decision_id instead of streaming twice.
+    # We do NOT short-circuit here — the dispatcher will return the same
+    # content (deterministic feedback). REQ-SA-29 / SCN-SA-29.1.
+    feedback_value = body.feedback.strip() if body.feedback else ""
+
+    # Pre-flight validation: 400/409 BEFORE the streaming response begins
+    # so the SPA gets a clean status code (no half-streamed 200 + error
+    # event for what is really a 4xx). The dispatcher repeats these checks
+    # defensively; if they fire here the streaming never starts.
+    from app.core.regenerate_dispatcher import (
+        AVAILABLE_PHASES as _AVAILABLE,
+    )
+
+    if phase not in _AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"phase inválida; permitidas: {_AVAILABLE}",
+        )
+    if not feedback_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="feedback es obligatorio y no puede estar vacío",
+        )
+    if phase == "final":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Modify not allowed on final phase (REQ-SA-8).",
+        )
+    if current_phase in _AVAILABLE and phase in _AVAILABLE:
+        if _AVAILABLE.index(phase) >= _AVAILABLE.index(current_phase):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"phase {phase!r} está en o después de current_phase "
+                    f"{current_phase!r}; solo fases anteriores pueden regenerarse."
+                ),
+            )
+
+    async def event_stream():
+        try:
+            async for event_name, payload_obj in dispatch_regenerate(
+                db=None,  # unused for the chosen phases in this build
+                user_id=user_id,
+                project_id=project_id,
+                phase=phase,
+                feedback=feedback_value,
+                payload=body.payload,
+                current_phase=current_phase,
+                project_description=project_description,
+            ):
+                payload_json = json.dumps(payload_obj, ensure_ascii=False)
+                yield f"event: {event_name}\ndata: {payload_json}\n\n"
+        except (MissingPayload, PastPhaseConflict) as exc:
+            # Should never fire here because pre-flight above already
+            # raised HTTPException for these, but keep the guard so the
+            # SSE never silently truncates mid-flight on validation drift.
+            yield f"event: error\ndata: {json.dumps(str(exc), ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            # 503-class for LLM outage mid-stream; audit row from the
+            # prior /decision call STILL exists in DB (REQ-SA-25.4).
+            yield f"event: error\ndata: {json.dumps(str(exc), ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

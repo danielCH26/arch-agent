@@ -255,6 +255,182 @@ class ProposalGenerator:
             },
         )
 
+    # ------------------------------------------------------------------
+    # HU11 (REQ-PA-HU11-1): bypass F08 lifecycle 409 at the generator
+    # ------------------------------------------------------------------
+
+    async def regenerate(
+        self,
+        project_id: int | None = None,
+        feedback: str | None = None,
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Yield SSE events for a surgical past-phase ``propuesta`` regenerate.
+
+        Differs from ``generate_stream`` in two ways:
+
+        1. The new iteration is computed as ``max(iteration for project_id) + 1``
+           regardless of the latest row's ``lifecycle`` value. F08's HTTP
+           endpoint rejects ``modify`` on ``lifecycle != "proposed"``; we
+           bypass that contract at the generator layer (REQ-PA-HU11-1).
+        2. ``prior_proposal_id`` is NOT passed to ``_persist_proposal_and_log``
+           — the freeze-prior-content ``proposal_approvals`` row was already
+           written by HU10's ``/phase/propuesta/decision`` call (dual-write
+           per REQ-PA-HU10-1), so a second freeze here would duplicate the
+           audit row.
+
+        The 200 SSE stream shape is identical to ``generate_stream`` so the
+        frontend's ``dispatchProposalSSE`` parser doesn't need a new branch
+        (REQ-SA-25 / design §E.1).
+        """
+        effective_project_id = project_id if project_id is not None else self.project_id
+        if effective_project_id is None:
+            yield ("error", "project_id is required")
+            return
+        if self.user_id is None:
+            yield ("error", "user_id is required to regenerate proposals")
+            return
+        if not (feedback and feedback.strip()):
+            yield ("error", "feedback is required for regenerate")
+            return
+
+        started_at = perf_counter()
+
+        # 1. Load project + session (ownership + FK).
+        try:
+            project, session_id = await asyncio.to_thread(
+                _load_project_and_session, self.user_id, effective_project_id
+            )
+        except _ProposalDomainError as exc:
+            yield ("error", str(exc))
+            return
+
+        # 2. Load the latest proposal so the prompt can carry its content
+        # as "previous output snapshot" (design §G). iteration is computed
+        # inside ``_persist_proposal_and_log`` to honour the unique
+        # (project_id, iteration) constraint.
+        try:
+            prior_content, prior_iteration = await asyncio.to_thread(
+                _load_latest_proposal_any_lifecycle,
+                self.user_id,
+                effective_project_id,
+            )
+        except _ProposalDomainError as exc:
+            yield ("error", str(exc))
+            return
+
+        next_iteration = prior_iteration + 1 if prior_iteration else None
+
+        # 3. Build summary query for RAG.
+        summary_query = _build_summary_query(
+            project.name, project.description, feedback, prior_content
+        )
+
+        # 4. Retrieve patterns from PGVector.
+        try:
+            docs = await asyncio.to_thread(
+                _retrieve_patterns, summary_query, self.user_id
+            )
+        except Exception as exc:  # RAG should never block regeneration
+            logger.warning(
+                "RAG retrieval failed for project_id=%s user_id=%s: %s",
+                effective_project_id,
+                self.user_id,
+                exc,
+            )
+            docs = []
+
+        citations = _filter_citations(docs)
+        yield ("sources", citations)
+
+        # 5. Build structured prompt + LLM.
+        prompt = _build_prompt(
+            citations=citations,
+            prior_content=prior_content,
+            feedback=feedback,
+            project_name=project.name,
+        )
+
+        try:
+            model = await asyncio.to_thread(build_langchain_model, self.user_id)
+        except LLMConfigError as exc:
+            yield ("error", str(exc))
+            return
+
+        # 6. Stream LLM tokens + accumulate markdown.
+        full_markdown_chunks: list[str] = []
+        try:
+            async for event in model.astream(prompt):
+                chunk = getattr(event, "content", None)
+                if chunk:
+                    full_markdown_chunks.append(chunk)
+                    yield ("token", chunk)
+        except Exception as exc:
+            logger.warning(
+                "LLM stream failed for project_id=%s user_id=%s: %s",
+                effective_project_id,
+                self.user_id,
+                exc,
+            )
+            yield ("error", f"LLM stream failed: {exc}")
+            return
+
+        full_markdown = "".join(full_markdown_chunks)
+        if not full_markdown.strip():
+            yield ("error", "LLM returned no content")
+            return
+
+        # 7. Persist (no prior_proposal_id — see docstring rationale).
+        try:
+            proposal_id, interaction_id = await asyncio.to_thread(
+                _persist_proposal_and_log,
+                session_id=session_id,
+                project_id=effective_project_id,
+                iteration=next_iteration,
+                prior_iteration=prior_iteration,
+                prior_proposal_id=None,
+                prior_content=None,
+                markdown=full_markdown,
+                citations=citations,
+                feedback=feedback,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to persist regenerated proposal for project_id=%s user_id=%s: %s",
+                effective_project_id,
+                self.user_id,
+                exc,
+            )
+            yield ("error", f"Failed to persist proposal: {exc}")
+            return
+
+        # 8. Best-effort Engram mirror.
+        await _engram_mirror(
+            session_id=session_id,
+            proposal_id=proposal_id,
+            interaction_id=interaction_id,
+            markdown=full_markdown,
+        )
+
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        logger.info(
+            "Proposal regenerated project_id=%s proposal_id=%s iteration=%s latency_ms=%s",
+            effective_project_id,
+            proposal_id,
+            next_iteration or 1,
+            latency_ms,
+        )
+
+        # 9. Final done event — iteration included so the SPA's PhaseHistory
+        # row can display "iteration actual: N+1".
+        yield (
+            "done",
+            {
+                "proposal_id": proposal_id,
+                "iteration": next_iteration or 1,
+                "citations": citations,
+            },
+        )
+
 
 # --- Pure helpers ---------------------------------------------------------
 
@@ -443,6 +619,52 @@ def _load_prior_proposal(user_id: int, proposal_id: int) -> tuple[str, int]:
     except Exception as exc:
         db.rollback()
         raise _ProposalDomainError(f"No se pudo cargar la propuesta previa: {exc}") from exc
+    finally:
+        db.close()
+
+
+def _load_latest_proposal_any_lifecycle(
+    user_id: int, project_id: int
+) -> tuple[str | None, int]:
+    """HU11: load the latest proposal for ``project_id`` regardless of its
+    ``lifecycle``. Bypasses F08's ``lifecycle == "proposed"`` guard at the
+    generator layer (REQ-PA-HU11-1). Returns ``(None, 0)`` when no
+    proposal exists yet (first regenerate == initial generation).
+    """
+    db = SessionLocal()
+    try:
+        latest = (
+            db.query(Proposal)
+            .filter(Proposal.project_id == project_id)
+            .order_by(Proposal.iteration.desc())
+            .first()
+        )
+        if latest is None:
+            return None, 0
+
+        project = (
+            db.query(Project)
+            .filter(Project.id == latest.project_id, Project.user_id == user_id)
+            .first()
+        )
+        if project is None:
+            raise _ProposalDomainError("No tienes acceso a esta propuesta")
+
+        content = latest.content
+        if isinstance(content, dict):
+            content_markdown = json.dumps(content, ensure_ascii=False)
+        else:
+            content_markdown = str(content)
+
+        return content_markdown, int(latest.iteration)
+    except _ProposalDomainError:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise _ProposalDomainError(
+            f"No se pudo cargar la propuesta más reciente: {exc}"
+        ) from exc
     finally:
         db.close()
 
