@@ -582,6 +582,19 @@ async def _astream_agent(
                 "event": "tool_end",
                 "data": {"tool": name, "result_length": length, "status": "ok"},
             }
+        elif ev_type == "on_tool_error":
+            name = raw.get("name") or "tool"
+            error = raw.get("data", {}).get("error")
+            _LOGGER.warning("Tool '%s' failed: %s", name, error)
+            yield {
+                "event": "tool_end",
+                "data": {
+                    "tool": name,
+                    "result_length": 0,
+                    "status": "error",
+                    "error": str(error) if error is not None else "unknown error",
+                },
+            }
         continue
 
 
@@ -615,27 +628,22 @@ async def run_agent(
         if degraded is not None:
             yield {"event": "degraded", "data": degraded}
 
-    # Traemos las tools de Puppeteer SOLO para uso interno (nunca se las
-    # pasamos a build_agent). Si fallan, seguimos sin diagrama pero sin
-    # romper el chat -- el mensaje de texto igual se genera.
-    screenshot_coroutine = None
-    navigate_coroutine = None
+    # Solo verificamos disponibilidad/rate-limit de Puppeteer aca (SIN abrir
+    # una sesion MCP para listar tools): la unica sesion del turno es la que
+    # abre `_render_mermaid_server_side` mas abajo. Antes, `get_puppeteer_
+    # tools_and_navigate` abria una primera sesion solo para derivar
+    # `screenshot_coroutine`/`navigate_coroutine`, que `_render_mermaid_
+    # server_side` ni siquiera usa (son parametros vestigiales que se
+    # dejaron para no romper la firma) -- eso duplicaba la conexion MCP
+    # por turno de diagrama.
+    puppeteer_available = False
     fetch_timeout = 15.0
     try:
-        from app.core.puppeteer_mcp import (
-            _FETCH_TIMEOUT_SECONDS,
-            _check_rate_limit,
-            get_puppeteer_tools_and_navigate,
-        )
+        from app.core.puppeteer_mcp import _FETCH_TIMEOUT_SECONDS, _check_rate_limit
 
         fetch_timeout = _FETCH_TIMEOUT_SECONDS
         _check_rate_limit(user_id)
-        puppeteer_tools, navigate_tool = await get_puppeteer_tools_and_navigate()
-        for _t in puppeteer_tools:
-            if getattr(_t, "name", None) == "puppeteer_screenshot":
-                screenshot_coroutine = _t.coroutine
-        if navigate_tool is not None:
-            navigate_coroutine = navigate_tool.coroutine
+        puppeteer_available = True
     except Exception as e:
         _LOGGER.warning(
             "Puppeteer no disponible para user_id=%s; se sigue sin "
@@ -721,11 +729,14 @@ async def run_agent(
                 }
 
         # UNICO camino para generar el diagrama: siempre server-side.
-        if is_valid and screenshot_coroutine is not None:
+        # `_render_mermaid_server_side` abre y gestiona su propia sesion
+        # MCP (navigate + screenshot en la misma sesion); ya no dependemos
+        # de la señal vestigial `screenshot_coroutine`, que quedaba en
+        # None (y por lo tanto nunca renderizaba) si el allow-list de
+        # tools no incluia `puppeteer_screenshot`.
+        if is_valid and puppeteer_available:
             attachment = await _render_mermaid_server_side(
                 mermaid_code,
-                navigate_coroutine=navigate_coroutine,
-                screenshot_coroutine=screenshot_coroutine,
                 fetch_timeout=fetch_timeout,
             )
             if attachment is not None:

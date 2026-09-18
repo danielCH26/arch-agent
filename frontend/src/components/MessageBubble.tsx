@@ -479,13 +479,21 @@ function DiagramAttachments({
     setFeedback('')
   }
 
-  const handleSendAdjustment = (index: number) => {
+  const handleSendAdjustment = async (index: number) => {
     const trimmed = feedback.trim()
     if (!trimmed) {
       setDecisionError('Describe el cambio que necesitas antes de enviarlo.')
       return
     }
-    if (projectId) void submitDiagramDecision(projectId, 'modify', trimmed)
+    setDecisionError('')
+    if (projectId) {
+      try {
+        await submitDiagramDecision(projectId, 'modify', trimmed)
+      } catch (err) {
+        setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+        return
+      }
+    }
     setDecidedFor((prev) => ({ ...prev, [index]: 'Se registró tu solicitud de cambios.' }))
     // El prompt completo (con instrucciones + Mermaid anterior) es lo que
     // necesita el agente para regenerar el diagrama, pero el usuario solo

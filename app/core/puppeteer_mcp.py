@@ -412,9 +412,9 @@ async def get_puppeteer_tools_and_navigate(
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError as e:
-        raise PuppeteerUnavailable("puppeteer_timeout", "Puppeteer tool fetch timed out after 15.0s") from e
+        raise PuppeteerUnavailable("Puppeteer tool fetch timed out after 15.0s", reason="puppeteer_timeout") from e
     except Exception as e:
-        raise PuppeteerUnavailable("puppeteer_unavailable", str(e)) from e
+        raise PuppeteerUnavailable(str(e), reason="puppeteer_unavailable") from e
 
     filtered = [t for t in raw if getattr(t, "name", None) in _PUPPETEER_ALLOWED_TOOLS]
     dropped = [t.name for t in raw if getattr(t, "name", None) not in _PUPPETEER_ALLOWED_TOOLS]

@@ -12,11 +12,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.dependencies import get_current_user
 from app.core.attachment_tokens import build_attachment_url
 from app.core.database import SessionLocal
+from app.core.session_store import record_approval_decision
 from app.models.message import Message
 from app.models.project import Project
 from pydantic import BaseModel
-from app.models.approval import Approval
-from app.models.session import UserSession
 
 router = APIRouter(prefix="/api/diagrams", tags=["diagrams"])
 
@@ -74,19 +73,7 @@ def diagram_history(
     finally:
         db.close()
 
-from typing import Literal, Optional
-
-from pydantic import BaseModel
-from app.models.approval import Approval
-from app.models.session import UserSession
-
 PHASE = "diagram"
-
-DECISION_TO_DB = {
-    "approve": "approved",
-    "modify": "modified",
-    "reject": "rejected",
-}
 
 
 class DiagramDecisionIn(BaseModel):
@@ -106,7 +93,15 @@ def decide_diagram(
     current_user: dict = Depends(get_current_user),
 ) -> DiagramDecisionOut:
     """Registra la decisión del usuario sobre el diagrama (tabla approvals,
-    phase="diagram"), mismo mecanismo que /elicitation/decision."""
+    phase="diagram"), mismo mecanismo que /elicitation/decision y
+    /proposal/decision.
+
+    Antes lanzaba 400 si no había una `UserSession` todavía, mientras que
+    /proposal/decision la creaba de forma perezosa con
+    `ensure_user_session` -- un usuario podía aprobar la propuesta pero no
+    el diagrama en su primera interacción. `record_approval_decision`
+    unifica el criterio: la sesión se crea si falta, en vez de bloquear.
+    """
     if body.decision == "modify" and not (body.feedback and body.feedback.strip()):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -128,20 +123,12 @@ def decide_diagram(
                 detail="Proyecto no encontrado",
             )
 
-        session_row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
-        if session_row is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No hay una sesión activa para este proyecto.",
-            )
-
-        db.add(
-            Approval(
-                session_id=session_row.id,
-                phase=PHASE,
-                decision=DECISION_TO_DB[body.decision],
-                feedback=body.feedback,
-            )
+        record_approval_decision(
+            db,
+            user_id=user_id,
+            phase=PHASE,
+            decision=body.decision,
+            feedback=body.feedback,
         )
         db.commit()
 

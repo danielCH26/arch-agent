@@ -46,12 +46,31 @@ def _label_has_unquoted_specials(label: str) -> bool:
     return any(ch in label for ch in "()\"")
 
 
+_FLOWCHART_TYPES = ("flowchart", "graph")
+
+
+def _diagram_type(code: str) -> str:
+    stripped = code.strip()
+    first_line = stripped.splitlines()[0] if stripped else ""
+    return first_line.strip()
+
+
 def sanitize_mermaid_labels(code: str) -> str:
     """Auto-corrige labels de nodo que romperian el parser de Mermaid,
     envolviendolos en comillas. Se llama ANTES de validate_mermaid()
     para que el caso comun (parentesis/barras sin comillas) no llegue
     a rechazarse.
+
+    Solo aplica a diagramas de flujo (`flowchart`/`graph`): `[...]` es
+    sintaxis de nodo unicamente ahi. En `sequenceDiagram` o
+    `classDiagram`, corchetes con ese mismo texto tienen otro
+    significado (p. ej. mensajes o anotaciones), y aplicar este regex
+    sobre todo el documento corrompia esa sintaxis (bug real, HU6).
     """
+    first_line = _diagram_type(code)
+    if not any(first_line.startswith(t) for t in _FLOWCHART_TYPES):
+        return code
+
     def _fix(match: re.Match) -> str:
         label = match.group(1)
         if _label_has_unquoted_specials(label):
