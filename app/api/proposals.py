@@ -34,7 +34,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core.database import SessionLocal
-from app.core.message_store import ensure_user_session
+from app.core.session_store import record_approval_decision
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
@@ -45,12 +45,6 @@ router = APIRouter(prefix="/api/projects", tags=["proposal"])
 # Se referencia por índice y no como string suelto, igual que en
 # elicitation.py, para no desalinearse si cambia el orden de fases.
 PHASE = AVAILABLE_PHASES[1]  # "propuesta"
-
-DECISION_TO_DB = {
-    "approve": "approved",
-    "modify": "modified",
-    "reject": "rejected",
-}
 
 # Tope defensivo: el snapshot va dentro de un JSONB compartido con el
 # estado de elicitación. Una propuesta larguísima (o un paste accidental)
@@ -166,23 +160,34 @@ async def decide_proposal(
 
     db = SessionLocal()
     try:
-        # ensure_ en vez de 400 como hace elicitation: acá el usuario puede
-        # llegar desde el chat sin haber pasado nunca por /elicitation, y no
-        # tiene sentido bloquearlo por una fila de bookkeeping.
-        session_id = ensure_user_session(db, user_id)
-        session_row = db.query(UserSession).filter(UserSession.id == session_id).first()
+        # record_approval_decision hace ensure_user_session por dentro: el
+        # usuario puede llegar desde el chat sin haber pasado nunca por
+        # /elicitation, y no tiene sentido bloquearlo por una fila de
+        # bookkeeping. Pero OJO: la llamamos DESPUÉS de validar que haya
+        # snapshot para 'approve' (más abajo) -- si la llamáramos antes,
+        # el 400 de "no hay propuesta que aprobar" dejaría un `flush()`
+        # sin commitear colgado en la sesión, dependiendo del rollback
+        # del `except HTTPException` para no persistir nada. Validar
+        # primero evita ese acoplamiento por completo.
+        session_row = (
+            db.query(UserSession).filter(UserSession.user_id == user_id).first()
+        )
         project = (
             db.query(Project)
             .filter(Project.id == project_id, Project.user_id == user_id)
             .first()
         )
 
-        engram_state, project_state = _load_project_state(session_row, project_id)
+        engram_state, project_state = (
+            _load_project_state(session_row, project_id)
+            if session_row is not None
+            else ({}, {})
+        )
 
         snapshot = (body.proposal_text or "").strip()
-        if not snapshot:
+        if not snapshot and session_row is not None:
             snapshot = _latest_assistant_text(
-                db, session_id=session_id, project_id=project_id, user_id=user_id
+                db, session_id=session_row.id, project_id=project_id, user_id=user_id
             ) or ""
 
         if body.decision == "approve":
@@ -215,17 +220,23 @@ async def decide_proposal(
                 else "Propuesta rechazada."
             )
 
+        # Ahora sí, con la validación ya pasada: registra la decisión
+        # (crea la UserSession si todavía no existía).
+        approval = record_approval_decision(
+            db,
+            user_id=user_id,
+            phase=PHASE,
+            decision=body.decision,
+            feedback=body.feedback,
+        )
+        session_id = approval.session_id
+        if session_row is None:
+            session_row = db.query(UserSession).filter(UserSession.id == session_id).first()
+
         engram_state[_project_key(project_id)] = project_state
         session_row.engram_state = engram_state
         flag_modified(session_row, "engram_state")
 
-        approval = Approval(
-            session_id=session_id,
-            phase=PHASE,
-            decision=DECISION_TO_DB[body.decision],
-            feedback=body.feedback,
-        )
-        db.add(approval)
         db.commit()
         db.refresh(approval)
 

@@ -1,6 +1,9 @@
+from sqlalchemy.orm import Session
+from app.core.message_store import ensure_user_session
 from app.core.database import SessionLocal
 from app.models.session import UserSession
 from app.models.project import Project
+from app.models.approval import Approval
 
 def save_session_state(user_id: int, project_id: int = None, active_phase: str = None, engram_state: dict = None):
     db = SessionLocal()
@@ -22,6 +25,7 @@ def save_session_state(user_id: int, project_id: int = None, active_phase: str =
     finally:
         db.close()
 
+
 def load_session_state(user_id: int) -> dict | None:
     db = SessionLocal()
     try:
@@ -35,3 +39,38 @@ def load_session_state(user_id: int) -> dict | None:
         }
     finally:
         db.close()
+DECISION_TO_DB = {
+    "approve": "approved",
+    "modify": "modified",
+    "reject": "rejected",
+}
+
+
+def record_approval_decision(
+    db: Session,
+    *,
+    user_id: int,
+    phase: str,
+    decision: str,
+    feedback: str | None = None,
+) -> Approval:
+    """Registra una fila en `approvals` para `phase`, creando la
+    `UserSession` si todavía no existe (via `ensure_user_session`) en
+    vez de exigir que ya haya una y tirar 400 (criterio unificado,
+    ver nota en diagrams.py::decide_diagram).
+
+    No hace `db.commit()` -- el caller controla la transacción, igual
+    que antes lo hacían diagrams.py/proposals.py/elicitation.py cada
+    uno con su propio `db.add(...)` + commit.
+    """
+    session_id = ensure_user_session(db, user_id)
+
+    approval = Approval(
+        session_id=session_id,
+        phase=phase,
+        decision=DECISION_TO_DB[decision],
+        feedback=feedback,
+    )
+    db.add(approval)
+    db.flush()
+    return approval
