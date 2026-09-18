@@ -195,10 +195,29 @@ def _error(message):
     return f"event: error\ndata: {json.dumps(message, ensure_ascii=False)}\n\n"
 
 
-def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
-    """Patch ``build_langchain_model``, ``similarity_search`` and ``run_agent``.
+def _patch_chat_route(*, rag_docs=None, run_agent_events=None, session_local=None):
+    """Patch ``build_langchain_model``, ``similarity_search``, ``SessionLocal``
+    and ``run_agent`` so the route can run end-to-end with NO live Postgres.
 
     Returns a list of patches applied so the caller can pop them in teardown.
+
+    PR #76 review fix (round 2, B3): the F12 liveness check
+    (``with SessionLocal() as _db_probe: _db_probe.execute(...)``) runs BEFORE
+    any other DB op and raises 503 on ``SQLAlchemyError``. The test conftest
+    points ``DATABASE_URL`` at a Postgres role that never exists in the test
+    environment, so the 12 SSE-stream tests all hit 503. We patch
+    ``app.api.chat.SessionLocal`` here with a no-op context manager that
+    returns ``1`` for ``SELECT 1``; the dedicated ``TestPostgresLivenessCheck``
+    test still exercises the real failure path by passing
+    ``session_local=<broken mock>`` and asserting 503.
+
+    Args:
+        rag_docs: RAG documents to return from ``similarity_search``.
+        run_agent_events: Iterable of SSE-shaped dicts the mocked ``run_agent``
+            yields in order.
+        session_local: Optional override for the ``SessionLocal`` mock used by
+            the liveness check. ``None`` (default) installs a healthy mock so
+            the chat route's pre-flight probe succeeds.
     """
     from app.api import chat as chat_module
 
@@ -231,7 +250,43 @@ def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
     p_lf = patch.object(chat_module, "get_langfuse_handler", return_value=None)
     patches.append(p_lf)
 
+    # Liveness check mock. The chat route calls
+    # ``with SessionLocal() as _db_probe: _db_probe.execute(...).scalar()``,
+    # so the mock must (a) be usable as a context manager and (b) chain
+    # ``.execute(<text>)`` → ``.scalar()`` → a non-error result.
+    if session_local is None:
+        session_local = _healthy_session_local_factory()
+    p_session = patch.object(chat_module, "SessionLocal", session_local)
+    patches.append(p_session)
+
     return patches
+
+
+def _healthy_session_local_factory():
+    """Return a callable that produces a healthy ``SessionLocal`` mock.
+
+    The returned factory mimics ``sqlalchemy.orm.sessionmaker()``: each call
+    returns a fresh context-manager-shaped object whose ``.execute(<text>)``
+    returns a chain ending in ``.scalar() == 1``. The liveness check
+    (``SELECT 1``) succeeds without ever touching Postgres, so the rest of
+    the chat route runs normally. ``TestPostgresLivenessCheck`` injects a
+    broken factory directly to assert the 503 path.
+    """
+
+    def _factory():
+        session = MagicMock(name="fake-session")
+        result = MagicMock(name="fake-result")
+        result.scalar.return_value = 1
+        session.execute.return_value = result
+
+        # ``with SessionLocal() as _db_probe:`` — make the instance a
+        # context manager whose __enter__ returns itself and __exit__ is a
+        # no-op so any commit/rollback paths inside the route still work.
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        return session
+
+    return _factory
 
 
 async def _call_chat(chat_module, body, current_user):
