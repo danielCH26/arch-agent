@@ -102,6 +102,11 @@ class PhaseStatusItem(BaseModel):
     status: str  # "active" | "approved" | "pending"
     ready: bool
     current_decision: Optional[dict[str, Any]] = None
+    # HU11 (REQ-SA-26 / design §D): true iff a past-phase modify exists
+    # whose ``created_at`` is newer than the latest ``approve`` of any
+    # downstream phase q. Computed on read; defaults to false for
+    # backward-compat with HU10 clients that ignore the field.
+    stale: bool = False
 
 
 class PhaseListOut(BaseModel):
@@ -479,6 +484,13 @@ async def list_phases(
         for row in approval_rows:
             latest_by_phase.setdefault(row.phase, row)
 
+        # HU11 (REQ-SA-26): compute ``stale`` per phase in a single pure-
+        # Python pass over the already-fetched ``approval_rows``. No new
+        # column, no migration, no index. The marker is ADVISORY — the
+        # SPA uses it to paint a yellow ⚠ badge, but the audit rows are
+        # never touched.
+        stale_map = compute_stale(approval_rows, current_phase)
+
         phases: list[PhaseStatusItem] = []
         for name in AVAILABLE_PHASES:
             row = latest_by_phase.get(name)
@@ -505,12 +517,87 @@ async def list_phases(
                     status=status_label,
                     ready=(name == current_phase and bool(project.phase_ready)),
                     current_decision=decision_dict,
+                    stale=stale_map.get(name, False),
                 )
             )
 
         return PhaseListOut(phases=phases, current_phase=current_phase)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# HU11 (REQ-SA-26): stale marker algorithm.
+#
+# For phase ``p`` (strictly before ``current_phase``), ``stale[p] = True``
+# iff there exists a ``modify`` row(p) whose ``created_at`` is strictly
+# greater than the latest ``approve`` row of any later phase q. Idempotent
+# boolean (not a count) — two modifies on the same upstream phase do not
+# double-flip the flag; cleared on re-approve (the new approve row is the
+# newest, so no later phase can compare newer).
+# ---------------------------------------------------------------------------
+
+
+def compute_stale(
+    approval_rows: list, current_phase: str
+) -> dict[str, bool]:
+    """Return ``{phase: stale_bool}`` for every phase in AVAILABLE_PHASES.
+
+    Pure function — exposed at module level so ``tests/api/test_list_phases_stale.py``
+    can exercise the algorithm directly with synthetic approval rows.
+
+    Algorithm (REQ-SA-26):
+
+    1. For each past phase ``p`` (strictly before ``current_phase``),
+       find its latest ``modify`` row timestamp.
+    2. For every later phase ``q`` (``q > p``), check whether ``q``'s
+       latest ``approve`` row timestamp is older than ``p``'s modify.
+    3. If yes, ``stale[q] = True``. The modified phase ``p`` itself
+       stays ``False`` — it IS the source of freshness (REQ-SA-26 spec
+       SCN-SA-26.1: ``propuesta`` stays false when it is the modified
+       phase).
+
+    Idempotent boolean (not a count); cleared on re-approve (the new
+    approve row is the newest on ``p`` so no later approve can compare
+    newer).
+    """
+    stale: dict[str, bool] = {p: False for p in AVAILABLE_PHASES}
+    if current_phase not in AVAILABLE_PHASES:
+        return stale
+
+    current_idx = AVAILABLE_PHASES.index(current_phase)
+
+    # Pre-compute: latest modify per phase, latest approve per phase.
+    latest_modify: dict[str, Any] = {}
+    latest_approve: dict[str, Any] = {}
+    for row in approval_rows:
+        phase = getattr(row, "phase", None)
+        decision = getattr(row, "decision", None)
+        ts = getattr(row, "created_at", None)
+        if phase is None or ts is None:
+            continue
+        if decision in ("modified", "modify"):
+            if latest_modify.get(phase) is None or ts > latest_modify[phase]:
+                latest_modify[phase] = ts
+        elif decision in ("approved", "approve"):
+            if latest_approve.get(phase) is None or ts > latest_approve[phase]:
+                latest_approve[phase] = ts
+
+    # For each past phase that has a modify, mark downstream phases stale.
+    for i, p in enumerate(AVAILABLE_PHASES):
+        if i >= current_idx:
+            continue
+        p_modify = latest_modify.get(p)
+        if p_modify is None:
+            continue
+        # Mark every later phase q stale if its latest approve is older.
+        for j in range(i + 1, current_idx):
+            q = AVAILABLE_PHASES[j]
+            q_approve = latest_approve.get(q)
+            if q_approve is None or p_modify > q_approve:
+                stale[q] = True
+
+    return stale
 
 
 # ---------------------------------------------------------------------------
