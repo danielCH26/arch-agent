@@ -182,8 +182,6 @@ Cobertura nueva, para que QA sepa qué ya corre en CI y qué sigue siendo manual
 | `tests/api/test_chat.py::test_chat_stream_persists_display_message_only_on_user_row` | Integración end-to-end del POST `/api/chat`: `display_message` se persiste en la fila `role="user"`, nunca en la de `role="assistant"` (requiere Postgres de test levantado, igual que el resto de `test_chat.py`) |
 | `tests/api/test_chat.py::test_chat_stream_display_message_omitted_keeps_display_content_none` | Caso mayoritario (sin `display_message`): `display_content` queda `None`, sin regresión |
 | `tests/api/test_chat_history.py::TestChatHistoryDisplayContent` | `GET /api/chat/history` devuelve `display_content or content`; filas pre-migración (sin `display_content` seteado) no se rompen |
-| `frontend/src/stores/__tests__/chatStore.test.ts` (describe nuevo) | `sendMessage` manda `displayText` como 4º argumento a `createChatStream`; la burbuja local muestra `displayText`, no el prompt técnico; con mensajes normales el 4º argumento es `undefined` |
-| `frontend/src/api/__tests__/chat.test.ts` (describe nuevo) | `createChatStream` incluye `display_message` en el body del POST solo cuando se pasa; lo omite (no manda `null` ni string vacío) cuando no |
 
 Correrlos:
 ```bash
