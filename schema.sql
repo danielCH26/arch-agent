@@ -125,13 +125,23 @@ CREATE TABLE IF NOT EXISTS approvals (
     id SERIAL PRIMARY KEY,
     session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
     phase VARCHAR(50) NOT NULL,
-    decision VARCHAR(20) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
+    -- HU10 (migration 0015): widened CHECK admits both participle forms (legacy F05)
+    -- and imperative forms (HU10 body verbs) so existing rows stay valid AND the
+    -- generic decision endpoint can insert without a destructive data migration.
+    decision VARCHAR(20) NOT NULL
+        CHECK (decision IN ('approved', 'modified', 'rejected', 'approve', 'modify', 'reject')),
     feedback TEXT,
+    -- HU10 (migration 0015): JSONB snapshot of the prior content for Modify flow.
+    previous_output JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_approvals_session_phase
     ON approvals (session_id, phase);
+-- HU10 (migration 0015): index for "last approved decision per (session, phase)"
+-- read path used by the 60s idempotency window check.
+CREATE INDEX IF NOT EXISTS idx_approvals_session_phase_created
+    ON approvals (session_id, phase, created_at DESC);
 
 -- =============================================================================
 -- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
