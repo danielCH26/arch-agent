@@ -1,4 +1,4 @@
-﻿"""Proposal generation boundary.
+"""Proposal generation boundary.
 
 The persistence contract follows ADR-008 and the streaming transport follows
 ADR-009. Slice 1 shipped the sync skeleton + slice-2 stub; slice 2 wires the

@@ -1,4 +1,4 @@
-﻿from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, String, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, String, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from app.core.database import Base
 

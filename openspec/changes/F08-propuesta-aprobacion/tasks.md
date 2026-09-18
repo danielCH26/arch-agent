@@ -1,4 +1,4 @@
-﻿# Tasks: F08 â€” Propuesta + AprobaciÃ³n
+# Tasks: F08 â€” Propuesta + AprobaciÃ³n
 
 | Field | Value |
 |---|---|

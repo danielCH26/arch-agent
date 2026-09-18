@@ -1,4 +1,4 @@
-﻿-- Migration 0014: proposal generation, interaction auditing, and proposal_approvals (F08)
+-- Migration 0014: proposal generation, interaction auditing, and proposal_approvals (F08)
 -- Renamed from 0008 to avoid number collision with F05's 0007/0008 approvals migrations.
 
 CREATE TABLE IF NOT EXISTS proposals (

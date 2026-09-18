@@ -1,4 +1,4 @@
-﻿"""Tests for ``app/api/proposals.py`` router (slice 2).
+"""Tests for ``app/api/proposals.py`` router (slice 2).
 
 Covered SCNs:
 - SCN-1: proposal round-trips with three sections (asserted via

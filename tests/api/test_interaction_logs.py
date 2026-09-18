@@ -1,4 +1,4 @@
-﻿from app.models import InteractionLog, Proposal, ProposalApproval
+from app.models import InteractionLog, Proposal, ProposalApproval
 
 
 def test_interaction_log_models_import_with_foreign_keys():

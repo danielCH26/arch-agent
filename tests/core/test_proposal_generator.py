@@ -1,4 +1,4 @@
-﻿from app.core.proposal_generator import ProposalGenerator
+from app.core.proposal_generator import ProposalGenerator
 
 
 def test_generate_sync_returns_proposal_skeleton():

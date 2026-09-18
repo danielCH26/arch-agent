@@ -1,4 +1,4 @@
-﻿from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, String, Text, TIMESTAMP, func
+from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, String, Text, TIMESTAMP, func
 from app.core.database import Base
 
 
