@@ -6,6 +6,13 @@ interface PhaseFeedbackComposerProps {
   initialPayload?: Record<string, unknown>
   onSubmit: (feedback: string, payload?: Record<string, unknown>) => Promise<void>
   onCancel: () => void
+  /**
+   * HU11 (REQ-SA-25 / design §F.1): when the composer is mounted in
+   * ``<PhaseActions mode='past'>``, pass the project's current phase so
+   * the placeholder copy makes the past-phase intent explicit. Ignored
+   * in current-mode (the default) — same UX as HU10.
+   */
+  currentPhase?: Phase
 }
 
 /**
@@ -22,6 +29,7 @@ export function PhaseFeedbackComposer({
   initialPayload,
   onSubmit,
   onCancel,
+  currentPhase,
 }: PhaseFeedbackComposerProps) {
   const [feedback, setFeedback] = useState('')
   const [patron, setPatron] = useState<string>(
@@ -107,7 +115,9 @@ export function PhaseFeedbackComposer({
       )}
 
       <label className="text-sm font-medium text-gray-700">
-        Comentario (feedback)
+        {currentPhase && currentPhase !== phase
+          ? `Ajuste para ${phase} (la fase actual sigue siendo ${currentPhase})`
+          : 'Comentario (feedback)'}
         <textarea
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
@@ -115,6 +125,11 @@ export function PhaseFeedbackComposer({
           className="mt-1 block w-full p-2 border border-gray-300 rounded"
           rows={3}
           data-testid={`phase-feedback-composer-feedback-${phase}`}
+          placeholder={
+            currentPhase && currentPhase !== phase
+              ? `Cuéntale al modelo qué cambiar en ${phase}...`
+              : undefined
+          }
         />
       </label>
 

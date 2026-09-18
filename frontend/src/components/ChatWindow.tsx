@@ -86,6 +86,18 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
       ? pendingDecision[typedCurrentPhase]
       : null
 
+  // HU11 (REQ-SA-25 / T8): mount <PhaseActions mode='past'> when a
+  // pending decision exists on a phase OTHER than the current phase.
+  // Render both with ``key={phase}`` so React reconciles them
+  // independently (design §K — "Current + past <PhaseActions>
+  // coexistence race").
+  const pastPendingPhases = (Object.keys(pendingDecision) as Phase[]).filter(
+    (p) =>
+      pendingDecision[p] !== null &&
+      typedCurrentPhase !== null &&
+      p !== typedCurrentPhase,
+  )
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -129,8 +141,8 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
           />
         )}
 
-        {/* HU11 (REQ-SA-26): per-phase audit panel. The Editar button
-            wires into approvalsStore.setPending(pastPhase) — the typed
+{/* HU11 (REQ-SA-26): per-phase audit panel. The Editar button
+            wires into approvalsStore.setPending(pastPhase) -- the typed
             action that HU10 added but never called. T8 mounts the
             <PhaseActions mode='past'> when setPending fires. */}
         <PhaseHistory
@@ -138,6 +150,49 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
           currentPhase={typedCurrentPhase}
           onEdit={(p) => setPending(p)}
         />
+
+        {/* HU11 (REQ-SA-25 / T8): past-phase <PhaseActions mode='past'>.
+            Mounted inline for every past phase whose pendingDecision slot
+            is set. ``key={phase}`` keeps React reconciliation deterministic
+            when multiple past-mode actions coexist. */}
+        {pastPendingPhases.map((pastPhase) => (
+          <PhaseActions
+            key={pastPhase}
+            phase={pastPhase}
+            mode="past"
+            currentPhase={typedCurrentPhase ?? undefined}
+            currentDecision={
+              (historyByPhase[pastPhase] ?? [])[0] ?? null
+            }
+            onApprove={async () => {
+              // Past-mode never approves directly; the approve button is
+              // hidden. Defensive wiring in case the UI later adds it.
+              await decide(projectId, pastPhase, { action: 'approve' })
+            }}
+            onModify={async (feedback, payload) => {
+              await decide(projectId, pastPhase, {
+                action: 'modify',
+                feedback,
+                payload,
+              })
+              // After the audit row is recorded, fire the SSE regenerate.
+              const regeneratePhase =
+                approvalsStore.getState().regeneratePhase
+              if (regeneratePhase) {
+                await regeneratePhase(projectId, pastPhase, {
+                  feedback,
+                  payload,
+                })
+              }
+            }}
+            onReject={async (feedback) => {
+              await decide(projectId, pastPhase, {
+                action: 'reject',
+                feedback,
+              })
+            }}
+          />
+        ))}
 
         {isStreaming && (
           <div className="flex justify-start">

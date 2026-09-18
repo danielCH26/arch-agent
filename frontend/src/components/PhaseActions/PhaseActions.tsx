@@ -9,6 +9,19 @@ interface PhaseActionsProps {
   onModify: (feedback: string, payload?: Record<string, unknown>) => Promise<void>
   onReject: (feedback: string) => Promise<void>
   disabled?: boolean
+  /**
+   * HU11 (REQ-SA-25 / design §F.1): ``mode='past'`` is rendered when the
+   * user clicked Editar on a past-phase row of <PhaseHistory>. It hides
+   * Aprobar/Rechazar (the prior approval stays intact — HU11 AC literal
+   * compliance) and shows an inline banner clarifying the current phase.
+   * Default ``'current'`` preserves the HU10 button layout.
+   */
+  mode?: 'current' | 'past'
+  /**
+   * HU11: the project's actual current phase, used in the past-mode banner
+   * to disambiguate "you're editing a prior phase" from the live one.
+   */
+  currentPhase?: Phase
 }
 
 /**
@@ -22,6 +35,9 @@ interface PhaseActionsProps {
  *
  * Click handlers fire POSTs immediately for approve / reject; modify
  * opens <PhaseFeedbackComposer> inline to capture the feedback string.
+ *
+ * HU11: in ``mode='past'`` the Aprobar/Rechazar buttons are hidden and a
+ * banner makes the user's intent explicit. Phase stays modifiable.
  */
 export function PhaseActions({
   phase,
@@ -30,6 +46,8 @@ export function PhaseActions({
   onModify,
   onReject,
   disabled,
+  mode = 'current',
+  currentPhase,
 }: PhaseActionsProps) {
   const [composerOpen, setComposerOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -72,12 +90,14 @@ export function PhaseActions({
   }
 
   const showModify = phase !== 'final'
+  const isPast = mode === 'past'
 
   return (
     <div
       className="flex flex-col gap-2 p-3 bg-white border border-gray-200 rounded-lg shadow-sm"
       data-testid={`phase-actions-${phase}`}
       aria-busy={busy}
+      data-phase-mode={mode}
     >
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">
@@ -94,38 +114,58 @@ export function PhaseActions({
         )}
       </div>
 
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={handleApprove}
-          disabled={disabled || busy}
-          className="flex-1 px-4 py-2 bg-green-600 text rounded hover:bg-green-700 disabled:bg-green-300"
-          data-testid={`phase-actions-approve-${phase}`}
+      {isPast && (
+        <div
+          className="text-xs px-2 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded"
+          data-testid={`phase-actions-past-banner-${phase}`}
+          role="status"
         >
-          Aprobar
-        </button>
+          Estás editando una fase anterior ({phase}). La fase actual sigue
+          siendo {currentPhase ?? 'desconocida'}. Las fases posteriores
+          marcadas con ⚠ están aprobadas pero pueden estar desactualizadas.
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {!isPast && (
+          <button
+            type="button"
+            onClick={handleApprove}
+            disabled={disabled || busy}
+            className="flex-1 px-4 py-2 bg-green-600 text rounded hover:bg-green-700 disabled:bg-green-300"
+            data-testid={`phase-actions-approve-${phase}`}
+          >
+            Aprobar
+          </button>
+        )}
 
         {showModify && (
           <button
             type="button"
             onClick={() => setComposerOpen(true)}
             disabled={disabled || busy}
-            className="flex-1 px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:bg-yellow-300"
+            className={
+              isPast
+                ? 'flex-1 px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:bg-yellow-300'
+                : 'flex-1 px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:bg-yellow-300'
+            }
             data-testid={`phase-actions-modify-${phase}`}
           >
-            Modificar
+            {isPast ? 'Regenerar' : 'Modificar'}
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={handleRejectClick}
-          disabled={disabled || busy}
-          className="flex-1 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-red-300"
-          data-testid={`phase-actions-reject-${phase}`}
-        >
-          Rechazar
-        </button>
+        {!isPast && (
+          <button
+            type="button"
+            onClick={handleRejectClick}
+            disabled={disabled || busy}
+            className="flex-1 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-red-300"
+            data-testid={`phase-actions-reject-${phase}`}
+          >
+            Rechazar
+          </button>
+        )}
       </div>
 
       {error && (
@@ -141,6 +181,7 @@ export function PhaseActions({
       {composerOpen && showModify && (
         <PhaseFeedbackComposer
           phase={phase}
+          currentPhase={currentPhase}
           onSubmit={handleModify}
           onCancel={() => setComposerOpen(false)}
         />
