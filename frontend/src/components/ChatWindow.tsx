@@ -7,6 +7,7 @@ import type { Phase } from '../api/approvals'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
 import { PhaseActions } from './PhaseActions/PhaseActions'
+import { PhaseHistory } from './PhaseHistory/PhaseHistory'
 import { ProposalCard } from './proposals/ProposalCard'
 
 interface ChatWindowProps {
@@ -37,7 +38,9 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
   const proposalInFlight = proposalsStore((s) => s.inFlight)
   const pendingDecision = approvalsStore((s) => s.pendingDecision)
   const historyByPhase = approvalsStore((s) => s.historyByPhase)
+  const phases = approvalsStore((s) => s.phases)
   const decide = approvalsStore((s) => s.decide)
+  const setPending = approvalsStore((s) => s.setPending)
   const fetchApprovalsHistory = approvalsStore((s) => s.fetchHistory)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -125,6 +128,16 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
             }}
           />
         )}
+
+        {/* HU11 (REQ-SA-26): per-phase audit panel. The Editar button
+            wires into approvalsStore.setPending(pastPhase) — the typed
+            action that HU10 added but never called. T8 mounts the
+            <PhaseActions mode='past'> when setPending fires. */}
+        <PhaseHistory
+          phases={phases}
+          currentPhase={typedCurrentPhase}
+          onEdit={(p) => setPending(p)}
+        />
 
         {isStreaming && (
           <div className="flex justify-start">
