@@ -136,6 +136,7 @@ async def chat(
         )
 
     # Validate project ownership if provided
+    project: Any = None
     if body.project_id is not None:
         db = SessionLocal()
         try:
@@ -235,8 +236,15 @@ async def chat(
         """
         SSE generator that yields events as they arrive from the agent runtime.
 
-        Ordering (design.md Γö¼┬║5.2):
-          sources -> (tool_start/tool_end)* -> token*N -> done
+        Ordering (design.md §5.2):
+          (phase_locked?) -> sources -> (tool_start/tool_end)* -> token*N -> done
+
+        HU10 (REQ-SA-11 / REQ-SA-12): ``event: phase_locked`` is emitted AS
+        THE FIRST EVENT when ``project.phase_ready`` is true for the current
+        phase. Non-blocking — the chat stream continues normally after the
+        signal so the user can still send follow-up questions. The frontend
+        surfaces the lock via a toast / banner pointing to ``/advance``; the
+        server never refuses a chat request because of the gate.
 
         ``sources`` is emitted by this route BEFORE the agent runs (the agent
         reuses the pre-fetched ``relevant_docs`` for system-prompt injection).
@@ -250,6 +258,16 @@ async def chat(
         fire-and-forgets the Engram mirror.
         """
         try:
+            # HU10 (REQ-SA-11): emit ``phase_locked`` first when the current
+            # phase is ready (i.e. the user has approved this phase but has
+            # not yet advanced). The chat response still streams; the FE
+            # uses the signal to show an "Avanzar" CTA.
+            if body.project_id is not None and project is not None and bool(getattr(project, "phase_ready", False)):
+                yield (
+                    f"event: phase_locked\n"
+                    f"data: {json.dumps({'phase': project.current_phase, 'phase_ready': True}, ensure_ascii=False)}\n\n"
+                )
+
             docs, rag_context = await retrieve_context()
 
             sources = [_doc_to_source(doc) for doc in docs]

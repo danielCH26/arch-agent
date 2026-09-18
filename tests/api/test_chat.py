@@ -969,3 +969,219 @@ def test_chat_stream_attachments_persisted_atomically_in_pre_done_tx(monkeypatch
 
     assert len(captured_attachments) == 1
     assert captured_attachments[0]["filename"] == "diagram.png"
+
+
+# ---------------------------------------------------------------------------
+# HU10 (REQ-SA-11): event: phase_locked emitted when phase_ready=True
+# ---------------------------------------------------------------------------
+
+
+def _patch_chat_route_with_project(*, run_agent_events, project_id, phase_ready=True, current_phase="propuesta"):
+    """Variant of ``_patch_chat_route`` that ALSO stubs the Project lookup so
+    the chat route's ``project.phase_ready`` branch is reachable."""
+    from app.api import chat as chat_module
+
+    patches = _patch_chat_route(run_agent_events=run_agent_events)
+
+    project = MagicMock(name="fake-project")
+    project.id = project_id
+    project.user_id = 1
+    project.current_phase = current_phase
+    project.phase_ready = phase_ready
+
+    # The chat route opens ``SessionLocal()`` twice in this flow: once for
+    # the liveness probe, once for the project ownership check. ``_patch_chat_route``
+    # already mocks the liveness-call factory. We need a SECOND SessionLocal
+    # for the ownership lookup. The cleanest path is to monkey-patch the
+    # chat module's ``SessionLocal`` to return a fresh MagicMock whose
+    # ``.query(...).filter(...).first()`` resolves to our project.
+    real_factory = chat_module.SessionLocal
+
+    def _project_factory():
+        s = MagicMock(name="fake-session-project")
+        s.__enter__ = MagicMock(return_value=s)
+        s.__exit__ = MagicMock(return_value=False)
+        # Project lookup chain: query(Project).filter().first()
+        q = MagicMock()
+        q.filter = MagicMock(return_value=q)
+        q.first = MagicMock(return_value=project)
+        s.query = MagicMock(return_value=q)
+        return s
+
+    # Wrap the existing factory: when ``.query(Project)`` is called, return
+    # our project; otherwise use the existing healthy mock.
+    def _wrap_factory():
+        outer_s = real_factory()
+        original_query = outer_s.query
+        q = MagicMock()
+        q.filter = MagicMock(return_value=q)
+        q.first = MagicMock(return_value=project)
+        outer_s.query = MagicMock(
+            side_effect=lambda model: q if model is project.__class__ else original_query(model)
+        )
+        return outer_s
+
+    # Simpler approach: have the test register its own SessionLocal mock
+    # that returns the project. We re-patch on top.
+    p_session = patch.object(
+        chat_module,
+        "SessionLocal",
+        _project_factory,
+    )
+    patches.append(p_session)
+    return patches
+
+
+def test_chat_emits_phase_locked_first_when_phase_ready_true():
+    """REQ-SA-11 / SCN-SA-11.1: ``event: phase_locked`` is the FIRST SSE
+    event when ``project.phase_ready`` is true. Chat still streams tokens
+    after the signal (REQ-SA-2.1: 0% advance without explicit approval,
+    but the chat itself is non-blocking)."""
+    from app.api import chat as chat_module
+
+    project = MagicMock()
+    project.id = 7
+    project.user_id = 1
+    project.current_phase = "propuesta"
+    project.phase_ready = True
+
+    s = MagicMock()
+    s.__enter__ = MagicMock(return_value=s)
+    s.__exit__ = MagicMock(return_value=False)
+    q = MagicMock()
+    q.filter = MagicMock(return_value=q)
+    q.first = MagicMock(return_value=project)
+    s.query = MagicMock(return_value=q)
+    # Make .execute().scalar() return 1 for the liveness probe.
+    result = MagicMock()
+    result.scalar.return_value = 1
+    s.execute.return_value = result
+
+    rag_doc = _empty_rag_doc()
+    with patch.object(chat_module, "build_langchain_model", return_value=MagicMock()):
+        with patch.object(
+            chat_module, "similarity_search",
+            return_value=(rag_doc, {"embedding_ms": 0, "search_ms": 0, "total_ms": 0}),
+        ):
+            with patch.object(
+                chat_module, "run_agent",
+                side_effect=_make_run_agent_mock(
+                    [{"event": "token", "data": "ok"}, {"event": "done", "data": None}]
+                ),
+            ):
+                with patch.object(chat_module, "get_langfuse_handler", return_value=None):
+                    with patch.object(chat_module, "SessionLocal", return_value=s):
+                        async def _drive():
+                            response = await chat_module.chat(
+                                body=chat_module.ChatRequest(
+                                    project_id=7, message="hi"
+                                ),
+                                current_user={"user_id": 1, "username": "architect"},
+                            )
+                            return await _drive_event_generator(response.body_iterator)
+
+                        chunks = asyncio.run(_drive())
+
+    body = "".join(chunks)
+    assert "event: phase_locked" in body
+    payload_line = next(
+        (line for line in body.split("\n") if line.startswith("data:") and "phase_locked" not in line and "propuesta" in line),
+        None,
+    )
+    # The data: line for phase_locked sits between the event: phase_locked
+    # header and the next blank line.
+    phase_locked_block = body.split("event: phase_locked", 1)[1].split("\n\n", 1)[0]
+    assert '"phase": "propuesta"' in phase_locked_block
+    assert '"phase_ready": true' in phase_locked_block
+    # ``phase_locked`` is the FIRST event -- appears before sources/tokens/done.
+    idx_locked = body.index("event: phase_locked")
+    assert "event: token" in body
+    idx_token = body.index("event: token")
+    assert idx_locked < idx_token
+
+
+def test_chat_does_not_emit_phase_locked_when_phase_ready_false():
+    """REQ-SA-11.2: ``phase_locked`` MUST NOT be emitted when
+    ``project.phase_ready`` is false (i.e. the user has not approved yet)."""
+    from app.api import chat as chat_module
+
+    project = MagicMock()
+    project.id = 7
+    project.user_id = 1
+    project.current_phase = "propuesta"
+    project.phase_ready = False  # not ready
+
+    s = MagicMock()
+    s.__enter__ = MagicMock(return_value=s)
+    s.__exit__ = MagicMock(return_value=False)
+    q = MagicMock()
+    q.filter = MagicMock(return_value=q)
+    q.first = MagicMock(return_value=project)
+    s.query = MagicMock(return_value=q)
+    result = MagicMock()
+    result.scalar.return_value = 1
+    s.execute.return_value = result
+
+    rag_doc = _empty_rag_doc()
+    with patch.object(chat_module, "build_langchain_model", return_value=MagicMock()):
+        with patch.object(
+            chat_module, "similarity_search",
+            return_value=(rag_doc, {"embedding_ms": 0, "search_ms": 0, "total_ms": 0}),
+        ):
+            with patch.object(
+                chat_module, "run_agent",
+                side_effect=_make_run_agent_mock(
+                    [{"event": "done", "data": None}]
+                ),
+            ):
+                with patch.object(chat_module, "get_langfuse_handler", return_value=None):
+                    with patch.object(chat_module, "SessionLocal", return_value=s):
+                        async def _drive():
+                            response = await chat_module.chat(
+                                body=chat_module.ChatRequest(
+                                    project_id=7, message="hi"
+                                ),
+                                current_user={"user_id": 1, "username": "architect"},
+                            )
+                            return await _drive_event_generator(response.body_iterator)
+
+                        chunks = asyncio.run(_drive())
+
+    body = "".join(chunks)
+    assert "event: phase_locked" not in body
+
+
+def test_chat_does_not_emit_phase_locked_without_project_id():
+    """When ``body.project_id is None`` (anonymous chat), there is no phase
+    to gate so ``phase_locked`` MUST NOT be emitted."""
+    from app.api import chat as chat_module
+
+    rag_doc = _empty_rag_doc()
+    with patch.object(chat_module, "build_langchain_model", return_value=MagicMock()):
+        with patch.object(
+            chat_module, "similarity_search",
+            return_value=(rag_doc, {"embedding_ms": 0, "search_ms": 0, "total_ms": 0}),
+        ):
+            with patch.object(
+                chat_module, "run_agent",
+                side_effect=_make_run_agent_mock(
+                    [{"event": "done", "data": None}]
+                ),
+            ):
+                with patch.object(chat_module, "get_langfuse_handler", return_value=None):
+                    with patch.object(
+                        chat_module, "SessionLocal", _healthy_session_local_factory()
+                    ):
+                        async def _drive():
+                            response = await chat_module.chat(
+                                body=chat_module.ChatRequest(
+                                    project_id=None, message="hi"
+                                ),
+                                current_user={"user_id": 1, "username": "architect"},
+                            )
+                            return await _drive_event_generator(response.body_iterator)
+
+                        chunks = asyncio.run(_drive())
+
+    body = "".join(chunks)
+    assert "event: phase_locked" not in body
