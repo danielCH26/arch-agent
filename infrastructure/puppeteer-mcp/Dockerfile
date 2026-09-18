@@ -25,7 +25,8 @@ ENV NODE_ENV=production \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_AUDIT=false \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false \
-    PUPPETEER_CACHE_DIR=/root/.cache/puppeteer
+    PUPPETEER_CACHE_DIR=/home/node/.cache/puppeteer \
+    HOME=/home/node
 
 # Chromium runtime dependencies + ca-certificates (HTTPS to upstream).
 #
@@ -116,6 +117,29 @@ COPY entrypoint.sh /entrypoint.sh
 # Strip CRs explicitly before chmod so this never breaks a build on a
 # CRLF checkout.
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+# PR #76 review fix (round 3, B2): Chromium refuses to launch as root
+# ("Running as root without --no-sandbox is not supported."). Drop to the
+# unprivileged ``node`` user that ships with ``node:20-bookworm-slim``.
+#
+# The build above ran as root (required for ``npm install -g`` into
+# ``/usr/local/lib/node_modules`` and for the Chromium warm-up to write
+# its cache). Those outputs are world-readable+executable by default, so
+# ``node`` can still resolve ``npx supergateway`` and ``npx
+# @modelcontextprotocol/server-puppeteer`` at runtime. The Chromium
+# cache is the only tree that needs an explicit ``chown`` -- it lives
+# under $HOME=/home/node/.cache/puppeteer now (set via ENV above), and
+# we hand ownership of the whole /home/node tree to ``node`` so the
+# runtime process can both read the pre-baked Chromium and write any
+# profile/state files Chromium creates at startup.
+#
+# /entrypoint.sh stays root:root with chmod 755 (world-readable+
+# executable), so the kernel can still exec it after the USER switch.
+# If we ever need ``node`` to write somewhere besides $HOME, add the
+# path here.
+RUN mkdir -p /home/node/.cache && chown -R node:node /home/node
+
+USER node
 
 EXPOSE 8931
 
