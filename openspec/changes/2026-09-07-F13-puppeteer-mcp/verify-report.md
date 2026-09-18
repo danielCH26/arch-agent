@@ -187,7 +187,7 @@ Exact match on the expected `True False False` triple — REQ-ATT-2 SCN-ATT-5 sa
 
 **Mermaid-only scope lock**: PASS, locked in three places:
 1. Frontmatter (line 8) — references both spec files' §Scope Confirmation
-2. §Decisión section 1 (lines 50-61) — explicit positive allow-list (only `puppeteer_screenshot` + hardened `evaluate`)
+2. §Decisión section 1 (lines 50-61) — explicit positive allow-list (only `puppeteer_screenshot`; `puppeteer_evaluate` was *promised* in the proposal as a hardened variant but the implementation dropped it for the security reasons documented in ADR-013 §Security; spec updated in PR #76 review fix #5 / B5 to match)
 3. §Decisiones NO tomadas (lines 173-175) — explicit deferral of HTML/navigate/evaluate beyond what the allow-list permits to F14
 
 **Hard invariants captured**:
