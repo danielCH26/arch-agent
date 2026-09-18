@@ -576,3 +576,323 @@ class TestGetLatestDecision:
             db, project.id, "requerimientos"
         )
         assert result is existing
+
+
+# ---------------------------------------------------------------------------
+# Past-phase modify (HU11 REQ-SA-27)
+#
+# HU10's ``_make_session`` fixture sets ``project.current_phase = phase`` in
+# every test (line 141) — which HIDES the cross-phase correctness gap that
+# HU11 closes. ``TestPastPhaseModify`` is the FIRST set of tests where the
+# project's current phase DIFFERS from the phase being modified. Each test
+# also builds the cross-phase fixtures that ``_build_previous_output``
+# needs to read (engram_state, messages.attachments).
+# ---------------------------------------------------------------------------
+
+
+def _make_past_phase_session(
+    *,
+    user_id: int,
+    project_id: int,
+    target_phase: str,
+    current_phase: str,
+    elicitation_resumen: dict | None = None,
+    latest_attachments: list[dict] | None = None,
+    latest_proposal: object | None = None,
+    session_row: object | None = None,
+):
+    """Build a session where ``current_phase != target_phase``.
+
+    The fake ``_FakeQuery`` defaults to terminal=None, so the helpers
+    ``_load_elicitation_resumen`` and ``_latest_assistant_attachments``
+    only return a value if we explicitly wire their terminals.
+
+    Note we also add the terminal keys for ``Project`` (current_phase
+    override) so the helper's ``db.query(Project).filter(...)`` chain
+    finds the project row in past-phase tests.
+    """
+    from app.models.message import Message
+
+    project = MagicMock()
+    project.id = project_id
+    project.user_id = user_id
+    project.current_phase = current_phase
+    project.phase_ready = False
+
+    if session_row is None:
+        # Build a session_row that carries engram_state for ``requerimientos``
+        # if a resumen was supplied — keeps the helper side-effect free.
+        sr = MagicMock()
+        sr.id = 1
+        if elicitation_resumen is not None:
+            sr.engram_state = {
+                str(project_id): {"requerimientos": {"resumen": elicitation_resumen}}
+            }
+        else:
+            sr.engram_state = {}
+        session_row = sr
+
+    sess = _FakeSession()
+    sess.set_query_terminal(phase_decisions.Project, "default", project)
+    sess.set_query_terminal(phase_decisions.UserSession, "default", session_row)
+    # No existing decision — every test below starts from a clean window.
+    sess.set_query_terminal(phase_decisions.Approval, "default", None)
+    sess.set_query_terminal(phase_decisions.Proposal, "default", latest_proposal)
+    # ``Message`` terminal: MagicMock with the attachments list applied.
+    msg_terminal = MagicMock()
+    msg_terminal.attachments = latest_attachments if latest_attachments is not None else None
+    sess.set_query_terminal(Message, "default", msg_terminal)
+
+    from datetime import datetime, timedelta
+
+    cutoff = datetime.utcnow() - timedelta(
+        seconds=phase_decisions.IDEMPOTENCY_WINDOW_SECONDS
+    )
+
+    def _in_window(row):
+        return getattr(row, "created_at", None) is not None and row.created_at >= cutoff
+
+    sess.set_query_filter(phase_decisions.Approval, "default", _in_window)
+
+    return sess, project
+
+
+class TestPastPhaseModify:
+    """HU11 REQ-SA-27 + REQ-SA-5: decisions on past phases are valid AND
+    ``previous_output`` is now populated for ``requerimientos`` and
+    ``refinamiento`` (previously empty)."""
+
+    def test_modify_past_requerimientos_records_audit_row(self):
+        # current_phase=propuesta (project is past requerimientos).
+        db, project = _make_past_phase_session(
+            user_id=90,
+            project_id=42,
+            target_phase="requerimientos",
+            current_phase="propuesta",
+            elicitation_resumen={"problema": "x", "usuarios": "y"},
+        )
+        result = phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="requerimientos",
+            action="modify",
+            feedback="falta no funcionales",
+        )
+        assert result.phase == "requerimientos"
+        assert result.action == "modify"
+        # The audit row goes into ``approvals`` AND ``interaction_logs``;
+        # both must be present even on a past-phase modify.
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        audits = [a for a in db.adds if isinstance(a, phase_decisions.InteractionLog)]
+        assert len(approvals) == 1
+        assert len(audits) == 1
+        assert audits[0].phase == "requerimientos"
+        assert audits[0].action_type == "modify"
+
+    def test_modify_past_requerimientos_snapshots_resumen(self):
+        # REQ-SA-27.1: engram_state[<pid>]["requerimientos"]["resumen"]
+        # becomes ``previous_output["resumen"]``.
+        resumen = {
+            "problema": "Sistema de reservas",
+            "usuarios": "Recepcionistas",
+            "funcionalidades": ["calendario", "pagos"],
+            "restricciones": ["multi-tenant"],
+            "calidad": ["99.9% uptime"],
+        }
+        db, project = _make_past_phase_session(
+            user_id=91,
+            project_id=7,
+            target_phase="requerimientos",
+            current_phase="propuesta",
+            elicitation_resumen=resumen,
+        )
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="requerimientos",
+            action="modify",
+            feedback="agregar no funcionales",
+        )
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        assert approvals[0].previous_output == {"resumen": resumen}
+
+    def test_modify_past_requerimientos_missing_resumen_returns_empty(self):
+        # REQ-SA-27.3: missing source falls back to ``{}`` so the LLM
+        # regenerates with feedback alone.
+        db, project = _make_past_phase_session(
+            user_id=92,
+            project_id=7,
+            target_phase="requerimientos",
+            current_phase="propuesta",
+            elicitation_resumen=None,
+        )
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="requerimientos",
+            action="modify",
+            feedback="empezar de cero",
+        )
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        assert approvals[0].previous_output == {}
+
+    def test_modify_past_refinamiento_snapshots_attachments(self):
+        # REQ-SA-27.2: latest assistant Message.attachments becomes the snapshot.
+        attachments = [
+            {
+                "kind": "screenshot",
+                "mime": "image/png",
+                "url": "/api/chat/attachments/77?token=abc",
+                "filename": "diagram.png",
+                "source": "graph TD; A-->B",
+            }
+        ]
+        db, project = _make_past_phase_session(
+            user_id=93,
+            project_id=7,
+            target_phase="refinamiento",
+            current_phase="revision",
+            latest_attachments=attachments,
+        )
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="refinamiento",
+            action="modify",
+            feedback="incluir retries",
+        )
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        assert approvals[0].previous_output == {"attachments": attachments}
+
+    def test_modify_past_refinamiento_no_attachments_returns_empty(self):
+        # No diagram ever streamed → ``{}`` fallback.
+        db, project = _make_past_phase_session(
+            user_id=94,
+            project_id=7,
+            target_phase="refinamiento",
+            current_phase="revision",
+            latest_attachments=None,
+        )
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="refinamiento",
+            action="modify",
+            feedback="definir mejor los nodos",
+        )
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        assert approvals[0].previous_output == {}
+
+    def test_modify_past_propuesta_still_snapshots_proposal(self):
+        # Past-phase ``propuesta`` keeps the HU10 snapshot path intact.
+        latest = MagicMock()
+        latest.id = 7
+        latest.content = {"componentes": ["API"]}
+        latest.citations = [{"pattern_id": 3}]
+        latest.iteration = 2
+        db, project = _make_past_phase_session(
+            user_id=95,
+            project_id=7,
+            target_phase="propuesta",
+            current_phase="refinamiento",
+            latest_proposal=latest,
+        )
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="propuesta",
+            action="modify",
+            feedback="agregar cache",
+        )
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        assert approvals[0].previous_output == {
+            "content": {"componentes": ["API"]},
+            "citations": [{"pattern_id": 3}],
+            "iteration": 2,
+        }
+        # Dual-write to proposal_approvals MUST still fire (REQ-PA-HU10-1).
+        pa = [a for a in db.adds if isinstance(a, phase_decisions.ProposalApproval)]
+        assert len(pa) == 1
+        assert pa[0].decision == "modified"
+
+    def test_modify_past_revision_carries_tradeoffs(self):
+        # Revision path is UI-edited (HU10 path); past-phase keeps that contract.
+        db, project = _make_past_phase_session(
+            user_id=96,
+            project_id=7,
+            target_phase="revision",
+            current_phase="final",
+        )
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="revision",
+            action="modify",
+            feedback="cambiar a event-driven",
+            payload={
+                "patron_elegido": "Event Sourcing",
+                "ventajas": ["audit"],
+                "desventajas": ["complexity"],
+            },
+        )
+        approvals = [a for a in db.adds if isinstance(a, phase_decisions.Approval)]
+        assert approvals[0].previous_output == {
+            "patron_elegido": "Event Sourcing",
+            "ventajas": ["audit"],
+            "desventajas": ["complexity"],
+        }
+
+    def test_modify_past_phase_does_not_change_phase_ready(self):
+        # ``modify`` is intentionally non-advancing — verify on past phase too.
+        db, project = _make_past_phase_session(
+            user_id=97,
+            project_id=7,
+            target_phase="requerimientos",
+            current_phase="final",
+            elicitation_resumen={"problema": "x"},
+        )
+        project.phase_ready = True
+        phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase="requerimientos",
+            action="modify",
+            feedback="refinar",
+        )
+        assert project.phase_ready is True
+
+    @pytest.mark.parametrize(
+        "phase",
+        ["requerimientos", "propuesta", "refinamiento", "revision"],
+    )
+    def test_modify_past_phase_parametrized_does_not_raise(self, phase):
+        # Parametrized smoke: any past-phase modify succeeds regardless of
+        # structured-source presence. Catches the gap HU10's _make_session
+        # fixture hid by always pinning current_phase = phase.
+        kwargs = dict(
+            user_id=100,
+            project_id=1,
+            target_phase=phase,
+            current_phase="final",
+        )
+        if phase == "propuesta":
+            latest = MagicMock()
+            latest.id = 1
+            latest.content = {}
+            latest.citations = []
+            latest.iteration = 1
+            kwargs["latest_proposal"] = latest
+        elif phase == "refinamiento":
+            kwargs["latest_attachments"] = []
+        elif phase == "requerimientos":
+            kwargs["elicitation_resumen"] = {"problema": "x"}
+        db, project = _make_past_phase_session(**kwargs)
+        result = phase_decisions.record_decision(
+            db=db,
+            project_id=project.id,
+            phase=phase,
+            action="modify",
+            feedback="ajuste",
+        )
+        assert result.action == "modify"
+        assert result.phase == phase

@@ -4,13 +4,18 @@ Issue #21 / HU10 — Staged Approvals. The single source of truth for the
 canonical ``POST /api/projects/{id}/phase/{phase}/decision`` endpoint
 declared in ``openspec/specs/staged-approvals/spec.md`` (REQ-SA-13).
 
+Issue #22 / HU11 — Surgical Adjustment. Extends ``_build_previous_output``
+(REQ-SA-27) so every phase has a non-empty snapshot when its structured
+source-of-truth exists (was previously ``{}`` for ``requerimientos`` and
+``refinamiento``).
+
 Responsibilities:
 - Validate the (phase, action) tuple against ``AVAILABLE_PHASES``.
 - Enforce the 60-second idempotency window (REQ-SA-10) and return a
   ``DecisionConflict`` for any different-action decision inside the
   window (REQ-SA-9, 409 mapping happens at the HTTP edge).
 - Persist the row in ``approvals`` with ``previous_output`` JSONB populated
-  from the phase-specific prior content (REQ-SA-3, REQ-SA-16).
+  from the phase-specific prior content (REQ-SA-3, REQ-SA-16, REQ-SA-27).
 - Dual-write to ``proposal_approvals`` for ``phase == "propuesta"``
   (REQ-SA-17 / REQ-PA-HU10-1) so the F08 reader paths keep working.
 - Update ``Project.phase_ready`` per the decision semantics and, on
@@ -31,6 +36,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.models import Approval, InteractionLog, Proposal, ProposalApproval
+from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
@@ -362,11 +368,25 @@ def _build_previous_output(
             "iteration": int(latest.iteration),
         }
 
-    # For other phases we don't have a structured source-of-truth for
-    # "the prior content" yet (the LLM streams it into the chat buffer,
-    # not into a JSONB column). Fall back to an empty snapshot so the
-    # CHECK + NOT NULL constraints are satisfied; the column becomes useful
-    # once F11/F12 engram_state lands per-phase structures.
+    if phase == "requerimientos":
+        # REQ-SA-27 (HU11): F05 streams the elicitation summary into
+        # ``session.engram_state[<project_id>]["requerimientos"]["resumen"]``.
+        # Snapshot that summary here so a Modify on a past ``requerimientos``
+        # phase carries the user's prior context into the LLM re-prompt.
+        resumen = _load_elicitation_resumen(db, project_id)
+        return {"resumen": resumen} if resumen is not None else {}
+
+    if phase == "refinamiento":
+        # REQ-SA-27 (HU11): F12/F13 stream the diagram + attachments into
+        # ``messages.attachments`` (Mermaid source lives there). Snapshot the
+        # most recent assistant message that carried attachments so the LLM
+        # can reference the previous diagrama previo in the re-prompt.
+        attachments = _latest_assistant_attachments(db, project_id)
+        return {"attachments": attachments} if attachments else {}
+
+    # ``final`` and any unknown phase: no meaningful prior content.
+    # Fall back to an empty snapshot so the CHECK + NOT NULL constraints
+    # are satisfied and the LLM regenerates with feedback alone.
     return {}
 
 
@@ -387,6 +407,65 @@ def _latest_proposal(db: Session, project_id: int) -> Optional[Proposal]:
         .order_by(Proposal.iteration.desc())
         .first()
     )
+
+
+def _load_elicitation_resumen(db: Session, project_id: int) -> Optional[dict]:
+    """Return the elicitation summary JSON from ``sessions.engram_state``.
+
+    HU11 REQ-SA-27. The key path is
+    ``engram_state[<project_id>]["requerimientos"]["resumen"]`` — same shape
+    F05 already produces via ``app.api.elicitation._phase_data_from_engram``.
+    Returns ``None`` when the session row is missing, ``engram_state`` is
+    null, or the per-project / per-phase keys are absent (e.g. a prior
+    ``reject`` wiped state). ``_build_previous_output`` translates the
+    ``None`` into ``{}`` so the LLM still regenerates with feedback alone.
+    """
+    # Per project.user_id (one UserSession per user per the F05 design);
+    # if there is no session row yet we have nothing to snapshot.
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if project is None:
+        return None
+    session_row = (
+        db.query(UserSession)
+        .filter(UserSession.user_id == project.user_id)
+        .first()
+    )
+    if session_row is None:
+        return None
+    engram_state = session_row.engram_state or {}
+    # Per-project scoping matches the F05 ``_phase_data_from_engram`` helper.
+    project_state = engram_state.get(str(project_id)) or {}
+    phase_data = project_state.get("requerimientos") or {}
+    resumen = phase_data.get("resumen")
+    return resumen if isinstance(resumen, dict) else None
+
+
+def _latest_assistant_attachments(
+    db: Session, project_id: int
+) -> list[dict]:
+    """Return the most recent assistant message's ``attachments`` list.
+
+    HU11 REQ-SA-27 / SCN-SA-27.2. The Mermaid source lives in
+    ``messages.attachments`` (F13 typed-attachments); we pick the newest
+    assistant row that actually carries attachments and return them as-is.
+    Returns ``[]`` when no such row exists (the caller falls back to
+    ``{}``).
+    """
+    row = (
+        db.query(Message)
+        .filter(
+            Message.project_id == project_id,
+            Message.role == "assistant",
+        )
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    if row is None:
+        return []
+    raw = row.attachments
+    if not raw:
+        return []
+    return list(raw) if isinstance(raw, list) else []
 
 
 def _compute_next_phase(
