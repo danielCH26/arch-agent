@@ -157,6 +157,223 @@ def test_get_puppeteer_tools_returns_empty_when_no_match(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Strict-mode null acceptance — PR #76 review fix (round 3, B1).
+# Groq/OpenAI strict function-calling sends optional parameters as ``null``.
+# The upstream MCP screenshot schema declares them as ``{"type":"string"}``
+# which strict validation rejects before the call reaches the sidecar. We
+# widen non-required parameters to accept null so REQ-PMCP-1 round-trips.
+# ---------------------------------------------------------------------------
+
+
+def _structured_tool_with_schema(name: str, schema: dict) -> MagicMock:
+    """Build a fake ``StructuredTool``-shaped object the helper can mutate."""
+    tool = MagicMock()
+    tool.name = name
+    tool.args_schema = schema
+    return tool
+
+
+def test_make_optional_params_nullable_accepts_string_null():
+    """A non-required string parameter becomes ``["string", "null"]``."""
+    from app.core import puppeteer_mcp
+
+    tool = _structured_tool_with_schema(
+        "puppeteer_screenshot",
+        {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "page URL"},
+                "selector": {"type": "string", "description": "optional CSS"},
+            },
+            "required": ["url"],
+        },
+    )
+
+    puppeteer_mcp._make_optional_params_nullable(tool)
+
+    assert tool.args_schema["properties"]["url"]["type"] == "string"
+    assert tool.args_schema["properties"]["selector"]["type"] == ["string", "null"]
+
+
+def test_make_optional_params_nullable_leaves_required_alone():
+    """Required parameters MUST NOT accept null — widening them would mask
+    schema bugs and let the model skip arguments it actually needs to send."""
+    from app.core import puppeteer_mcp
+
+    tool = _structured_tool_with_schema(
+        "puppeteer_screenshot",
+        {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "selector": {"type": "string"},
+            },
+            "required": ["url", "selector"],
+        },
+    )
+
+    puppeteer_mcp._make_optional_params_nullable(tool)
+
+    assert tool.args_schema["properties"]["url"]["type"] == "string"
+    assert tool.args_schema["properties"]["selector"]["type"] == "string"
+
+
+def test_make_optional_params_nullable_handles_anyof_branch():
+    """``anyOf`` schemas get a null branch appended (never replaced)."""
+    from app.core import puppeteer_mcp
+
+    tool = _structured_tool_with_schema(
+        "puppeteer_screenshot",
+        {
+            "type": "object",
+            "properties": {
+                "format": {
+                    "anyOf": [
+                        {"type": "string", "enum": ["png", "jpeg"]},
+                    ],
+                },
+            },
+        },
+    )
+
+    puppeteer_mcp._make_optional_params_nullable(tool)
+
+    types = [b.get("type") for b in tool.args_schema["properties"]["format"]["anyOf"]]
+    assert types == ["string", "null"]
+
+
+def test_make_optional_params_nullable_is_idempotent():
+    """Calling twice must NOT keep stacking null branches."""
+    from app.core import puppeteer_mcp
+
+    tool = _structured_tool_with_schema(
+        "puppeteer_screenshot",
+        {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string"},
+            },
+        },
+    )
+
+    puppeteer_mcp._make_optional_params_nullable(tool)
+    puppeteer_mcp._make_optional_params_nullable(tool)
+
+    assert tool.args_schema["properties"]["selector"]["type"] == ["string", "null"]
+
+
+def test_make_optional_params_nullable_handles_type_list():
+    """Properties already declaring ``type: [...]`` get null appended once."""
+    from app.core import puppeteer_mcp
+
+    tool = _structured_tool_with_schema(
+        "puppeteer_screenshot",
+        {
+            "type": "object",
+            "properties": {
+                "size": {"type": ["integer", "string"]},
+            },
+        },
+    )
+
+    puppeteer_mcp._make_optional_params_nullable(tool)
+
+    assert tool.args_schema["properties"]["size"]["type"] == ["integer", "string", "null"]
+
+
+def test_make_optional_params_nullable_skips_ref_and_oneof():
+    """``$ref`` and ``oneOf`` are intentionally untouched — silently rewriting
+    them is more dangerous than the strict-mode rejection we are working
+    around."""
+    from app.core import puppeteer_mcp
+
+    tool = _structured_tool_with_schema(
+        "puppeteer_screenshot",
+        {
+            "type": "object",
+            "properties": {
+                "shared": {"$ref": "#/$defs/Shared"},
+                "either": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+            },
+        },
+    )
+
+    puppeteer_mcp._make_optional_params_nullable(tool)
+
+    assert tool.args_schema["properties"]["shared"] == {"$ref": "#/$defs/Shared"}
+    assert tool.args_schema["properties"]["either"] == {
+        "oneOf": [{"type": "string"}, {"type": "integer"}]
+    }
+
+
+def test_get_puppeteer_tools_patches_optional_params(monkeypatch):
+    """End-to-end: a Groq-shaped screenshot tool with ``selector`` reaches
+    ``get_puppeteer_tools`` and the returned tool's schema accepts null for
+    that optional parameter."""
+    from app.core import puppeteer_mcp
+
+    # What ``@modelcontextprotocol/server-puppeteer`` advertises for
+    # ``puppeteer_screenshot`` upstream (truncated for brevity; ``selector``
+    # is optional in upstream's inputSchema).
+    groq_shape_schema = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "page URL"},
+            "selector": {"type": "string", "description": "optional CSS selector"},
+            "fullPage": {"type": "boolean", "description": "full-page screenshot"},
+        },
+        "required": ["url"],
+    }
+
+    raw_tool = MagicMock()
+    raw_tool.name = "puppeteer_screenshot"
+    raw_tool.args_schema = groq_shape_schema
+
+    fake_client = MagicMock()
+    fake_client.get_tools = AsyncMock(return_value=[raw_tool])
+
+    async def _drive():
+        return await puppeteer_mcp.get_puppeteer_tools(client=fake_client)
+
+    tools = asyncio.run(_drive())
+
+    assert len(tools) == 1
+    patched = tools[0].args_schema
+    assert patched["properties"]["url"]["type"] == "string"  # required, untouched
+    assert patched["properties"]["selector"]["type"] == ["string", "null"]
+    assert patched["properties"]["fullPage"]["type"] == ["boolean", "null"]
+
+
+def test_get_puppeteer_tools_drops_tools_not_in_allow_list():
+    """A tool that survives the upstream but is NOT in the allow-list must
+    not be patched — patching-and-dropping would be wasted work, and the
+    invariant we are protecting is per-tool schema integrity, not
+    per-call. This also pins that ``puppeteer_evaluate`` (the second tool
+    the original spec mentioned) is dropped before any schema work."""
+    from app.core import puppeteer_mcp
+
+    eval_tool = MagicMock()
+    eval_tool.name = "puppeteer_evaluate"
+    eval_tool.args_schema = {
+        "type": "object",
+        "properties": {"script": {"type": "string"}},
+        "required": ["script"],
+    }
+
+    fake_client = MagicMock()
+    fake_client.get_tools = AsyncMock(return_value=[eval_tool])
+
+    async def _drive():
+        return await puppeteer_mcp.get_puppeteer_tools(client=fake_client)
+
+    tools = asyncio.run(_drive())
+
+    assert tools == []
+    # And the dropped tool's schema was NOT mutated — it never reached the patcher.
+    assert eval_tool.args_schema["properties"]["script"]["type"] == "string"
+
+
+# ---------------------------------------------------------------------------
 # Timeout — REQ-PMCP-3 (15s default)
 # ---------------------------------------------------------------------------
 

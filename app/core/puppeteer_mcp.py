@@ -314,6 +314,17 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
             len(dropped),
             dropped,
         )
+    # PR #76 review fix (round 3, B1): Groq strict-mode / OpenAI strict
+    # function-calling send optional parameters as ``null`` when they are not
+    # needed. The upstream MCP server publishes these as ``{"type": "string"}``
+    # (or similar) with no nullability hint, so strict validation rejects the
+    # call BEFORE the sidecar can see it. Patch each surviving tool's schema
+    # in place so ``tool_call_schema`` (the surface the model provider sees)
+    # advertises ``["string", "null"]`` (or ``anyOf: [<orig>, {type:null}]``)
+    # for every non-required parameter. Required parameters keep their
+    # declared type — the model is not allowed to send null for them anyway.
+    for tool in filtered:
+        _make_optional_params_nullable(tool)
     _LOGGER.info(
         "Puppeteer returned %d raw tool(s); %d allowed after filter: %s",
         len(raw),
@@ -321,3 +332,69 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
         [t.name for t in filtered],
     )
     return filtered
+
+
+def _make_optional_params_nullable(tool: Any) -> None:
+    """In-place: allow ``null`` for every non-required parameter of ``tool``.
+
+    Operates on the MCP-converted ``StructuredTool``'s ``args_schema`` dict
+    (set by ``langchain-mcp-adapters`` to ``tool.inputSchema``). LangChain's
+    ``tool_call_schema`` property is derived from the same dict, so mutating
+    here propagates to the JSON Schema the LLM provider validates against.
+
+    Required parameters are left untouched — the model is not permitted to
+    send null for them and silently widening them would mask schema bugs.
+
+    No-op when ``tool.args_schema`` is not a dict (e.g. a Pydantic-derived
+    ``StructuredTool``); those tools already get correct nullability from
+    their declared type hints.
+    """
+    schema = getattr(tool, "args_schema", None)
+    if not isinstance(schema, dict):
+        return
+
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return
+
+    required = set(schema.get("required") or [])
+    for name, prop in properties.items():
+        if name in required:
+            continue
+        if not isinstance(prop, dict):
+            continue
+        _widen_type_to_accept_null(prop)
+
+
+def _widen_type_to_accept_null(prop: dict) -> None:
+    """Rewrite a single JSON Schema property so ``null`` becomes a valid value.
+
+    Handles the three shapes MCP-converted schemas arrive in:
+
+    1. ``{"type": "string"}``         -> ``{"type": ["string", "null"]}``
+    2. ``{"type": ["string", ...]}``  -> append ``"null"`` if absent
+    3. ``{"anyOf": [...]}``           -> append ``{"type": "null"}`` branch
+    4. ``{"$ref": ...}`` / ``oneOf``  -> untouched (too risky to rewrite)
+    """
+    # anyOf-style: append a null branch.
+    if "anyOf" in prop:
+        branches = prop["anyOf"]
+        if isinstance(branches, list):
+            types = [
+                b.get("type")
+                for b in branches
+                if isinstance(b, dict)
+            ]
+            if "null" not in types:
+                prop["anyOf"] = list(branches) + [{"type": "null"}]
+        return
+
+    # oneOf + $ref: leave alone — too easy to silently break the contract.
+    if "oneOf" in prop or "$ref" in prop:
+        return
+
+    t = prop.get("type")
+    if isinstance(t, str):
+        prop["type"] = [t, "null"]
+    elif isinstance(t, list) and t and "null" not in t:
+        prop["type"] = list(t) + ["null"]
