@@ -2,8 +2,11 @@ import { useEffect, useRef } from 'react'
 import { chatStore } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
+import { approvalsStore } from '../stores/approvalsStore'
+import type { Phase } from '../api/approvals'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
+import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ProposalCard } from './proposals/ProposalCard'
 
 interface ChatWindowProps {
@@ -32,6 +35,10 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory } = chatStore()
   const currentPhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
   const proposalInFlight = proposalsStore((s) => s.inFlight)
+  const pendingDecision = approvalsStore((s) => s.pendingDecision)
+  const historyByPhase = approvalsStore((s) => s.historyByPhase)
+  const decide = approvalsStore((s) => s.decide)
+  const fetchApprovalsHistory = approvalsStore((s) => s.fetchHistory)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Scroll to bottom on new messages
@@ -52,6 +59,9 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
       return
     }
     void state.loadHistory(projectId)
+    // HU10 (REQ-SA-22): also load the approval history so the SPA can
+    // mount <PhaseActions> correctly on reload.
+    void fetchApprovalsHistory(projectId)
     // We deliberately read state via getState() inside the effect so the
     // effect itself can run with empty deps (mount-only).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -62,6 +72,16 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
   }
 
   const showProposalCard = shouldMountProposalCard(currentPhase, proposalInFlight)
+
+  // HU10 (REQ-SA-19): mount <PhaseActions> only when a pending decision
+  // exists for the project's current phase. Cast ``currentPhase`` to ``Phase``
+  // for the type-narrow lookup -- the backend only returns the canonical
+  // 5 values, so this is safe at runtime even when TypeScript can't prove it.
+  const typedCurrentPhase = currentPhase as Phase | null
+  const pendingForCurrentPhase =
+    typedCurrentPhase && pendingDecision[typedCurrentPhase]
+      ? pendingDecision[typedCurrentPhase]
+      : null
 
   return (
     <div className="flex flex-col h-full">
@@ -80,6 +100,31 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
         ))}
 
         {showProposalCard && <ProposalCard forceMount projectId={projectId} />}
+
+        {pendingForCurrentPhase && typedCurrentPhase && (
+          <PhaseActions
+            phase={typedCurrentPhase}
+            currentDecision={
+              (historyByPhase[typedCurrentPhase] ?? [])[0] ?? null
+            }
+            onApprove={async () => {
+              await decide(projectId, typedCurrentPhase, { action: 'approve' })
+            }}
+            onModify={async (feedback, payload) => {
+              await decide(projectId, typedCurrentPhase, {
+                action: 'modify',
+                feedback,
+                payload,
+              })
+            }}
+            onReject={async (feedback) => {
+              await decide(projectId, typedCurrentPhase, {
+                action: 'reject',
+                feedback,
+              })
+            }}
+          />
+        )}
 
         {isStreaming && (
           <div className="flex justify-start">
