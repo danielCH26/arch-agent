@@ -231,7 +231,24 @@ async def decide_elicitation(
         )
 
     user_id = current_user["user_id"]
-    _require_project(user_id, project_id)  # valida ownership antes de tocar la DB
+    project = _require_project(user_id, project_id)  # valida ownership antes de tocar la DB
+
+    # HU11 (REQ-SA-28 / SCN-SA-28.1): past-phase guard. F05's modify
+    # branch clobbers engram_state[<pid>]["requerimientos"]["resumen"];
+    # when the project is past the elicitation phase, that clobber is
+    # destructive. The new /phases/{phase}/regenerate endpoint is the
+    # recommended replacement — 409 here so legacy callers stop routing
+    # past-phase modify through F05.
+    if project.current_phase != PHASE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"F05 /elicitation/decision solo aplica en la fase "
+                f"'{PHASE}'; el proyecto está en '{project.current_phase}'. "
+                f"Usa POST /api/projects/{project_id}/phases/requerimientos"
+                f"/regenerate en su lugar."
+            ),
+        )
 
     db = SessionLocal()
     try:
