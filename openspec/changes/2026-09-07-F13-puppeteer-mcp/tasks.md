@@ -126,12 +126,12 @@ Budget verdict: grand total ~1,505 changed lines. Above the 400-line single-PR c
 - **Commit**: `feat(puppeteer_mcp): add in-memory sliding-window rate limiter`
 - **Risk**: medium. Rollback: remove `_RATE_LIMIT` and `_check_rate_limit` calls; renders proceed without limit until revert.
 
-### T13.2.4 — feat(db): migration 0009_add_message_attachments.sql + schema.sql mirror (REQ-EM-DELTA-1)
+### T13.2.4 — feat(db): migration 0011_add_message_attachments.sql + schema.sql mirror (REQ-EM-DELTA-1)
 
-- **Files**: `migrations/0009_add_message_attachments.sql` (NEW, ~5); `schema.sql` (+1)
+- **Files**: `migrations/0011_add_message_attachments.sql` (NEW, ~5); `schema.sql` (+1)
 - **Action**: idempotent `ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;` mirrored verbatim into `schema.sql` immediately after the `CREATE TABLE messages` block.
 - **Test** (lands in T13.4.4): re-run `python migrations/run_migrations.py` against a fresh SQLite-in-memory DB; re-run against an existing DB (idempotent).
-- **Commit**: `feat(db): migration 0009_add_message_attachments.sql + schema.sql mirror`
+- **Commit**: `feat(db): migration 0011_add_message_attachments.sql + schema.sql mirror`
 - **Risk**: low. Rollback: `ALTER TABLE messages DROP COLUMN IF EXISTS attachments;` (reversible per design §11).
 
 ### T13.2.5 — feat(models): Message.attachments JSONB column
@@ -341,7 +341,7 @@ Budget verdict: grand total ~1,505 changed lines. Above the 400-line single-PR c
 | 5 | `feat(puppeteer_mcp): scaffold client + PuppeteerUnavailable + reset_client_for_tests` | +70 | feat | puppeteer_mcp | `app/core/puppeteer_mcp.py` | `rm app/core/puppeteer_mcp.py` |
 | 6 | `feat(puppeteer_mcp): add positive tool allow-list filter` | +30 | feat | puppeteer_mcp | `app/core/puppeteer_mcp.py` | drop the filter line; keep the helper |
 | 7 | `feat(puppeteer_mcp): add in-memory sliding-window rate limiter` | +40 | feat | puppeteer_mcp | `app/core/puppeteer_mcp.py` | remove `_RATE_LIMIT` + `_check_rate_limit` calls |
-| 8 | `feat(db): migration 0009_add_message_attachments.sql + schema.sql mirror` | +6 | feat | db | `migrations/0009_add_message_attachments.sql`, `schema.sql` | `ALTER TABLE messages DROP COLUMN IF EXISTS attachments` |
+| 8 | `feat(db): migration 0011_add_message_attachments.sql + schema.sql mirror` | +6 | feat | db | `migrations/0011_add_message_attachments.sql`, `schema.sql` | `ALTER TABLE messages DROP COLUMN IF EXISTS attachments` |
 | 9 | `feat(models): add attachments JSONB column to Message` | +5 | feat | models | `app/models/message.py` | drop the column block |
 | 10 | `feat(message_store): save_attachment + list_attachments + save_message attachments kwarg` | +40 | feat | message_store | `app/core/message_store.py` | drop the new helpers + `save_message` kwarg |
 | 11 | `feat(attachment_tokens): sign/verify helpers + uploads-dir bootstrap` | +40 | feat | attachment_tokens | `app/core/attachment_tokens.py` | `rm app/core/attachment_tokens.py` |
@@ -378,7 +378,7 @@ Total changed lines (estimate): 1,155 (backend 540 + frontend 180 + tests 350 + 
     app/api/attachments.py (NEW): 80
     app/api/__init__.py: +2
     server.py: +1
-    migrations/0009_add_message_attachments.sql (NEW): 5
+    migrations/0011_add_message_attachments.sql (NEW): 5
     schema.sql: +1
     infrastructure/puppeteer-mcp/Dockerfile (NEW): 30
     infrastructure/puppeteer-mcp/entrypoint.sh (NEW): 10

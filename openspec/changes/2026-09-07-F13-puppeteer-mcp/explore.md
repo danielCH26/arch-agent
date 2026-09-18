@@ -82,7 +82,7 @@ The `engram-proxy` precedent (`alpine/socat:1.8.1.3` at `docker-compose.yml:104-
 
 The DB has a `messages` table (F12, `app/models/message.py`, `migrations/0008_add_messages_table.sql`) with a `citations JSONB` column. Screenshots are NOT citations (citations are RAG sources), so we need either:
 
-- A new `messages.attachments JSONB` column (migration `0009_add_message_attachments.sql` + schema.sql mirror).
+- A new `messages.attachments JSONB` column (migration `0011_add_message_attachments.sql` + schema.sql mirror).
 - A new `message_attachments` table (id, message_id, type, mime, storage_path, source_url, created_at).
 
 The JSONB column is simpler (no extra JOIN, no schema drift), but a normalized table scales better for retention policies and clean deletion when a `message` is purged. **Recommendation lives in the proposal**, but the explore establishes both options.
@@ -175,7 +175,7 @@ Stick with the official **`@modelcontextprotocol/server-puppeteer`** as ADR-007 
 | `app/core/message_store.py` (F12) | Add `save_attachment(db, message_id, type, mime, storage_path, source_url) -> Attachment` and `list_attachments(db, message_id) -> list[Attachment]`. New `attachments` column on `messages` OR new `message_attachments` table — proposal decides. |
 | `app/models/message.py` | New `Attachment` ORM + migration (or JSONB column). |
 | `app/models/__init__.py` | Register `Attachment` if a new ORM class. |
-| `migrations/0009_add_message_attachments.sql` (NEW) | Idempotent (`CREATE TABLE IF NOT EXISTS`) matching the F12 migration pattern. Mirror in `schema.sql`. |
+| `migrations/0011_add_message_attachments.sql` (NEW) | Idempotent (`CREATE TABLE IF NOT EXISTS`) matching the F12 migration pattern. Mirror in `schema.sql`. |
 | `app/api/chat.py` | Extend the SSE `event_generator` to emit a new event type when an assistant tool returns a render result: `event: attachment\ndata: {kind:"screenshot", mime:"image/png", url:"/api/chat/attachments/<id>", filename:"diagram-<ts>.png"}\n\n`. The route persists both `messages` rows + an `attachments` row inside the same pre-`done` transaction (extends F12 REQ-4). |
 | `app/api/attachments.py` (NEW, ~50 LOC) | `GET /api/chat/attachments/{id}` — auth-gated (`get_current_user`), streams the file from `/app/uploads/screenshots/{id}.png` with correct `Content-Type`. 404 if attachment not found OR not owned by the current user. |
 | `backend/Dockerfile` | If stdio-in-container path is chosen (§5.A): add `nodejs` + `npm` to runtime stage, add `PUPPETEER_SKIP_DOWNLOAD=true` (download on demand) or pre-bake. **Add system libs** (`libnss3`, `libatk1.0-0`, `libxss1`, `libasound2`, `libgbm1`, `libcups2`) if the MCP server launches Chromium in this container. |
