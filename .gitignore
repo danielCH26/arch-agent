@@ -44,6 +44,8 @@ temp/
 !docs/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
+!scripts/
+!scripts/**/*.md
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
 !.atl/
@@ -52,6 +54,8 @@ temp/
 !openspec/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
+!scripts/
+!scripts/**/*.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
