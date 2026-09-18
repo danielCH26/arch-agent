@@ -1,5 +1,61 @@
+import { vi } from 'vitest'
+
+// HU10 (T8 commit 2c19482): <ChatWindow> now also calls
+// ``fetchApprovalsHistory(projectId)`` at mount time. The real
+// ``approvalsStore.fetchHistory`` re-throws on failure, and the call site
+// is ``void fetchApprovalsHistory(...)`` with no catch handler -- so any
+// rejected promise (e.g. unmocked fetch in jsdom) escapes as an unhandled
+// rejection. Stub the store here, mirroring the pattern used in
+// ``ChatWindow.mount-history.test.tsx`` for ``chatStore``.
+const { fetchApprovalsHistoryMock } = vi.hoisted(() => ({
+  fetchApprovalsHistoryMock: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../../stores/approvalsStore', () => {
+  const actualState = {
+    pendingDecision: {
+      requerimientos: null,
+      propuesta: null,
+      refinamiento: null,
+      revision: null,
+      final: null,
+    },
+    historyByPhase: {
+      requerimientos: [],
+      propuesta: [],
+      refinamiento: [],
+      revision: [],
+      final: [],
+    },
+    phases: [],
+    currentPhase: null,
+    loading: false,
+    error: null,
+    fetchHistory: (...args: unknown[]) =>
+      fetchApprovalsHistoryMock(...args),
+    setPending: vi.fn(),
+    clearPending: vi.fn(),
+    decide: vi.fn(),
+    reset: vi.fn(),
+  }
+  // approvalsStore is consumed via the zustand selector pattern in
+  // ChatWindow: ``approvalsStore((s) => s.fetchHistory)``. The mock must
+  // actually invoke the selector (the existing chatStore mock did not
+  // need this because ChatWindow reads chatStore via ``getState()``).
+  const approvalsStoreFn = ((selector?: (s: typeof actualState) => unknown) =>
+    selector ? selector(actualState) : actualState) as unknown as {
+    (): typeof actualState
+    (selector: (s: typeof actualState) => unknown): unknown
+    getState: () => typeof actualState
+    setState: ReturnType<typeof vi.fn>
+  }
+  approvalsStoreFn.getState = () => actualState
+  approvalsStoreFn.setState = vi.fn()
+  return { approvalsStore: approvalsStoreFn }
+})
+
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ChatWindow } from '../ChatWindow'
 import { chatStore } from '../../stores/chatStore'
 import { projectsStore } from '../../stores/projectsStore'

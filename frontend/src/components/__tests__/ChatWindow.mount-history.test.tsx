@@ -6,6 +6,8 @@ if (!Element.prototype.scrollIntoView) {
   }
 }
 
+import { vi } from 'vitest'
+
 // Mock the chat store BEFORE importing the component under test.
 // This file isolates the F12 REQ-9 / SCN-2 mount-time fetch tests so the
 // vi.mock does not leak into the SCN-8 ProposalCard tests (which need the
@@ -38,8 +40,59 @@ vi.mock('../../stores/chatStore', () => {
   }
 })
 
+// HU10 (T8 commit 2c19482): <ChatWindow> also fires
+// ``fetchApprovalsHistory(projectId)`` on mount. Stub the store here so the
+// unmocked fetch does not bubble up as an unhandled rejection during these
+// mount-time tests (which only assert on chatStore).
+const { fetchApprovalsHistoryMock } = vi.hoisted(() => ({
+  fetchApprovalsHistoryMock: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../../stores/approvalsStore', () => {
+  const actualState = {
+    pendingDecision: {
+      requerimientos: null,
+      propuesta: null,
+      refinamiento: null,
+      revision: null,
+      final: null,
+    },
+    historyByPhase: {
+      requerimientos: [],
+      propuesta: [],
+      refinamiento: [],
+      revision: [],
+      final: [],
+    },
+    phases: [],
+    currentPhase: null,
+    loading: false,
+    error: null,
+    fetchHistory: (...args: unknown[]) =>
+      fetchApprovalsHistoryMock(...args),
+    setPending: vi.fn(),
+    clearPending: vi.fn(),
+    decide: vi.fn(),
+    reset: vi.fn(),
+  }
+  // approvalsStore is consumed via the zustand selector pattern in
+  // ChatWindow: ``approvalsStore((s) => s.fetchHistory)``. The mock must
+  // actually invoke the selector (the existing chatStore mock did not
+  // need this because ChatWindow reads chatStore via ``getState()``).
+  const approvalsStoreFn = ((selector?: (s: typeof actualState) => unknown) =>
+    selector ? selector(actualState) : actualState) as unknown as {
+    (): typeof actualState
+    (selector: (s: typeof actualState) => unknown): unknown
+    getState: () => typeof actualState
+    setState: ReturnType<typeof vi.fn>
+  }
+  approvalsStoreFn.getState = () => actualState
+  approvalsStoreFn.setState = vi.fn()
+  return { approvalsStore: approvalsStoreFn }
+})
+
 import { render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ChatWindow } from '../ChatWindow'
 
 describe('ChatWindow mount-time fetch (F12 REQ-9, SCN-2)', () => {
