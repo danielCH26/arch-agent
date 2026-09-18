@@ -7,6 +7,7 @@ vi.mock('../../api/approvals', async (importOriginal) => {
     ...actual,
     decidePhase: vi.fn(),
     listPhases: vi.fn(),
+    createRegenerateStream: vi.fn(),
   }
 })
 
@@ -15,6 +16,7 @@ import {
   type DecisionResponse,
   type Phase,
   type PhaseListResponse,
+  createRegenerateStream,
   decidePhase,
   listPhases,
 } from '../../api/approvals'
@@ -22,6 +24,7 @@ import { approvalsStore } from '../approvalsStore'
 
 const decidePhaseMock = vi.mocked(decidePhase)
 const listPhasesMock = vi.mocked(listPhases)
+const createRegenerateStreamMock = vi.mocked(createRegenerateStream)
 
 const PROJECT_ID = '1'
 
@@ -208,5 +211,141 @@ describe('approvalsStore', () => {
     expect(state.currentPhase).toBeNull()
     expect(state.error).toBeNull()
     expect(state.historyByPhase.propuesta).toEqual([])
+  })
+
+  // HU11 (REQ-SA-25): regeneratePhase action + AbortController cleanup.
+})
+
+describe('approvalsStore — regeneratePhase (HU11 REQ-SA-25)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    approvalsStore.getState().reset()
+    listPhasesMock.mockResolvedValue(_phaseListResponse('final'))
+  })
+
+  it('starts idle with regeneratingPhase=null', () => {
+    expect(approvalsStore.getState().regeneratingPhase).toBeNull()
+  })
+
+  it('calls createRegenerateStream with phase + feedback (REQ-SA-25)', async () => {
+    let onDone: ((payload: Record<string, unknown>) => void) | undefined
+    createRegenerateStreamMock.mockImplementation(
+      (
+        _projectId,
+        phase,
+        body,
+        callbacks: {
+          onDone?: (payload: Record<string, unknown>) => void
+        },
+      ) => {
+        expect(phase).toBe('propuesta')
+        expect(body.feedback).toBe('add caching')
+        onDone = callbacks.onDone
+        return () => undefined
+      },
+    )
+
+    const promise = approvalsStore
+      .getState()
+      .regeneratePhase(PROJECT_ID, 'propuesta', { feedback: 'add caching' })
+
+    // The store sets regeneratingPhase immediately.
+    expect(approvalsStore.getState().regeneratingPhase).toBe('propuesta')
+
+    // Fire the done callback to resolve the promise.
+    onDone?.({ proposal_id: 99, iteration: 3 })
+    await promise
+
+    expect(approvalsStore.getState().regeneratingPhase).toBeNull()
+  })
+
+  it('re-syncs history on done', async () => {
+    let onDone: ((payload: Record<string, unknown>) => void) | undefined
+    createRegenerateStreamMock.mockImplementation(
+      (_id, _phase, _body, callbacks) => {
+        onDone = callbacks.onDone
+        return () => undefined
+      },
+    )
+
+    const promise = approvalsStore
+      .getState()
+      .regeneratePhase(PROJECT_ID, 'propuesta', { feedback: 'x' })
+
+    onDone?.({})
+    await promise
+
+    // listPhases called at least once (the re-sync after done).
+    expect(listPhasesMock).toHaveBeenCalled()
+  })
+
+  it('error event clears regeneratingPhase + sets error (REQ-SA-25.4)', async () => {
+    let onError: ((message: string) => void) | undefined
+    createRegenerateStreamMock.mockImplementation(
+      (_id, _phase, _body, callbacks) => {
+        onError = callbacks.onError
+        return () => undefined
+      },
+    )
+
+    const promise = approvalsStore
+      .getState()
+      .regeneratePhase(PROJECT_ID, 'propuesta', { feedback: 'x' })
+
+    onError?.('LLM unavailable')
+    await promise
+
+    const state = approvalsStore.getState()
+    expect(state.regeneratingPhase).toBeNull()
+    expect(state.error).toMatch(/Regenerate failed/)
+    expect(state.error).toMatch(/LLM unavailable/)
+  })
+
+  it('error path keeps the prior decision audit row (REQ-SA-25.4)', async () => {
+    // The store does NOT call decide() again or roll back history on
+    // regenerate failure — only the audit row stays. Verify by checking
+    // historyByPhase is unchanged after a failed regenerate.
+    const initial = _phaseListResponse('propuesta', ['requerimientos'])
+    listPhasesMock.mockResolvedValue(initial)
+    await approvalsStore.getState().fetchHistory(PROJECT_ID)
+
+    const historyBefore = approvalsStore.getState().historyByPhase.requerimientos
+    expect(historyBefore.length).toBe(1)
+
+    let onError: ((message: string) => void) | undefined
+    createRegenerateStreamMock.mockImplementation(
+      (_id, _phase, _body, callbacks) => {
+        onError = callbacks.onError
+        return () => undefined
+      },
+    )
+    const promise = approvalsStore
+      .getState()
+      .regeneratePhase(PROJECT_ID, 'requerimientos', { feedback: 'x' })
+    onError?.('boom')
+    await promise
+
+    // The audit row is still in historyByPhase — store never called decide().
+    expect(decidePhaseMock).not.toHaveBeenCalled()
+    expect(
+      approvalsStore.getState().historyByPhase.requerimientos.length,
+    ).toBe(1)
+  })
+
+  it('reset clears regeneratingPhase', async () => {
+    let onDone: ((payload: Record<string, unknown>) => void) | undefined
+    createRegenerateStreamMock.mockImplementation(
+      (_id, _phase, _body, callbacks) => {
+        onDone = callbacks.onDone
+        return () => undefined
+      },
+    )
+    const promise = approvalsStore
+      .getState()
+      .regeneratePhase(PROJECT_ID, 'propuesta', { feedback: 'x' })
+    onDone?.({})
+    await promise
+    approvalsStore.getState().reset()
+    expect(approvalsStore.getState().regeneratingPhase).toBeNull()
   })
 })

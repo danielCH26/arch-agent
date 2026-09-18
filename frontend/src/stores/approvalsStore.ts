@@ -1,17 +1,19 @@
 import { create } from 'zustand'
 import {
   PhaseDecisionConflict,
+  createRegenerateStream,
   type DecideBody,
   type Decision,
   type DecisionResponse,
   type Phase,
   type PhaseStatusItem,
+  type RegenerateBody,
   decidePhase,
   listPhases,
 } from '../api/approvals'
 
 /**
- * Cross-phase decision state for HU10 (REQ-SA-21).
+ * Cross-phase decision state for HU10 (REQ-SA-21) + HU11 (REQ-SA-25).
  *
  * Mirrors the pattern used by ``frontend/src/stores/chatStore.ts`` and
  * ``frontend/src/stores/proposalsStore.ts``: ``create<State>()((set, get) => ({ ... }))``.
@@ -21,6 +23,14 @@ import {
  * per-phase UI (e.g. <PhaseActions> for the current phase + an audit log
  * for past phases). Re-fetching ``fetchHistory`` replaces the slot atomically
  * so React doesn't see partial state.
+ *
+ * HU11: ``regeneratingPhase`` tracks the in-flight LLM regenerate per
+ * phase; ``regeneratePhase`` action opens an SSE stream against
+ * ``/api/projects/{id}/phases/{phase}/regenerate``. On ``done`` we
+ * re-fetch history so the new proposal iteration / elicitation summary
+ * shows up in ``historyByPhase``. On ``error`` we set ``error`` and
+ * clear the in-flight flag — the prior /decision audit row stays in
+ * the DB (REQ-SA-25.4) so the UI shows a Reintentar button.
  */
 export interface PendingDecision {
   phase: Phase
@@ -34,6 +44,8 @@ interface ApprovalsState {
   currentPhase: Phase | null
   loading: boolean
   error: string | null
+  // HU11: phase currently being regenerated (null = idle).
+  regeneratingPhase: Phase | null
 
   // Actions
   fetchHistory: (projectId: number | string) => Promise<void>
@@ -44,6 +56,12 @@ interface ApprovalsState {
     phase: Phase,
     body: DecideBody,
   ) => Promise<DecisionResponse>
+  // HU11: open SSE regenerate stream for ``phase`` with user feedback.
+  regeneratePhase: (
+    projectId: number | string,
+    phase: Phase,
+    body: RegenerateBody,
+  ) => Promise<void>
   reset: () => void
 }
 
@@ -82,6 +100,7 @@ export const approvalsStore = create<ApprovalsState>((set, get) => ({
   currentPhase: null,
   loading: false,
   error: null,
+  regeneratingPhase: null,
 
   fetchHistory: async (projectId) => {
     set({ loading: true, error: null })
@@ -187,6 +206,45 @@ export const approvalsStore = create<ApprovalsState>((set, get) => ({
     }
   },
 
+  // HU11 (REQ-SA-25): open SSE regenerate stream. Mirrors the chat SSE
+  // pattern (chatStore.ts:50-129) — AbortController-based cleanup so
+  // component unmount doesn't leak event listeners. The decision audit
+  // row was already written by HU10's /decision call; on regenerate
+  // failure we surface the error but do NOT roll back the decision —
+  // the user can Reintentar from the UI (REQ-SA-25.4).
+  regeneratePhase: async (projectId, phase, body) => {
+    set({ regeneratingPhase: phase, error: null })
+    return new Promise<void>((resolve) => {
+      createRegenerateStream(projectId, phase, body, {
+        onSources: () => {
+          // Future: surface RAG sources in a sidebar. No-op for now —
+          // the chat/proposal UIs already cover the same pattern.
+        },
+        onToken: () => {
+          // Tokens stream into the chat timeline via chatStore; we
+          // intentionally do NOT mirror them into approvalsStore so the
+          // audit row reflects only structured decisions.
+        },
+        onDone: async () => {
+          set({ regeneratingPhase: null })
+          try {
+            await get().fetchHistory(projectId)
+          } catch {
+            // Best-effort — the regenerate itself succeeded.
+          }
+          resolve()
+        },
+        onError: (message) => {
+          set({
+            regeneratingPhase: null,
+            error: `Regenerate failed for ${phase}: ${message}`,
+          })
+          resolve()
+        },
+      })
+    })
+  },
+
   reset: () => {
     set({
       pendingDecision: emptyPending(),
@@ -195,6 +253,7 @@ export const approvalsStore = create<ApprovalsState>((set, get) => ({
       currentPhase: null,
       loading: false,
       error: null,
+      regeneratingPhase: null,
     })
   },
 }))
