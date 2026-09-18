@@ -10,3 +10,4 @@ from app.models.proposal import Proposal  # noqa: F401
 from app.models.interaction_log import InteractionLog  # noqa: F401
 from app.models.approval import Approval  # noqa: F401
 from app.models.proposal_approval import ProposalApproval  # noqa: F401
+from app.models.message import Message  # noqa: F401

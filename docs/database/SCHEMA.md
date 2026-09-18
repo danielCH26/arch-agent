@@ -185,12 +185,12 @@ CREATE TABLE approvals (
     id SERIAL PRIMARY KEY,
     session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
     phase VARCHAR(50) NOT NULL,
-    decision VARCHAR(20) NOT NULL,  -- approved | modified | rejected
+    decision VARCHAR(20) NOT NULL,  -- approved | modified | rejected | approve | modify | reject (HU10 widening)
     feedback TEXT,
-    previous_output JSONB,
+    previous_output JSONB NOT NULL DEFAULT '{}'::jsonb,  -- HU10 (migration 0015)
     regenerated_output JSONB,
     created_at TIMESTAMP,
-    CONSTRAINT chk_decision CHECK (decision IN ('approved', 'modified', 'rejected'))
+    CONSTRAINT chk_decision CHECK (decision IN ('approved', 'modified', 'rejected', 'approve', 'modify', 'reject'))  -- HU10 widening
 );
 ```
 

@@ -17,6 +17,7 @@ class TestPhaseConstants:
             "propuesta",
             "refinamiento",
             "revision",
+            "final",
         ]
 
     def test_phase_labels(self):
@@ -25,6 +26,7 @@ class TestPhaseConstants:
         assert PHASE_LABELS["requerimientos"] == "Requerimientos"
         assert PHASE_LABELS["propuesta"] == "Propuesta"
         assert PHASE_LABELS["revision"] == "Revisión"
+        assert PHASE_LABELS["final"] == "Aprobación final"
 
 
 class TestProjectModels:
@@ -78,7 +80,7 @@ class TestProjectModels:
         )
         assert out.current_phase == "propuesta"
         assert out.phase_ready is True
-        assert len(out.available_phases) == 4
+        assert len(out.available_phases) == 5
 
 
 class TestRequireProjectLogic:
@@ -166,14 +168,14 @@ class TestAdvancePhaseLogic:
             assert "no está completa" in exc.detail
 
     def test_phase_advance_error_at_last_phase(self):
-        """current_phase='revision' + phase_ready=True → HTTP 400 'última fase'."""
+        """current_phase='final' + phase_ready=True → HTTP 400 'última fase'."""
         from fastapi import HTTPException
 
         phase_ready = True
-        current_phase = "revision"
-        idx = 3  # "revision" is the last phase (index 3 of 4 phases)
+        current_phase = "final"
+        idx = 4  # "final" is the last phase (index 4 of 5 phases)
 
-        if idx == len(["requerimientos", "propuesta", "refinamiento", "revision"]) - 1:
+        if idx == len(["requerimientos", "propuesta", "refinamiento", "revision", "final"]) - 1:
             detail = "Ya estás en la última fase."
             exc = HTTPException(status_code=400, detail=detail)
             assert exc.status_code == 400

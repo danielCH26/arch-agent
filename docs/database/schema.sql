@@ -100,16 +100,23 @@ CREATE TABLE approvals (
     id SERIAL PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     phase VARCHAR(50) NOT NULL,
-    decision VARCHAR(20) NOT NULL,  -- 'approved', 'modified', 'rejected'
+    -- HU10 (migration 0015): widened CHECK admits both participle (F05 legacy)
+    -- and imperative (HU10 body verbs) forms. See docs/adr/014-hu10-phase-gate.md §3.
+    decision VARCHAR(20) NOT NULL
+        CHECK (decision IN ('approved', 'modified', 'rejected', 'approve', 'modify', 'reject')),
     feedback TEXT,
-    previous_output JSONB,
+    -- HU10 (migration 0015): JSONB snapshot for Modify flow; NOT NULL DEFAULT '{}'
+    -- makes the migration non-destructive (existing rows backfill to empty object).
+    previous_output JSONB NOT NULL DEFAULT '{}'::jsonb,
     regenerated_output JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT chk_decision CHECK (decision IN ('approved', 'modified', 'rejected'))
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_approvals_session_id ON approvals(session_id);
 CREATE INDEX idx_approvals_decision ON approvals(decision);
+-- HU10 (migration 0015): read-path index for "last decision per (session, phase)".
+CREATE INDEX idx_approvals_session_phase_created
+    ON approvals(session_id, phase, created_at DESC);
 
 -- ----------------------------------------------------------------------------
 -- uploaded_documents: Metadata de documentos subidos al RAG (HU13)

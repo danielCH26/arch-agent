@@ -1,10 +1,18 @@
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { MessageBubble } from '../MessageBubble'
-import type { Message } from '../../stores/chatStore'
+import type { Attachment, Message } from '../../stores/chatStore'
 
-function renderMessage(content: string, role: Message['role'] = 'assistant') {
-  render(<MessageBubble message={{ id: 'message-1', role, content }} />)
+function renderMessage(
+  content: string,
+  role: Message['role'] = 'assistant',
+  attachments?: Attachment[]
+) {
+  render(
+    <MessageBubble
+      message={{ id: 'message-1', role, content, attachments }}
+    />
+  )
 }
 
 describe('MessageBubble', () => {
@@ -38,5 +46,51 @@ describe('MessageBubble', () => {
 
     expect(screen.getByText(/### No renderizar/)).toBeInTheDocument()
     expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+  })
+
+  // ----- F13 (REQ-PMCP-1 / REQ-ATT-3) attachment rendering ---------------
+
+  it('does not render any <img> when attachments is empty', () => {
+    renderMessage('Sin diagrama.', 'assistant', [])
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+
+  it('does not render any <img> when attachments is undefined', () => {
+    renderMessage('Sin diagrama.', 'assistant', undefined)
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+
+  it('renders one <img> per attachment with the signed URL + alt text', () => {
+    const attachments: Attachment[] = [
+      {
+        kind: 'screenshot',
+        mime: 'image/png',
+        url: '/api/chat/attachments/abc-uuid?token=signed.jwt',
+        filename: 'diagram-12345.png',
+      },
+    ]
+    renderMessage('Aquí va el diagrama:', 'assistant', attachments)
+    const img = screen.getByRole('img')
+    expect(img).toHaveAttribute(
+      'src',
+      '/api/chat/attachments/abc-uuid?token=signed.jwt'
+    )
+    expect(img).toHaveAttribute('alt', 'diagram-12345.png')
+    expect(img).toHaveAttribute('loading', 'lazy')
+  })
+
+  it('does not render attachments on user messages', () => {
+    const attachments: Attachment[] = [
+      {
+        kind: 'screenshot',
+        mime: 'image/png',
+        url: '/api/chat/attachments/abc?token=t',
+        filename: 'diagram-12345.png',
+      },
+    ]
+    renderMessage('Hola', 'user', attachments)
+    // The <img> slot only fires for assistant messages — users keep their
+    // raw content as plain text.
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
   })
 })
