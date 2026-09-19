@@ -98,29 +98,18 @@ _MERMAID_RENDER_POLL_INTERVAL_SECONDS: float = 0.3
 
 # Hallazgo #4 (revisión feature/hu6-diagrama): mermaid.js se cargaba desde
 # `cdn.jsdelivr.net`, lo que no funciona en el sidecar de Puppeteer (sin
-# salida a internet) a pesar de que el comentario decia "ya embebido
-# inline". Se vendoriza el bundle leyendo el archivo local una sola vez.
-_MERMAID_JS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "mermaid.min.js",
+# salida a internet). Se vendorizó el bundle (`mermaid.min.js` en la raíz).
+#
+# Pero embeberlo INLINE en el data URL (~3.3 MB -> ~4.5 MB en base64) tampoco
+# funciona en Docker: el data URL viaja como JSON en un POST al sidecar y
+# supergateway (`express.json()` sin `limit`) rechaza cuerpos > 100 KB con
+# HTTP 413; además Chromium limita las URLs de navegación a ~2 MB. Por eso el
+# HTML sigue siendo un data URL chico y solo el <script> apunta al bundle,
+# servido por el propio backend (`GET /vendor/mermaid.min.js`, ver server.py)
+# dentro de la red de Docker -- sigue sin necesitar internet.
+_MERMAID_JS_URL: str = os.environ.get(
+    "MERMAID_JS_URL", "http://backend:8000/vendor/mermaid.min.js"
 )
-
-
-def _load_vendored_mermaid_js() -> str:
-    try:
-        with open(_MERMAID_JS_PATH, "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError as e:
-        _LOGGER.error(
-            "No se pudo leer el bundle vendorizado de mermaid.js en %s: %s. "
-            "El render de diagramas va a fallar (mermaid quedará indefinido).",
-            _MERMAID_JS_PATH,
-            e,
-        )
-        return ""
-
-
-_MERMAID_JS_SOURCE: str = _load_vendored_mermaid_js()
 _MERMAID_NODE_DEF_PATTERN = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*\"?([^\"\]\n]+?)\"?\s*\]|\[\(\s*([^)]+?)\s*\)\])"
 )
@@ -157,6 +146,18 @@ def _has_architect_pattern(rag_documents: list[Any]) -> bool:
             if metadata.get("source_type") == "architect_pattern":
                 return True
     return False
+
+
+# Palabras que NO aportan informacion para decidir si un nodo esta respaldado
+# (articulos/preposiciones y sustantivos "contenedor" genericos). Se usan solo
+# como segundo criterio en `find_ungrounded_mermaid_nodes`.
+_GROUNDING_GENERIC_WORDS = frozenset(
+    {
+        "de", "del", "la", "el", "los", "las", "y", "e", "en", "para", "con",
+        "base", "datos", "database", "db", "servicio", "servicios", "service",
+        "services",
+    }
+)
 
 
 def _normalise_grounding_text(text: str) -> str:
@@ -216,13 +217,29 @@ def find_ungrounded_mermaid_nodes(
     if not grounding_text:
         return []
 
+    grounding_words = set(grounding_text.split())
+
     unknown: list[str] = []
     for node_name in _extract_mermaid_node_names(mermaid_code):
         normalised = _normalise_grounding_text(node_name.replace("_", " "))
         if not normalised:
             continue
-        if normalised not in grounding_text:
-            unknown.append(node_name)
+        if normalised in grounding_text:
+            continue
+
+        # Falso positivo (HU6): la propuesta dice "PostgreSQL" y el modelo
+        # rotula el nodo "Base de Datos PostgreSQL". La etiqueta completa no
+        # es substring del texto, pero TODAS sus palabras distintivas (las que
+        # no son genericas) si aparecen -> el nodo esta respaldado. Un nodo
+        # inventado ("Servicio de Blockchain") sigue marcandose porque su
+        # palabra distintiva no aparece en el contexto.
+        distinctive = [
+            w for w in normalised.split() if w not in _GROUNDING_GENERIC_WORDS
+        ]
+        if distinctive and all(w in grounding_words for w in distinctive):
+            continue
+
+        unknown.append(node_name)
 
     return unknown
 
@@ -326,7 +343,7 @@ async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
 
 def _build_mermaid_preview_html(mermaid_code: str) -> str:
     """Pagina HTML autocontenida que renderiza un bloque Mermaid via
-    mermaid.js (vendorizado, embebido inline -- ver hallazgo #4), agrandando
+    mermaid.js (vendorizado, servido por el backend -- ver hallazgo #4), agrandando
     el SVG resultante antes del screenshot para que los textos sean legibles
     en la imagen final.
 
@@ -337,9 +354,10 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
     import html as _html
 
     escaped = _html.escape(mermaid_code)
+    script_url = _html.escape(_MERMAID_JS_URL, quote=True)
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<script>" + _MERMAID_JS_SOURCE + "</script>"
+        "<script src='" + script_url + "'></script>"
         "<style>"
         "html,body{margin:0;padding:0;background:#fff;font-family:sans-serif;}"
         "body{display:inline-block;box-sizing:border-box;}"
@@ -429,6 +447,16 @@ async def _wait_for_mermaid_render(session: Any, *, fetch_timeout: float) -> str
         if asyncio.get_event_loop().time() >= deadline:
             return last_title
         await asyncio.sleep(_MERMAID_RENDER_POLL_INTERVAL_SECONDS)
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Aplana un ExceptionGroup (p. ej. el ``unhandled errors in a TaskGroup``
+    del cliente MCP) para loguear la causa real (``HTTPStatusError 413``,
+    ``ConnectError``...) en vez del mensaje generico del grupo."""
+    subs = getattr(exc, "exceptions", None)
+    if subs:
+        return "; ".join(_describe_exception(s) for s in subs)
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _mermaid_html_to_data_url(html: str) -> str:
@@ -550,7 +578,9 @@ async def _render_mermaid_server_side(
                     timeout=fetch_timeout,
                 )
     except Exception as e:
-        _LOGGER.warning("Render server-side (sesion unica) fallo: %s", e)
+        _LOGGER.warning(
+            "Render server-side (sesion unica) fallo: %s", _describe_exception(e)
+        )
         return None
 
     blocks = getattr(result, "content", None) or []

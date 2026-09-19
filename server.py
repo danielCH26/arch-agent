@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -76,6 +76,23 @@ app.include_router(elicitation_router)
 app.include_router(attachments_router)
 app.include_router(diagrams_router)
 app.include_router(proposals_router)
+
+# HU6: bundle de mermaid.js para el render server-side (sidecar de Puppeteer).
+# Ruta puntual (no un StaticFiles de la raiz, que expondria server.py, .env...).
+# Es una libreria publica; no requiere auth porque Chromium la pide sin token.
+MERMAID_JS_FILE = Path(__file__).parent / "mermaid.min.js"
+
+
+@app.get("/vendor/mermaid.min.js", include_in_schema=False)
+async def vendor_mermaid_js():
+    if not MERMAID_JS_FILE.is_file():
+        raise HTTPException(status_code=404, detail="mermaid.min.js no disponible")
+    return FileResponse(
+        MERMAID_JS_FILE,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
 
 # Serve SPA static files (built by Vite)
 # Mount AFTER specific routes so /api/* and /register work first

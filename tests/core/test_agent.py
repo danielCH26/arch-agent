@@ -1175,3 +1175,95 @@ def test_run_agent_does_not_consume_rate_limit_when_reply_has_no_diagram(monkeyp
         for ev in events
     )
     assert events[-1]["event"] == "done"
+
+# ---------------------------------------------------------------------------
+# HTML de preview de Mermaid: NO debe embeber mermaid.js (bug HU6: el data URL
+# de ~4.5 MB era rechazado con HTTP 413 por supergateway, limite 100 KB)
+# ---------------------------------------------------------------------------
+
+
+def test_mermaid_preview_html_references_bundle_by_url_not_inline():
+    from app.core import agent
+
+    html = agent._build_mermaid_preview_html('flowchart LR\n  A["Nodo 1"] --> B["Nodo 2"]')
+
+    assert f"<script src='{agent._MERMAID_JS_URL}'></script>" in html
+    # Si alguien vuelve a embeber el bundle, el HTML pasa de unos pocos KB a MBs.
+    assert len(html) < 20_000
+
+
+def test_mermaid_data_url_stays_under_gateway_body_limit():
+    from app.core import agent
+
+    data_url = agent._mermaid_html_to_data_url(
+        agent._build_mermaid_preview_html("flowchart LR\n  A --> B")
+    )
+
+    # supergateway usa express.json() sin `limit` -> 100 KB por request.
+    assert len(data_url) < 100_000
+
+
+def test_describe_exception_flattens_exception_groups():
+    from app.core import agent
+
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [RuntimeError("413 Payload Too Large"), ValueError("otra")],
+    )
+
+    text = agent._describe_exception(group)
+
+    assert "RuntimeError: 413 Payload Too Large" in text
+    assert "ValueError: otra" in text
+    assert "TaskGroup" not in text
+
+
+# ---------------------------------------------------------------------------
+# Grounding: falso positivo "Base de Datos PostgreSQL" vs propuesta "PostgreSQL"
+# ---------------------------------------------------------------------------
+
+_APPROVED_PROPOSAL_DOC_TEXT = (
+    "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL DIAGRAMA:\n"
+    "Arquitectura de microservicios: API Gateway, Servicio de Órdenes, "
+    "Servicio de Pagos, Servicio de Inventario, PostgreSQL"
+)
+
+
+def _approved_proposal_doc():
+    return _make_doc(
+        _APPROVED_PROPOSAL_DOC_TEXT,
+        "approved_proposal",
+        pattern_name="Propuesta aprobada",
+    )
+
+
+def test_grounding_accepts_label_that_elaborates_a_proposal_term():
+    """La propuesta dice 'PostgreSQL'; el modelo rotula 'Base de Datos
+    PostgreSQL'. Todas las palabras distintivas estan en el contexto -> no
+    debe salir la advertencia."""
+    from app.core.agent import find_ungrounded_mermaid_nodes
+
+    code = (
+        "flowchart LR\n"
+        '  G["API Gateway"] --> O["Servicio de Órdenes"]\n'
+        '  O --> DB["Base de Datos PostgreSQL"]'
+    )
+
+    assert find_ungrounded_mermaid_nodes(code, [_approved_proposal_doc()]) == []
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Servicio de Blockchain",       # componente inventado
+        "Base de Datos MongoDB",        # otra tecnologia que la propuesta no menciona
+        "Servicio de Pagos Externos",   # una palabra distintiva de mas
+        "Cache Redis",
+    ],
+)
+def test_grounding_still_flags_invented_components(label):
+    from app.core.agent import find_ungrounded_mermaid_nodes
+
+    code = f'flowchart LR\n  X["{label}"] --> Y["API Gateway"]'
+
+    assert label in find_ungrounded_mermaid_nodes(code, [_approved_proposal_doc()])
