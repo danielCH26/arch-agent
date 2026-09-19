@@ -61,6 +61,10 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
+    # Raiz del codigo en el path: sin esto, `python migrations/run_migrations.py`
+    # y `python scripts/...` fallan con "No module named 'app'" (Python pone
+    # en sys.path la carpeta del script, no el cwd).
+    PYTHONPATH=/app \
     # Cache de modelos HF/sentence-transformers
     HF_HOME=/app/.cache/huggingface \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
@@ -82,6 +86,7 @@ COPY --from=builder /install /usr/local
 COPY server.py ./
 COPY app/ ./app/
 COPY schema.sql ./
+COPY mermaid.min.js ./
 COPY scripts/ ./scripts/
 COPY migrations/ ./migrations/
 

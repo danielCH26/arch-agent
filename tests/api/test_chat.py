@@ -239,7 +239,7 @@ def test_load_approved_proposal_doc_uses_approved_proposal_anchor():
 
     fake_db = MagicMock()
     fake_session = MagicMock(id=11)
-    fake_approval = MagicMock(id=22, phase="propuesta", created_at=None)
+    fake_approval = MagicMock(id=22, phase="propuesta", decision="approved", created_at=None)
     fake_message = MagicMock(
         id=33,
         content="Propuesta aprobada: API Gateway -> Servicio de Órdenes",
@@ -284,7 +284,7 @@ def test_load_approved_proposal_doc_prefers_saved_proposal_state():
             }
         },
     )
-    fake_approval = MagicMock(id=22, phase="propuesta", created_at=None)
+    fake_approval = MagicMock(id=22, phase="propuesta", decision="approved", created_at=None)
 
     q_session = MagicMock()
     q_session.filter.return_value.first.return_value = fake_session

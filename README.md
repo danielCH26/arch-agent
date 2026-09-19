@@ -15,8 +15,11 @@ cp .env.example .env
 # 2. Levantar el stack Docker completo (Postgres, backend FastAPI, SPA, Engram, Langfuse)
 docker compose up -d
 
-# 3. (Opcional) Setup automatizado: genera JWT y ENCRYPTION_KEY, inicializa DB,
-# corre migrations, espera al backend
+# El backend aplica schema.sql y las migraciones pendientes al arrancar
+# (ver `command` en docker-compose.yml); si cambias migrations/, reconstruye:
+#   docker compose up -d --build backend
+
+# 3. (Opcional) Setup automatizado: genera JWT y ENCRYPTION_KEY, espera al backend
 bash scripts/setup-local.sh
 ```
 

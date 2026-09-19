@@ -66,6 +66,15 @@ services:
       - backend_models:/app/.cache
     ports:
       - "8000:8000"
+    # Aplica el schema (idempotente) y las migraciones pendientes ANTES de
+    # levantar uvicorn. Si alguno falla, el contenedor sale con error (queda
+    # visible en `docker compose logs backend`) en vez de arrancar contra una
+    # DB desactualizada. Sobrescribir `command` reemplaza el CMD del
+    # Dockerfile, por eso se repiten los flags de uvicorn.
+    command: >
+      sh -c "python scripts/init_db.py &&
+             python -m migrations.run_migrations &&
+             exec uvicorn server:app --host 0.0.0.0 --port 8000 --proxy-headers"
     restart: unless-stopped
 
   # ===========================================================================

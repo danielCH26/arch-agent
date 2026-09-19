@@ -5,7 +5,7 @@ más antiguo (HU6: "Historial de versiones del diagrama").
 """
 from __future__ import annotations
 
-from typing import Any,Literal, Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -20,11 +20,22 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api/diagrams", tags=["diagrams"])
 
 
-@router.get("/history")
+class DiagramVersionOut(BaseModel):
+    message_id: int
+    url: str
+    filename: Optional[str] = None
+    created_at: str
+
+
+class DiagramHistoryOut(BaseModel):
+    diagrams: list[DiagramVersionOut]
+
+
+@router.get("/history", response_model=DiagramHistoryOut)
 def diagram_history(
     project_id: int = Query(..., ge=1),
     current_user: dict = Depends(get_current_user),
-) -> dict[str, list[dict[str, Any]]]:
+) -> DiagramHistoryOut:
     user_id = current_user["user_id"]
 
     db = SessionLocal()
@@ -62,25 +73,25 @@ def diagram_history(
             .all()
         )
 
-        versions: list[dict[str, Any]] = []
+        versions: list[DiagramVersionOut] = []
         for row in rows:
             for att in row.attachments or []:
                 if att.get("kind") == "screenshot" and att.get("id"):
                     versions.append(
-                        {
-                            "message_id": row.id,
+                        DiagramVersionOut(
+                            message_id=row.id,
                             # Bug fix (HU6): no reusar att["url"] tal cual —
                             # es el token firmado en el momento en que se
                             # genero el diagrama (TTL 5 min) y para cuando
                             # alguien abre el historial de versiones ya esta
                             # vencido casi siempre. Se re-firma aqui.
-                            "url": build_attachment_url(att["id"], user_id),
-                            "filename": att.get("filename"),
-                            "created_at": row.created_at.isoformat(),
-                        }
+                            url=build_attachment_url(att["id"], user_id),
+                            filename=att.get("filename"),
+                            created_at=row.created_at.isoformat(),
+                        )
                     )
 
-        return {"diagrams": versions}
+        return DiagramHistoryOut(diagrams=versions)
     finally:
         db.close()
 
