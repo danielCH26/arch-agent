@@ -40,11 +40,22 @@ def test_env_present_helper_whitespace(monkeypatch):
     assert langfuse_tracer._env_present() is False
 
 
-def test_get_langfuse_handler_stub_raises():
-    """Slice F11.1 stub raises ``NotImplementedError`` until F11.3b."""
-    import pytest
-
+def test_get_langfuse_handler_returns_none_without_env(monkeypatch):
+    """F11.3b implementation: when Langfuse env vars are not set, the factory
+    returns ``None`` (free-tier default, no Langfuse coupling)."""
     from app.core import langfuse_tracer
 
-    with pytest.raises(NotImplementedError):
-        langfuse_tracer.get_langfuse_handler()
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    assert langfuse_tracer.get_langfuse_handler() is None
+
+
+def test_get_langfuse_handler_returns_handler_with_env(monkeypatch):
+    """F11.3b implementation: with both Langfuse env vars set, the factory
+    returns a configured ``CallbackHandler`` instance (not ``None``)."""
+    from app.core import langfuse_tracer
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk_test_1234567890")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk_test_1234567890")
+    handler = langfuse_tracer.get_langfuse_handler()
+    assert handler is not None
