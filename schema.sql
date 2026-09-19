@@ -154,7 +154,6 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
 
-<<<<<<< HEAD
 -- architect_pattern_chunks.chunk_metadata (migration 0009)
 ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;
 
