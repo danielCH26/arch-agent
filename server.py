@@ -63,6 +63,7 @@ from app.api.rag import router as rag_router
 from app.api.patterns import router as patterns_router
 from app.api.elicitation import router as elicitation_router
 from app.api.proposals import router as proposals_router
+from app.api.attachments import router as attachments_router  # F13, issue #17
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -74,6 +75,7 @@ app.include_router(rag_router)
 app.include_router(patterns_router)
 app.include_router(elicitation_router)
 app.include_router(proposals_router)
+app.include_router(attachments_router)
 
 # Serve SPA static files (built by Vite)
 # Mount AFTER specific routes so /api/* and /register work first

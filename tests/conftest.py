@@ -39,3 +39,22 @@ def setup_encryption_key():
     yield
     # Cleanup opcional
     # os.environ.pop("ENCRYPTION_KEY", None)
+
+
+@pytest.fixture(autouse=True)
+def reset_puppeteer_state():
+    """Clear the puppeteer-mcp client cache and rate limiter between tests.
+
+    Without this autouse, F11 tests that share ``user_id=None`` would
+    accumulate entries in the module-level ``_RATE_LIMITER`` and the 6th
+    test in a run would emit ``degraded`` (rate-limited) before its
+    expected first event. Resetting both keeps each test deterministic
+    regardless of execution order — the sidecar may be healthy (so the
+    real fetch would otherwise succeed) or down (so the real fetch would
+    otherwise fail); the reset prevents pollution either way.
+    """
+    from app.core import puppeteer_mcp
+
+    puppeteer_mcp.reset_client_for_tests()
+    yield
+    puppeteer_mcp.reset_client_for_tests()

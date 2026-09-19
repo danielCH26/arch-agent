@@ -338,8 +338,31 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
+        {!isUser && renderAttachments(message.attachments)}
         {!isUser && renderSources(message.sources)}
       </div>
+    </div>
+  )
+}
+
+// F13 (REQ-PMCP-1 / REQ-ATT-3): renders the inline screenshot(s) the agent
+// emitted via `` event: attachment``. Only fires for assistant messages —
+// user messages never carry attachments. No download button in v1 (see
+// design §8 Q-NEW-DOWNLOAD-PNG). The URL already carries the signed
+// token, so no Authorization header is needed.
+function renderAttachments(attachments: Message['attachments']) {
+  if (!attachments || attachments.length === 0) return null
+  return (
+    <div className="mt-2 space-y-2">
+      {attachments.map((attachment, index) => (
+        <img
+          key={`${attachment.url}-${index}`}
+          src={attachment.url}
+          alt={attachment.filename}
+          className="max-w-md rounded-lg my-2"
+          loading="lazy"
+        />
+      ))}
     </div>
   )
 }

@@ -1,0 +1,55 @@
+# =============================================================================
+# Line-ending normalization for arch-agent (PR #76 review fix #4)
+# =============================================================================
+# Repo convention: LF line endings everywhere; Docker entrypoints and
+# shell scripts MUST be LF or ``set -e`` syntax errors will silently
+# break on Linux containers. A previous commit landed a CRLF entrypoint.sh
+# (# ea24df3 ingest), so the head of the repo was inconsistent across
+# Windows / macOS / Linux checkouts. ``git add --renormalize`` after
+# adding this file resets every tracked file to LF in one pass.
+#
+# If you add a new file extension here, also git-attribute-verify it on
+# the next touch (``git check-attr -a path/to/new.ext``).
+# =============================================================================
+
+# Shell scripts (entrypoint.sh, setup scripts, ci helpers).
+*.sh             text eol=lf
+
+# Python source.
+*.py             text eol=lf
+
+# Markdown / docs.
+*.md             text eol=lf
+
+# TypeScript / TSX source (frontend React/Vite).
+*.ts             text eol=lf
+*.tsx            text eol=lf
+
+# JSON manifests (package.json, package-lock.json, tsconfig).
+*.json           text eol=lf
+
+# Dockerfiles must be LF; CRLF breaks ``docker build`` on Linux runners.
+Dockerfile       text eol=lf
+
+# Env / shell dotenvs.
+.env*            text eol=lf
+
+# SQL migrations (run_migrations.py reads them as text; CRLF -> weird).
+*.sql            text eol=lf
+
+# YAML configs (LLM benchmarks, k8s, compose overlays, CI).
+*.yml            text eol=lf
+*.yaml           text eol=lf
+
+# Binary assets (mockups, screenshots). MUST stay binary or
+# ``git add --renormalize`` will munge any embedded text chunk.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.ico           binary
+*.pdf           binary
+*.zip           binary
+*.gz            binary
+*.tgz           binary
