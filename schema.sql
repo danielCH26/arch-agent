@@ -114,6 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_pattern_chunks_embedding
 
 CREATE INDEX IF NOT EXISTS idx_pattern_chunks_pattern_id
     ON architect_pattern_chunks (pattern_id);
+
 -- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
 -- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
 -- migration 0007, mismo criterio que architect_patterns arriba (C2).
