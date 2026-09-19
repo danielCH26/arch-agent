@@ -192,19 +192,17 @@ def validate_mermaid(code: str) -> tuple[bool, str | None]:
     if not any(first_line.startswith(t) for t in _DIAGRAM_TYPES):
         return False, f"Tipo de diagrama no reconocido: '{first_line}'"
 
-    if stripped.count("[") != stripped.count("]"):
-        return False, "Corchetes sin cerrar"
-    if stripped.count("(") != stripped.count(")"):
-        return False, "Paréntesis sin cerrar"
-
-    # Hallazgo #3 (revisión feature/hu6-diagrama): el chequeo de labels
-    # `[...]` solo es válido para flowchart/graph -- `sanitize_mermaid_
-    # labels` ya se limita a esos tipos, pero el validador seguía aplicando
-    # el mismo criterio a CUALQUIER tipo. En un sequenceDiagram, `[...]`
-    # dentro de un mensaje (p. ej. `A->>B: parse items[0](x)`) no es una
-    # etiqueta de nodo y Mermaid sí lo renderiza -- este validador lo
-    # rechazaba igual.
+    # Hallazgo #3 (revisión feature/hu6-diagrama): el balance de []/() y el
+    # chequeo de labels sin comillas solo tienen sentido en flowchart/graph.
+    # Antes se aplicaban a cualquier tipo de diagrama, y en un sequenceDiagram
+    # con algo como "Note over A: 1) validar" (un ")" sin "(" en todo el
+    # documento) el diagrama se rechazaba aunque Mermaid sí lo renderizara.
     if _is_flowchart(code):
+        if stripped.count("[") != stripped.count("]"):
+            return False, "Corchetes sin cerrar"
+        if stripped.count("(") != stripped.count(")"):
+            return False, "Paréntesis sin cerrar"
+
         for match in _NODE_LABEL_PATTERN.finditer(stripped):
             label = match.group(1)
             if _label_has_unquoted_specials(label):

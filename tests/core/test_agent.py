@@ -1042,3 +1042,136 @@ def test_render_mermaid_server_side_returns_none_when_mcp_sdk_unavailable(
     )
 
     assert result is None
+# ---------------------------------------------------------------------------
+# run_agent — rate limit de Puppeteer chequeado justo antes de renderizar
+# (hallazgo #2, revisión feature/hu6-diagrama). Reemplaza al viejo
+# ``test_rate_limit_handler_in_try_get_puppeteer_tools`` en
+# tests/core/test_puppeteer_mcp.py, que llamaba a
+# ``agent._try_get_puppeteer_tools`` -- funcion que ya no existe tras este
+# refactor (el chequeo se movio a un import local dentro de ``run_agent``,
+# justo antes de ``_render_mermaid_server_side``).
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_emits_degraded_with_rate_limited_reason_before_render(monkeypatch):
+    """Hallazgo #2: si la cuota de Puppeteer ya esta agotada cuando el
+    turno llega al bloque mermaid, `run_agent` debe emitir `degraded` con
+    `source="puppeteer"` / `reason="puppeteer_rate_limited"` en vez de
+    omitir el diagrama en silencio, y NO debe llegar a llamar a
+    `_render_mermaid_server_side` (no tiene sentido intentar renderizar
+    si ya sabemos que el rate limit lo va a rechazar)."""
+    from app.core import agent, puppeteer_mcp
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    mermaid_reply = "Aca esta el diagrama:\n```mermaid\nflowchart TD\nA-->B\n```"
+    raw_events = [
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk(mermaid_reply)}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    # Agota la (unica) cuota del usuario ANTES de correr el turno.
+    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
+    puppeteer_mcp._RATE_LIMITER.clear()
+    puppeteer_mcp._check_rate_limit(user_id=7)
+
+    render_mock = AsyncMock()
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_render_mermaid_server_side", render_mock):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="dibuja el diagrama",
+                callbacks=[],
+                rag_documents=[],
+                user_id=7,
+                project_id=1,
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    render_mock.assert_not_called()
+
+    degraded_events = [
+        ev for ev in events
+        if ev["event"] == "degraded"
+        and ev["data"].get("reason") == "puppeteer_rate_limited"
+    ]
+    assert len(degraded_events) == 1, f"eventos: {[ev['event'] for ev in events]}"
+    payload = degraded_events[0]["data"]
+    assert payload["source"] == "puppeteer"
+    assert payload["fallback"] == "text_only"
+
+    types = [ev["event"] for ev in events]
+    # El mermaid sigue siendo validado igual (solo falla el render a imagen).
+    assert "diagram_validated" in types
+    assert types[-1] == "done"
+
+
+def test_run_agent_does_not_consume_rate_limit_when_reply_has_no_diagram(monkeypatch):
+    """Hallazgo #2 (regresion): antes `_check_rate_limit(user_id)` se
+    llamaba al PRINCIPIO de todos los turnos, no solo los que terminan en
+    diagrama -- eso gastaba cuota en cualquier mensaje de chat normal. Un
+    turno sin bloque ```mermaid``` en la respuesta no debe tocar el rate
+    limiter en absoluto."""
+    from app.core import agent, puppeteer_mcp
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    raw_events = [
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk("Respuesta normal, sin diagrama.")}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
+    puppeteer_mcp._RATE_LIMITER.clear()
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="como funciona el patron saga?",
+                callbacks=[],
+                rag_documents=[],
+                user_id=7,
+                project_id=1,
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    # Ninguna llamada a _check_rate_limit -> la ventana del usuario sigue
+    # vacia (si el bug volviera, tendria un timestamp cargado aca).
+    assert puppeteer_mcp._RATE_LIMITER.get(7, []) == []
+    assert not any(
+        ev["event"] == "degraded"
+        and ev.get("data", {}).get("source") == "puppeteer"
+        for ev in events
+    )
+    assert events[-1]["event"] == "done"

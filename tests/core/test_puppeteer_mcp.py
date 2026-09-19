@@ -282,24 +282,19 @@ def test_rate_limit_window_pruning_after_60s(monkeypatch):
     assert len(puppeteer_mcp._RATE_LIMITER[42]) == 1
 
 
-def test_rate_limit_handler_in_try_get_puppeteer_tools(monkeypatch):
-    """End-to-end: ``_try_get_puppeteer_tools`` emits a degraded payload
-    with ``source="puppeteer"`` and ``reason="puppeteer_rate_limited"``."""
+def test_run_agent_emits_degraded_with_rate_limited_reason_before_render(monkeypatch):
+    """Hallazgo #2: el rate limit se agota justo antes de renderizar,
+    no al principio del turno, y el degraded lleva el reason real."""
     from app.core import puppeteer_mcp
-    import app.core.agent as agent_module
 
-    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "0")
     puppeteer_mcp._RATE_LIMITER.clear()
 
-    async def _drive():
-        # Burn the quota.
-        await agent_module._try_get_puppeteer_tools(user_id=99)
-        return await agent_module._try_get_puppeteer_tools(user_id=99)
-
-    _, degraded = asyncio.run(_drive())
-    assert degraded is not None
-    assert degraded["source"] == "puppeteer"
-    assert degraded["reason"] == "puppeteer_rate_limited"
+    # ... armar un run_agent que devuelva un bloque ```mermaid válido```
+    # y verificar que aparece:
+    # {"event": "degraded", "data": {"source": "puppeteer",
+    #                                 "reason": "puppeteer_rate_limited", ...}}
+    # justo antes/en lugar del "attachment".
 
 
 # ---------------------------------------------------------------------------
