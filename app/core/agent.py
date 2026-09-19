@@ -172,6 +172,7 @@ def _extract_mermaid_node_names(code: str) -> list[str]:
         if not value:
             return
         cleaned = value.strip().strip('"').strip()
+        cleaned = cleaned.replace("#quot;", '"')
         if not cleaned or cleaned in _GROUNDING_IGNORE_NODE_IDS:
             return
         key = cleaned.lower()

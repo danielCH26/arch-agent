@@ -87,6 +87,7 @@ Para pruebas por API sin pelear con `curl`/PowerShell: `http://localhost:8000/do
   (antes de esta ronda, esto nunca llegaba a la UI — el filtro de `api/chat.ts` lo descartaba)
 - [ ] Proyecto con propuesta aprobada que sí menciona esos componentes → la advertencia no aparece
 - [ ] Confirmá que la lista de nodos en el mensaje coincide con los que realmente sobran (comparalo contra el Mermaid generado)
+- [ ] **Bug conocido, sin arreglar** — si el LLM rotula un nodo con comillas literales dentro del label (ej. el nodo se ve como `"API Gateway"` dentro del recuadro), la lista de nodos de la advertencia muestra el texto crudo `#quot;API Gateway#quot;` en vez de `API Gateway` o `"API Gateway"`. No reportar como bug nuevo, ya está identificado: `sanitize_mermaid_labels` (`mermaid_validator.py`, línea ~84) escapa las comillas internas del label a la entidad `#quot;` (sintaxis propia de Mermaid) para que el diagrama renderice bien, pero `_add` dentro de `_extract_mermaid_node_names` (`agent.py`) solo hace `.strip('"')` sobre el label y nunca revierte ese escape antes de mandarlo al mensaje — así que `#quot;` queda tal cual en el texto que ve el usuario. Ver sección 10.
 
 ## 5. Propuesta aprobada como fuente de verdad
 
@@ -170,6 +171,7 @@ Este es el caso que en la ronda anterior estaba explícitamente marcado como "no
 - No hay tests automáticos para `app/api/diagrams.py`, `app/api/proposals.py`, ni para el sanitizador de Mermaid — todo lo de las secciones 2, 5, 6.1 y 6.2 sigue siendo manual hoy. (La pieza de `display_content`, sección 6.3, sí tiene tests — ver sección 11.)
 - Test `client.test.ts > redirects to /login on 401` es flaky (falla también sin nuestros cambios, confirmado con `git stash`) — no relacionado a HU6.
 - Si el `.env` tiene valores entre comillas simples y algún servicio se recrea (aunque sea en cascada, sin que lo pidas explícitamente), `backend` puede levantar con credenciales de Postgres literalmente entre comillas y todo el login/chat empieza a dar 500. Revisar `docker compose exec backend printenv DATABASE_URL` ante cualquier 500 repentino después de un `up`/`restart`.
+- **Nuevo, detectado esta ronda**: la advertencia de grounding (sección 4) puede mostrar nodos con `#quot;` literal en vez de comillas normales cuando el label del nodo ya trae comillas incrustadas (ej. `#quot;API Gateway#quot;` en vez de `API Gateway`). No es un problema de HTML/frontend — `api/chat.ts` solo concatena el string que manda el backend. La causa es que `_extract_mermaid_node_names` / `_add` en `app/core/agent.py` limpia el label con `.strip('"')` pero nunca revierte el escape `#quot;` que `sanitize_mermaid_labels` (`app/core/mermaid_validator.py`) le aplicó antes para que el propio Mermaid pudiera renderizar las comillas internas. Fix propuesto (no aplicado todavía): en `_add`, después del `.strip('"')`, agregar `cleaned = cleaned.replace("#quot;", '"')` (o directamente quitar esas comillas del todo, ya que ahí son decorativas y no aportan al nombre del nodo).
 
 ## 11. Tests automáticos agregados esta ronda (migración 0015 / display_content)
 
