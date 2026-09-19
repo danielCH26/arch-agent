@@ -106,9 +106,13 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   }, [projectId, renderElicitationState])
 
   useEffect(() => {
-    chatStore.setState({ messages: [], error: null })
     setDone(false); setSummary(null); setDecisionMessage(''); setDecisionError(''); setShowModify(false)
-    if (isElicitation) void loadElicitation()
+    if (!isElicitation) return
+    // Solo en la fase de elicitación el historial del chat lo dicta el backend;
+    // en las demás fases se respeta lo que ya haya en chatStore.
+    chatStore.setState({ messages: [], error: null })
+    void loadElicitation()
+    return () => { chatStore.setState({ messages: [], error: null }) }
   }, [isElicitation, loadElicitation, projectId])
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, isStreaming, loadingElicitation])
