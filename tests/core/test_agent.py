@@ -106,6 +106,25 @@ flowchart TD
     assert find_ungrounded_mermaid_nodes(mermaid, docs) == ["Fraud Service"]
 
 
+def test_extract_mermaid_node_names_unescapes_quot_entity():
+    """Regresion (docs/QA_feature-hu6-diagrama.md, secciones 4 y 10):
+    ``sanitize_mermaid_labels`` (mermaid_validator.py) escapa comillas
+    internas de un label a la entidad ``#quot;`` para que Mermaid renderice
+    bien -- p. ej. ``Cliente "Premium"`` sale del sanitizador como
+    ``Cliente #quot;Premium#quot;``. ``_extract_mermaid_node_names`` es lo
+    que arma la lista de nodos de la advertencia de grounding que ve el
+    usuario, y debe revertir ese escape (no mostrar la entidad cruda).
+    """
+    from app.core.agent import _extract_mermaid_node_names
+
+    code = 'flowchart TD\nA["Cliente #quot;Premium#quot;"]-->B["API Gateway"]'
+
+    names = _extract_mermaid_node_names(code)
+
+    assert 'Cliente "Premium"' in names
+    assert not any("#quot;" in name for name in names)
+
+
 # ---------------------------------------------------------------------------
 # build_agent
 # ---------------------------------------------------------------------------
