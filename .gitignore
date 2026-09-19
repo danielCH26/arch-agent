@@ -48,3 +48,5 @@ frontend/.env.local
 
 # OpenSpec artifacts (experimental workflow - not for production)
 openspec/
+
+.freebuff/
