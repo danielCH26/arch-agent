@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -53,7 +54,15 @@ logger = logging.getLogger(__name__)
 
 DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
 PROPOSAL_PHASES = {"propuesta", "proposal"}
+# Hallazgo #14 (revisión feature/hu6-diagrama): "graph" hacía match por
+# substring contra "paragraph"/"photograph" y disparaba `_is_diagram_turn`
+# en turnos que no tenían nada que ver con diagramas. Se compila un patrón
+# de límite de palabra en vez de usar `in` sobre el string completo.
 DIAGRAM_REQUEST_TERMS = ("diagrama", "diagram", "mermaid", "flowchart", "graph")
+_DIAGRAM_REQUEST_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(term) for term in DIAGRAM_REQUEST_TERMS) + r")\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -69,8 +78,7 @@ def _is_relevant(doc) -> bool:
 def _is_diagram_turn(project: Project | None, message: str) -> bool:
     if project is not None and (project.current_phase or "").lower() in DIAGRAM_PHASES:
         return True
-    lowered = message.lower()
-    return any(term in lowered for term in DIAGRAM_REQUEST_TERMS)
+    return bool(_DIAGRAM_REQUEST_PATTERN.search(message))
 
 
 def _proposal_from_engram_state(session_row: UserSession, project_id: int) -> str | None:
@@ -101,6 +109,23 @@ def _load_approved_proposal_doc(
     proposal text lives in chat history, so we use the approved proposal
     decision as an anchor and retrieve the latest assistant message for the
     same project before that approval.
+
+    Fixes aplicados (hallazgo #1, revisión feature/hu6-diagrama):
+
+    1. Filtra por `project_id` (migration 0016) además de `session_id`.
+       Antes, como `sessions` es una fila por usuario, aprobar la propuesta
+       del proyecto A hacía que el proyecto B (nunca aprobado) recibiera
+       este doc igual. Filas viejas con `project_id IS NULL` (creadas antes
+       de la migración) se excluyen a propósito: no sabemos a qué proyecto
+       pertenecían, así que no se usan como ancla de verdad para ningún
+       proyecto.
+    2. Ya no filtra directamente por `decision == "approved"`. Se toma la
+       última decisión de esa fase/proyecto sin importar cuál sea, y solo
+       se sigue adelante si esa última decisión es "approved". Antes, un
+       "approved" viejo se seguía encontrando aunque hubiera un
+       "modified"/"rejected" más reciente para el mismo proyecto -- la
+       propuesta ya descartada se reinyectaba igual como "fuente de
+       verdad" del diagrama.
     """
     if project_id is None:
         return None
@@ -115,13 +140,16 @@ def _load_approved_proposal_doc(
             db.query(Approval)
             .filter(
                 Approval.session_id == session_row.id,
+                Approval.project_id == project_id,
                 Approval.phase.in_(PROPOSAL_PHASES),
-                Approval.decision == "approved",
             )
             .order_by(Approval.created_at.desc(), Approval.id.desc())
             .first()
         )
-        if approval is None:
+        if approval is None or approval.decision != "approved":
+            # None: nunca hubo ninguna decisión para este proyecto.
+            # No "approved": la última decisión fue modify/reject -- la
+            # propuesta vigente (si la hubo) ya quedó descartada.
             return None
 
         proposal_from_state = _proposal_from_engram_state(session_row, project_id)

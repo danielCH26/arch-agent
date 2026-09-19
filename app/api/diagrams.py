@@ -40,14 +40,25 @@ def diagram_history(
                 detail="Proyecto no encontrado",
             )
 
+        # Hallazgo #10 (revisión feature/hu6-diagrama): antes traía TODOS
+        # los mensajes del asistente del proyecto (con `content` completo,
+        # que puede ser largo) sin límite. Ahora: solo columnas necesarias
+        # (`with_entities`), solo filas que realmente tengan adjuntos, y un
+        # tope razonable de mensajes recientes a inspeccionar.
+        HISTORY_MESSAGE_LOOKBACK = 200
+
         rows = (
             db.query(Message)
             .filter(
                 Message.project_id == project_id,
                 Message.user_id == user_id,
                 Message.role == "assistant",
+                Message.attachments != None,  # noqa: E711 (comparación JSONB, no bool)
+                Message.attachments != [],
             )
             .order_by(Message.created_at.desc())
+            .limit(HISTORY_MESSAGE_LOOKBACK)
+            .with_entities(Message.id, Message.created_at, Message.attachments)
             .all()
         )
 
@@ -129,6 +140,7 @@ def decide_diagram(
             phase=PHASE,
             decision=body.decision,
             feedback=body.feedback,
+            project_id=project_id,
         )
         db.commit()
 

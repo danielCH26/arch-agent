@@ -39,6 +39,8 @@ def load_session_state(user_id: int) -> dict | None:
         }
     finally:
         db.close()
+
+
 DECISION_TO_DB = {
     "approve": "approved",
     "modify": "modified",
@@ -53,6 +55,7 @@ def record_approval_decision(
     phase: str,
     decision: str,
     feedback: str | None = None,
+    project_id: int | None = None,
 ) -> Approval:
     """Registra una fila en `approvals` para `phase`, creando la
     `UserSession` si todavía no existe (via `ensure_user_session`) en
@@ -62,11 +65,19 @@ def record_approval_decision(
     No hace `db.commit()` -- el caller controla la transacción, igual
     que antes lo hacían diagrams.py/proposals.py/elicitation.py cada
     uno con su propio `db.add(...)` + commit.
+
+    `project_id` (migration 0016): `sessions` es una fila por usuario, no
+    por proyecto, así que sin esto una aprobación del proyecto A "contamina"
+    al proyecto B del mismo usuario (hallazgo #1, revisión
+    feature/hu6-diagrama). Todos los callers (elicitation.py, proposals.py,
+    diagrams.py) deben pasarlo -- queda opcional solo para no romper código
+    viejo que aún no lo pase explícitamente.
     """
     session_id = ensure_user_session(db, user_id)
 
     approval = Approval(
         session_id=session_id,
+        project_id=project_id,
         phase=phase,
         decision=DECISION_TO_DB[decision],
         feedback=feedback,

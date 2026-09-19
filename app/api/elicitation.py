@@ -9,8 +9,7 @@ from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
 from app.core.llm_loader import build_langchain_model, LLMConfigError
-from app.core.session_store import load_session_state, save_session_state
-from app.models.approval import Approval
+from app.core.session_store import load_session_state, record_approval_decision, save_session_state
 from app.models.project import Project
 from app.models.session import UserSession
 
@@ -21,11 +20,10 @@ router = APIRouter(prefix="/api/projects", tags=["elicitation"])
 # para no desalinearse si el orden de fases cambia.
 PHASE = AVAILABLE_PHASES[0]  # "requerimientos"
 
-DECISION_TO_DB = {
-    "approve": "approved",
-    "modify": "modified",
-    "reject": "rejected",
-}
+# Hallazgo #8 (revisión feature/hu6-diagrama): este módulo tenía su propio
+# `DECISION_TO_DB` + `db.add(Approval(...))`, duplicando exactamente lo que
+# ya centraliza `record_approval_decision` en session_store.py (usado por
+# proposals.py y diagrams.py). Se elimina la duplicación -- ver más abajo.
 
 
 # --- Pydantic models --------------------------------------------------------
@@ -255,13 +253,18 @@ async def decide_elicitation(
 
         project = db.query(Project).filter(Project.id == project_id).first()
 
-        db.add(
-            Approval(
-                session_id=session_row.id,
-                phase=PHASE,
-                decision=DECISION_TO_DB[body.decision],
-                feedback=body.feedback,
-            )
+        # Antes: `db.add(Approval(...))` construido a mano con un
+        # `DECISION_TO_DB` propio de este módulo (hallazgo #8). Ahora usa el
+        # mismo helper que proposals.py/diagrams.py, y le pasa `project_id`
+        # (migration 0016) para que esta decisión no se filtre como
+        # "aprobada" en otro proyecto del mismo usuario (hallazgo #1).
+        record_approval_decision(
+            db,
+            user_id=user_id,
+            phase=PHASE,
+            decision=body.decision,
+            feedback=body.feedback,
+            project_id=project_id,
         )
 
         if body.decision == "approve":

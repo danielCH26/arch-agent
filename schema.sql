@@ -173,6 +173,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
 ALTER TABLE messages
     ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
 
+-- approvals.project_id (migration 0016) -- fix de aislamiento entre
+-- proyectos: session_id solo no alcanza porque sessions es 1 fila por
+-- usuario, no por proyecto (ver hallazgo #1, revisión feature/hu6-diagrama).
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_approvals_project_phase
+    ON approvals (project_id, phase);
+
 -- =============================================================================
 -- F14 — display_content (migracion 0015). Idempotente para DBs creadas por
 -- init_db.py antes de que corriera la migracion 0015.

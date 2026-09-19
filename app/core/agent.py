@@ -88,9 +88,39 @@ _TOOL_RESULT_TRUNCATION_MARKER: str = (
     "... [truncado, ver Langfuse trace para el resultado completo]"
 )
 
-# Cuanto esperar despues de navegar a la pagina de preview antes de tomar
-# el screenshot, para darle tiempo a mermaid.js a terminar de dibujar.
-_MERMAID_RENDER_DELAY_SECONDS: float = 6.0
+# Hallazgo #9 (revisión feature/hu6-diagrama): antes era una espera fija
+# de 6s aplicada siempre, aunque mermaid.run() terminara en <1s. Ahora es
+# un TOPE MAXIMO para el polling de document.title (ver
+# _wait_for_mermaid_result) -- la mayoria de los diagramas van a tardar
+# bastante menos que esto.
+_MERMAID_RENDER_MAX_WAIT_SECONDS: float = 6.0
+_MERMAID_RENDER_POLL_INTERVAL_SECONDS: float = 0.3
+
+# Hallazgo #4 (revisión feature/hu6-diagrama): mermaid.js se cargaba desde
+# `cdn.jsdelivr.net`, lo que no funciona en el sidecar de Puppeteer (sin
+# salida a internet) a pesar de que el comentario decia "ya embebido
+# inline". Se vendoriza el bundle leyendo el archivo local una sola vez.
+_MERMAID_JS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "mermaid.min.js",
+)
+
+
+def _load_vendored_mermaid_js() -> str:
+    try:
+        with open(_MERMAID_JS_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        _LOGGER.error(
+            "No se pudo leer el bundle vendorizado de mermaid.js en %s: %s. "
+            "El render de diagramas va a fallar (mermaid quedará indefinido).",
+            _MERMAID_JS_PATH,
+            e,
+        )
+        return ""
+
+
+_MERMAID_JS_SOURCE: str = _load_vendored_mermaid_js()
 _MERMAID_NODE_DEF_PATTERN = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*\"?([^\"\]\n]+?)\"?\s*\]|\[\(\s*([^)]+?)\s*\)\])"
 )
@@ -296,15 +326,20 @@ async def _try_get_context7_tools() -> tuple[list[Any], dict[str, Any] | None]:
 
 def _build_mermaid_preview_html(mermaid_code: str) -> str:
     """Pagina HTML autocontenida que renderiza un bloque Mermaid via
-    mermaid.js (CDN), agrandando el SVG resultante antes del screenshot
-    para que los textos sean legibles en la imagen final.
+    mermaid.js (vendorizado, embebido inline -- ver hallazgo #4), agrandando
+    el SVG resultante antes del screenshot para que los textos sean legibles
+    en la imagen final.
+
+    El sidecar de Puppeteer no tiene salida a internet, así que un
+    `<script src="https://...">` (como se hacía antes) deja `mermaid`
+    indefinido y el render falla en silencio tras el timeout completo.
     """
     import html as _html
 
     escaped = _html.escape(mermaid_code)
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js'></script>"
+        "<script>" + _MERMAID_JS_SOURCE + "</script>"
         "<style>"
         "html,body{margin:0;padding:0;background:#fff;font-family:sans-serif;}"
         "body{display:inline-block;box-sizing:border-box;}"
@@ -347,10 +382,54 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
         "    });"
         "} catch (e) {"
         "  document.getElementById('status').textContent = 'ERROR sincrono: ' + e.message;"
+        "  document.title = 'mermaid-error';"
         "}"
         "</script>"
         "</body></html>"
     )
+
+async def _wait_for_mermaid_render(session: Any, *, fetch_timeout: float) -> str:
+    """Poll de ``document.title`` hasta que mermaid.js termine (o se agote
+    ``_MERMAID_RENDER_MAX_WAIT_SECONDS``).
+
+    Hallazgo #9 (revisión feature/hu6-diagrama): antes se esperaba siempre
+    un ``asyncio.sleep`` fijo de 6s antes de mirar el resultado, aunque
+    ``mermaid.run()`` terminara en menos de 1s -- cada diagrama sumaba 6s+
+    de latencia innecesaria. Ahora se consulta el title cada
+    ``_MERMAID_RENDER_POLL_INTERVAL_SECONDS`` y se corta apenas aparece
+    ``mermaid-rendered``/``mermaid-error``, con el viejo valor como tope
+    máximo por si el render nunca termina.
+
+    Devuelve el último título leído (puede ser el título por defecto de la
+    página si nunca llegó a terminar dentro del tope).
+    """
+    deadline = asyncio.get_event_loop().time() + _MERMAID_RENDER_MAX_WAIT_SECONDS
+    last_title = ""
+    while True:
+        try:
+            title_result = await asyncio.wait_for(
+                session.call_tool("puppeteer_evaluate", {"script": "document.title"}),
+                timeout=fetch_timeout,
+            )
+            title_blocks = getattr(title_result, "content", None) or []
+            last_title = " ".join(
+                getattr(b, "text", "") or ""
+                for b in title_blocks
+                if getattr(b, "type", None) == "text"
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "Render server-side: fallo consultando document.title durante "
+                "el polling, sigo con lo que haya: %s", e
+            )
+            return last_title
+
+        if "mermaid-rendered" in last_title or "mermaid-error" in last_title:
+            return last_title
+        if asyncio.get_event_loop().time() >= deadline:
+            return last_title
+        await asyncio.sleep(_MERMAID_RENDER_POLL_INTERVAL_SECONDS)
+
 
 def _mermaid_html_to_data_url(html: str) -> str:
     encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
@@ -402,10 +481,10 @@ async def _render_mermaid_server_side(
                     timeout=fetch_timeout,
                 )
 
-                # Le damos tiempo a mermaid.js (ya embebido inline, sin
-                # dependencia de red) a terminar de dibujar el SVG.
-                await asyncio.sleep(_MERMAID_RENDER_DELAY_SECONDS)
-
+                # Hallazgo #9: en vez de dormir siempre el tope máximo,
+                # hacemos polling corto de document.title y cortamos apenas
+                # mermaid.js termina (éxito o error).
+                #
                 # Bug fix (HU6, "se petó" con diagramas mas complejos): el
                 # validador de mermaid_validator.py es un heuristico, no un
                 # parser real -- puede dejar pasar sintaxis que Mermoid
@@ -420,17 +499,8 @@ async def _render_mermaid_server_side(
                 # seguimos con el flujo viejo (mejor un screenshot
                 # ocasionalmente malo que romper el caso feliz).
                 try:
-                    title_result = await asyncio.wait_for(
-                        session.call_tool(
-                            "puppeteer_evaluate", {"script": "document.title"}
-                        ),
-                        timeout=fetch_timeout,
-                    )
-                    title_blocks = getattr(title_result, "content", None) or []
-                    title_text = " ".join(
-                        getattr(b, "text", "") or ""
-                        for b in title_blocks
-                        if getattr(b, "type", None) == "text"
+                    title_text = await _wait_for_mermaid_render(
+                        session, fetch_timeout=fetch_timeout
                     )
                     if "mermaid-error" in title_text:
                         # Antes solo mirabamos el title ("mermaid-error"), que
@@ -585,6 +655,13 @@ async def _astream_agent(
         elif ev_type == "on_tool_error":
             name = raw.get("name") or "tool"
             error = raw.get("data", {}).get("error")
+            # Hallazgo #11 (revisión feature/hu6-diagrama): antes se mandaba
+            # `str(error)` crudo en el evento SSE. `sse.py::_emit_tool_end`
+            # deliberadamente NO hace esto (solo usa el error para calcular
+            # `result_length`, nunca lo pone en el payload) porque un error
+            # de tool puede exponer hosts internos, paths del filesystem,
+            # o detalle de infraestructura. Acá loggeamos el detalle
+            # completo solo server-side y mandamos un mensaje genérico.
             _LOGGER.warning("Tool '%s' failed: %s", name, error)
             yield {
                 "event": "tool_end",
@@ -592,7 +669,7 @@ async def _astream_agent(
                     "tool": name,
                     "result_length": 0,
                     "status": "error",
-                    "error": str(error) if error is not None else "unknown error",
+                    "error": "Error ejecutando la herramienta.",
                 },
             }
         continue
@@ -628,28 +705,28 @@ async def run_agent(
         if degraded is not None:
             yield {"event": "degraded", "data": degraded}
 
-    # Solo verificamos disponibilidad/rate-limit de Puppeteer aca (SIN abrir
-    # una sesion MCP para listar tools): la unica sesion del turno es la que
-    # abre `_render_mermaid_server_side` mas abajo. Antes, `get_puppeteer_
-    # tools_and_navigate` abria una primera sesion solo para derivar
-    # `screenshot_coroutine`/`navigate_coroutine`, que `_render_mermaid_
-    # server_side` ni siquiera usa (son parametros vestigiales que se
-    # dejaron para no romper la firma) -- eso duplicaba la conexion MCP
-    # por turno de diagrama.
-    puppeteer_available = False
+    # Hallazgo #2 (revisión feature/hu6-diagrama): antes se llamaba
+    # `_check_rate_limit(user_id)` ACA, al principio de TODOS los turnos --
+    # no solo los que terminan generando un diagrama. Eso gastaba una de
+    # las 5 llamadas/minuto en cualquier mensaje de chat normal, y cuando
+    # se agotaba, el bloque de degraded (mas abajo, dentro de
+    # `if is_valid and puppeteer_available`) ni se ejecutaba porque
+    # `is_valid` todavia no existe en este punto del turno -- resultado:
+    # bloque mermaid valido, sin imagen, sin `event: degraded`, sin nota.
+    #
+    # Ahora solo se importa `_FETCH_TIMEOUT_SECONDS` aca (no gasta rate
+    # limit); el chequeo de rate limit en si se mueve mas abajo, justo
+    # antes de `_render_mermaid_server_side`, que es el unico lugar que
+    # realmente necesita a Puppeteer.
     fetch_timeout = 15.0
     try:
-        from app.core.puppeteer_mcp import _FETCH_TIMEOUT_SECONDS, _check_rate_limit
+        from app.core.puppeteer_mcp import _FETCH_TIMEOUT_SECONDS
 
         fetch_timeout = _FETCH_TIMEOUT_SECONDS
-        _check_rate_limit(user_id)
-        puppeteer_available = True
     except Exception as e:
         _LOGGER.warning(
-            "Puppeteer no disponible para user_id=%s; se sigue sin "
-            "renderizar diagramas este turno: %s",
-            user_id,
-            e,
+            "No se pudo leer _FETCH_TIMEOUT_SECONDS de puppeteer_mcp, "
+            "uso el default de %.1fs: %s", fetch_timeout, e,
         )
 
     tools: list[Any] = list(context7_tools)
@@ -734,34 +811,63 @@ async def run_agent(
         # de la señal vestigial `screenshot_coroutine`, que quedaba en
         # None (y por lo tanto nunca renderizaba) si el allow-list de
         # tools no incluia `puppeteer_screenshot`.
-        if is_valid and puppeteer_available:
-            attachment = await _render_mermaid_server_side(
-                mermaid_code,
-                fetch_timeout=fetch_timeout,
-            )
-            if attachment is not None:
-                url = (
-                    build_attachment_url(attachment["id"], user_id)
-                    if user_id is not None
-                    else ""
+        if is_valid:
+            # Hallazgo #2: el rate limit se chequea RECIEN ACA, que es el
+            # unico lugar del turno que realmente va a usar Puppeteer. Si
+            # se agoto, se emite `degraded` con el `reason` real en vez de
+            # omitir el diagrama en silencio.
+            try:
+                from app.core.puppeteer_mcp import _check_rate_limit
+
+                _check_rate_limit(user_id)
+                puppeteer_available = True
+            except Exception as e:
+                puppeteer_available = False
+                reason = getattr(e, "reason", "puppeteer_unavailable") or "puppeteer_unavailable"
+                _LOGGER.warning(
+                    "Puppeteer no disponible para user_id=%s; se sigue sin "
+                    "renderizar el diagrama de este turno: %s",
+                    user_id,
+                    e,
                 )
-                yield {
-                    "event": "attachment",
-                    "data": {
-                        **attachment,
-                        "url": url,
-                    },
-                }
-            else:
                 yield {
                     "event": "degraded",
                     "data": {
                         "source": "puppeteer",
-                        "reason": "render_failed",
+                        "reason": reason,
                         "fallback": "text_only",
-                        "message": "No se pudo renderizar el diagrama a imagen.",
+                        "message": str(e) or "Puppeteer no disponible en este momento.",
                     },
                 }
+
+            if puppeteer_available:
+                attachment = await _render_mermaid_server_side(
+                    mermaid_code,
+                    fetch_timeout=fetch_timeout,
+                )
+                if attachment is not None:
+                    url = (
+                        build_attachment_url(attachment["id"], user_id)
+                        if user_id is not None
+                        else ""
+                    )
+                    yield {
+                        "event": "attachment",
+                        "data": {
+                            **attachment,
+                            "url": url,
+                        },
+                    }
+                else:
+                    yield {
+                        "event": "degraded",
+                        "data": {
+                            "source": "puppeteer",
+                            "reason": "render_failed",
+                            "fallback": "text_only",
+                            "message": "No se pudo renderizar el diagrama a imagen.",
+                        },
+                    }
 
     yield {"event": "done", "data": None}
 

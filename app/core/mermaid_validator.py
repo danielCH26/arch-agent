@@ -74,7 +74,15 @@ def sanitize_mermaid_labels(code: str) -> str:
     def _fix(match: re.Match) -> str:
         label = match.group(1)
         if _label_has_unquoted_specials(label):
-            return f'["{label}"]'
+            # Hallazgo #5 (revisión feature/hu6-diagrama): antes se citaba
+            # el label sin escapar comillas internas, así que
+            # `Cliente "Premium"` quedaba `["Cliente "Premium""]` -- una
+            # comilla que cierra el string a mitad de camino, inválido para
+            # Mermaid aunque `_label_has_unquoted_specials` lo diera por
+            # bueno (empieza y termina con `"`). Se escapan con `#quot;`,
+            # la entidad que Mermaid soporta dentro de labels citados.
+            escaped = label.replace('"', "#quot;")
+            return f'["{escaped}"]'
         return match.group(0)
 
     return _NODE_LABEL_PATTERN.sub(_fix, code)
@@ -96,6 +104,11 @@ def _slug_mermaid_id(value: str) -> str:
     return slug
 
 
+def _is_flowchart(code: str) -> bool:
+    first_line = _diagram_type(code)
+    return any(first_line.startswith(t) for t in _FLOWCHART_TYPES)
+
+
 def sanitize_class_statements(code: str) -> str:
     """Corrige sentencias `class` invalidas.
 
@@ -112,6 +125,14 @@ def sanitize_class_statements(code: str) -> str:
     linea entera (mejor sin colorear esos nodos que romper el diagrama
     completo).
     """
+    # Hallazgo #3 (revisión feature/hu6-diagrama): igual que
+    # sanitize_mermaid_labels, esto solo tiene sentido para
+    # flowchart/graph -- en sequenceDiagram/classDiagram una línea que
+    # empiece con "class " puede ser sintaxis válida de otro tipo (p. ej.
+    # una clase de classDiagram) y este regex la corrompía igual.
+    if not _is_flowchart(code):
+        return code
+
     def _fix(match: re.Match) -> str:
         prefix, ids_part, suffix = match.group(1), match.group(2), match.group(3)
         tokens = [t.strip() for t in ids_part.split(",")]
@@ -131,6 +152,12 @@ def sanitize_subgraph_statements(code: str) -> str:
     ``subgraph Servicios_Sincronos["Servicios_Síncronos"]``: el ID queda
     ASCII y la etiqueta visible conserva el texto original.
     """
+    # Hallazgo #3: `subgraph` es sintaxis de flowchart/graph. Igual que los
+    # otros sanitizadores, se acota para no tocar contenido de otros tipos
+    # de diagrama que pudiera coincidir por casualidad con este patrón.
+    if not _is_flowchart(code):
+        return code
+
     def _fix(match: re.Match) -> str:
         prefix, raw = match.group(1), match.group(2).strip()
 
@@ -170,12 +197,20 @@ def validate_mermaid(code: str) -> tuple[bool, str | None]:
     if stripped.count("(") != stripped.count(")"):
         return False, "Paréntesis sin cerrar"
 
-    for match in _NODE_LABEL_PATTERN.finditer(stripped):
-        label = match.group(1)
-        if _label_has_unquoted_specials(label):
-            return False, (
-                f"Etiqueta de nodo sin comillas contiene caracteres especiales: "
-                f'[{label}]. Envolvé el texto entre comillas: ["{label}"]'
-            )
+    # Hallazgo #3 (revisión feature/hu6-diagrama): el chequeo de labels
+    # `[...]` solo es válido para flowchart/graph -- `sanitize_mermaid_
+    # labels` ya se limita a esos tipos, pero el validador seguía aplicando
+    # el mismo criterio a CUALQUIER tipo. En un sequenceDiagram, `[...]`
+    # dentro de un mensaje (p. ej. `A->>B: parse items[0](x)`) no es una
+    # etiqueta de nodo y Mermaid sí lo renderiza -- este validador lo
+    # rechazaba igual.
+    if _is_flowchart(code):
+        for match in _NODE_LABEL_PATTERN.finditer(stripped):
+            label = match.group(1)
+            if _label_has_unquoted_specials(label):
+                return False, (
+                    f"Etiqueta de nodo sin comillas contiene caracteres especiales: "
+                    f'[{label}]. Envolvé el texto entre comillas: ["{label}"]'
+                )
 
     return True, None

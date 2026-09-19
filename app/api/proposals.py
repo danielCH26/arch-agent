@@ -228,6 +228,7 @@ async def decide_proposal(
             phase=PHASE,
             decision=body.decision,
             feedback=body.feedback,
+            project_id=project_id,
         )
         session_id = approval.session_id
         if session_row is None:
@@ -288,9 +289,17 @@ async def get_proposal_state(
                 last_decision=None,
             )
 
+        # Migration 0016 / hallazgo #1: filtrar también por project_id, no
+        # solo por session_id -- si no, GET /proposal de un proyecto B sin
+        # ninguna aprobación devolvía approved=True porque el proyecto A
+        # del mismo usuario sí tenía una.
         last = (
             db.query(Approval)
-            .filter(Approval.session_id == session_row.id, Approval.phase == PHASE)
+            .filter(
+                Approval.session_id == session_row.id,
+                Approval.project_id == project_id,
+                Approval.phase == PHASE,
+            )
             .order_by(Approval.created_at.desc(), Approval.id.desc())
             .first()
         )

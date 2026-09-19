@@ -435,7 +435,13 @@ function DiagramAttachments({
   onSendMessage?: (text: string, displayText?: string) => void
 }) {
   const [openFeedbackFor, setOpenFeedbackFor] = useState<number | null>(null)
-  const [feedback, setFeedback] = useState('')
+  // Hallazgo #6 (revisión feature/hu6-diagrama): antes era un único
+  // `useState('')` para TODA la burbuja, así que si abrías "Solicitar
+  // cambios" en el adjunto 0, escribías algo, lo cerrabas sin enviar, y
+  // después clickeabas "Rechazar" en el adjunto 1, `handleReject` mandaba
+  // el texto que habías escrito para el adjunto 0. Ahora es un estado por
+  // índice de adjunto.
+  const [feedbackByIndex, setFeedbackByIndex] = useState<Record<number, string>>({})
   const [decisionError, setDecisionError] = useState('')
   const [decidedFor, setDecidedFor] = useState<Record<number, string>>({})
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
@@ -445,15 +451,22 @@ function DiagramAttachments({
 
   const handleApprove = async (index: number) => {
     setDecisionError('')
-    if (projectId) {
-      try {
-        await submitDiagramDecision(projectId, 'approve')
-      } catch (err) {
-        // HU6: antes el error del backend se perdia (void + sin catch) y la
-        // burbuja marcaba "Diagrama aprobado." aunque el POST hubiera fallado.
-        setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
-        return
-      }
+    // Hallazgo #6: antes, si `projectId` faltaba, el `if` de abajo se
+    // saltaba el POST en silencio pero igual se llegaba a
+    // `setDecidedFor(...)` y la burbuja marcaba "Diagrama aprobado." sin
+    // haber persistido nada. Ahora, sin projectId, se corta acá con un
+    // error visible en vez de mostrar un éxito falso.
+    if (!projectId) {
+      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      return
+    }
+    try {
+      await submitDiagramDecision(projectId, 'approve')
+    } catch (err) {
+      // HU6: antes el error del backend se perdia (void + sin catch) y la
+      // burbuja marcaba "Diagrama aprobado." aunque el POST hubiera fallado.
+      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+      return
     }
     setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama aprobado.' }))
     onSendMessage?.('Apruebo el diagrama, continuemos.')
@@ -466,33 +479,38 @@ function DiagramAttachments({
   // rechazar corta el flujo, no pide una nueva iteracion.
   const handleReject = async (index: number) => {
     setDecisionError('')
-    if (projectId) {
-      try {
-        await submitDiagramDecision(projectId, 'reject', feedback.trim() || undefined)
-      } catch (err) {
-        setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
-        return
-      }
+    if (!projectId) {
+      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      return
+    }
+    const feedbackForThisAttachment = (feedbackByIndex[index] ?? '').trim()
+    try {
+      await submitDiagramDecision(projectId, 'reject', feedbackForThisAttachment || undefined)
+    } catch (err) {
+      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+      return
     }
     setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama rechazado.' }))
     setOpenFeedbackFor(null)
-    setFeedback('')
+    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
   }
 
   const handleSendAdjustment = async (index: number) => {
-    const trimmed = feedback.trim()
+    const trimmed = (feedbackByIndex[index] ?? '').trim()
     if (!trimmed) {
       setDecisionError('Describe el cambio que necesitas antes de enviarlo.')
       return
     }
     setDecisionError('')
-    if (projectId) {
-      try {
-        await submitDiagramDecision(projectId, 'modify', trimmed)
-      } catch (err) {
-        setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
-        return
-      }
+    if (!projectId) {
+      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      return
+    }
+    try {
+      await submitDiagramDecision(projectId, 'modify', trimmed)
+    } catch (err) {
+      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+      return
     }
     setDecidedFor((prev) => ({ ...prev, [index]: 'Se registró tu solicitud de cambios.' }))
     // El prompt completo (con instrucciones + Mermaid anterior) es lo que
@@ -504,7 +522,7 @@ function DiagramAttachments({
       trimmed,
     )
     setOpenFeedbackFor(null)
-    setFeedback('')
+    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
     setDecisionError('')
   }
 
@@ -546,7 +564,7 @@ function DiagramAttachments({
                   type="button"
                   onClick={() => {
                     setOpenFeedbackFor(index)
-                    setFeedback('')
+                    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
                     setDecisionError('')
                   }}
                   className="text-xs px-2 py-1 rounded bg-gray-300 text-gray-800 hover:bg-gray-400"
@@ -561,8 +579,10 @@ function DiagramAttachments({
                   </label>
                   <textarea
                     id={`diagram-feedback-${index}`}
-                    value={feedback}
-                    onChange={(event) => setFeedback(event.target.value)}
+                    value={feedbackByIndex[index] ?? ''}
+                    onChange={(event) =>
+                      setFeedbackByIndex((prev) => ({ ...prev, [index]: event.target.value }))
+                    }
                     rows={3}
                     className="w-full rounded border border-gray-300 p-2 text-sm text-gray-900"
                     placeholder="Describe los cambios que necesitas en el diagrama..."
@@ -579,7 +599,7 @@ function DiagramAttachments({
                       type="button"
                       onClick={() => {
                         setOpenFeedbackFor(null)
-                        setFeedback('')
+                        setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
                         setDecisionError('')
                       }}
                       className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
