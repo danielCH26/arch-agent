@@ -8,6 +8,7 @@ from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
+from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.session_store import load_session_state, save_session_state
 from app.models.approval import Approval
@@ -169,10 +170,18 @@ async def send_elicitation_message(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
+    # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).
+    langfuse_handler = get_langfuse_handler()
+    callbacks = [langfuse_handler] if langfuse_handler is not None else None
+
     try:
-        decision = elicitation_agent.next_step(model, history, project.description or "")
+        decision = elicitation_agent.next_step(
+            model, history, project.description or "", callbacks=callbacks
+        )
         if decision.done:
-            resumen = elicitation_agent.generate_summary(model, history, project.description or "")
+            resumen = elicitation_agent.generate_summary(
+                model, history, project.description or "", callbacks=callbacks
+            )
         else:
             resumen = None
     except elicitation_agent.ElicitationLLMError as e:
