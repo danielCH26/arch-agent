@@ -200,8 +200,24 @@ def test_validate_mermaid_does_not_apply_label_check_to_sequence_diagram():
     assert validate_mermaid(code) == (True, None)
 
 
-def test_validate_mermaid_still_checks_bracket_balance_for_any_type():
+def test_validate_mermaid_does_not_check_bracket_balance_outside_flowchart():
+    """Hallazgo #3 (corrección post-revisión): el chequeo de balance de
+    `[]`/`()` es sintaxis de nodo de flowchart/graph, igual que el chequeo
+    de labels -- en un sequenceDiagram, `[`/`(` sin cerrar dentro del
+    texto de un mensaje no rompe el parser de Mermaid (no es sintaxis de
+    nodo ahí), así que no debe rechazarse.
+
+    (Reemplaza a `test_validate_mermaid_still_checks_bracket_balance_for_any_type`,
+    que quedó de una versión anterior del fix y afirmaba justo el
+    comportamiento contrario al que pedía el hallazgo #3 -- el test fallaba
+    contra la implementación real.)"""
     code = "sequenceDiagram\nA->>B: parse items[0"
+
+    assert validate_mermaid(code) == (True, None)
+
+
+def test_validate_mermaid_still_checks_bracket_balance_in_flowchart():
+    code = "flowchart TD\nA[Cliente-->B"
 
     is_valid, error = validate_mermaid(code)
 
