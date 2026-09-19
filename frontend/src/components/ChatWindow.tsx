@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getElicitationState, sendElicitationMessage, submitElicitationDecision, type ElicitationDecision, type ElicitationState } from '../api/chat'
 import { chatStore } from '../stores/chatStore'
+import { projectsStore } from '../stores/projectsStore'
+import { proposalsStore } from '../stores/proposalsStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
+import { ProposalCard } from './proposals/ProposalCard'
 
-interface ChatWindowProps { projectId: number; phase: string | null }
+interface ChatWindowProps { projectId: number; phase?: string | null }
 
 function SummaryList({ items }: { items: unknown }) {
   const values = Array.isArray(items) ? items : []
@@ -40,8 +43,29 @@ function SummaryView({ resumen }: { resumen: Record<string, unknown> }) {
   )
 }
 
-export function ChatWindow({ projectId, phase }: ChatWindowProps) {
+/**
+ * Mount condition for ProposalCard (REQ-7 / SCN-8):
+ *   - `current_phase === "propuesta"`, OR
+ *   - a proposal is currently being streamed (inFlight !== 'idle') so the
+ *     card stays visible across the boundary between user-initiated
+ *     generate and the assistant's streamed response.
+ *
+ * In any other phase the chat stays a plain message stream.
+ */
+function shouldMountProposalCard(
+  currentPhase: string | null,
+  inFlight: 'idle' | 'generating' | 'modifying' | 'deciding',
+): boolean {
+  if (currentPhase === 'propuesta') return true
+  if (inFlight !== 'idle') return true
+  return false
+}
+
+
+export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   const { messages, isStreaming, error } = chatStore()
+  const currentPhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
+  const proposalInFlight = proposalsStore((s) => s.inFlight)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [loadingElicitation, setLoadingElicitation] = useState(false)
   const [decisionError, setDecisionError] = useState('')
@@ -109,14 +133,33 @@ export function ChatWindow({ projectId, phase }: ChatWindowProps) {
   }
 
   const busy = isStreaming || loadingElicitation || awaitingDecision
+  const showProposalCard = shouldMountProposalCard(currentPhase, proposalInFlight)
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {loadingElicitation && messages.length === 0 && <div className="text-center text-gray-500 py-8">Preparando la elicitación…</div>}
-        {messages.length === 0 && !busy && <div className="text-center text-gray-500 py-8"><p>Envía un mensaje para comenzar la conversación</p></div>}
+        {messages.length === 0 && !busy && !showProposalCard && (
+          <div className="text-center text-gray-500 py-8">
+            <svg className="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <p>Envía un mensaje para comenzar la conversación</p>
+          </div>
+        )}
         {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
         {isElicitation && summary && <SummaryView resumen={summary} />}
-        {busy && <div className="flex justify-start"><div className="bg-gray-100 px-4 py-2 rounded-lg text-sm text-gray-500">Procesando…</div></div>}
+        {showProposalCard && <ProposalCard forceMount projectId={projectId} />}
+        {busy && (
+          <div className="flex justify-start">
+            <div className="bg-gray-100 px-4 py-2 rounded-lg">
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+              </div>
+            </div>
+          </div>
+        )}
         {error && <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>}
         {isElicitation && done && !decisionMessage && <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
           <p className="mb-3">¿El resumen representa las necesidades del proyecto?</p>

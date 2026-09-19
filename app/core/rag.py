@@ -21,6 +21,7 @@ from sqlalchemy import text
 from app.core.database import SessionLocal
 from app.core.embeddings import get_embeddings
 from app.models.architect_pattern import ArchitectPattern
+from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
 
 SearchScope = Literal["all", "patterns", "documents"]
@@ -41,24 +42,22 @@ def _similarity_from_cosine_distance(distance: float | None) -> float | None:
     return 1.0 - float(distance)
 
 
-def _pattern_to_document(pattern: ArchitectPattern, distance: float | None) -> Document:
+def _pattern_chunk_to_document(
+    chunk: ArchitectPatternChunk,
+    pattern: ArchitectPattern,
+    distance: float | None,
+) -> Document:
     metadata = {
         "source_type": "architect_pattern",
         "pattern_id": pattern.id,
         "pattern_name": pattern.pattern_name,
         "category": pattern.category,
         "tradeoffs": pattern.tradeoffs,
+        "chunk_type": chunk.chunk_type,
         "distance": float(distance) if distance is not None else None,
         "similarity": _similarity_from_cosine_distance(distance),
     }
-    page_content = "\n".join(
-        part for part in [
-            pattern.pattern_name,
-            pattern.description,
-            f"Casos de uso: {pattern.use_cases}" if pattern.use_cases else None,
-        ] if part
-    )
-    return Document(page_content=page_content, metadata=metadata)
+    return Document(page_content=chunk.chunk_text, metadata=metadata)
 
 
 def _chunk_to_document(
@@ -92,19 +91,23 @@ def similarity_search_patterns_by_vector(
     category: Optional[str] = None,
     probes: int = 10,
 ) -> tuple[list[Document], float]:
-    """Busca patrones de arquitectura por similitud coseno en PGVector."""
+    """Busca chunks de patrones de arquitectura por similitud coseno en PGVector."""
     _validate_embedding(query_embedding)
     db = SessionLocal()
     started = perf_counter()
     try:
         _set_pgvector_probes(db, probes)
-        distance = ArchitectPattern.embedding.cosine_distance(query_embedding).label("distance")
-        query = db.query(ArchitectPattern, distance).filter(ArchitectPattern.embedding.isnot(None))
+        distance = ArchitectPatternChunk.embedding.cosine_distance(query_embedding).label("distance")
+        query = (
+            db.query(ArchitectPatternChunk, ArchitectPattern, distance)
+            .join(ArchitectPattern, ArchitectPattern.id == ArchitectPatternChunk.pattern_id)
+            .filter(ArchitectPatternChunk.embedding.isnot(None))
+        )
         if category:
             query = query.filter(ArchitectPattern.category == category)
         rows = query.order_by(distance).limit(k).all()
         elapsed_ms = (perf_counter() - started) * 1000
-        return [_pattern_to_document(pattern, dist) for pattern, dist in rows], elapsed_ms
+        return [_pattern_chunk_to_document(chunk, pattern, dist) for chunk, pattern, dist in rows], elapsed_ms
     finally:
         db.close()
 

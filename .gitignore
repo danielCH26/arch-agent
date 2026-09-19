@@ -39,6 +39,13 @@ temp/
 !README.md
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
+!.atl/
+!.atl/**/*.md
+!openspec/
+!openspec/**/*.md
+!docs/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
@@ -46,5 +53,4 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec artifacts (experimental workflow - not for production)
-openspec/
+# OpenSpec + .atl/ + docs/ artifacts: versioned via *.md exceptions above

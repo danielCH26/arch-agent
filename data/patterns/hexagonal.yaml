@@ -1,0 +1,26 @@
+pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
+category: "Monolítica"
+description: >
+  Aísla la lógica de negocio del núcleo mediante puertos (interfaces) y
+  adaptadores, de forma que la tecnología externa (DB, UI, APIs) se pueda
+  cambiar sin tocar el dominio.
+use_cases: >
+  Sistemas donde se anticipan cambios de tecnología externa (DB, proveedor de
+  mensajería) o que requieren alta cobertura de tests unitarios del dominio.
+when_not_to_use: >
+  Proyectos pequeños de vida corta donde el boilerplate adicional no se justifica
+  frente al beneficio de aislar el dominio.
+tradeoffs:
+  ventajas:
+    - "Dominio testeable de forma aislada, sin dependencias externas"
+    - "Cambiar de tecnología externa (DB, cola, UI) no afecta la lógica de negocio"
+  desventajas:
+    - "Más código repetitivo (boilerplate) que una arquitectura en capas simple"
+    - "Curva de aprendizaje más alta para equipos sin experiencia previa"
+decision_signals:
+  - pregunta: "¿Anticipas cambiar de proveedor de base de datos, mensajería o API externa?"
+    señal_patron: "sí -> Arquitectura hexagonal (Puertos y Adaptadores)"
+  - pregunta: "¿Necesitas probar reglas de dominio sin levantar base de datos, UI ni servicios externos?"
+    señal_patron: "sí -> Arquitectura hexagonal (Puertos y Adaptadores)"
+  - pregunta: "¿El dominio cambia con más frecuencia que la tecnología de entrada o salida?"
+    señal_patron: "sí -> Arquitectura hexagonal (Puertos y Adaptadores)"
