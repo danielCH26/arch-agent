@@ -439,8 +439,6 @@ def _mermaid_html_to_data_url(html: str) -> str:
 async def _render_mermaid_server_side(
     mermaid_code: str,
     *,
-    navigate_coroutine: Any | None = None,   # ya no se usa; se deja el parámetro
-    screenshot_coroutine: Any = None,        # para no romper la firma de la llamada existente
     fetch_timeout: float = 15.0,
 ) -> dict[str, Any] | None:
     """Renderiza un bloque mermaid a PNG, abriendo UNA sola sesión MCP
@@ -807,10 +805,9 @@ async def run_agent(
 
         # UNICO camino para generar el diagrama: siempre server-side.
         # `_render_mermaid_server_side` abre y gestiona su propia sesion
-        # MCP (navigate + screenshot en la misma sesion); ya no dependemos
-        # de la señal vestigial `screenshot_coroutine`, que quedaba en
-        # None (y por lo tanto nunca renderizaba) si el allow-list de
-        # tools no incluia `puppeteer_screenshot`.
+        # MCP (navigate + screenshot en la misma sesion) -- ya no se
+        # ofrecen tools de puppeteer al LLM (ver hallazgo #12, revisión
+        # feature/hu6-diagrama).
         if is_valid:
             # Hallazgo #2: el rate limit se chequea RECIEN ACA, que es el
             # unico lugar del turno que realmente va a usar Puppeteer. Si

@@ -392,39 +392,10 @@ async def get_puppeteer_navigate_tool(client: Any | None = None) -> Any | None:
             return t
     return None
 
-async def get_puppeteer_tools_and_navigate(
-    client: Any | None = None,
-) -> tuple[list[Any], Any | None]:
-    """Como ``get_puppeteer_tools()`` + ``get_puppeteer_navigate_tool()``,
-    pero en UNA sola sesión MCP en vez de dos.
-
-    FIX (bug: supergateway crashea con 'No connection established for
-    request ID' cuando dos sesiones stateless llegan casi al mismo
-    tiempo). Pedimos el tools/list una única vez y derivamos de ahí
-    tanto la lista filtrada por allow-list como la tool cruda de
-    navigate.
-    """
-    if client is None:
-        client = build_puppeteer_client()
-    try:
-        raw = await asyncio.wait_for(
-            client.get_tools(server_name=_SERVER_NAME),
-            timeout=_FETCH_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError as e:
-        raise PuppeteerUnavailable("Puppeteer tool fetch timed out after 15.0s", reason="puppeteer_timeout") from e
-    except Exception as e:
-        raise PuppeteerUnavailable(str(e), reason="puppeteer_unavailable") from e
-
-    filtered = [t for t in raw if getattr(t, "name", None) in _PUPPETEER_ALLOWED_TOOLS]
-    dropped = [t.name for t in raw if getattr(t, "name", None) not in _PUPPETEER_ALLOWED_TOOLS]
-    if dropped:
-        _LOGGER.warning(
-            "Puppeteer MCP advertised %d unexpected tool(s) — dropped by allow-list: %s",
-            len(dropped), dropped,
-        )
-    for t in filtered:
-        _allow_null_for_optional_params(t)
-
-    navigate_tool = next((t for t in raw if getattr(t, "name", None) == "puppeteer_navigate"), None)
-    return filtered, navigate_tool
+# Hallazgo #12 (revisión feature/hu6-diagrama): `get_puppeteer_tools_and_navigate`
+# vivía acá para el flujo viejo donde el LLM invocaba navigate/screenshot
+# como dos tools separadas. Ese flujo se reemplazó por
+# `agent._render_mermaid_server_side`, que abre su propia sesión MCP cruda
+# (navigate + screenshot en la misma sesión) sin pasar por esta función.
+# No queda ningún caller (ni en producción ni en tests) -- se elimina en
+# vez de dejarla como código muerto.

@@ -282,21 +282,6 @@ def test_rate_limit_window_pruning_after_60s(monkeypatch):
     assert len(puppeteer_mcp._RATE_LIMITER[42]) == 1
 
 
-def test_run_agent_emits_degraded_with_rate_limited_reason_before_render(monkeypatch):
-    """Hallazgo #2: el rate limit se agota justo antes de renderizar,
-    no al principio del turno, y el degraded lleva el reason real."""
-    from app.core import puppeteer_mcp
-
-    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "0")
-    puppeteer_mcp._RATE_LIMITER.clear()
-
-    # ... armar un run_agent que devuelva un bloque ```mermaid válido```
-    # y verificar que aparece:
-    # {"event": "degraded", "data": {"source": "puppeteer",
-    #                                 "reason": "puppeteer_rate_limited", ...}}
-    # justo antes/en lugar del "attachment".
-
-
 # ---------------------------------------------------------------------------
 # PuppeteerUnavailable sub-reason taxonomy
 # ---------------------------------------------------------------------------

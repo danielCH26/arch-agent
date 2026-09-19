@@ -202,7 +202,6 @@ async def decide_proposal(
                 )
             snapshot = snapshot[:MAX_SNAPSHOT_CHARS]
             project_state["propuesta"] = snapshot
-            project.phase_ready = True
             message = (
                 "Propuesta aprobada. El diagrama va a usar este texto como "
                 "fuente de verdad."
@@ -213,7 +212,6 @@ async def decide_proposal(
             # inyectando mientras exista CUALQUIER approval vieja aprobada.
             project_state.pop("propuesta", None)
             snapshot = ""
-            project.phase_ready = False
             message = (
                 "Se registró tu solicitud de cambios sobre la propuesta."
                 if body.decision == "modify"
@@ -233,6 +231,17 @@ async def decide_proposal(
         session_id = approval.session_id
         if session_row is None:
             session_row = db.query(UserSession).filter(UserSession.id == session_id).first()
+
+        # Hallazgo #13 (revisión feature/hu6-diagrama): `project.phase_ready`
+        # se asigna DESPUÉS de `record_approval_decision` (no antes). Esa
+        # función llama a `ensure_user_session`, que ante una carrera de
+        # `IntegrityError` en el INSERT hace `db.rollback()` -- si
+        # `phase_ready` ya estuviera asignado en el objeto `project` tracked
+        # por esta misma sesión, ese rollback lo descartaría en silencio.
+        # Asignándolo después de que la sesión ya está garantizada, el
+        # rollback (si ocurre) pasa antes de que haya nada más pendiente
+        # que perder.
+        project.phase_ready = body.decision == "approve"
 
         engram_state[_project_key(project_id)] = project_state
         session_row.engram_state = engram_state
