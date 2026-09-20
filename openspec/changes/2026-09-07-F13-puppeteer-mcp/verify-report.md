@@ -13,6 +13,20 @@
 
 ---
 
+> ## ERRATA — added 2026-09-20 by `2026-09-20-f13-review-fixes`
+>
+> The §3 verdict for **REQ-PMCP-3** states that "byte cap server-side path
+> is wired". This was **factually incorrect** at the time of the original
+> verify: the only per-call budget actually wired was
+> `asyncio.wait_for(timeout=15.0)`; the 2 MB byte cap was not enforced
+> anywhere in the codebase. The fix change
+> `2026-09-20-f13-review-fixes` implements the cap at the tool-invocation
+> boundary (see ADR-013 §2.1). This ERRATA does not retract the F13
+> merge itself — the other 8 REQs are independently verified — but it
+> corrects the REQ-PMCP-3 evidence record.
+
+---
+
 ## 1. Executive summary
 
 The F13 implementation is **complete in code** — all 17 commits land 3,951 insertions across the 35 expected files, and every new pytest assertion plus the 7 new vitest suites pass green inside the container. The migration applies cleanly, the schema mirror is in place, the signed-token helpers round-trip, and the SSE handler emits `event: attachment` exactly as the spec requires.
