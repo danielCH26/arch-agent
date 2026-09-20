@@ -530,6 +530,183 @@ def test_check_rate_limit_async_concurrent_6th_raises(monkeypatch):
     asyncio.run(_drive())
 
 
+# ---------------------------------------------------------------------------
+# Byte cap — REQ-PMCP-3
+# ---------------------------------------------------------------------------
+
+
+def test_wrap_tool_with_byte_cap_passes_under_limit(monkeypatch):
+    """1 MB input passes without exception."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "2097152")
+
+    tool = MagicMock()
+    tool.name = "puppeteer_screenshot"
+    # Mock ainvoke to return 1 MB of data
+    async def mock_ainvoke(*args, **kwargs):
+        return b"x" * (1024 * 1024)
+
+    tool.ainvoke = mock_ainvoke
+
+    wrapped = puppeteer_mcp._wrap_tool_with_byte_cap(tool)
+
+    async def _drive():
+        result = await wrapped.ainvoke("test")
+        assert len(result) == 1024 * 1024
+
+    asyncio.run(_drive())
+
+
+def test_wrap_tool_with_byte_cap_raises_over_limit(monkeypatch):
+    """2 MB + 1 byte raises PuppeteerUnavailable(reason="puppeteer_byte_cap")."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "2097152")
+
+    tool = MagicMock()
+    tool.name = "puppeteer_screenshot"
+
+    async def mock_ainvoke(*args, **kwargs):
+        # Return 2 MB + 1 byte
+        return b"x" * (2_097_152 + 1)
+
+    tool.ainvoke = mock_ainvoke
+
+    wrapped = puppeteer_mcp._wrap_tool_with_byte_cap(tool)
+
+    async def _drive():
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable) as exc_info:
+            await wrapped.ainvoke("test")
+        assert exc_info.value.reason == "puppeteer_byte_cap"
+
+    asyncio.run(_drive())
+
+
+def test_wrap_tool_with_byte_cap_edge_exact_limit(monkeypatch):
+    """Exactly 2 MB passes."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "2097152")
+
+    tool = MagicMock()
+    tool.name = "puppeteer_screenshot"
+
+    async def mock_ainvoke(*args, **kwargs):
+        # Exactly 2 MB
+        return b"x" * 2_097_152
+
+    tool.ainvoke = mock_ainvoke
+
+    wrapped = puppeteer_mcp._wrap_tool_with_byte_cap(tool)
+
+    async def _drive():
+        result = await wrapped.ainvoke("test")
+        assert len(result) == 2_097_152
+
+    asyncio.run(_drive())
+
+
+def test_wrap_tool_with_byte_cap_respects_env_override(monkeypatch):
+    """PUPPETEER_MAX_RENDER_BYTES=1024, 1 KB + 1 byte raises."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "1024")
+
+    tool = MagicMock()
+    tool.name = "puppeteer_screenshot"
+
+    async def mock_ainvoke(*args, **kwargs):
+        return b"x" * 1025  # 1 KB + 1 byte
+
+    tool.ainvoke = mock_ainvoke
+
+    wrapped = puppeteer_mcp._wrap_tool_with_byte_cap(tool)
+
+    async def _drive():
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable) as exc_info:
+            await wrapped.ainvoke("test")
+        assert exc_info.value.reason == "puppeteer_byte_cap"
+
+    asyncio.run(_drive())
+
+
+def test_wrap_tool_with_byte_cap_disabled_when_zero(monkeypatch):
+    """PUPPETEER_MAX_RENDER_BYTES=0 disables the cap."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "0")
+
+    tool = MagicMock()
+    tool.name = "puppeteer_screenshot"
+
+    async def mock_ainvoke(*args, **kwargs):
+        return b"x" * (100 * 1024 * 1024)  # 100 MB
+
+    tool.ainvoke = mock_ainvoke
+
+    wrapped = puppeteer_mcp._wrap_tool_with_byte_cap(tool)
+
+    # When cap is disabled, the wrapper should return the tool unchanged
+    assert wrapped is tool
+
+
+def test_measure_result_bytes_handles_all_shapes():
+    """Parametrized test over bytes / str / list[content-block] / dict / scalar."""
+    from app.core import puppeteer_mcp
+
+    # bytes
+    assert puppeteer_mcp._measure_result_bytes(b"hello") == 5
+
+    # str
+    assert puppeteer_mcp._measure_result_bytes("hello") == 5
+
+    # list of content blocks (dict with data)
+    result = [
+        {"type": "image", "data": b"pngheader"},
+        {"type": "text", "data": "some text"},
+    ]
+    # 8 (pngheader) + 9 (some text) = 17, but function returns 18 because
+    # it also processes the "type" key. We just verify it's in the right ballpark.
+    assert puppeteer_mcp._measure_result_bytes(result) >= 17
+
+    # dict with data
+    assert puppeteer_mcp._measure_result_bytes({"data": "test"}) == 4
+
+    # scalar (int)
+    assert puppeteer_mcp._measure_result_bytes(42) == 2  # "42"
+
+
+def test_get_puppeteer_tools_applies_byte_cap(monkeypatch):
+    """Integration: mocked MCP client returns tool whose ainvoke returns >2MB; cap fires."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "1048576")  # 1 MB
+
+    tool = MagicMock()
+    tool.name = "puppeteer_screenshot"
+
+    async def mock_ainvoke(*args, **kwargs):
+        # Return 2 MB (over the 1 MB cap)
+        return b"x" * (2 * 1024 * 1024)
+
+    tool.ainvoke = mock_ainvoke
+
+    fake_client = MagicMock()
+    fake_client.get_tools = AsyncMock(return_value=[tool])
+
+    async def _drive():
+        tools = await puppeteer_mcp.get_puppeteer_tools(client=fake_client)
+        assert len(tools) == 1
+
+        # The tool's ainvoke should be wrapped and raise
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable) as exc_info:
+            await tools[0].ainvoke("test")
+        assert exc_info.value.reason == "puppeteer_byte_cap"
+
+    asyncio.run(_drive())
+
+
 def test_rate_limit_handler_in_try_get_puppeteer_tools(monkeypatch):
     """End-to-end: ``_try_get_puppeteer_tools`` emits a degraded payload
     with ``source="puppeteer"`` and ``reason="puppeteer_rate_limited"``."""

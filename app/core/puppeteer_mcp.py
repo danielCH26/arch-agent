@@ -75,6 +75,21 @@ _RATE_LIMIT_WINDOW_SECONDS: int = 60
 _RATE_LIMITER: dict[int, list[float]] = {}
 _RATE_LIMIT_LOCK = asyncio.Lock()  # guards window mutation; see ``_check_rate_limit``
 
+# REQ-PMCP-3: byte cap on render results. Hardcoded default mirrors ADR-013 §2 (2 MB).
+# Override via env var for tests / future tuning.
+_DEFAULT_MAX_RENDER_BYTES: int = 2_097_152  # 2 MiB
+
+
+def _max_render_bytes() -> int:
+    """Read ``PUPPETEER_MAX_RENDER_BYTES`` at call-time (test-friendly)."""
+    raw = os.getenv("PUPPETEER_MAX_RENDER_BYTES")
+    if raw is None or not raw.strip():
+        return _DEFAULT_MAX_RENDER_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_MAX_RENDER_BYTES
+
 
 def _rate_limit_per_minute() -> int:
     """Read ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE`` at call-time.
@@ -139,6 +154,76 @@ async def _check_rate_limit(user_id: int | None) -> None:
             )
 
         window.append(now)
+
+
+def _measure_result_bytes(result: Any) -> int:
+    """Best-effort byte size of a tool result.
+
+    LangChain tool results come back as ``str`` (base64-in-string), ``bytes``,
+    ``list[content-block]``, or sometimes a wrapper dict. We normalize to a
+    single byte count for the cap check.
+    """
+    if isinstance(result, bytes):
+        return len(result)
+    if isinstance(result, str):
+        return len(result.encode("utf-8"))
+    if isinstance(result, list):
+        # Common LangChain content-block shape.
+        total = 0
+        for block in result:
+            if isinstance(block, dict):
+                data = block.get("data") or block.get("text") or ""
+                if isinstance(data, bytes):
+                    total += len(data)
+                else:
+                    total += len(str(data).encode("utf-8"))
+            else:
+                total += len(str(block).encode("utf-8"))
+        return total
+    if isinstance(result, dict):
+        data = result.get("data") or result.get("content") or ""
+        if isinstance(data, bytes):
+            return len(data)
+        return len(str(data).encode("utf-8"))
+    return len(str(result).encode("utf-8"))
+
+
+def _wrap_tool_with_byte_cap(tool: Any) -> Any:
+    """In-place: enforce ``PUPPETEER_MAX_RENDER_BYTES`` on the tool's result.
+
+    Replaces ``tool.ainvoke`` with a wrapper that:
+      1. awaits the original ainvoke,
+      2. measures the result bytes,
+      3. raises ``PuppeteerUnavailable(reason="puppeteer_byte_cap")`` if over.
+
+    The mutation is per-tool and only affects this instance; the upstream
+    adapter is untouched (same fragility budget as
+    ``_make_optional_params_nullable`` from round 3 — see test pinning).
+    """
+    cap = _max_render_bytes()
+    if cap <= 0:
+        # Cap disabled (env var = 0) — leave tool untouched.
+        return tool
+
+    # Some test tools may not have ainvoke; skip wrapping in that case.
+    if not hasattr(tool, "ainvoke"):
+        _LOGGER.debug("Tool %s has no ainvoke, skipping byte cap", getattr(tool, "name", "<unknown>"))
+        return tool
+
+    original_ainvoke = tool.ainvoke
+
+    async def _capped_ainvoke(*args: Any, **kwargs: Any) -> Any:
+        result = await original_ainvoke(*args, **kwargs)
+        size = _measure_result_bytes(result)
+        if size > cap:
+            raise PuppeteerUnavailable(
+                f"Puppeteer render exceeds byte cap ({size} > {cap})",
+                reason="puppeteer_byte_cap",
+            )
+        return result
+
+    tool.ainvoke = _capped_ainvoke  # type: ignore[method-assign]
+    return tool
 
 
 class PuppeteerUnavailable(Exception):
@@ -336,6 +421,13 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
         len(filtered),
         [t.name for t in filtered],
     )
+
+    # 2026-09-20-f13-review-fixes / REQ-PMCP-3: wrap each tool's ainvoke
+    # with a byte cap check. The cap bounds what flows into the SSE event
+    # and what gets persisted (see ADR-013 §2.1).
+    for tool in filtered:
+        _wrap_tool_with_byte_cap(tool)
+
     return filtered
 
 
