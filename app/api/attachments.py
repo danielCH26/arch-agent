@@ -76,18 +76,12 @@ def get_attachment(
             detail="Invalid token",
         )
 
-    # Look up the row. JSONB containment is delegated to the adapter via
-    # a portable ``JSON_EXTRACT``-style path: we read all messages for
-    # the user and filter in Python. Keeps the query portable across
-    # SQLite (tests) + Postgres (prod) without ``@>`` operator coupling.
+    # Look up the attachment using dialect-aware helper.
+    # Postgres uses JSONB containment with GIN index; SQLite falls back to Python filter.
     db = SessionLocal()
     try:
         try:
-            rows: list[Message] = (
-                db.query(Message)
-                .filter(Message.user_id == user_id)
-                .all()
-            )
+            attachment, owner_row = _lookup_attachment(db, user_id, id)
         except SQLAlchemyError as exc:
             logger.warning(
                 "attachment lookup DB error user_id=%s attachment_id=%s: %s",
@@ -99,17 +93,6 @@ def get_attachment(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
             )
-
-        attachment = None
-        owner_row: Message | None = None
-        for row in rows:
-            for att in (row.attachments or []):
-                if isinstance(att, dict) and att.get("id") == id:
-                    attachment = att
-                    owner_row = row
-                    break
-            if attachment is not None:
-                break
 
         if attachment is None or owner_row is None:
             # 404, NOT 403 — avoid existence leak (REQ-ATT-2 / SCN-ATT-4).
@@ -142,6 +125,46 @@ def get_attachment(
         )
     finally:
         db.close()
+
+
+def _lookup_attachment(
+    db: SessionLocal, user_id: int, attachment_id: str
+) -> tuple[dict | None, Message | None]:
+    """Resolve one attachment by ``(user_id, attachment_id)``.
+
+    Postgres path uses ``messages.attachments @> '[{"id": "..."}]'::jsonb``
+    + the new GIN index from migration 0013. SQLite path falls back to
+    the existing in-Python filter (test compatibility — JSONB containment
+    is not supported on SQLite).
+    """
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    if dialect == "postgresql":
+        row = (
+            db.query(Message)
+            .filter(
+                Message.user_id == user_id,
+                Message.attachments.contains([{"id": attachment_id}]),
+            )
+            .first()
+        )
+        if row is None:
+            return None, None
+        attachment = next(
+            (a for a in (row.attachments or [])
+             if isinstance(a, dict) and a.get("id") == attachment_id),
+            None,
+        )
+        return attachment, row
+
+    # SQLite / fallback: existing Python-filter behavior.
+    rows: list[Message] = (
+        db.query(Message).filter(Message.user_id == user_id).all()
+    )
+    for row in rows:
+        for att in (row.attachments or []):
+            if isinstance(att, dict) and att.get("id") == attachment_id:
+                return att, row
+    return None, None
 
 
 __all__ = ["router"]
