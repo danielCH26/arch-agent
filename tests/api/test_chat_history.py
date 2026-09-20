@@ -35,7 +35,7 @@ if not hasattr(_sqlite_dialect.dialect, "_f12_jsonb_patched"):
     _sqlite_dialect.dialect._f12_jsonb_patched = True
 
 
-_TEST_TABLES = ["users", "sessions", "projects", "messages"]
+_TEST_TABLES = ["users", "sessions", "projects", "messages", "approvals"]
 
 
 @pytest.fixture()
@@ -348,3 +348,84 @@ class TestChatHistoryDisplayContent:
 
         assert response.status_code == 200
         assert response.json()["messages"][0]["content"] == "u1"
+
+
+# ---------------------------------------------------------------------------
+# Estado de decisión de cada diagrama en GET /api/chat/history (migración 0017)
+#
+# Bug QA HU6: tras un F5, la burbuja del chat perdía el estado "ya decidido"
+# (aprobado / rechazado / cambios pedidos) y volvían a aparecer los botones.
+# ---------------------------------------------------------------------------
+
+
+def _insert_assistant_with_diagram(fake_db, *, session_id, user_id, project_id, attachment_id):
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.message import Message
+
+        db.add(
+            Message(
+                session_id=session_id, project_id=project_id, user_id=user_id,
+                role="assistant", content="aca va el diagrama", citations=[],
+                attachments=[{
+                    "id": attachment_id, "kind": "screenshot", "mime": "image/png",
+                    "filename": f"{attachment_id}.png", "storage_path": "/tmp/x.png",
+                }],
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _insert_diagram_approval(fake_db, *, session_id, project_id, attachment_id, decision_db):
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.approval import Approval
+
+        db.add(Approval(session_id=session_id, project_id=project_id, phase="diagram",
+                        decision=decision_db, attachment_id=attachment_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestChatHistoryDiagramDecision:
+    def test_attachment_exposes_id_and_null_decision_when_undecided(self, fake_db):
+        _seed(fake_db)
+        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
+        client = _client_for_user(user_id=1)
+
+        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
+
+        assert att["id"] == "att-1"
+        assert att["decision"] is None
+        assert "storage_path" not in att  # no se filtra el path del servidor
+
+    @pytest.mark.parametrize(
+        "decision_db, decision_api",
+        [("approved", "approve"), ("rejected", "reject"), ("modified", "modify")],
+    )
+    def test_attachment_returns_persisted_decision(self, fake_db, decision_db, decision_api):
+        _seed(fake_db)
+        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
+        _insert_diagram_approval(fake_db, session_id=10, project_id=1, attachment_id="att-1", decision_db=decision_db)
+        client = _client_for_user(user_id=1)
+
+        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
+
+        assert att["decision"] == decision_api
+
+    def test_decision_of_another_project_is_not_returned(self, fake_db):
+        _seed(fake_db)
+        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
+        _insert_diagram_approval(fake_db, session_id=10, project_id=2, attachment_id="att-1", decision_db="rejected")
+        client = _client_for_user(user_id=1)
+
+        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
+
+        assert att["decision"] is None

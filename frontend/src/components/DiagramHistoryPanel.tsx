@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchDiagramHistory, submitDiagramDecision, type DiagramVersion } from '../api/diagrams'
+import { fetchDiagramHistory, type DiagramDecision, type DiagramVersion } from '../api/diagrams'
 
 interface DiagramHistoryPanelProps {
   projectId: number
@@ -7,48 +7,38 @@ interface DiagramHistoryPanelProps {
   onClose: () => void
 }
 
-type Decision = 'approve' | 'modify' | 'reject'
+// Estado de cada version, solo informativo. Las decisiones (aprobar / rechazar
+// / pedir cambios) se toman UNICAMENTE en el chat, cuando se le muestra el
+// diagrama al usuario: antes este panel tambien las ofrecia sobre "el diagrama
+// actual", asi que se podia rechazar desde aqui algo ya aprobado en el chat.
+const STATUS_LABEL: Record<DiagramDecision, { text: string; className: string }> = {
+  approve: { text: '✅ Aprobado', className: 'bg-green-100 text-green-800' },
+  reject: { text: '❌ Rechazado', className: 'bg-red-100 text-red-800' },
+  modify: { text: '✏️ Cambios solicitados', className: 'bg-yellow-100 text-yellow-800' },
+}
 
-const DECISION_OK: Record<Decision, string> = {
-  approve: 'Diagrama aprobado.',
-  modify: 'Se registro tu solicitud de cambios.',
-  reject: 'Diagrama rechazado.',
+function StatusBadge({ decision }: { decision: DiagramVersion['decision'] }) {
+  const status = decision ? STATUS_LABEL[decision] : null
+  return (
+    <span
+      className={`inline-block text-xs rounded px-2 py-0.5 ${
+        status ? status.className : 'bg-gray-100 text-gray-600'
+      }`}
+    >
+      {status ? status.text : 'Sin decisión'}
+    </span>
+  )
 }
 
 export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistoryPanelProps) {
   const [versions, setVersions] = useState<DiagramVersion[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
-  const [feedback, setFeedback] = useState('')
-  const [sending, setSending] = useState<Decision | null>(null)
-  // HU6: antes el panel no mostraba NADA despues de decidir (ni exito ni
-  // error), asi que era imposible saber desde la UI si la decision quedo
-  // registrada. Ahora se muestra el resultado.
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
-
-  async function handleDecision(decision: Decision) {
-    if (decision === 'modify' && !feedback.trim()) return
-    setSending(decision)
-    setResult(null)
-    try {
-      await submitDiagramDecision(projectId, decision, feedback.trim() || undefined)
-      setFeedback('')
-      setResult({ ok: true, text: DECISION_OK[decision] })
-    } catch (err) {
-      setResult({
-        ok: false,
-        text: err instanceof Error ? err.message : 'No se pudo registrar la decision.',
-      })
-    } finally {
-      setSending(null)
-    }
-  }
 
   useEffect(() => {
     if (!open) return
     setLoading(true)
     setLoadError('')
-    setResult(null)
     fetchDiagramHistory(projectId)
       .then(setVersions)
       .catch((err) => {
@@ -82,64 +72,29 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
 
         <ul className="space-y-4">
           {versions.map((version) => (
-            <li key={version.message_id} className="border rounded-lg p-2">
+            <li key={version.id} className="border rounded-lg p-2">
               <img
                 src={version.url}
                 alt={version.filename ?? `diagrama ${version.message_id}`}
                 className="w-full rounded"
                 loading="lazy"
               />
-              <p className="text-xs text-gray-500 mt-1">
-                {new Date(version.created_at).toLocaleString()}
-              </p>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <p className="text-xs text-gray-500">
+                  {new Date(version.created_at).toLocaleString()}
+                </p>
+                <StatusBadge decision={version.decision} />
+              </div>
             </li>
           ))}
         </ul>
 
-        <div className="mt-4 border-t pt-4 space-y-2">
-          <p className="text-sm font-medium">¿Qué hacemos con el diagrama actual?</p>
-          <textarea
-            value={feedback}
-            onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Feedback (obligatorio si pedís cambios)"
-            className="w-full text-sm border rounded p-2"
-            rows={2}
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => handleDecision('approve')}
-              disabled={!!sending}
-              className="flex-1 bg-green-600 text-white text-sm rounded py-1 disabled:opacity-50"
-            >
-              Aprobar
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDecision('modify')}
-              disabled={!!sending || !feedback.trim()}
-              className="flex-1 bg-yellow-500 text-white text-sm rounded py-1 disabled:opacity-50"
-            >
-              Pedir cambios
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDecision('reject')}
-              disabled={!!sending}
-              className="flex-1 bg-red-600 text-white text-sm rounded py-1 disabled:opacity-50"
-            >
-              Rechazar
-            </button>
-          </div>
-          {result && (
-            <p
-              role="status"
-              className={`text-xs ${result.ok ? 'text-green-700' : 'text-red-700'}`}
-            >
-              {result.text}
-            </p>
-          )}
-        </div>
+        {versions.length > 0 && (
+          <p className="mt-4 border-t pt-3 text-xs text-gray-500">
+            Aquí solo se consulta el historial. Las decisiones sobre un diagrama se toman en el
+            chat, cuando se te muestra.
+          </p>
+        )}
       </div>
     </div>
   )

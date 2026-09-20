@@ -13,6 +13,18 @@ vi.mock('../../stores/authStore', () => ({
   },
 }))
 
+describe('_normaliseHistoryAttachments conserva id y decision del diagrama', () => {
+  it('no descarta `id` ni `decision` (los usa la burbuja para no repetir los botones tras un F5)', () => {
+    const result = _normaliseHistoryAttachments([
+      { id: 'att-1', kind: 'screenshot', mime: 'image/png', url: '/x?token=t', filename: 'd.png', decision: 'reject' },
+    ])
+
+    expect(result).toEqual([
+      { id: 'att-1', kind: 'screenshot', mime: 'image/png', url: '/x?token=t', filename: 'd.png', decision: 'reject' },
+    ])
+  })
+})
+
 describe('_normaliseHistoryAttachments (PR #76 review fix #6a)', () => {
   it('returns [] when input is not an array', () => {
     expect(_normaliseHistoryAttachments(undefined)).toEqual([])

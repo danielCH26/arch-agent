@@ -1,4 +1,5 @@
 import { authStore } from '../stores/authStore'
+import type { DiagramDecision } from './diagrams'
 
 export interface ChatRequest {
   project_id: number | null
@@ -23,10 +24,16 @@ export interface RagSource {
 // (TTL 5 min, ver app/core/attachment_tokens.py) — el <img src=...> no
 // puede llevar Authorization, por eso va en la query string.
 export interface Attachment {
+  // UUID del adjunto (ya viaja dentro de `url`). Identifica el diagrama para
+  // decidir sobre el (POST /api/diagrams/decision -> attachment_id).
+  id?: string
   kind: 'screenshot'
   mime: 'image/png'
   url: string
   filename: string
+  // Decision ya registrada para este diagrama (la devuelve GET
+  // /api/chat/history). undefined/null = sin decidir: se muestran los botones.
+  decision?: DiagramDecision | null
 }
 
 // F12 (REQ-7 / REQ-8): una fila persistida por el backend, devuelta por

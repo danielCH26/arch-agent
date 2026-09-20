@@ -19,6 +19,7 @@ from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
+from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
@@ -525,6 +526,10 @@ async def chat(
                     # atomically (REQ-ATT-1).
                     if isinstance(payload, dict):
                         public_payload = {
+                            # `id` (UUID del adjunto): identifica el diagrama
+                            # para decidir sobre él (POST /api/diagrams/decision).
+                            # Ya viaja dentro de `url`, no expone nada nuevo.
+                            "id": payload.get("id"),
                             "kind": payload.get("kind", "screenshot"),
                             "mime": payload.get("mime", "image/png"),
                             "url": payload.get("url"),
@@ -610,6 +615,31 @@ def chat_history(
             )
             return {"messages": []}
 
+        # Decisión más reciente de cada diagrama (aprobado / rechazado / con
+        # cambios pedidos). Sin esto, un F5 borraba el estado "ya decidido" de
+        # la burbuja y volvían a aparecer los tres botones. Falla en blando:
+        # si esta consulta falla, el historial se devuelve igual, sin estado.
+        try:
+            decisions = latest_diagram_decisions(
+                db,
+                project_id=project_id,
+                attachment_ids=[
+                    att["id"]
+                    for row in rows
+                    for att in (row.attachments or [])
+                    if isinstance(att, dict) and att.get("id")
+                ],
+            )
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "diagram decisions read skipped user_id=%s project_id=%s: %s",
+                user_id,
+                project_id,
+                exc,
+            )
+            db.rollback()
+            decisions = {}
+
         return {
             "messages": [
                 {
@@ -634,10 +664,13 @@ def chat_history(
                     # de 5 min y estar vencido) via build_attachment_url.
                     "attachments": [
                         {
+                            "id": att["id"],
                             "kind": att.get("kind", "screenshot"),
                             "mime": att.get("mime", "image/png"),
                             "filename": att.get("filename"),
                             "url": build_attachment_url(att["id"], user_id),
+                            # None = sin decidir; si no, "approve" | "modify" | "reject".
+                            "decision": decisions.get(att["id"]),
                         }
                         for att in (row.attachments or [])
                         if isinstance(att, dict) and att.get("id")

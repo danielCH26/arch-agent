@@ -398,3 +398,141 @@ class TestDecideDiagram:
             assert rows[0].project_id == 1
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# Decisión POR diagrama (migración 0017: approvals.attachment_id)
+#
+# Bug QA HU6: rechazar un diagrama en el chat no se recordaba -- tras un F5
+# volvían los tres botones -- y el panel de historial dejaba decidir otra vez
+# sobre un diagrama ya decidido. La decisión ahora se guarda por diagrama y se
+# devuelve en el historial.
+# ---------------------------------------------------------------------------
+
+
+def _seed_diagram(fake_db, *, user_id=1, project_id=1, attachment_id="att-1", minute=0):
+    _insert_assistant_message(
+        fake_db, session_id=10, user_id=user_id, project_id=project_id,
+        attachments=[{"id": attachment_id, "kind": "screenshot", "filename": f"{attachment_id}.png"}],
+        created_at=datetime(2024, 1, 1, 12, minute, 0, tzinfo=timezone.utc),
+    )
+
+
+def _approval_rows(fake_db):
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.approval import Approval
+
+        return [
+            (r.attachment_id, r.decision, r.project_id)
+            for r in db.query(Approval).filter(Approval.phase == "diagram").order_by(Approval.id).all()
+        ]
+    finally:
+        db.close()
+
+
+class TestPerDiagramDecision:
+    def test_history_exposes_attachment_id_and_no_decision_by_default(self, fake_db):
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        _seed_diagram(fake_db, attachment_id="att-1")
+        client = _client_for_user(user_id=1)
+
+        diagrams = client.get("/api/diagrams/history?project_id=1").json()["diagrams"]
+
+        assert diagrams[0]["id"] == "att-1"
+        assert diagrams[0]["decision"] is None
+
+    @pytest.mark.parametrize("decision", ["approve", "reject", "modify"])
+    def test_decision_is_persisted_per_diagram_and_returned_by_history(self, fake_db, decision):
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        _seed_diagram(fake_db, attachment_id="att-1")
+        client = _client_for_user(user_id=1)
+
+        response = client.post(
+            "/api/diagrams/decision?project_id=1",
+            json={"decision": decision, "feedback": "cambia algo", "attachment_id": "att-1"},
+        )
+
+        assert response.status_code == 200
+        assert _approval_rows(fake_db) == [("att-1", {"approve": "approved", "reject": "rejected", "modify": "modified"}[decision], 1)]
+        diagrams = client.get("/api/diagrams/history?project_id=1").json()["diagrams"]
+        assert diagrams[0]["decision"] == decision
+
+    def test_deciding_one_diagram_does_not_mark_the_others(self, fake_db):
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        _seed_diagram(fake_db, attachment_id="att-1", minute=0)
+        _seed_diagram(fake_db, attachment_id="att-2", minute=5)
+        client = _client_for_user(user_id=1)
+
+        client.post("/api/diagrams/decision?project_id=1", json={"decision": "reject", "attachment_id": "att-2"})
+
+        by_id = {d["id"]: d["decision"] for d in client.get("/api/diagrams/history?project_id=1").json()["diagrams"]}
+        assert by_id == {"att-1": None, "att-2": "reject"}
+
+    def test_second_decision_on_same_diagram_is_409_and_not_persisted(self, fake_db):
+        """Ya aprobado / rechazado / con cambios pedidos: no se puede decidir
+        de nuevo (p. ej. desde otra pestaña o llamando a la API directo)."""
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        _seed_diagram(fake_db, attachment_id="att-1")
+        client = _client_for_user(user_id=1)
+        body = {"decision": "approve", "attachment_id": "att-1"}
+        assert client.post("/api/diagrams/decision?project_id=1", json=body).status_code == 200
+
+        again = client.post(
+            "/api/diagrams/decision?project_id=1",
+            json={"decision": "reject", "attachment_id": "att-1"},
+        )
+
+        assert again.status_code == 409
+        assert "ya tiene una decisión" in again.json()["detail"]
+        assert _approval_rows(fake_db) == [("att-1", "approved", 1)]
+
+    def test_404_for_unknown_attachment_id(self, fake_db):
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        client = _client_for_user(user_id=1)
+
+        response = client.post(
+            "/api/diagrams/decision?project_id=1",
+            json={"decision": "approve", "attachment_id": "no-existe"},
+        )
+
+        assert response.status_code == 404
+        assert _approval_rows(fake_db) == []
+
+    def test_404_when_attachment_belongs_to_another_project_of_same_user(self, fake_db):
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        _seed_user_and_project(fake_db, user_id=1, project_id=2)
+        _seed_diagram(fake_db, project_id=2, attachment_id="att-de-otro-proyecto")
+        client = _client_for_user(user_id=1)
+
+        response = client.post(
+            "/api/diagrams/decision?project_id=1",
+            json={"decision": "approve", "attachment_id": "att-de-otro-proyecto"},
+        )
+
+        assert response.status_code == 404
+
+    def test_404_when_attachment_belongs_to_another_user(self, fake_db):
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        _seed_user_and_project(fake_db, user_id=2, project_id=2)
+        _seed_diagram(fake_db, user_id=2, project_id=2, attachment_id="att-ajeno")
+        client = _client_for_user(user_id=1)
+
+        response = client.post(
+            "/api/diagrams/decision?project_id=1",
+            json={"decision": "approve", "attachment_id": "att-ajeno"},
+        )
+
+        assert response.status_code == 404
+
+    def test_decision_without_attachment_id_still_works_as_before(self, fake_db):
+        """Compatibilidad: un cliente viejo sin `attachment_id` sigue
+        registrando la decisión a nivel de proyecto."""
+        _seed_user_and_project(fake_db, user_id=1, project_id=1)
+        client = _client_for_user(user_id=1)
+
+        response = client.post("/api/diagrams/decision?project_id=1", json={"decision": "approve"})
+
+        assert response.status_code == 200
+        assert _approval_rows(fake_db) == [(None, "approved", 1)]

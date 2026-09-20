@@ -2,7 +2,16 @@ import type React from 'react'
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Message } from '../stores/chatStore'
-import { submitDiagramDecision } from '../api/diagrams'
+import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
+
+// Texto que se muestra cuando un diagrama ya tiene decision. Es el mismo tanto
+// justo despues de decidir como despues de un F5 (la decision se recupera de
+// GET /api/chat/history), asi el estado no depende de la memoria de React.
+const DIAGRAM_DECISION_TEXT: Record<DiagramDecision, string> = {
+  approve: 'Diagrama aprobado.',
+  reject: 'Diagrama rechazado.',
+  modify: 'Se registró tu solicitud de cambios.',
+}
 
 interface MessageBubbleProps {
   message: Message
@@ -461,14 +470,14 @@ function DiagramAttachments({
       return
     }
     try {
-      await submitDiagramDecision(projectId, 'approve')
+      await submitDiagramDecision(projectId, 'approve', undefined, attachments[index]?.id)
     } catch (err) {
       // HU6: antes el error del backend se perdia (void + sin catch) y la
       // burbuja marcaba "Diagrama aprobado." aunque el POST hubiera fallado.
       setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
       return
     }
-    setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama aprobado.' }))
+    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.approve }))
     onSendMessage?.('Apruebo el diagrama, continuemos.')
   }
 
@@ -485,12 +494,17 @@ function DiagramAttachments({
     }
     const feedbackForThisAttachment = (feedbackByIndex[index] ?? '').trim()
     try {
-      await submitDiagramDecision(projectId, 'reject', feedbackForThisAttachment || undefined)
+      await submitDiagramDecision(
+        projectId,
+        'reject',
+        feedbackForThisAttachment || undefined,
+        attachments[index]?.id,
+      )
     } catch (err) {
       setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
       return
     }
-    setDecidedFor((prev) => ({ ...prev, [index]: 'Diagrama rechazado.' }))
+    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.reject }))
     setOpenFeedbackFor(null)
     setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
   }
@@ -507,12 +521,12 @@ function DiagramAttachments({
       return
     }
     try {
-      await submitDiagramDecision(projectId, 'modify', trimmed)
+      await submitDiagramDecision(projectId, 'modify', trimmed, attachments[index]?.id)
     } catch (err) {
       setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
       return
     }
-    setDecidedFor((prev) => ({ ...prev, [index]: 'Se registró tu solicitud de cambios.' }))
+    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.modify }))
     // El prompt completo (con instrucciones + Mermaid anterior) es lo que
     // necesita el agente para regenerar el diagrama, pero el usuario solo
     // escribió su feedback -- eso es lo que debe verse en su propia
@@ -525,6 +539,13 @@ function DiagramAttachments({
     setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
     setDecisionError('')
   }
+
+  // Decision de este diagrama: la recien tomada en esta sesion (`decidedFor`)
+  // o, tras un F5, la que devuelve el historial del chat (`attachment.decision`).
+  // Si hay una, no se vuelven a ofrecer los botones.
+  const decidedTextFor = (attachment: NonNullable<Message['attachments']>[number], index: number) =>
+    decidedFor[index] ??
+    (attachment.decision ? DIAGRAM_DECISION_TEXT[attachment.decision] : undefined)
 
   const openExpandedDiagram = (url: string) => {
     setDiagramZoom(2)
@@ -543,7 +564,7 @@ function DiagramAttachments({
             title="Click para ampliar"
             onClick={() => openExpandedDiagram(attachment.url)}
           />
-          {onSendMessage && !decidedFor[index] && (
+          {onSendMessage && !decidedTextFor(attachment, index) && (
             <>
               <div className="flex gap-2 mt-1">
                 <button
@@ -615,8 +636,8 @@ function DiagramAttachments({
               )}
             </>
           )}
-          {decidedFor[index] && (
-            <p className="mt-1 text-xs text-green-700">{decidedFor[index]}</p>
+          {decidedTextFor(attachment, index) && (
+            <p className="mt-1 text-xs text-green-700">{decidedTextFor(attachment, index)}</p>
           )}
         </div>
       ))}

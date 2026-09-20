@@ -47,6 +47,41 @@ DECISION_TO_DB = {
     "reject": "rejected",
 }
 
+# Inverso de DECISION_TO_DB: lo que guarda la DB -> lo que habla la API.
+DECISION_FROM_DB = {v: k for k, v in DECISION_TO_DB.items()}
+
+
+def latest_diagram_decisions(
+    db: Session, *, project_id: int, attachment_ids: list[str]
+) -> dict[str, str]:
+    """Última decisión registrada por diagrama, como ``{attachment_id:
+    "approve" | "modify" | "reject"}``. Los diagramas sin decisión no
+    aparecen en el resultado.
+
+    Una sola consulta para todos los ids (la usan el historial del chat y el
+    historial de diagramas). Filtra por ``project_id`` además de por
+    ``attachment_id`` para no mezclar proyectos.
+    """
+    ids = [a for a in attachment_ids if a]
+    if not ids:
+        return {}
+
+    rows = (
+        db.query(Approval.attachment_id, Approval.decision)
+        .filter(
+            Approval.phase == "diagram",
+            Approval.project_id == project_id,
+            Approval.attachment_id.in_(ids),
+        )
+        .order_by(Approval.id.asc())
+        .all()
+    )
+    # order_by id asc + dict => la última fila de cada diagrama pisa a las anteriores.
+    return {
+        row.attachment_id: DECISION_FROM_DB.get(row.decision, row.decision)
+        for row in rows
+    }
+
 
 def record_approval_decision(
     db: Session,
@@ -56,6 +91,7 @@ def record_approval_decision(
     decision: str,
     feedback: str | None = None,
     project_id: int | None = None,
+    attachment_id: str | None = None,
 ) -> Approval:
     """Registra una fila en `approvals` para `phase`, creando la
     `UserSession` si todavía no existe (via `ensure_user_session`) en
@@ -72,6 +108,10 @@ def record_approval_decision(
     feature/hu6-diagrama). Todos los callers (elicitation.py, proposals.py,
     diagrams.py) deben pasarlo -- queda opcional solo para no romper código
     viejo que aún no lo pase explícitamente.
+
+    `attachment_id` (migration 0017): solo para la fase "diagram" -- UUID del
+    adjunto sobre el que se decidió, para que la decisión sea POR diagrama y
+    no solo por proyecto.
     """
     session_id = ensure_user_session(db, user_id)
 
@@ -81,6 +121,7 @@ def record_approval_decision(
         phase=phase,
         decision=DECISION_TO_DB[decision],
         feedback=feedback,
+        attachment_id=attachment_id,
     )
     db.add(approval)
     db.flush()

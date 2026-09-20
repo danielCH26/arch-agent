@@ -1,10 +1,16 @@
 import { apiFetch } from './client'
 
+export type DiagramDecision = 'approve' | 'modify' | 'reject'
+
 export interface DiagramVersion {
   message_id: number
+  // UUID del adjunto: identidad del diagrama para las decisiones.
+  id: string
   url: string
   filename: string | null
   created_at: string
+  // Ultima decision registrada sobre ESTE diagrama; null = sin decidir.
+  decision: DiagramDecision | null
 }
 
 /**
@@ -31,14 +37,18 @@ export async function fetchDiagramHistory(projectId: number): Promise<DiagramVer
  */
 export async function submitDiagramDecision(
   projectId: number,
-  decision: 'approve' | 'modify' | 'reject',
+  decision: DiagramDecision,
   feedback?: string,
+  // UUID del diagrama (Attachment.id) sobre el que se decide. Con el la
+  // decision queda guardada POR diagrama y sobrevive a un F5; sin el (cliente
+  // viejo) solo se registra a nivel de proyecto.
+  attachmentId?: string,
 ): Promise<void> {
   await apiFetch<void>(
     `/api/diagrams/decision?project_id=${encodeURIComponent(String(projectId))}`,
     {
       method: 'POST',
-      body: JSON.stringify({ decision, feedback }),
+      body: JSON.stringify({ decision, feedback, attachment_id: attachmentId }),
     },
   )
 }

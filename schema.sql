@@ -182,6 +182,15 @@ ALTER TABLE approvals
 CREATE INDEX IF NOT EXISTS idx_approvals_project_phase
     ON approvals (project_id, phase);
 
+-- approvals.attachment_id (migration 0017) -- decisión POR diagrama: UUID del
+-- adjunto (messages.attachments[].id) sobre el que se decidió. Permite que el
+-- chat y el historial recuerden qué diagramas ya tienen una decisión.
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS attachment_id VARCHAR(64);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_attachment_id
+    ON approvals (attachment_id);
+
 -- =============================================================================
 -- F14 — display_content (migracion 0015). Idempotente para DBs creadas por
 -- init_db.py antes de que corriera la migracion 0015.

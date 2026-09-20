@@ -26,6 +26,12 @@ class Approval(Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=True,
     )
+    # Migration 0017: UUID del adjunto (messages.attachments[].id) sobre el que
+    # se decidió, para las decisiones de la fase "diagram". Permite que el chat
+    # y el historial recuerden qué diagramas ya tienen decisión (antes la
+    # decisión era solo por proyecto y se perdía en un F5). NULL en el resto de
+    # fases y en filas anteriores a la migración.
+    attachment_id = Column(String(64), nullable=True)
     phase = Column(String(50), nullable=False)
     decision = Column(String(20), nullable=False)  # 'approved' | 'modified' | 'rejected'
     feedback = Column(Text)

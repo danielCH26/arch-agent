@@ -1,18 +1,34 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from '../MessageBubble'
+import { submitDiagramDecision } from '../../api/diagrams'
 import type { Attachment, Message } from '../../stores/chatStore'
+
+// Las decisiones sobre el diagrama pegan a POST /api/diagrams/decision; aqui se
+// mockea la API para probar el comportamiento de la burbuja.
+vi.mock('../../api/diagrams', () => ({
+  submitDiagramDecision: vi.fn().mockResolvedValue(undefined),
+}))
+
+const submitDecisionMock = vi.mocked(submitDiagramDecision)
+
+beforeEach(() => {
+  submitDecisionMock.mockReset()
+  submitDecisionMock.mockResolvedValue(undefined)
+})
 
 function renderMessage(
   content: string,
   role: Message['role'] = 'assistant',
   attachments?: Attachment[],
-  onSendMessage?: (text: string) => void
+  onSendMessage?: (text: string, displayText?: string) => void,
+  projectId: number | undefined = 1
 ) {
   render(
     <MessageBubble
       message={{ id: 'message-1', role, content, attachments }}
+      projectId={projectId}
       onSendMessage={onSendMessage}
     />
   )
@@ -139,7 +155,8 @@ describe('MessageBubble', () => {
     await user.type(screen.getByLabelText('¿Qué debe ajustarse en el diagrama?'), 'Agrega Redis entre gateway y ordenes')
     await user.click(screen.getByRole('button', { name: 'Enviar ajuste' }))
 
-    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    // El prompt se manda al agente despues de registrar la decision (POST async).
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalledTimes(1))
     const prompt = onSendMessage.mock.calls[0][0]
     expect(prompt).toContain('Responde UNICAMENTE con un bloque ```mermaid```')
     expect(prompt).toContain('No agregues explicaciones')
@@ -164,5 +181,97 @@ describe('MessageBubble', () => {
     // The <img> slot only fires for assistant messages — users keep their
     // raw content as plain text.
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+
+  // ---------------------------------------------------------------------
+  // Decision POR diagrama (QA HU6): antes, tras rechazar y hacer F5, volvian
+  // los tres botones porque el estado "ya decidido" solo vivia en React.
+  // ---------------------------------------------------------------------
+  describe('decision persistida del diagrama', () => {
+    const diagram = (extra: Partial<Attachment> = {}): Attachment[] => [
+      {
+        id: 'att-1',
+        kind: 'screenshot',
+        mime: 'image/png',
+        url: '/api/chat/attachments/att-1?token=signed.jwt',
+        filename: 'diagram-1.png',
+        ...extra,
+      },
+    ]
+
+    it('sin decision previa muestra los tres botones', () => {
+      renderMessage('Diagrama', 'assistant', diagram(), vi.fn())
+
+      expect(screen.getByRole('button', { name: '✅ Aprobar' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '❌ Rechazar' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '✏️ Solicitar cambios' })).toBeInTheDocument()
+    })
+
+    it.each([
+      ['reject', 'Diagrama rechazado.'],
+      ['approve', 'Diagrama aprobado.'],
+      ['modify', 'Se registró tu solicitud de cambios.'],
+    ] as const)(
+      'si el historial trae decision=%s (tras un F5) no vuelve a ofrecer los botones',
+      (decision, text) => {
+        renderMessage('Diagrama', 'assistant', diagram({ decision }), vi.fn())
+
+        expect(screen.getByText(text)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: '✅ Aprobar' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: '❌ Rechazar' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: '✏️ Solicitar cambios' })).not.toBeInTheDocument()
+      }
+    )
+
+    it('decision=null se trata como sin decidir', () => {
+      renderMessage('Diagrama', 'assistant', diagram({ decision: null }), vi.fn())
+
+      expect(screen.getByRole('button', { name: '❌ Rechazar' })).toBeInTheDocument()
+    })
+
+    it('rechazar manda el id del diagrama, muestra la confirmacion y oculta los botones', async () => {
+      const user = userEvent.setup()
+      renderMessage('Diagrama', 'assistant', diagram(), vi.fn())
+
+      await user.click(screen.getByRole('button', { name: '❌ Rechazar' }))
+
+      await waitFor(() => expect(screen.getByText('Diagrama rechazado.')).toBeInTheDocument())
+      expect(submitDecisionMock).toHaveBeenCalledWith(1, 'reject', undefined, 'att-1')
+      expect(screen.queryByRole('button', { name: '❌ Rechazar' })).not.toBeInTheDocument()
+    })
+
+    it('aprobar manda el id del diagrama', async () => {
+      const user = userEvent.setup()
+      const onSendMessage = vi.fn()
+      renderMessage('Diagrama', 'assistant', diagram(), onSendMessage)
+
+      await user.click(screen.getByRole('button', { name: '✅ Aprobar' }))
+
+      await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('Apruebo el diagrama, continuemos.'))
+      expect(submitDecisionMock).toHaveBeenCalledWith(1, 'approve', undefined, 'att-1')
+    })
+
+    it('si el backend falla muestra el error y NO marca el diagrama como decidido', async () => {
+      const user = userEvent.setup()
+      submitDecisionMock.mockRejectedValueOnce(new Error('Este diagrama ya tiene una decisión registrada.'))
+      renderMessage('Diagrama', 'assistant', diagram(), vi.fn())
+
+      await user.click(screen.getByRole('button', { name: '❌ Rechazar' }))
+
+      expect(await screen.findByText('Este diagrama ya tiene una decisión registrada.')).toBeInTheDocument()
+      expect(screen.queryByText('Diagrama rechazado.')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '❌ Rechazar' })).toBeInTheDocument()
+    })
+
+    it('con dos diagramas en la misma burbuja cada uno tiene su propio estado', () => {
+      const two: Attachment[] = [
+        ...diagram({ id: 'att-1', decision: 'reject' }),
+        ...diagram({ id: 'att-2', url: '/api/chat/attachments/att-2?token=x', decision: null }),
+      ]
+      renderMessage('Dos diagramas', 'assistant', two, vi.fn())
+
+      expect(screen.getAllByRole('button', { name: '❌ Rechazar' })).toHaveLength(1)
+      expect(screen.getByText('Diagrama rechazado.')).toBeInTheDocument()
+    })
   })
 })
