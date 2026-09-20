@@ -70,6 +70,15 @@ Decisiones de diseño que viajan con esta elección:
   wrap evita que un render desbocado inunde la memoria del backend antes
   de llegar al cliente.
 
+### 2.1 Boundary clarification (added by `2026-09-20-f13-review-fixes`)
+
+The byte cap is enforced **at the tool-invocation boundary** (post-`ainvoke`,
+pre-yield to the agent) via `_wrap_tool_with_byte_cap` in
+`app/core/puppeteer_mcp.py`. The cap bounds what flows into the SSE event
+and what gets persisted/served. It does **not** bound the receive-time
+process memory spike — the bytes are already in the Python process when
+measured. That bound is the sidecar `mem_limit: 512m` (§6).
+
 ### 3. Rate limit per-user (REQ-PMCP-4, SCN-PMCP-6)
 
 - Sliding-window in-memory `_RATE_LIMITER: dict[user_id, list[float]]`,
