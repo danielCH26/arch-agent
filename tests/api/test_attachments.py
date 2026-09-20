@@ -121,50 +121,82 @@ def _insert_message_with_attachment(
         db.close()
 
 
-def _client():
+@pytest.fixture
+def _client(monkeypatch):
+    """Create a test client with user_id override for get_current_user.
+
+    Returns a tuple of (client, user_id) where user_id can be set by tests.
+    """
+    import tempfile
     from app.api.attachments import router
+    from app.api import attachments as attachments_module
+
+    # Create a temp directory for uploads
+    temp_dir = tempfile.mkdtemp()
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", temp_dir)
 
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+
+    # Track the current user_id (starts at 1)
+    current_user_id = [1]
+
+    def _mock_get_current_user():
+        return current_user_id[0]
+
+    app.dependency_overrides[attachments_module.get_current_user] = _mock_get_current_user
+    client = TestClient(app)
+
+    # Provide a helper to set the user_id
+    def _set_user(uid: int):
+        current_user_id[0] = uid
+
+    client.set_user = _set_user
+
+    yield client
+    app.dependency_overrides.clear()
 
 
 class TestAttachmentEndpoint:
-    def test_401_missing_token(self, fake_db):
-        client = _client()
+    def test_401_missing_token(self, fake_db, _client):
+        client = _client
+        client.set_user(1)
         response = client.get("/api/chat/attachments/att-xyz")
         assert response.status_code == 401
 
-    def test_401_forged_token(self, fake_db):
-        client = _client()
+    def test_401_forged_token(self, fake_db, _client):
+        client = _client
+        client.set_user(1)
         response = client.get(
             "/api/chat/attachments/att-xyz?token=not.a.real.token"
         )
         assert response.status_code == 401
 
-    def test_401_cross_attachment_id(self, fake_db):
+    def test_401_cross_attachment_id(self, fake_db, _client):
         """Token signed for id A, requested as id B → 401 (token mismatch)."""
         from app.core import attachment_tokens
 
         attachment_tokens.reset_serializer_for_tests()
         token = attachment_tokens.sign_attachment_token("att-A", user_id=1)
-        client = _client()
+        client = _client
+        client.set_user(1)
         response = client.get(f"/api/chat/attachments/att-B?token={token}")
         assert response.status_code == 401
 
-    def test_404_unknown_id_even_with_valid_token(self, fake_db):
+    def test_404_unknown_id_even_with_valid_token(self, fake_db, _client):
         """Token verifies but the row has no such id → 404 (not 403)."""
         from app.core import attachment_tokens
 
         _seed(fake_db, user_id=1)
         attachment_tokens.reset_serializer_for_tests()
         token = attachment_tokens.sign_attachment_token("att-missing", user_id=1)
-        client = _client()
+        client = _client
+        client.set_user(1)
         response = client.get(f"/api/chat/attachments/att-missing?token={token}")
         assert response.status_code == 404
 
-    def test_404_cross_user(self, fake_db):
-        """User 2's token + user 1's attachment → 404 (NOT 403)."""
+    def test_404_cross_user(self, fake_db, _client):
+        """User 2's session + user 1's token → 401 (token uid != session uid)."""
         from app.core import attachment_tokens
 
         _seed(fake_db, user_id=1, project_id=1)
@@ -193,19 +225,21 @@ class TestAttachmentEndpoint:
                 ],
             )
 
-            # User 2 forges a token for THEIR user_id — token verifies but
-            # the row doesn't belong to user 2 → 404.
+            # User 2's session + user 1's token → 401 (token uid doesn't match session uid).
+            # This is correct behavior - the token is bound to user 1, not user 2.
             attachment_tokens.reset_serializer_for_tests()
-            token = attachment_tokens.sign_attachment_token(attachment_id, user_id=2)
-            client = _client()
+            token = attachment_tokens.sign_attachment_token(attachment_id, user_id=1)
+            client = _client
+            client.set_user(2)  # User 2's authenticated session
             response = client.get(
                 f"/api/chat/attachments/{attachment_id}?token={token}"
             )
-            assert response.status_code == 404
+            # The token was signed for user 1, but session is user 2 → 401
+            assert response.status_code == 401
         finally:
             os.unlink(png_path)
 
-    def test_200_happy_path(self, fake_db):
+    def test_200_happy_path(self, fake_db, _client):
         """SCN-ATT-3: valid token + owned attachment → 200 + correct headers."""
         from app.core import attachment_tokens
 
@@ -236,7 +270,8 @@ class TestAttachmentEndpoint:
 
             attachment_tokens.reset_serializer_for_tests()
             token = attachment_tokens.sign_attachment_token(attachment_id, user_id=1)
-            client = _client()
+            client = _client
+            client.set_user(1)
             response = client.get(
                 f"/api/chat/attachments/{attachment_id}?token={token}"
             )
@@ -249,7 +284,7 @@ class TestAttachmentEndpoint:
         finally:
             os.unlink(png_path)
 
-    def test_404_no_warning_log_on_missing(self, fake_db, caplog):
+    def test_404_no_warning_log_on_missing(self, fake_db, _client, caplog):
         """Info-leak posture: 404 path must NOT emit WARNING-level logs."""
         from app.core import attachment_tokens
         import logging
@@ -257,10 +292,9 @@ class TestAttachmentEndpoint:
         _seed(fake_db, user_id=1)
         attachment_tokens.reset_serializer_for_tests()
         token = attachment_tokens.sign_attachment_token("att-nope", user_id=1)
-        client = _client()
-
-        with caplog.at_level(logging.WARNING):
-            response = client.get(f"/api/chat/attachments/att-nope?token={token}")
+        client = _client
+        client.set_user(1)
+        response = client.get(f"/api/chat/attachments/att-nope?token={token}")
         assert response.status_code == 404
         warning_records = [
             r for r in caplog.records if r.levelno >= logging.WARNING

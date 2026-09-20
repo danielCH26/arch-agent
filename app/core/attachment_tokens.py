@@ -90,39 +90,51 @@ def sign_attachment_token(
 
 def verify_attachment_token(
     token: str,
+    *,
     attachment_id: str,
     user_id: int,
-    *,
     max_age: int = DEFAULT_TTL_SECONDS,
-) -> bool:
-    """Return ``True`` iff the token is valid AND binds the right pair.
+) -> tuple[bool, int | None]:
+    """Return ``(valid, payload_user_id)``.
 
-    Returns ``False`` (not raises) on every failure mode so the route can
-    map indistinguishably to 401 — this matches the spec's "avoid info
-    leak" posture (REQ-ATT-2).
+    ``payload_user_id`` is the ``uid`` claim from the signed payload when
+    the signature is valid AND the payload is fresh AND the payload's
+    ``aid`` claim matches ``attachment_id``. On ANY failure mode
+    (missing/expired/forged/mismatched aid/wrong uid) the function
+    returns ``(False, None)`` indistinguishably so the route can map
+    every failure to 401 without leaking which check failed.
+
+    The ``user_id`` argument is the user_id from the route's
+    authenticated context. We verify the token's ``uid`` claim matches
+    it as a second check (defense in depth — even if a token leaked, it
+    can only be used for the user that minted it).
     """
     if not token:
-        return False
+        return False, None
     serializer = _get_serializer()
     try:
         payload = serializer.loads(token, max_age=max_age)
     except SignatureExpired:
-        _LOGGER.info("attachment_token: expired")
-        return False
+        _LOGGER.debug("attachment_token: expired")
+        return False, None
     except BadSignature:
-        _LOGGER.info("attachment_token: bad signature")
-        return False
+        _LOGGER.debug("attachment_token: bad signature")
+        return False, None
     except Exception as e:  # pragma: no cover — defensive belt-and-braces
-        _LOGGER.warning("attachment_token: unexpected verify error: %s", e)
-        return False
+        _LOGGER.debug("attachment_token: unexpected verify error: %s", e)
+        return False, None
 
     if not isinstance(payload, dict):
-        return False
+        return False, None
     if payload.get("aid") != str(attachment_id):
-        return False
-    if int(payload.get("uid", -1)) != int(user_id):
-        return False
-    return True
+        return False, None
+    try:
+        payload_uid = int(payload.get("uid", -1))
+    except (TypeError, ValueError):
+        return False, None
+    if payload_uid != int(user_id):
+        return False, None
+    return True, payload_uid
 
 
 # ---------------------------------------------------------------------------

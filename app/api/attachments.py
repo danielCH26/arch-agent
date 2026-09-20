@@ -1,10 +1,10 @@
 """
 GET /api/chat/attachments/{id} — serve a screenshot with signed-token auth.
 
-The endpoint is intentionally NOT behind ``get_current_user``: an
-``<img src=...>`` cannot carry an ``Authorization`` header, so we sign the
-URL itself with ``itsdangerous.URLSafeTimedSerializer`` (TTL ≤ 5 min,
-REQ-ATT-2). Cross-user access returns **404, NOT 403**, to avoid existence
+The endpoint requires both a signed token (short-lived bearer) AND an
+authenticated session (``get_current_user``). The token authorizes the
+specific attachment read; the session provides the user context for
+cross-check. Cross-user access returns **404, NOT 403**, to avoid existence
 leak (REQ-ATT-2, SCN-ATT-4) — and the route does NOT log at WARNING on
 the 404 case for the same reason.
 """
@@ -13,11 +13,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api.auth import get_current_user
 from app.core.attachment_tokens import (
+    DEFAULT_TTL_SECONDS,
     _ensure_uploads_dir,
     verify_attachment_token,
 )
@@ -32,10 +34,12 @@ logger = logging.getLogger(__name__)
 def get_attachment(
     id: str,
     token: str | None = Query(default=None),
+    user_id: int = Depends(get_current_user),
 ) -> FileResponse:
     """Serve the attachment bytes for ``id`` if the signed URL is valid.
 
     Auth posture:
+      * ``get_current_user`` provides the authenticated user context.
       * ``token`` is REQUIRED (returns 401 if missing/expired/forged).
       * The signed payload binds ``(attachment_id, user_id)``. When
         ``token`` verifies but the row's owner differs, the lookup
@@ -46,6 +50,7 @@ def get_attachment(
         id: Attachment UUID (the value the row's ``attachments[].id``
             column holds).
         token: Signed query-string token (TTL 5 min, REQ-ATT-2).
+        user_id: Authenticated user from session (via ``get_current_user``).
 
     Returns:
         ``FileResponse`` carrying the PNG bytes + ``Content-Type`` from
@@ -58,41 +63,17 @@ def get_attachment(
             detail="Missing token",
         )
 
-    # Defense in depth: we need the user_id to verify the token. The
-    # signed payload carries it, but we re-verify against the URL params
-    # so a tampered ``id`` in the path can't slip through.
-    # Walk the messages table for a row whose attachments JSONB contains
-    # the requested id. The token's user_id claim scopes the lookup.
-    from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-    from app.core.attachment_tokens import _derive_key, _SALT
-
-    serializer = URLSafeTimedSerializer(_derive_key(), salt=_SALT)
-    try:
-        payload = serializer.loads(token, max_age=300)
-    except SignatureExpired:
+    # Delegate token verification to the helper. Returns (valid, payload_uid)
+    # or (False, None) on any failure — indistinguishably maps to 401.
+    valid, payload_uid = verify_attachment_token(
+        token,
+        attachment_id=id,
+        user_id=user_id,
+    )
+    if not valid or payload_uid != user_id:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
-        )
-    except BadSignature:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
-
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
-    if payload.get("aid") != id:
-        # The signed id does not match the path id → treat as forged.
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
-
-    try:
-        user_id = int(payload.get("uid"))
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
         )
 
     # Look up the row. JSONB containment is delegated to the adapter via
