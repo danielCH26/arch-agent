@@ -435,14 +435,16 @@ def test_rate_limit_allows_5_calls_in_60s(monkeypatch):
     _reset_rate_limiter()
     monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "5")
 
-    # 5 calls — all must succeed.
-    for _ in range(5):
-        puppeteer_mcp._check_rate_limit(user_id=42)
+    async def _drive():
+        # 5 calls — all must succeed.
+        for _ in range(5):
+            await puppeteer_mcp._check_rate_limit(user_id=42)
+        # 6th call — must raise.
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable) as exc_info:
+            await puppeteer_mcp._check_rate_limit(user_id=42)
+        assert exc_info.value.reason == "puppeteer_rate_limited"
 
-    # 6th call — must raise.
-    with pytest.raises(puppeteer_mcp.PuppeteerUnavailable) as exc_info:
-        puppeteer_mcp._check_rate_limit(user_id=42)
-    assert exc_info.value.reason == "puppeteer_rate_limited"
+    asyncio.run(_drive())
 
 
 def test_rate_limit_is_per_user(monkeypatch):
@@ -452,18 +454,21 @@ def test_rate_limit_is_per_user(monkeypatch):
     _reset_rate_limiter()
     monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "5")
 
-    for _ in range(5):
-        puppeteer_mcp._check_rate_limit(user_id=1)
+    async def _drive():
+        for _ in range(5):
+            await puppeteer_mcp._check_rate_limit(user_id=1)
 
-    # User 2 starts fresh.
-    for _ in range(5):
-        puppeteer_mcp._check_rate_limit(user_id=2)
+        # User 2 starts fresh.
+        for _ in range(5):
+            await puppeteer_mcp._check_rate_limit(user_id=2)
 
-    # User 1's 6th call still raises; user 2's 6th call also raises.
-    with pytest.raises(puppeteer_mcp.PuppeteerUnavailable):
-        puppeteer_mcp._check_rate_limit(user_id=1)
-    with pytest.raises(puppeteer_mcp.PuppeteerUnavailable):
-        puppeteer_mcp._check_rate_limit(user_id=2)
+        # User 1's 6th call still raises; user 2's 6th call also raises.
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable):
+            await puppeteer_mcp._check_rate_limit(user_id=1)
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable):
+            await puppeteer_mcp._check_rate_limit(user_id=2)
+
+    asyncio.run(_drive())
 
 
 def test_rate_limit_disabled_when_zero(monkeypatch):
@@ -474,9 +479,12 @@ def test_rate_limit_disabled_when_zero(monkeypatch):
     _reset_rate_limiter()
     monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "0")
 
-    # 100 calls all succeed when the limit is disabled.
-    for _ in range(100):
-        puppeteer_mcp._check_rate_limit(user_id=1)
+    async def _drive():
+        # 100 calls all succeed when the limit is disabled.
+        for _ in range(100):
+            await puppeteer_mcp._check_rate_limit(user_id=1)
+
+    asyncio.run(_drive())
 
 
 def test_rate_limit_window_pruning_after_60s(monkeypatch):
@@ -494,9 +502,32 @@ def test_rate_limit_window_pruning_after_60s(monkeypatch):
     base = puppeteer_mcp._time.time()
     puppeteer_mcp._RATE_LIMITER[42] = [base - 200, base - 180, base - 150, base - 120, base - 100]
 
-    # Now the next call should succeed (all 5 old entries get pruned).
-    puppeteer_mcp._check_rate_limit(user_id=42)
-    assert len(puppeteer_mcp._RATE_LIMITER[42]) == 1
+    async def _drive():
+        # Now the next call should succeed (all 5 old entries get pruned).
+        await puppeteer_mcp._check_rate_limit(user_id=42)
+        assert len(puppeteer_mcp._RATE_LIMITER[42]) == 1
+
+    asyncio.run(_drive())
+
+
+def test_check_rate_limit_async_concurrent_6th_raises(monkeypatch):
+    """6 concurrent calls — exactly one should raise (the 6th)."""
+    from app.core import puppeteer_mcp
+
+    _reset_rate_limiter()
+    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "5")
+
+    async def _drive():
+        # Fire 6 concurrent calls.
+        tasks = [puppeteer_mcp._check_rate_limit(user_id=42) for _ in range(6)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Count how many raised.
+        exceptions = [r for r in results if isinstance(r, Exception)]
+        assert len(exceptions) == 1
+        assert exceptions[0].reason == "puppeteer_rate_limited"
+
+    asyncio.run(_drive())
 
 
 def test_rate_limit_handler_in_try_get_puppeteer_tools(monkeypatch):

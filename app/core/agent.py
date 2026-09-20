@@ -252,7 +252,7 @@ async def _try_get_puppeteer_tools(
         # REQ-PMCP-4: rate-limit check BEFORE the MCP call so a 6th request
         # within 60s emits degraded immediately without paying the
         # streamable_http round-trip.
-        _check_rate_limit(user_id)
+        await _check_rate_limit(user_id)
         tools = await get_puppeteer_tools()
         return tools, None
     except PuppeteerUnavailable as e:

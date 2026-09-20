@@ -73,7 +73,7 @@ _PUPPETEER_ALLOWED_TOOLS: frozenset = frozenset({"puppeteer_screenshot"})
 # F14 if horizontal scaling arrives (R-SPEC-4 mitigation in ADR-013 §Security).
 _RATE_LIMIT_WINDOW_SECONDS: int = 60
 _RATE_LIMITER: dict[int, list[float]] = {}
-_RATE_LIMIT_LOCK = None  # lazily created; see ``_check_rate_limit``
+_RATE_LIMIT_LOCK = asyncio.Lock()  # guards window mutation; see ``_check_rate_limit``
 
 
 def _rate_limit_per_minute() -> int:
@@ -92,8 +92,8 @@ def _rate_limit_per_minute() -> int:
         return 5
 
 
-def _check_rate_limit(user_id: int | None) -> None:
-    """Sliding-window rate limiter (REQ-PMCP-4).
+async def _check_rate_limit(user_id: int | None) -> None:
+    """Sliding-window rate limiter (REQ-PMCP-4) — async + locked.
 
     Raises ``PuppeteerUnavailable(reason="puppeteer_rate_limited")`` when the
     call would exceed ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE`` within the
@@ -102,6 +102,10 @@ def _check_rate_limit(user_id: int | None) -> None:
 
     On success: appends the current epoch timestamp to the user's window
     AFTER pruning entries older than ``_RATE_LIMIT_WINDOW_SECONDS``.
+
+    The window mutation is guarded by ``_RATE_LIMIT_LOCK`` to prevent a race
+    where two concurrent coroutines both pass the ``len(window) < limit`` check
+    and both append.
     """
     limit = _rate_limit_per_minute()
     if limit <= 0:
@@ -112,28 +116,29 @@ def _check_rate_limit(user_id: int | None) -> None:
     now = _time.time()
     cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
 
-    window = _RATE_LIMITER.get(key)
-    if window is None:
-        window = []
-        _RATE_LIMITER[key] = window
+    async with _RATE_LIMIT_LOCK:
+        window = _RATE_LIMITER.get(key)
+        if window is None:
+            window = []
+            _RATE_LIMITER[key] = window
 
-    # Prune timestamps older than the window.
-    while window and window[0] < cutoff:
-        window.pop(0)
+        # Prune timestamps older than the window.
+        while window and window[0] < cutoff:
+            window.pop(0)
 
-    if len(window) >= limit:
-        _LOGGER.warning(
-            "Puppeteer rate limit hit for user_id=%s (limit=%d / %ds)",
-            key,
-            limit,
-            _RATE_LIMIT_WINDOW_SECONDS,
-        )
-        raise PuppeteerUnavailable(
-            f"Puppeteer render rate limit exceeded ({limit}/{_RATE_LIMIT_WINDOW_SECONDS}s)",
-            reason="puppeteer_rate_limited",
-        )
+        if len(window) >= limit:
+            _LOGGER.warning(
+                "Puppeteer rate limit hit for user_id=%s (limit=%d / %ds)",
+                key,
+                limit,
+                _RATE_LIMIT_WINDOW_SECONDS,
+            )
+            raise PuppeteerUnavailable(
+                f"Puppeteer render rate limit exceeded ({limit}/{_RATE_LIMIT_WINDOW_SECONDS}s)",
+                reason="puppeteer_rate_limited",
+            )
 
-    window.append(now)
+        window.append(now)
 
 
 class PuppeteerUnavailable(Exception):
