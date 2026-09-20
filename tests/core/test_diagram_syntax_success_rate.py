@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from app.core.mermaid_validator import sanitize_mermaid, validate_mermaid
 
-MIN_SUCCESS_RATE = 0.75  # KR Sofía (F09)
+MIN_SUCCESS_RATE = 0.75  # KR Sofía (F09) — grep "MIN_SUCCESS_RATE" para encontrar este umbral
 
 # (id del caso, mermaid "crudo" tal como podría salir del LLM)
 CORPUS: list[tuple[str, str]] = [
@@ -70,7 +70,10 @@ CORPUS: list[tuple[str, str]] = [
         "participant O as Orders\nC->>G: crear pedido\nG->>O: procesar\n"
         "O-->>G: confirmado\nG-->>C: 200 OK",
     ),
-    # -- otro tipo soportado (bonus, no pedido por F09 pero validado) ---
+    # -- otro tipo soportado (bonus, NO es uno de los 3 tipos que pide F09
+    #    estrictamente -- infla el denominador global. Si se mide la tasa
+    #    solo sobre flujo/componentes/secuencia, da 13/17 = 76.5%, todavía
+    #    arriba del umbral) --------------------------------------------
     ("clase_simple", "classDiagram\nclass Pedido\nPedido : +id\nPedido : +total"),
     # -- fallos genuinos que el sanitizador NO puede rescatar -----------
     ("fallo_tipo_no_reconocido", "erDiagram\nA ||--o{ B : tiene"),
@@ -79,8 +82,22 @@ CORPUS: list[tuple[str, str]] = [
     ("fallo_parentesis_sin_cerrar", "flowchart TD\nA(Inicio --> B[Fin]"),
 ]
 
+# Contrato explícito de qué casos deben fallar. Sin esto, alguien podría
+# "arreglar" la tasa borrando los fallos genuinos (o agregando solo casos
+# fáciles) sin haber mejorado nada real, y el CI seguiría en verde. Si este
+# set cambia, es porque el corpus cambió a propósito -- actualizalo a mano,
+# no lo generes dinámicamente a partir de los resultados.
+EXPECTED_FAILURES = {
+    "fallo_tipo_no_reconocido",
+    "fallo_bloque_vacio",
+    "fallo_corchete_sin_cerrar",
+    "fallo_parentesis_sin_cerrar",
+}
+
 
 def test_diagram_corpus_meets_sofia_kr_syntax_success_rate():
+    assert len(CORPUS) == 18, f"Corpus tiene {len(CORPUS)} casos, se esperaban 18"
+
     results: dict[str, tuple[bool, str | None]] = {}
     for name, raw in CORPUS:
         code = sanitize_mermaid(raw)
@@ -92,6 +109,18 @@ def test_diagram_corpus_meets_sofia_kr_syntax_success_rate():
     rate = valid / total
 
     failures = {name: err for name, (ok, err) in results.items() if not ok}
+
+    # Blindaje contra drift silencioso: si alguien borra los fallos
+    # genuinos (o agrega solo casos fáciles) para empujar la tasa hacia
+    # arriba, este assert lo detecta aunque `rate >= MIN_SUCCESS_RATE`
+    # siga pasando.
+    got_failures = set(failures)
+    assert got_failures == EXPECTED_FAILURES, (
+        f"Las fallas genuinas del corpus cambiaron: esperado "
+        f"{EXPECTED_FAILURES}, obtenido {got_failures}. Si fue un cambio "
+        f"intencional del corpus, actualizá EXPECTED_FAILURES; si no, "
+        f"alguien modificó un caso que debía fallar."
+    )
 
     assert rate >= MIN_SUCCESS_RATE, (
         f"Tasa de éxito {rate:.1%} ({valid}/{total}) por debajo del "
