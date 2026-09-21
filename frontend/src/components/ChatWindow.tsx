@@ -61,7 +61,6 @@ function shouldMountProposalCard(
   return false
 }
 
-
 export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   const { messages, isStreaming, error } = chatStore()
   const currentPhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
@@ -116,6 +115,24 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   }, [isElicitation, loadElicitation, projectId])
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, isStreaming, loadingElicitation])
+
+  // F12 (REQ-9 / SCN-2): on mount, pull the last-N turns from the backend
+  // so a page reload restores the conversation. We guard with
+  // ``isStreaming === false && loadingHistory === false`` so React
+  // StrictMode's intentional double-mount does not double-fire the fetch
+  // AND so an in-flight stream is never clobbered by a stale history
+  // payload. ``projectId`` is intentionally in the dep array: switching
+  // projects re-loads.
+  useEffect(() => {
+    const state = chatStore.getState()
+    if (state.isStreaming || state.loadingHistory) {
+      return
+    }
+    void state.loadHistory(projectId)
+    // We deliberately read state via getState() inside the effect so the
+    // effect itself can run with empty deps (mount-only).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId])
 
   const handleSend = async (text: string) => {
     if (!isElicitation) { await chatStore.getState().sendMessage(projectId, text); return }

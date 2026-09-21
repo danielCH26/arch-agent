@@ -11,6 +11,7 @@ Que hace:
 4. Verifica la conexion y PGVector
 """
 
+import os
 import re
 import sys
 from pathlib import Path
