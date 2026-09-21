@@ -1,4 +1,4 @@
-"""Smoke tests for the Langfuse tracer module skeleton (slice F11.1).
+"""Smoke tests for the Langfuse tracer module skeleton.
 
 These tests verify only that the module imports and exposes the expected
 public surface and the ``_env_present()`` helper. The real implementation
