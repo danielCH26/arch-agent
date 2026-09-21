@@ -1,5 +1,5 @@
-"""
-Tests para /api/chat — SSE streaming.
+﻿"""
+Tests para /api/chat â€” SSE streaming.
 
 F08 contract (preserved byte-for-byte):
   - request model ``ChatRequest``
@@ -9,7 +9,7 @@ F08 contract (preserved byte-for-byte):
   - ``event: error`` last on failure
   - HTTP 400/401/404/409 paths unchanged
 
-F11 additions (issue #13, design.md §13):
+F11 additions (issue #13, design.md Â§13):
   - ``event: tool_start`` / ``event: tool_end`` pairs (REQ-7 / SCN-1)
   - ``event: degraded`` between sources and first token on Context7
     unavailability (REQ-6 / SCN-3)
@@ -61,9 +61,9 @@ class TestChatRequestModel:
     def test_chat_request_normal_message(self):
         from app.api.chat import ChatRequest
 
-        req = ChatRequest(project_id=1, message="Diseña un sistema de login")
+        req = ChatRequest(project_id=1, message="DiseÃ±a un sistema de login")
         assert req.project_id == 1
-        assert req.message == "Diseña un sistema de login"
+        assert req.message == "DiseÃ±a un sistema de login"
 
 
 class TestSSEStreamCallbackHandler:
@@ -79,7 +79,7 @@ class TestSSEStreamCallbackHandler:
 
 
 class TestChatEndpointErrors:
-    """Tests de errores del endpoint de chat (lógica sin red)."""
+    """Tests de errores del endpoint de chat (lÃ³gica sin red)."""
 
     def test_llm_config_error_exists(self):
         """LLMConfigError is raised when user has no LLM config."""
@@ -134,7 +134,7 @@ class TestJWTAuth:
 
 
 # ---------------------------------------------------------------------------
-# F11 integration — drive the event_generator through patched ``run_agent``
+# F11 integration â€” drive the event_generator through patched ``run_agent``
 # ---------------------------------------------------------------------------
 
 
@@ -253,7 +253,7 @@ def _patch_chat_route(*, rag_docs=None, run_agent_events=None, session_local=Non
     # Liveness check mock. The chat route calls
     # ``with SessionLocal() as _db_probe: _db_probe.execute(...).scalar()``,
     # so the mock must (a) be usable as a context manager and (b) chain
-    # ``.execute(<text>)`` → ``.scalar()`` → a non-error result.
+    # ``.execute(<text>)`` â†’ ``.scalar()`` â†’ a non-error result.
     if session_local is None:
         session_local = _healthy_session_local_factory()
     p_session = patch.object(chat_module, "SessionLocal", session_local)
@@ -279,7 +279,7 @@ def _healthy_session_local_factory():
         result.scalar.return_value = 1
         session.execute.return_value = result
 
-        # ``with SessionLocal() as _db_probe:`` — make the instance a
+        # ``with SessionLocal() as _db_probe:`` â€” make the instance a
         # context manager whose __enter__ returns itself and __exit__ is a
         # no-op so any commit/rollback paths inside the route still work.
         session.__enter__ = MagicMock(return_value=session)
@@ -440,7 +440,7 @@ def test_chat_stream_emits_degraded_event_between_sources_and_tokens(monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# F11 wiring — Langfuse handler is appended when present, skipped otherwise
+# F11 wiring â€” Langfuse handler is appended when present, skipped otherwise
 # ---------------------------------------------------------------------------
 
 
@@ -524,7 +524,7 @@ def test_chat_route_skips_langfuse_handler_when_env_unset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Error handling — inner ``error`` event terminates the stream cleanly
+# Error handling â€” inner ``error`` event terminates the stream cleanly
 # ---------------------------------------------------------------------------
 
 
@@ -663,10 +663,10 @@ def test_chat_stream_sources_event_carries_doc_metadata(monkeypatch):
 
 
 class TestEventGeneratorPersistence:
-    """F12.2: SCN-1, SCN-4, SCN-7 ΓÇö commit-before-yield + Engram-down resilience.
+    """F12.2: SCN-1, SCN-4, SCN-7 Î“Ã‡Ã¶ commit-before-yield + Engram-down resilience.
 
     We replicate the persistence block inline rather than instantiating the
-    FastAPI app ΓÇö the goal is to assert the orchestration contract (commit
+    FastAPI app Î“Ã‡Ã¶ the goal is to assert the orchestration contract (commit
     happens BEFORE the 'done' yield; EngramError does not abort the stream)
     without spinning up Postgres.
     """
@@ -710,7 +710,7 @@ class TestEventGeneratorPersistence:
             engram_mirror("u", user_id=user_id, project_id=project_id)
             engram_mirror("a", user_id=user_id, project_id=project_id)
         except Exception:
-            # Must NOT propagate ΓÇö REQ-6 / REQ-10 / SCN-4.
+            # Must NOT propagate Î“Ã‡Ã¶ REQ-6 / REQ-10 / SCN-4.
             pass
 
     def test_commit_happens_before_done_yield(self):
@@ -754,7 +754,7 @@ class TestEventGeneratorPersistence:
         session = MagicMock()
 
         with patch("app.api.chat.engram_mirror") as fake_mirror:
-            fake_mirror.side_effect = EngramError("Engram ca├¡do")
+            fake_mirror.side_effect = EngramError("Engram caâ”œÂ¡do")
 
             async def run():
                 yield "event: sources\ndata: []\n\n"
@@ -817,7 +817,7 @@ class TestPostgresLivenessCheck:
 
 
 # ---------------------------------------------------------------------------
-# F13 (REQ-PMCP-1 / REQ-ATT-1) — event: attachment on the SSE channel
+# F13 (REQ-PMCP-1 / REQ-ATT-1) â€” event: attachment on the SSE channel
 # ---------------------------------------------------------------------------
 
 
@@ -841,7 +841,7 @@ def test_chat_stream_emits_attachment_event_between_token_and_done(monkeypatch):
 
     patches = _patch_chat_route(
         run_agent_events=[
-            {"event": "token", "data": "Aquí va el diagrama:"},
+            {"event": "token", "data": "AquÃ­ va el diagrama:"},
             {"event": "attachment", "data": {
                 "kind": "screenshot",
                 "mime": "image/png",
@@ -874,7 +874,7 @@ def test_chat_stream_emits_attachment_event_between_token_and_done(monkeypatch):
         assert "/app/uploads/" not in body_text
         assert "data:image/png;base64,xxx" not in body_text
         # Attachment event ordering: AFTER token, BEFORE done.
-        idx_token = body_text.find(_token("Aquí va el diagrama:"))
+        idx_token = body_text.find(_token("AquÃ­ va el diagrama:"))
         idx_attach = body_text.find("event: attachment")
         idx_done = body_text.find(_done())
         assert 0 <= idx_token < idx_attach < idx_done
@@ -1185,3 +1185,176 @@ def test_chat_does_not_emit_phase_locked_without_project_id():
 
     body = "".join(chunks)
     assert "event: phase_locked" not in body
+# Conversation memory â€” persisted history feeds ``run_agent``
+# ---------------------------------------------------------------------------
+
+
+def test_chat_stream_feeds_persisted_history_to_agent_chronologically(monkeypatch):
+    """F1 fix: the SSE generator loads the persisted turns BEFORE the new
+    turn is persisted and hands them to ``run_agent`` in chronological order
+    (``list_recent`` is newest-first â†’ must be reversed)."""
+    from types import SimpleNamespace
+    from app.api import chat as chat_module
+
+    # ``list_recent`` returns newest-first; seed accordingly.
+    fake_rows = [
+        SimpleNamespace(role="assistant", content="answer 2"),
+        SimpleNamespace(role="user", content="question 2"),
+        SimpleNamespace(role="assistant", content="answer 1"),
+    ]
+    captured: dict = {}
+
+    async def _capture_run_agent(*_args, **kwargs):
+        captured["history"] = kwargs.get("history")
+        captured["message"] = kwargs.get("message")
+        if False:  # pragma: no cover
+            yield {}
+
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "list_recent", return_value=fake_rows))
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="follow-up question")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["message"] == "follow-up question"
+    # Chronological: reversed from the newest-first DB rows, current turn NOT
+    # included (it is persisted only after the stream completes).
+    assert captured["history"] == [
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "question 2"},
+        {"role": "assistant", "content": "answer 2"},
+    ]
+
+
+def test_chat_stream_history_read_caps_at_10_messages(monkeypatch):
+    """The history read must request the last 10 messages (limit=10)."""
+    from app.api import chat as chat_module
+
+    captured: dict = {}
+
+    def _capture_list_recent(_db, session_id, *, project_id, limit):
+        captured["session_id"] = session_id
+        captured["project_id"] = project_id
+        captured["limit"] = limit
+        return []
+
+    async def _capture_run_agent(*_args, **kwargs):
+        if False:  # pragma: no cover
+            yield {}
+
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "list_recent", side_effect=_capture_list_recent))
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(project_id=7, message="hi")
+        current_user = {"user_id": 3, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["limit"] == 10
+    assert captured["project_id"] == 7
+
+
+def test_chat_stream_history_skips_empty_contents(monkeypatch):
+    """Rows whose content is empty must not reach the agent payload."""
+    from types import SimpleNamespace
+    from app.api import chat as chat_module
+
+    fake_rows = [
+        SimpleNamespace(role="assistant", content=""),
+        SimpleNamespace(role="user", content=None),
+        SimpleNamespace(role="user", content="real turn"),
+    ]
+    captured: dict = {}
+
+    async def _capture_run_agent(*_args, **kwargs):
+        captured["history"] = kwargs.get("history")
+        if False:  # pragma: no cover
+            yield {}
+
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "list_recent", return_value=fake_rows))
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hi")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["history"] == [{"role": "user", "content": "real turn"}]
+
+
+def test_chat_stream_history_db_failure_degrades_to_empty_history(monkeypatch):
+    """REQ-11: a failed history read must NOT break the stream â€” the agent
+    runs with an empty history instead."""
+    from sqlalchemy.exc import SQLAlchemyError
+    from app.api import chat as chat_module
+
+    captured: dict = {}
+
+    async def _capture_run_agent(*_args, **kwargs):
+        captured["history"] = kwargs.get("history")
+        yield {"event": "token", "data": "still works"}
+        yield {"event": "done", "data": None}
+
+    patches = _patch_chat_route()
+    patches.append(
+        patch.object(
+            chat_module, "list_recent",
+            side_effect=SQLAlchemyError("connection refused"),
+        )
+    )
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hi")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        chunks = asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    body_text = "".join(chunks)
+    assert "still works" in body_text
+    assert body_text.endswith(_done())
+    assert captured["history"] == []
