@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy import select
@@ -253,14 +254,25 @@ def engram_mirror(
         from app.core.engram_client import EngramClient, EngramError
 
         client = EngramClient()
-        # Deterministic session id per (user, project) — ADR-005 / proposal §6 row 4.
-        # Same shape used as the project name so the Engram scope lines up.
-        project = f"arch-agent-user-{user_id}"
-        session_id = project
+        # The Engram instance is single-project (ENGRAM_PROJECT env), so
+        # all mirrors target THAT project; we scope per-(user, project)
+        # via session_id only. Pre-create the session (404 otherwise).
+        project = os.getenv("ENGRAM_PROJECT") or "arch-agent"
+        session_id = f"{project}-user-{user_id}"
         if project_id is not None:
-            session_id = f"{project}-project-{project_id}-chat"
+            session_id = f"{session_id}-project-{project_id}-chat"
 
         try:
+            try:
+                client.create_session(
+                    session_id=session_id,
+                    project=project,
+                    directory=os.getenv("ENGRAM_PROJECT", "arch-agent"),
+                )
+            except EngramError:
+                # Session may already exist (Engram returns 409/400). Safe to ignore.
+                pass
+
             result = client.save(
                 session_id=session_id,
                 project=project,
