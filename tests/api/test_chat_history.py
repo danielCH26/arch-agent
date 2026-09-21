@@ -150,7 +150,7 @@ class TestChatHistoryEndpoint:
         assert all("created_at" in m for m in messages)
         assert all(m["citations"] == [] for m in messages)
 
-    def test_default_limit_is_5(self, fake_db):
+    def test_default_limit_is_50(self, fake_db):
         _seed(fake_db)
         _insert_messages(fake_db, 10, 1, 1, [f"m{i}" for i in range(20)])
         client = _client_for_user(user_id=1)
@@ -158,7 +158,7 @@ class TestChatHistoryEndpoint:
         response = client.get("/api/chat/history?project_id=1")
 
         assert response.status_code == 200
-        assert len(response.json()["messages"]) == 5
+        assert len(response.json()["messages"]) == 20  # only 20 seeded, 20 <= default 50
 
     def test_limit_clamped_to_max_50(self, fake_db):
         _seed(fake_db)
