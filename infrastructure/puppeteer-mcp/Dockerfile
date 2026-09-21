@@ -139,6 +139,21 @@ RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 # path here.
 RUN mkdir -p /home/node/.cache && chown -R node:node /home/node
 
+# PR #76 round-4 E2E finding: Chromium aborts with ``No usable sandbox!``
+# when the host kernel restricts unprivileged user namespaces (WSL2 /
+# Docker Desktop kernels, Ubuntu 23.10+ AppArmor policies). The in-Chrome
+# sandbox simply cannot be constructed there, regardless of the process
+# being non-root. Mitigate at the container boundary instead: we already
+# run as the unprivileged ``node`` user, the container is network-isolated
+# (no published ports), memory-capped (512m) and renders only caller-
+# supplied Mermaid via ``data:`` URLs — so running Chromium with
+# ``--no-sandbox`` inside this boundary is the accepted trade-off
+# (originally suggested as the quick fix in review round 3; kernel
+# reality forced it). ``ALLOW_DANGEROUS=true`` is the upstream server's
+# required opt-in for user-supplied launch options.
+ENV PUPPETEER_LAUNCH_OPTIONS='{"args":["--no-sandbox","--disable-setuid-sandbox"]}' \
+    ALLOW_DANGEROUS=true
+
 USER node
 
 EXPOSE 8931
