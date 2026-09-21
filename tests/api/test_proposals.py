@@ -465,6 +465,89 @@ class TestDecidePerProposalIdempotency:
         ), rendered
 
 
+# --- PR #78 review F3: generate_proposal guards current_phase ------------
+
+
+class TestGenerateProposalPhaseGuard:
+    """F3: proposals are generated in the 'propuesta' phase only.
+
+    - project in ``requerimientos`` -> 409;
+    - project in ``propuesta`` -> proceeds (StreamingResponse).
+    """
+
+    def _fake_db_with_project(self, current_phase):
+        from types import SimpleNamespace
+
+        from app.models import Project
+
+        project = SimpleNamespace(
+            id=42,
+            user_id=1,
+            current_phase=current_phase,
+            phase_ready=False,
+        )
+
+        db = MagicMock()
+
+        def _query(model):
+            q = MagicMock()
+            terminal = project if model is Project else None
+            q.filter = MagicMock(return_value=q)
+            q.order_by = MagicMock(return_value=q)
+            q.first = MagicMock(return_value=terminal)
+            q.all = MagicMock(return_value=[])
+            return q
+
+        db.query = MagicMock(side_effect=_query)
+        db.close = MagicMock()
+        return db
+
+    def _run_generate(self, monkeypatch, db, project_id=42):
+        from app.api import proposals as proposals_module
+
+        monkeypatch.setattr(proposals_module, "SessionLocal", lambda: db)
+        return asyncio.run(
+            proposals_module.generate_proposal(
+                body=proposals_module.GenerateRequest(project_id=project_id),
+                current_user={"user_id": 1, "username": "architect"},
+            )
+        )
+
+    def test_generate_in_requerimientos_conflicts_409(self, monkeypatch):
+        from fastapi import HTTPException
+
+        db = self._fake_db_with_project(current_phase="requerimientos")
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._run_generate(monkeypatch, db)
+        assert exc_info.value.status_code == 409
+        assert "requerimientos" in exc_info.value.detail
+        assert "propuesta" in exc_info.value.detail
+
+    def test_generate_in_propuesta_proceeds(self, monkeypatch):
+        from fastapi.responses import StreamingResponse
+
+        from app.api import proposals as proposals_module
+
+        db = self._fake_db_with_project(current_phase="propuesta")
+
+        # The generator is constructed after the guard; stub it so the
+        # test exercises only the route wiring (guard passes -> stream
+        # starts), not the LLM pipeline.
+        class _FakeGenerator:
+            def __init__(self, user_id, project_id):
+                assert project_id == 42
+
+            async def generate_stream(self, project_id, feedback=None, prior_proposal_id=None):
+                yield "done", {"proposal_id": 1, "citations": []}
+
+        monkeypatch.setattr(proposals_module, "ProposalGenerator", _FakeGenerator)
+
+        response = self._run_generate(monkeypatch, db)
+        assert isinstance(response, StreamingResponse)
+        assert response.media_type == "text/event-stream"
+
+
 # --- Lifecycle side effects ----------------------------------------------
 
 

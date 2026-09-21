@@ -140,6 +140,17 @@ async def generate_proposal(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Proyecto no encontrado",
             )
+        # PR #78 review F3: proposals are generated in the 'propuesta'
+        # phase only. Generating from any other phase would desync the
+        # phase gate — Project.current_phase vs the content being produced.
+        if project.current_phase != "propuesta":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"El proyecto está en fase '{project.current_phase}'; "
+                    "la propuesta se genera en la fase 'propuesta'."
+                ),
+            )
     finally:
         db.close()
 
