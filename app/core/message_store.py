@@ -253,17 +253,20 @@ def engram_mirror(
         from app.core.engram_client import EngramClient, EngramError
 
         client = EngramClient()
-        # topic_key per (user, project) — ADR-005 / proposal §6 row 4.
-        topic_key = f"arch-agent-user-{user_id}"
+        # Deterministic session id per (user, project) — ADR-005 / proposal §6 row 4.
+        # Same shape used as the project name so the Engram scope lines up.
+        project = f"arch-agent-user-{user_id}"
+        session_id = project
         if project_id is not None:
-            topic_key = f"{topic_key}-project-{project_id}-chat"
+            session_id = f"{project}-project-{project_id}-chat"
 
         try:
             result = client.save(
-                topic_key=topic_key,
+                session_id=session_id,
+                project=project,
                 content=message.content,
                 title=f"{message.role}:{message.id or 'pending'}",
-                observation_type="chat_message",
+                observation_type="manual",
             )
             observation_id = result.get("id") if isinstance(result, dict) else None
             if observation_id is not None:

@@ -92,29 +92,34 @@ class EngramClient:
 
     def save(
         self,
-        topic_key: str,
+        session_id: str,
+        project: str,
         content: str,
         *,
         title: str = "",
-        observation_type: str = "chat_message",
-        project: str | None = None,
+        observation_type: str = "manual",
         scope: str = "project",
     ) -> dict:
         """Fire-and-forget sibling observation (REQ-6 / ADR-011).
+
+        Posts the SAME body shape as ``save_observation``: the real Engram
+        API REQUIRES ``session_id`` (HTTP 400 "session_id and content are
+        required" otherwise) and rejects unknown observation types, so the
+        old ``topic_key``-shaped body was dead on arrival. Callers pass a
+        deterministic session id per (user, project).
 
         Returns the parsed JSON response (typically ``{"id": <int>}``).
         The chat route catches ``EngramError`` and continues without
         surfacing the failure to the SSE stream (REQ-6, REQ-10).
         """
         body: dict[str, Any] = {
-            "topic_key": topic_key,
-            "content": content,
-            "title": title,
+            "session_id": session_id,
             "type": observation_type,
+            "title": title,
+            "content": content,
+            "project": project,
             "scope": scope,
         }
-        if project is not None:
-            body["project"] = project
         response = self._request("POST", "/observations", body)
         return response if isinstance(response, dict) else {}
 
