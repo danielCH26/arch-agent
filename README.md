@@ -230,6 +230,32 @@ arch-agent/
 
 ---
 
+## ⚠️ Tool Calling y modelos para F13 (Puppeteer MCP)
+
+**F11 (Context7) y F13 (Puppeteer MCP) dependen de Tool Calling nativo del modelo.** El modelo por defecto en `.env.example` es `llama3` (Ollama, 8k ctx), que **NO tiene soporte sólido de tool calling** — emite texto libre en lugar de un `tool_calls` válido cuando se le pide invocar una herramienta, lo que rompe el end-to-end test de F13 (el sidecar Puppeteer nunca recibe la llamada `puppeteer_screenshot` y no se renderiza el diagrama Mermaid).
+
+Para verificar F11 / F13 end-to-end **usá uno de estos modelos** (cualquiera con buen soporte de function/tool calling):
+
+| Familia | Modelos recomendados | Notas |
+|---------|----------------------|-------|
+| **Qwen** | `qwen2.5-coder:7b`, `qwen2.5-coder:14b`, `qwen2.5:14b`, `qwen2.5:32b` | Excelente tool calling, corre local en Ollama |
+| **Llama 3.1+** | `llama-3.1-8b-instruct`, `llama-3.1-70b-instruct`, `llama-3.3-70b-instruct` | A partir de 3.1 hay tool calling usable (3.0 / `llama3` NO) |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o3-mini` | Tool calling robusto out-of-the-box |
+| **Anthropic** | `claude-3-5-sonnet-latest`, `claude-3-7-sonnet`, `claude-sonnet-4` | Tool calling robusto |
+
+Configurá el modelo desde el **wizard de LLM** (`Settings → LLM Config`, paso 3) o directamente en el `.env` cambiando `LLM_MODEL=...`. Si el modelo no soporta tool calling, vas a ver este patrón en el log del backend:
+
+```
+WARNING LangChain agent produced no tool_calls despite tool_intent=puppeteer_screenshot
+event: degraded | data: {"source":"agent","reason":"tool_calls_missing",...}
+```
+
+(modelos sin tool calling → el frontend recibe `event: degraded` con `reason: "tool_calls_missing"` en lugar del `event: attachment` esperado — fix #2b del round de revisión PR #76).
+
+`llama3` sigue siendo un buen default para **pruebas de texto puro** (elicitación, RAG) — solo no lo uses para validar tool calling.
+
+---
+
 ## Contribuir
 
 Cada issue tiene su branch dedicado (`feature/<ID>-<nombre>`) y PR contra `development`. Ver issues en GitHub para tareas abiertas.
