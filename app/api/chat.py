@@ -458,7 +458,7 @@ async def chat(
 @router.get("/history")
 def chat_history(
     project_id: int = Query(..., ge=1),
-    limit: int = Query(5, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=50),
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, list[dict[str, Any]]]:
     """
