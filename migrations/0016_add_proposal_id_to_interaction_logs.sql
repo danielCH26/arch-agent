@@ -7,9 +7,10 @@
 -- breaking the Modify -> new iteration -> Approve cycle.
 --
 -- This migration adds the nullable ``proposal_id`` FK the filter needs.
--- Legacy rows stay NULL: NULL never matches ``proposal_id = :x`` in SQL, so
--- old audit rows stop blocking new iterations (existing behaviour for already
--- decided legacy proposals is preserved — their lifecycle is terminal anyway).
+-- Legacy rows stay NULL: NULL never matches an equality predicate against a
+-- real proposal_id in SQL, so old audit rows stop blocking new iterations
+-- (existing behaviour for already decided legacy proposals is preserved —
+-- their lifecycle is terminal anyway).
 --
 -- Reference: PR #78 review finding F2 (lau2413).
 -- Idempotent: every statement uses IF NOT EXISTS so a re-run of
