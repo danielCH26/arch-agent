@@ -598,6 +598,124 @@ def test_run_agent_records_none_project_as_string_none():
 
 
 # ---------------------------------------------------------------------------
+# Conversation memory — ``history`` prepends persisted turns to the payload
+# ---------------------------------------------------------------------------
+
+
+def _capture_payload_astream(captured: dict):
+    """Build a fake ``astream_events`` that records its ``input`` payload."""
+    async def _empty_astream(*_a, **_kw):
+        if False:  # pragma: no cover
+            yield {}
+
+    def _capture(input, config=None, **kwargs):
+        captured["input"] = input
+        return _empty_astream()
+
+    return _capture
+
+
+def test_run_agent_payload_without_history_is_single_user_message():
+    """No history → payload is exactly the historical single-message shape."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+    captured: dict = {}
+    fake_agent.astream_events = _capture_payload_astream(captured)
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            async for _ in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="hi",
+                callbacks=[],
+                rag_documents=[],
+            ):
+                pass
+
+        asyncio.run(_drive())
+
+    assert captured["input"] == {"messages": [{"role": "user", "content": "hi"}]}
+
+
+def test_run_agent_payload_with_history_prepends_prior_turns_chronologically():
+    """Non-empty history → prior turns precede the current user message in
+    the SAME order they were persisted (chronological), so the model sees
+    a real conversation instead of an amnesiac single turn."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+    captured: dict = {}
+    fake_agent.astream_events = _capture_payload_astream(captured)
+
+    history = [
+        {"role": "user", "content": "question 1"},
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "question 2"},
+    ]
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            async for _ in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="follow-up",
+                callbacks=[],
+                rag_documents=[],
+                history=history,
+            ):
+                pass
+
+        asyncio.run(_drive())
+
+    assert captured["input"] == {"messages": [
+        {"role": "user", "content": "question 1"},
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "question 2"},
+        {"role": "user", "content": "follow-up"},
+    ]}
+
+
+def test_run_agent_payload_with_empty_history_matches_no_history():
+    """``history=[]`` must behave EXACTLY like ``history=None`` (byte-identical
+    payload) so callers that simply omit the argument see no difference."""
+    from app.core import agent
+
+    fake_agent = MagicMock()
+    captured: dict = {}
+    fake_agent.astream_events = _capture_payload_astream(captured)
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_try_get_puppeteer_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            async for _ in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="hi",
+                callbacks=[],
+                rag_documents=[],
+                history=[],
+            ):
+                pass
+
+        asyncio.run(_drive())
+
+    assert captured["input"] == {"messages": [{"role": "user", "content": "hi"}]}
+
+
+# ---------------------------------------------------------------------------
 # PR #76 review fix #2b — ``degraded`` event when model never invokes tools
 # ---------------------------------------------------------------------------
 

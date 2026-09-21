@@ -969,3 +969,179 @@ def test_chat_stream_attachments_persisted_atomically_in_pre_done_tx(monkeypatch
 
     assert len(captured_attachments) == 1
     assert captured_attachments[0]["filename"] == "diagram.png"
+
+
+# ---------------------------------------------------------------------------
+# Conversation memory — persisted history feeds ``run_agent``
+# ---------------------------------------------------------------------------
+
+
+def test_chat_stream_feeds_persisted_history_to_agent_chronologically(monkeypatch):
+    """F1 fix: the SSE generator loads the persisted turns BEFORE the new
+    turn is persisted and hands them to ``run_agent`` in chronological order
+    (``list_recent`` is newest-first → must be reversed)."""
+    from types import SimpleNamespace
+    from app.api import chat as chat_module
+
+    # ``list_recent`` returns newest-first; seed accordingly.
+    fake_rows = [
+        SimpleNamespace(role="assistant", content="answer 2"),
+        SimpleNamespace(role="user", content="question 2"),
+        SimpleNamespace(role="assistant", content="answer 1"),
+    ]
+    captured: dict = {}
+
+    async def _capture_run_agent(*_args, **kwargs):
+        captured["history"] = kwargs.get("history")
+        captured["message"] = kwargs.get("message")
+        if False:  # pragma: no cover
+            yield {}
+
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "list_recent", return_value=fake_rows))
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="follow-up question")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["message"] == "follow-up question"
+    # Chronological: reversed from the newest-first DB rows, current turn NOT
+    # included (it is persisted only after the stream completes).
+    assert captured["history"] == [
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "question 2"},
+        {"role": "assistant", "content": "answer 2"},
+    ]
+
+
+def test_chat_stream_history_read_caps_at_10_messages(monkeypatch):
+    """The history read must request the last 10 messages (limit=10)."""
+    from app.api import chat as chat_module
+
+    captured: dict = {}
+
+    def _capture_list_recent(_db, session_id, *, project_id, limit):
+        captured["session_id"] = session_id
+        captured["project_id"] = project_id
+        captured["limit"] = limit
+        return []
+
+    async def _capture_run_agent(*_args, **kwargs):
+        if False:  # pragma: no cover
+            yield {}
+
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "list_recent", side_effect=_capture_list_recent))
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(project_id=7, message="hi")
+        current_user = {"user_id": 3, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["limit"] == 10
+    assert captured["project_id"] == 7
+
+
+def test_chat_stream_history_skips_empty_contents(monkeypatch):
+    """Rows whose content is empty must not reach the agent payload."""
+    from types import SimpleNamespace
+    from app.api import chat as chat_module
+
+    fake_rows = [
+        SimpleNamespace(role="assistant", content=""),
+        SimpleNamespace(role="user", content=None),
+        SimpleNamespace(role="user", content="real turn"),
+    ]
+    captured: dict = {}
+
+    async def _capture_run_agent(*_args, **kwargs):
+        captured["history"] = kwargs.get("history")
+        if False:  # pragma: no cover
+            yield {}
+
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "list_recent", return_value=fake_rows))
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hi")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured["history"] == [{"role": "user", "content": "real turn"}]
+
+
+def test_chat_stream_history_db_failure_degrades_to_empty_history(monkeypatch):
+    """REQ-11: a failed history read must NOT break the stream — the agent
+    runs with an empty history instead."""
+    from sqlalchemy.exc import SQLAlchemyError
+    from app.api import chat as chat_module
+
+    captured: dict = {}
+
+    async def _capture_run_agent(*_args, **kwargs):
+        captured["history"] = kwargs.get("history")
+        yield {"event": "token", "data": "still works"}
+        yield {"event": "done", "data": None}
+
+    patches = _patch_chat_route()
+    patches.append(
+        patch.object(
+            chat_module, "list_recent",
+            side_effect=SQLAlchemyError("connection refused"),
+        )
+    )
+    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="hi")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        chunks = asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    body_text = "".join(chunks)
+    assert "still works" in body_text
+    assert body_text.endswith(_done())
+    assert captured["history"] == []

@@ -290,6 +290,7 @@ async def _astream_agent(
     project_id: int | None = None,
     model_name: str | None = None,
     tool_call_tracker: dict[str, int] | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive ``agent.astream_events`` and yield SSE-ready dicts.
 
@@ -307,6 +308,12 @@ async def _astream_agent(
     one" case and emit a ``degraded`` event with
     ``reason="tool_calls_missing"`` (PR #76 review fix #2b). Callers that
     don't care can pass ``None``.
+
+    ``history`` (optional): prior conversation turns as ``{"role", "content"}``
+    dicts in CHRONOLOGICAL order. When non-empty they are prepended to the
+    user message in the ``astream_events`` payload so the model sees the
+    persisted conversation instead of an amnesiac single turn. When ``None``
+    or empty the payload is exactly the single-message shape used before.
     """
     config: dict[str, Any] = {}
     if callbacks:
@@ -328,8 +335,14 @@ async def _astream_agent(
         )
 
     try:
+        # Conversation memory (F12 follow-up): prepend the persisted prior
+        # turns so the agent continues the conversation instead of seeing
+        # each message in isolation. ``None``/empty history keeps the
+        # byte-identical single-message payload.
+        payload_messages: list[dict[str, Any]] = list(history or [])
+        payload_messages.append({"role": "user", "content": message})
         event_iter = agent.astream_events(
-            {"messages": [{"role": "user", "content": message}]},
+            {"messages": payload_messages},
             config=config,
             version="v2",
         )
@@ -371,6 +384,7 @@ async def run_agent(
     rag_documents: list[Any] | None = None,
     user_id: int | None = None,
     project_id: int | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive the agent and yield SSE-ready dicts.
 
@@ -394,6 +408,11 @@ async def run_agent(
             ownership of retrieval and can emit ``sources`` first).
         user_id: Optional user id; used by Langfuse trace-name metadata.
         project_id: Optional project id; ``None`` is recorded as ``"none"``.
+        history: Optional prior conversation turns (``{"role", "content"}``
+            dicts, CHRONOLOGICAL order) loaded from Postgres BEFORE this
+            turn is persisted. Prepended to the user message so the model
+            has conversation memory. ``None``/empty preserves the previous
+            single-message payload exactly.
 
     Yields:
         SSE-ready dicts.
@@ -456,6 +475,7 @@ async def run_agent(
         project_id=project_id,
         model_name=model_name,
         tool_call_tracker=tool_call_tracker,
+        history=history,
     ):
         yield sse_dict
 
