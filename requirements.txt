@@ -18,6 +18,7 @@ email-validator
 python-dotenv
 jinja2
 pyjwt
+pytest
 pyyaml>=6.0
 # F13 — Puppeteer MCP integration (https://github.com/danielCH26/arch-agent/issues/17).
 # Signed query-string tokens for /api/chat/attachments/{id} (REQ-ATT-2).

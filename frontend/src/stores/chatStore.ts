@@ -30,7 +30,7 @@ interface ChatState {
   // useEffect can avoid double-firing under React StrictMode.
   loadingHistory: boolean
 
-  sendMessage: (projectId: number | null, text: string) => Promise<void>
+  sendMessage: (projectId: number | null, text: string, onComplete?: () => void) => Promise<void>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
@@ -47,7 +47,7 @@ export const chatStore = create<ChatState>((set) => ({
   error: null,
   loadingHistory: false,
 
-  sendMessage: async (projectId: number | null, text: string) => {
+  sendMessage: async (projectId: number | null, text: string, onComplete?: () => void) => {
     // Add user message
     const userMessage: Message = {
       id: `user-${Date.now()}`,
@@ -109,6 +109,7 @@ export const chatStore = create<ChatState>((set) => ({
     },
       onDone: () => {
         set({ isStreaming: false })
+        onComplete?.()
       },
       onError: (errorMessage: string) => {
         set((state) => ({
