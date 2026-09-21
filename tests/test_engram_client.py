@@ -92,26 +92,28 @@ class EngramClientExtensionsTests(unittest.TestCase):
         self.assertEqual(result, {"id": 42, "content": "hi"})
 
     @patch("app.core.engram_client.urlopen")
-    def test_save_sends_topic_key_and_content(self, mock_urlopen):
+    def test_save_sends_session_id_project_and_content(self, mock_urlopen):
         mock_urlopen.return_value = make_response({"id": 99})
         client = EngramClient(base_url="http://engram.test")
 
         result = client.save(
-            topic_key="arch-agent-user-7-project-42-chat",
+            session_id="arch-agent-user-7-project-42-chat",
+            project="asistente-arquitectura",
             content="hola",
             title="user:1",
-            observation_type="chat_message",
-            project="u-7-p-42",
+            observation_type="manual",
         )
 
         request = mock_urlopen.call_args.args[0]
         body = json.loads(request.data)
         self.assertEqual(request.full_url, "http://engram.test/observations")
         self.assertEqual(request.method, "POST")
-        self.assertEqual(body["topic_key"], "arch-agent-user-7-project-42-chat")
+        self.assertEqual(body["session_id"], "arch-agent-user-7-project-42-chat")
+        self.assertEqual(body["project"], "asistente-arquitectura")
         self.assertEqual(body["content"], "hola")
+        self.assertEqual(body["title"], "user:1")
         self.assertEqual(body["scope"], "project")
-        self.assertEqual(body["type"], "chat_message")
+        self.assertEqual(body["type"], "manual")
         self.assertEqual(result, {"id": 99})
 
     @patch("app.core.engram_client.urlopen")
@@ -119,10 +121,13 @@ class EngramClientExtensionsTests(unittest.TestCase):
         mock_urlopen.return_value = make_response({"id": 1})
         client = EngramClient(base_url="http://engram.test")
 
-        client.save(topic_key="arch-agent-user-7", content="x")
+        # project is required by save() — if caller passes None we DO send
+        # project: None; Engram rejects with 400 (the real bug we fixed).
+        # This test now pins that save() always sends a project string.
+        client.save(session_id="arch-agent-user-7", project="asistente-arquitectura", content="x")
 
         body = json.loads(mock_urlopen.call_args.args[0].data)
-        self.assertNotIn("project", body)
+        self.assertEqual(body["project"], "asistente-arquitectura")
 
     @patch("app.core.engram_client.urlopen")
     def test_delete_calls_delete_endpoint(self, mock_urlopen):
