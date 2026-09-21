@@ -196,9 +196,18 @@ def _wrap_tool_with_byte_cap(tool: Any) -> Any:
       2. measures the result bytes,
       3. raises ``PuppeteerUnavailable(reason="puppeteer_byte_cap")`` if over.
 
-    The mutation is per-tool and only affects this instance; the upstream
-    adapter is untouched (same fragility budget as
-    ``_make_optional_params_nullable`` from round 3 — see test pinning).
+    Note: ``langchain_core.tools.StructuredTool`` is a Pydantic v2 model
+    with ``model_config = ConfigDict(extra="forbid")``. Normal attribute
+    assignment ``tool.ainvoke = wrapper`` triggers Pydantic validation
+    and raises ``ValidationError: 'StructuredTool' object has no field
+    'ainvoke'`` (PR #76 review finding from @lau2413 — round 5 testing).
+    We bypass the Pydantic ``__setattr__`` via ``object.__setattr__`` so
+    the wrapper installs as a plain instance attribute (shadows the
+    class-level bound method, which is what we want).
+
+    Same fragility budget as ``_make_optional_params_nullable`` from
+    round 3 — see test pinning, especially the Pydantic-BaseModel
+    regression test below.
     """
     cap = _max_render_bytes()
     if cap <= 0:
@@ -222,7 +231,8 @@ def _wrap_tool_with_byte_cap(tool: Any) -> Any:
             )
         return result
 
-    tool.ainvoke = _capped_ainvoke  # type: ignore[method-assign]
+    # Bypass Pydantic's __setattr__ (extra="forbid"). See docstring above.
+    object.__setattr__(tool, "ainvoke", _capped_ainvoke)
     return tool
 
 

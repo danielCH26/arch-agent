@@ -707,6 +707,61 @@ def test_get_puppeteer_tools_applies_byte_cap(monkeypatch):
     asyncio.run(_drive())
 
 
+def test_wrap_tool_with_byte_cap_works_on_pydantic_model_with_extra_forbid(monkeypatch):
+    """Regression for PR #76 round 5 finding from @lau2413.
+
+    ``langchain_core.tools.StructuredTool`` is a Pydantic v2 model with
+    ``model_config = ConfigDict(extra="forbid")``. Normal attribute
+    assignment ``tool.ainvoke = wrapper`` triggers Pydantic validation
+    and raises ``ValidationError: 'StructuredTool' object has no field
+    'ainvoke'``, which propagated through ``get_puppeteer_tools`` and
+    broke the chat happy path in E2E testing.
+
+    The fix uses ``object.__setattr__`` to bypass Pydantic's
+    ``__setattr__``. This test pins that behavior so a future change
+    doesn't accidentally revert it.
+    """
+    from pydantic import BaseModel, ConfigDict
+    from app.core import puppeteer_mcp
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "1048576")  # 1 MB
+
+    class StructuredToolLikePydanticModel(BaseModel):
+        """Mimic langchain StructuredTool: Pydantic v2 + extra='forbid'."""
+
+        model_config = ConfigDict(extra="forbid")
+
+        name: str = "puppeteer_screenshot"
+
+        async def ainvoke(self, *args, **kwargs):
+            # Return 2 MB (over the 1 MB cap)
+            return b"x" * (2 * 1024 * 1024)
+
+    tool = StructuredToolLikePydanticModel()
+
+    # Sanity check: a plain setattr should FAIL on this model (proves
+    # the test exercises the right failure mode).
+    def _would_fail():
+        def _boom(_):
+            return None
+        tool.ainvoke = _boom  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="no field"):
+        _would_fail()
+
+    # The fix path: _wrap_tool_with_byte_cap must NOT raise.
+    wrapped = puppeteer_mcp._wrap_tool_with_byte_cap(tool)
+    assert wrapped is tool
+
+    # And the wrapped ainvoke must enforce the cap.
+    async def _drive():
+        with pytest.raises(puppeteer_mcp.PuppeteerUnavailable) as exc_info:
+            await wrapped.ainvoke("test")
+        assert exc_info.value.reason == "puppeteer_byte_cap"
+
+    asyncio.run(_drive())
+
+
 def test_rate_limit_handler_in_try_get_puppeteer_tools(monkeypatch):
     """End-to-end: ``_try_get_puppeteer_tools`` emits a degraded payload
     with ``source="puppeteer"`` and ``reason="puppeteer_rate_limited"``."""
