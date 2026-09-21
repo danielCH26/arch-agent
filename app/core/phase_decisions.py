@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.message_store import ensure_user_session
 from app.models import Approval, InteractionLog, Proposal, ProposalApproval
 from app.models.project import Project
 from app.models.session import UserSession
@@ -181,16 +182,15 @@ def record_decision(
         raise ProjectNotFound(project_id)
 
     # Resolve the user's session row (F05 pattern — one session per user).
-    session_row = (
-        db.query(UserSession).filter(UserSession.user_id == project.user_id).first()
-    )
-    if session_row is None:
-        # A project without a session is an inconsistent state; surface as
-        # a generic 500-class error so the caller can map it appropriately.
-        raise PhaseDecisionError(
-            f"user {project.user_id} has no active session for project {project_id}"
-        )
-    session_id = int(session_row.id)
+    # PR #78 review F1: a brand-new user (no UserSession row yet) whose very
+    # first action is an approval used to raise a bare PhaseDecisionError
+    # here, which the route mapped to an HTTP 500 — breaking the happy
+    # path. Reuse the same lazy-upsert the chat persistence path relies on
+    # (``app/core/message_store.ensure_user_session``) so the row is
+    # created on demand instead of failing. At this point no writes are
+    # pending on ``db``, so the helper's internal flush/rollback cannot
+    # discard caller state.
+    session_id = int(ensure_user_session(db, project.user_id))
 
     # --- Idempotency window (REQ-SA-9 / REQ-SA-10) --------------------------
     decision_db = DECISION_TO_DB[action]

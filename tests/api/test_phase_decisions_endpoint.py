@@ -279,6 +279,130 @@ class TestDecisionEndpointErrors:
         assert exc_info.value.phase == "requerimientos"
 
 
+# --- PR #78 review F1: session bootstrap + HTTP code mapping ----------------
+
+
+class TestDecisionEndpointSessionBootstrapAndMapping:
+    """F1: a brand-new user (no UserSession row) whose first action is an
+    approval must get a 200 — ``record_decision`` lazily creates the session
+    via ``ensure_user_session`` instead of raising a bare PhaseDecisionError
+    (which used to surface as an HTTP 500). Also pins the domain-exception →
+    HTTP-code mapping at the endpoint level."""
+
+    def test_approve_with_no_session_creates_one_and_returns_200(self, monkeypatch):
+        sess, project = _fake_session_with_terminals(
+            phase="requerimientos", session_row=None
+        )
+        added_sessions: list = []
+
+        _base_add = sess.add.side_effect
+
+        def _add(obj):
+            _base_add(obj)
+            if isinstance(obj, phase_decisions.UserSession):
+                added_sessions.append(obj)
+
+        sess.add.side_effect = _add
+
+        # ``ensure_user_session`` re-queries UserSession after its INSERT;
+        # the second lookup must resolve to the row that was just added.
+        from app.models.session import UserSession as UserSessionModel
+
+        _orig_query = sess.query.side_effect
+
+        def _query(model):
+            q = _orig_query(model)
+            if model is UserSessionModel:
+                q.first = MagicMock(
+                    side_effect=lambda: added_sessions[0] if added_sessions else None
+                )
+            return q
+
+        sess.query.side_effect = _query
+
+        _set_fake_sessionlocal(monkeypatch, sess)
+        _patch_require_project(monkeypatch)
+
+        result = asyncio.run(
+            projects_module.phase_decision(
+                project_id=project.id,
+                phase="requerimientos",
+                body=projects_module.PhaseDecisionIn(action="approve"),
+                current_user={"user_id": 1, "username": "architect"},
+            )
+        )
+
+        # 200-shaped outcome (PhaseDecisionOut, NOT an HTTPException 500).
+        assert isinstance(result, projects_module.PhaseDecisionOut)
+        assert result.action == "approve"
+        assert result.idempotent is False
+        # A session row was lazily created as part of the request.
+        assert len(added_sessions) == 1
+
+    def test_conflict_maps_to_409(self, monkeypatch):
+        existing = MagicMock()
+        existing.decision = "approved"
+        existing.created_at = datetime.utcnow()  # inside the 60s window
+        sess, project = _fake_session_with_terminals(
+            phase="requerimientos", existing_decision=existing
+        )
+        _set_fake_sessionlocal(monkeypatch, sess)
+        _patch_require_project(monkeypatch)
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                projects_module.phase_decision(
+                    project_id=project.id,
+                    phase="requerimientos",
+                    body=projects_module.PhaseDecisionIn(action="reject"),
+                    current_user={"user_id": 1, "username": "architect"},
+                )
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["current_decision"] == "approved"
+
+    def test_invalid_action_maps_to_422_not_500(self, monkeypatch):
+        sess, project = _fake_session_with_terminals(phase="requerimientos")
+        _set_fake_sessionlocal(monkeypatch, sess)
+        _patch_require_project(monkeypatch)
+
+        # ``PhaseDecisionIn.action`` is a Literal, so a bad verb normally
+        # dies in Pydantic body validation (also 422). To exercise the
+        # ROUTE's ``except InvalidAction -> 422`` mapping (defense in depth
+        # for callers that bypass body validation) we build the body with
+        # validation skipped.
+        body = projects_module.PhaseDecisionIn.model_construct(
+            action="smash", feedback=None, payload=None
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                projects_module.phase_decision(
+                    project_id=project.id,
+                    phase="requerimientos",
+                    body=body,
+                    current_user={"user_id": 1, "username": "architect"},
+                )
+            )
+        assert exc_info.value.status_code == 422
+
+    def test_modify_without_feedback_maps_to_400(self, monkeypatch):
+        sess, project = _fake_session_with_terminals(phase="revision")
+        _set_fake_sessionlocal(monkeypatch, sess)
+        _patch_require_project(monkeypatch)
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                projects_module.phase_decision(
+                    project_id=project.id,
+                    phase="revision",
+                    body=projects_module.PhaseDecisionIn(action="modify", feedback="   "),
+                    current_user={"user_id": 1, "username": "architect"},
+                )
+            )
+        assert exc_info.value.status_code == 400
+
+
 # --- Body validation (Pydantic-level) --------------------------------------
 
 
