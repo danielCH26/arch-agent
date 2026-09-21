@@ -151,7 +151,7 @@ RUN mkdir -p /home/node/.cache && chown -R node:node /home/node
 # (originally suggested as the quick fix in review round 3; kernel
 # reality forced it). ``ALLOW_DANGEROUS=true`` is the upstream server's
 # required opt-in for user-supplied launch options.
-ENV PUPPETEER_LAUNCH_OPTIONS='{"args":["--no-sandbox","--disable-setuid-sandbox"]}' \
+ENV PUPPETEER_LAUNCH_OPTIONS='{"args":["--no-sandbox","--disable-setuid-sandbox","--headless=new","--disable-gpu","--disable-dev-shm-usage"]}' \
     ALLOW_DANGEROUS=true
 
 USER node
