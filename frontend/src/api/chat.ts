@@ -251,7 +251,7 @@ export function createChatStream(
  */
 export async function fetchChatHistory(
   projectId: number,
-  limit: number = 5,
+  limit: number = 50,
 ): Promise<ChatHistoryMessage[]> {
   const token = authStore.getState().token
   const clampedLimit = Math.max(1, Math.min(50, Math.floor(limit)))
