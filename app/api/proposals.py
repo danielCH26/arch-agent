@@ -302,10 +302,15 @@ async def decide_proposal(
             )
 
         # Idempotency check: same (proposal_id, action_type) row already?
+        # PR #78 review F2: the fingerprint is scoped by ``proposal_id`` so
+        # deciding iteration N does NOT block iteration N+1 (each Modify
+        # creates a new proposal row). Legacy pre-0016 rows have
+        # ``proposal_id IS NULL`` — NULL never matches, so they no longer
+        # block new decisions either.
         existing = (
             db.query(InteractionLog)
             .filter(
-                InteractionLog.project_id == proposal.project_id,
+                InteractionLog.proposal_id == proposal.id,
                 InteractionLog.phase == "propuesta",
                 InteractionLog.action_type == (
                     "approve" if body.decision == "approve" else "reject"
@@ -333,11 +338,14 @@ async def decide_proposal(
             project.current_phase = PROPOSAL_REJECT_REVERTS_TO
             project.phase_ready = False
 
-        # Audit row.
+        # Audit row (PR #78 review F2: stamp proposal_id — it scopes the
+        # idempotency fingerprint above and keeps the audit trail per
+        # iteration).
         db.add(
             InteractionLog(
                 session_id=proposal.session_id,
                 project_id=proposal.project_id,
+                proposal_id=proposal.id,
                 phase="propuesta",
                 action_type="approve" if body.decision == "approve" else "reject",
                 comment=body.comment,

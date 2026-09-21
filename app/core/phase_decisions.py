@@ -240,22 +240,27 @@ def record_decision(
     db.flush()  # populate approval_row.id without committing
 
     # --- Dual-write for propuesta (REQ-SA-17 / REQ-PA-HU10-1) --------------
-    if phase == "propuesta":
-        proposal_id = _latest_proposal_id(db, project_id)
-        if proposal_id is not None:
-            db.add(
-                ProposalApproval(
-                    proposal_id=proposal_id,
-                    decision=decision_db,
-                    previous_output=previous_output,
-                )
+    # PR #78 review F2: the resolved proposal id also stamps the audit row
+    # below so ``interaction_logs.proposal_id`` stays meaningful for
+    # propuesta-phase decisions.
+    propuesta_proposal_id = (
+        _latest_proposal_id(db, project_id) if phase == "propuesta" else None
+    )
+    if phase == "propuesta" and propuesta_proposal_id is not None:
+        db.add(
+            ProposalApproval(
+                proposal_id=propuesta_proposal_id,
+                decision=decision_db,
+                previous_output=previous_output,
             )
+        )
 
     # --- Audit row ----------------------------------------------------------
     db.add(
         InteractionLog(
             session_id=session_id,
             project_id=project_id,
+            proposal_id=propuesta_proposal_id,
             phase=phase,
             action_type=action,
             comment=feedback,

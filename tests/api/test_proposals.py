@@ -264,23 +264,205 @@ class TestStreamingResponseWiring:
 class TestDecideIdempotency:
     """``interaction_logs (proposal_id, action_type)`` is the implicit key.
 
-    We assert the query pattern the router uses (filter by
-    ``project_id+phase+action_type``) matches the unique fingerprint we want
-    to block. The actual DB-level test lives in the apply phase migration
-    harness; here we only verify the route consults the right fingerprint
-    so a future migration to add a true UNIQUE constraint is a drop-in.
+    PR #78 review F2: the fingerprint is scoped by ``proposal_id`` so the
+    Modify -> new iteration -> Approve cycle works (deciding iteration N no
+    longer blocks iteration N+1). We assert the query pattern the router
+    uses (filter by ``proposal_id + phase + action_type``) matches the
+    unique fingerprint we want to block. The actual DB-level test lives in
+    the apply phase migration harness; here we only verify the route
+    consults the right fingerprint so a future migration to add a true
+    UNIQUE constraint is a drop-in.
     """
 
     def test_decide_checks_action_type_fingerprint(self):
         # The route builds the fingerprint via:
-        #   InteractionLog.project_id == proposal.project_id AND
+        #   InteractionLog.proposal_id == proposal.id AND
         #   InteractionLog.phase == "propuesta" AND
         #   InteractionLog.action_type IN ("approve", "reject")
         # Verify the import path + the model fields the route relies on.
         from app.models import InteractionLog
 
         columns = {c.name for c in InteractionLog.__table__.columns}
-        assert {"project_id", "phase", "action_type"}.issubset(columns)
+        assert {"proposal_id", "project_id", "phase", "action_type"}.issubset(columns)
+
+
+# --- PR #78 review F2: per-proposal idempotency end-to-end ---------------
+
+
+def _decide_fake_db(proposal, project, existing_log=None):
+    """Build a MagicMock SQLAlchemy session for ``decide_proposal``.
+
+    Returns ``(db, added_logs)`` where ``added_logs`` collects every
+    ``InteractionLog`` handed to ``db.add`` so tests can assert the
+    ``proposal_id`` stamp.
+    """
+    from app.models import InteractionLog, Project
+
+    db = MagicMock()
+    db.get = MagicMock(return_value=proposal)
+
+    added_logs: list = []
+
+    def _add(obj):
+        if isinstance(obj, InteractionLog):
+            added_logs.append(obj)
+
+    db.add = MagicMock(side_effect=_add)
+
+    def _query(model):
+        q = MagicMock()
+        if model is Project:
+            terminal = project
+        elif model is InteractionLog:
+            terminal = existing_log
+        else:
+            terminal = None
+        q.filter = MagicMock(return_value=q)
+        q.order_by = MagicMock(return_value=q)
+        q.first = MagicMock(return_value=terminal)
+        q.all = MagicMock(return_value=[])
+        return q
+
+    db.query = MagicMock(side_effect=_query)
+    db.commit = MagicMock()
+    db.refresh = MagicMock()
+    db.rollback = MagicMock()
+    db.close = MagicMock()
+    return db, added_logs
+
+
+class TestDecidePerProposalIdempotency:
+    """F2 required scenarios:
+
+    (a) approve iteration 1 -> approve iteration 2 (different proposal id,
+        same project + phase) -> both succeed;
+    (b) double-approve of the SAME proposal -> 409.
+    """
+
+    def _make_proposal(self, proposal_id, project_id=1, session_id=1):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            id=proposal_id,
+            project_id=project_id,
+            session_id=session_id,
+            lifecycle="proposed",
+        )
+
+    def _make_project(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=1, current_phase="propuesta", phase_ready=False)
+
+    def _run_decide(self, monkeypatch, db, proposal_id, decision="approve"):
+        from app.api import proposals as proposals_module
+
+        monkeypatch.setattr(
+            proposals_module, "SessionLocal", lambda: db
+        )
+        return asyncio.run(
+            proposals_module.decide_proposal(
+                proposal_id=proposal_id,
+                body=proposals_module.DecideRequest(
+                    decision=decision,
+                ),
+                current_user={"user_id": 1, "username": "architect"},
+            )
+        )
+
+    def test_approve_iteration_1_then_iteration_2_both_succeed(self, monkeypatch):
+        # Iteration 1.
+        proposal_1 = self._make_proposal(proposal_id=101)
+        project = self._make_project()
+        db_1, logs_1 = _decide_fake_db(proposal_1, project, existing_log=None)
+
+        result_1 = self._run_decide(monkeypatch, db_1, proposal_id=101)
+        assert result_1["proposal_id"] == 101
+        assert result_1["lifecycle"] == "approved"
+        assert len(logs_1) == 1
+        # The audit row is stamped with the proposal it decided (F2).
+        assert logs_1[0].proposal_id == 101
+
+        # Iteration 2 = a NEW proposal row after a Modify; no log exists
+        # for it yet, so the approve must NOT be blocked by iteration 1.
+        proposal_2 = self._make_proposal(proposal_id=102)
+        db_2, logs_2 = _decide_fake_db(proposal_2, project, existing_log=None)
+
+        result_2 = self._run_decide(monkeypatch, db_2, proposal_id=102)
+        assert result_2["proposal_id"] == 102
+        assert result_2["lifecycle"] == "approved"
+        assert len(logs_2) == 1
+        assert logs_2[0].proposal_id == 102
+
+    def test_double_approve_same_proposal_conflicts_409(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from app.models import InteractionLog
+
+        proposal = self._make_proposal(proposal_id=101)
+        project = self._make_project()
+
+        # The first approve already wrote this audit row...
+        prior_log = InteractionLog(
+            session_id=1,
+            project_id=1,
+            proposal_id=101,
+            phase="propuesta",
+            action_type="approve",
+        )
+        # ...and the proposal itself is terminal (lifecycle flipped by the
+        # first call), so the double-approve also trips the lifecycle
+        # guard. The idempotency fingerprint alone must produce the 409.
+        db, _logs = _decide_fake_db(
+            proposal, project, existing_log=prior_log
+        )
+        # Keep lifecycle "proposed" so the 409 comes from the fingerprint
+        # check (the code path under test), not the lifecycle guard.
+        proposal.lifecycle = "proposed"
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._run_decide(monkeypatch, db, proposal_id=101)
+        assert exc_info.value.status_code == 409
+
+    def test_idempotency_filter_is_scoped_by_proposal_id(self, monkeypatch):
+        """Pin the query shape: the fingerprint MUST include
+        ``InteractionLog.proposal_id == proposal.id`` (PR #78 review F2)."""
+        from types import SimpleNamespace
+
+        from app.api import proposals as proposals_module
+        from app.models import InteractionLog
+
+        proposal = self._make_proposal(proposal_id=101)
+        project = self._make_project()
+        db, _logs = _decide_fake_db(proposal, project, existing_log=None)
+
+        captured_filters: list = []
+
+        original_query = db.query.side_effect
+
+        def _query(model):
+            q = original_query(model)
+            if model is InteractionLog:
+                base_filter = q.filter
+
+                def _filter(*args, **kwargs):
+                    captured_filters.extend(args)
+                    return base_filter(*args, **kwargs)
+
+                q.filter = _filter
+            return q
+
+        db.query.side_effect = _query
+
+        self._run_decide(monkeypatch, db, proposal_id=101)
+
+        assert captured_filters, "decide_proposal must query InteractionLog"
+        rendered = [str(criterion) for criterion in captured_filters]
+        assert any("proposal_id" in r for r in rendered), rendered
+        # And it must NOT fall back to the old project-wide fingerprint.
+        assert not any(
+            "project_id" in r and "proposal_id" not in r for r in rendered
+        ), rendered
 
 
 # --- Lifecycle side effects ----------------------------------------------

@@ -79,6 +79,10 @@ CREATE INDEX idx_sessions_status ON sessions(status);
 CREATE TABLE interaction_logs (
     id SERIAL PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    -- PR #78 review F2 (migration 0016): proposal this row belongs to, when
+    -- the audited interaction is scoped to one. Nullable so legacy
+    -- (pre-0016) rows stay valid; NULL never matches an idempotency lookup.
+    proposal_id INTEGER REFERENCES proposals(id) ON DELETE SET NULL,
     phase VARCHAR(50),
     prompt TEXT,
     response TEXT,
@@ -91,6 +95,9 @@ CREATE TABLE interaction_logs (
 CREATE INDEX idx_interaction_logs_session_id ON interaction_logs(session_id);
 CREATE INDEX idx_interaction_logs_phase ON interaction_logs(phase);
 CREATE INDEX idx_interaction_logs_created_at ON interaction_logs(created_at);
+-- PR #78 review F2 (migration 0016): decide_proposal idempotency fingerprint.
+CREATE INDEX idx_interaction_logs_proposal_action
+    ON interaction_logs(proposal_id, action_type);
 
 -- ----------------------------------------------------------------------------
 -- approvals: Aprobaciones del usuario (HU10, HU11)

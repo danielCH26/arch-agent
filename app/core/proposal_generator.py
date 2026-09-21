@@ -511,6 +511,10 @@ def _persist_proposal_and_log(
         log = InteractionLog(
             session_id=session_id,
             project_id=project_id,
+            # PR #78 review F2 (migration 0016): stamp the row the audit
+            # entry is about so decide_proposal's (proposal_id,
+            # action_type) idempotency fingerprint stays per-iteration.
+            proposal_id=proposal.id,
             phase="propuesta",
             action_type=action_type,
             comment=feedback,
