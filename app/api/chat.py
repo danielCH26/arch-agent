@@ -193,8 +193,8 @@ async def chat(
         except Exception as e:
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
         finally:
-             if langfuse_handler is not None:
-                 get_client().flush()
+            if langfuse_handler is not None:
+                get_client().flush()
 
     return StreamingResponse(
         event_generator(),
