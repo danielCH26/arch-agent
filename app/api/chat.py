@@ -129,8 +129,12 @@ async def chat(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler
+    # Build SSE streaming handler + optional Langfuse callback
     handler = SSEStreamCallbackHandler()
+    langfuse_handler = get_langfuse_handler()
+    callbacks: list = [handler]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
         try:
@@ -210,7 +214,7 @@ async def chat(
                 f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
                 f"Mensaje del usuario: {body.message}"
             )
-            async for event in model.astream(prompt):
+            async for event in model.astream(prompt, config={"callbacks": callbacks}):
                 if event.content:
                     # Yield the token as SSE
                     yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
