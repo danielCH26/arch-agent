@@ -8,9 +8,6 @@ credentials, no Langfuse coupling).
 
 The ``langfuse`` import is guarded so the module is import-safe when the
 ``langfuse`` wheel is not installed in the current environment.
-
-Issue: #13 - [F11] Context7 MCP integration.
-ADR: docs/adr/010-context7-agent-runtime.md.
 """
 from __future__ import annotations
 
@@ -39,16 +36,38 @@ def _env_present() -> bool:
     return bool(public) and bool(secret)
 
 
+def _build_handler() -> Any:
+    """Construct a ``CallbackHandler`` instance, swallowing SDK failures."""
+    if CallbackHandler is None:
+        _LOGGER.warning(
+            "Langfuse is not installed; agent will run without tracing."
+        )
+        return None
+    try:
+        return CallbackHandler()
+    except Exception as e:
+        _LOGGER.warning(
+            "Langfuse CallbackHandler construction failed; agent will run "
+            "without tracing. error=%s",
+            e,
+        )
+        return None
+
+
 def get_langfuse_handler() -> Any:
     """Return a Langfuse ``CallbackHandler`` or ``None``.
 
     When the env vars are missing or empty (free-tier default), this returns
-    ``None`` and emits a single WARNING so the misconfiguration is visible in
-    the backend log even though the chat flow still works.
+    ``None`` and emits a WARNING so the misconfiguration is visible in the
+    backend log even though the chat flow still works.
 
     SDK construction errors (bad credentials, missing OTLP endpoint, etc.)
     are swallowed into the same ``None`` + WARNING path so a Langfuse outage
     never breaks the chat response.
     """
-    # NOTE: stub body — full implementation lands in slice F11.3b.
-    raise NotImplementedError("get_langfuse_handler lands in slice F11.3b")
+    if not _env_present():
+        _LOGGER.warning(
+            "Langfuse env vars missing; agent will run without tracing."
+        )
+        return None
+    return _build_handler()
