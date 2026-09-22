@@ -1,4 +1,5 @@
 import { authStore } from '../stores/authStore'
+import { apiFetch } from './client'
 
 export interface ChatRequest {
   project_id: number | null
@@ -12,6 +13,49 @@ export interface RagSource {
   source_type: string | null
   name: string | null
   similarity: number | null
+}
+
+// F05: contrato de la elicitación guiada. Estos endpoints viven bajo el
+// proyecto, no bajo /api/chat: el backend conserva el historial, genera el
+// resumen y registra decisiones en la tabla approvals.
+export interface ElicitationState {
+  done: boolean
+  question: string | null
+  resumen: Record<string, unknown> | null
+  history: Array<{ pregunta: string; respuesta: string }>
+}
+
+export type ElicitationDecision = 'approve' | 'modify' | 'reject'
+
+export interface ElicitationDecisionResult {
+  decision: ElicitationDecision
+  phase_ready: boolean
+  message: string
+}
+
+export function getElicitationState(projectId: number): Promise<ElicitationState> {
+  return apiFetch<ElicitationState>(`/api/projects/${projectId}/elicitation`)
+}
+
+export function sendElicitationMessage(
+  projectId: number,
+  answer?: string,
+): Promise<ElicitationState> {
+  return apiFetch<ElicitationState>(`/api/projects/${projectId}/elicitation/message`, {
+    method: 'POST',
+    body: JSON.stringify(answer ? { answer } : {}),
+  })
+}
+
+export function submitElicitationDecision(
+  projectId: number,
+  decision: ElicitationDecision,
+  feedback?: string,
+): Promise<ElicitationDecisionResult> {
+  return apiFetch<ElicitationDecisionResult>(`/api/projects/${projectId}/elicitation/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, feedback }),
+  })
 }
 
 interface StreamCallbacks {

@@ -26,13 +26,15 @@ def _count_patterns(conn) -> int:
 def test_seed_patterns_is_idempotent():
     conn = connect_db()
     try:
+        expected = len(seed_patterns.load_patterns())
+
         seed_patterns.seed_patterns(conn)
         first_count = _count_patterns(conn)
 
         seed_patterns.seed_patterns(conn)
         second_count = _count_patterns(conn)
 
-        assert first_count == len(seed_patterns.PATTERNS)
+        assert first_count == expected
         assert second_count == first_count, (
             "seed_patterns() no debe insertar duplicados en una segunda corrida"
         )

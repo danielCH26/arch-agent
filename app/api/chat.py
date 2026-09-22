@@ -40,12 +40,22 @@ from app.models.project import Project
 # numero -- quedo fuera del alcance de esta HU, ver docs/QA_criterios_aceptacion_RAG.md.
 RAG_MIN_SIMILARITY = 0.85
 
+# Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
+# solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
+# distinto resultado en similarity). No cambia que se cita o no.
+RAG_NEAR_MISS_MARGIN = 0.05
+
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
 
 def _is_relevant(doc) -> bool:
     return (doc.metadata.get("similarity") or 0.0) >= RAG_MIN_SIMILARITY
+
+
+def _is_near_miss(doc) -> bool:
+    similarity = doc.metadata.get("similarity") or 0.0
+    return RAG_MIN_SIMILARITY - RAG_NEAR_MISS_MARGIN <= similarity < RAG_MIN_SIMILARITY
 
 
 # --- Request model ---------------------------------------------------------
@@ -119,12 +129,8 @@ async def chat(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler + optional Langfuse callback
+    # Build SSE streaming handler
     handler = SSEStreamCallbackHandler()
-    langfuse_handler = get_langfuse_handler()
-    callbacks: list = [handler]
-    if langfuse_handler is not None:
-        callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
         try:
@@ -143,6 +149,25 @@ async def chat(
         # Descarta lo que quedo por debajo del umbral de relevancia -- ver
         # comentario junto a RAG_MIN_SIMILARITY.
         relevant_docs = [doc for doc in docs if _is_relevant(doc)]
+
+        # Visibilidad de la zona gris: si hubo candidatos justo por debajo
+        # del umbral, dejarlo en el log para poder diagnosticar casos como
+        # "misma intencion, distinta redaccion, distinto resultado" sin
+        # tener que reproducirlo a mano contra /api/rag/search.
+        near_misses = [doc for doc in docs if doc not in relevant_docs and _is_near_miss(doc)]
+        if near_misses:
+            logger.info(
+                "RAG near-miss (< %.2f) para query=%r: %s",
+                RAG_MIN_SIMILARITY,
+                body.message[:80],
+                [
+                    (
+                        doc.metadata.get("pattern_name") or doc.metadata.get("filename"),
+                        round(doc.metadata.get("similarity") or 0.0, 3),
+                    )
+                    for doc in near_misses
+                ],
+            )
 
         context_blocks = []
         for index, doc in enumerate(relevant_docs, start=1):
@@ -185,7 +210,7 @@ async def chat(
                 f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
                 f"Mensaje del usuario: {body.message}"
             )
-            async for event in model.astream(prompt,config={"callbacks": callbacks}):
+            async for event in model.astream(prompt):
                 if event.content:
                     # Yield the token as SSE
                     yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
