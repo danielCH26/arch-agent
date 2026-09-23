@@ -54,3 +54,5 @@ frontend/.env
 frontend/.env.local
 
 # OpenSpec + .atl/ + docs/ artifacts: versioned via *.md exceptions above
+
+.freebuff/
