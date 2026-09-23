@@ -3,8 +3,8 @@ Langfuse tracing factory.
 
 ``get_langfuse_handler()`` returns a configured ``CallbackHandler`` when both
 ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` are present in the
-environment, otherwise ``None``. The free-tier default is untraced (no
-credentials, no Langfuse coupling).
+environment, otherwise ``None``. Without credentials the app simply runs
+untraced -- no Langfuse coupling, no crash.
 
 The ``langfuse`` import is guarded so the module is import-safe when the
 ``langfuse`` wheel is not installed in the current environment.
@@ -57,7 +57,7 @@ def _build_handler() -> Any:
 def get_langfuse_handler() -> Any:
     """Return a Langfuse ``CallbackHandler`` or ``None``.
 
-    When the env vars are missing or empty (free-tier default), this returns
+    When the env vars are missing or empty (Langfuse not configured), this returns
     ``None`` and emits a WARNING so the misconfiguration is visible in the
     backend log even though the chat flow still works.
 

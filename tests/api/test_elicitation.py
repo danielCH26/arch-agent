@@ -155,6 +155,73 @@ class TestSendElicitationMessage:
         assert result.question == elicitation_agent.FIRST_QUESTION
         mock_build_model.return_value.invoke.assert_not_called()
 
+    @patch("app.api.elicitation.flush_langfuse")
+    @patch("app.api.elicitation.get_langfuse_handler")
+    @patch("app.api.elicitation.save_session_state")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
+    @patch("app.core.elicitation_agent.next_step")
+    def test_flushes_langfuse_after_a_real_llm_call(
+        self, mock_next_step, mock_load, mock_require, mock_build_model,
+        mock_save, mock_get_handler, mock_flush,
+    ):
+        """Regresión (PR #79 review): una llamada real al LLM en elicitación
+        debe exportar la traza de inmediato, no depender solo del ciclo en
+        segundo plano del SDK de Langfuse."""
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
+                "pending_question": "pregunta pendiente",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.return_value = MagicMock()
+        mock_get_handler.return_value = MagicMock()  # Langfuse "configurado"
+        mock_next_step.return_value = elicitation_agent.ElicitationDecision(
+            done=False, question="siguiente pregunta", reason="sigue"
+        )
+
+        run(send_elicitation_message(
+            project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
+            current_user=CURRENT_USER,
+        ))
+
+        mock_flush.assert_called_once()
+
+    @patch("app.api.elicitation.flush_langfuse")
+    @patch("app.api.elicitation.get_langfuse_handler")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
+    @patch("app.core.elicitation_agent.next_step")
+    def test_flushes_langfuse_even_when_the_llm_call_fails(
+        self, mock_next_step, mock_load, mock_require, mock_build_model,
+        mock_get_handler, mock_flush,
+    ):
+        """La traza de una llamada fallida tambien debe exportarse -- por
+        eso el flush vive en un ``finally``, no solo en el camino feliz."""
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
+                "pending_question": "pregunta pendiente",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.return_value = MagicMock()
+        mock_get_handler.return_value = MagicMock()
+        mock_next_step.side_effect = elicitation_agent.ElicitationLLMError("rate limit")
+
+        with pytest.raises(HTTPException):
+            run(send_elicitation_message(
+                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
+                current_user=CURRENT_USER,
+            ))
+
+        mock_flush.assert_called_once()
+
     @patch("app.api.elicitation.load_session_state")
     def test_400_when_resumen_already_generated(self, mock_load):
         with patch("app.api.elicitation._require_project", return_value=make_project()):
