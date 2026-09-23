@@ -9,7 +9,7 @@ from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
-from app.core.langfuse_tracer import get_langfuse_handler
+from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.session_store import load_session_state, save_session_state
 from app.models.approval import Approval
@@ -212,6 +212,12 @@ async def send_elicitation_message(
             "sin espacio de salida). Intenta de nuevo o prueba con otro "
             "modelo en la configuración de LLM.",
         )
+    finally:
+        # F14: exportar la traza de inmediato -- no depender solo del ciclo
+        # en segundo plano del SDK, que puede no alcanzar a correr si el
+        # proceso se reinicia justo después de esta respuesta.
+        if callbacks:
+            flush_langfuse()
 
     phase_data = {
         "preguntas_respuestas": history,
