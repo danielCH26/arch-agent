@@ -22,7 +22,7 @@ describe('LoginPage', () => {
   it('renders login form', () => {
     renderWithRouter(<LoginPage />)
 
-    expect(screen.getByRole('heading', { name: /inicia sesión en arq ?agent/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /bienvenido de nuevo/i })).toBeInTheDocument()
     expect(screen.getByLabelText('Nombre de usuario')).toBeInTheDocument()
     expect(screen.getByLabelText('Contraseña')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /iniciar sesión/i })).toBeInTheDocument()
