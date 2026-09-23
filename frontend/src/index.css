@@ -2,25 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-@keyframes arm-wave {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  20% {
-    transform: rotate(-22deg);
-  }
-  40% {
-    transform: rotate(14deg);
-  }
-  60% {
-    transform: rotate(-18deg);
-  }
-  80% {
-    transform: rotate(10deg);
-  }
-}
-
 @keyframes robot-float {
   0%,
   100% {
@@ -31,16 +12,11 @@
   }
 }
 
-.animate-arm-wave {
-  animation: arm-wave 0.9s ease-in-out 2;
-}
-
 .animate-robot-float {
   animation: robot-float 3.6s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-arm-wave,
   .animate-robot-float {
     animation: none;
   }

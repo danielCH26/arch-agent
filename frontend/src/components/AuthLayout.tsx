@@ -61,12 +61,11 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
           </h2>
 
           <div className="relative z-10 mt-14 flex w-full flex-1 items-end justify-center pb-4">
-            <div className="relative">
-              <div className="absolute -right-4 -top-16 max-w-[160px] rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm text-gray-700 shadow-[0px_6px_20px_rgba(0,0,0,0.12)] sm:-right-8 sm:-top-20">
-                {greeting}
-              </div>
-              <RobotGreeter />
-            </div>
+            <RobotGreeter />
+          </div>
+
+          <div className="absolute right-4 top-60 z-10 max-w-[150px] rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm text-gray-700 shadow-[0px_6px_20px_rgba(0,0,0,0.12)] sm:right-6 sm:top-64">
+            {greeting}
           </div>
         </div>
       </div>
