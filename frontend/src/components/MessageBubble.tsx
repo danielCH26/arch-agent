@@ -1,5 +1,6 @@
 import type React from 'react'
 import type { Message } from '../stores/chatStore'
+import robotAvatar from '../assets/robot-avatar.png'
 
 interface MessageBubbleProps {
   message: Message
@@ -329,12 +330,21 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex items-start gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!isUser && (
+        <img
+          src={robotAvatar}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          className="mt-1 h-9 w-auto shrink-0 select-none"
+        />
+      )}
       <div
-        className={`max-w-[70%] px-4 py-2 rounded-lg break-words ${
+        className={`max-w-[70%] px-4 py-2 break-words ${
           isUser
-            ? 'whitespace-pre-wrap bg-blue-600 text-white'
-            : 'bg-gray-100 text-gray-900'
+            ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white'
+            : 'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm'
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}

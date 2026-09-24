@@ -3,6 +3,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { authStore } from '../stores/authStore'
 import { projectsStore } from '../stores/projectsStore'
 import { Logo } from './Logo'
+import { ArchiveIcon, ChatIcon, ClockIcon, DocumentIcon } from './NavIcons'
 
 export function Layout() {
   const navigate = useNavigate()
@@ -73,7 +74,7 @@ export function Layout() {
                   isOnActiveSession ? 'bg-[#0e54ce]/70 text-white' : 'text-gray-800 hover:bg-gray-100'
                 }`}
               >
-                <span aria-hidden="true">💬</span>
+                <ChatIcon />
                 <span className="truncate">Sesión activa</span>
               </Link>
             )}
@@ -83,7 +84,7 @@ export function Layout() {
               className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2.5 text-gray-400"
               title="Próximamente"
             >
-              <span aria-hidden="true">🗄️</span>
+              <ArchiveIcon />
               <span>Base de patrones</span>
             </div>
           </nav>
@@ -122,7 +123,7 @@ export function Layout() {
                             : 'text-gray-700 hover:bg-gray-100'
                         }`}
                       >
-                        <span aria-hidden="true" className="shrink-0">🕐</span>
+                        <ClockIcon />
                         <span className="truncate flex-1">{p.name}</span>
                         <svg
                           className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${
@@ -146,7 +147,7 @@ export function Layout() {
                                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                             }`}
                           >
-                            <span>💬</span>
+                            <ChatIcon className="h-4 w-4" />
                             <span>Chat</span>
                           </Link>
                           <Link
@@ -157,7 +158,7 @@ export function Layout() {
                                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                             }`}
                           >
-                            <span>📄</span>
+                            <DocumentIcon className="h-4 w-4" />
                             <span>Documentos</span>
                           </Link>
                         </div>

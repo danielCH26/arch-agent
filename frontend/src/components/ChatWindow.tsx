@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { chatStore } from '../stores/chatStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
+import robotAvatar from '../assets/robot-avatar.png'
 
 interface ChatWindowProps {
   projectId: number
@@ -37,8 +38,9 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
         ))}
 
         {isStreaming && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 px-4 py-2 rounded-lg">
+          <div className="flex items-start gap-2 justify-start">
+            <img src={robotAvatar} alt="" aria-hidden="true" draggable={false} className="mt-1 h-9 w-auto shrink-0 select-none" />
+            <div className="rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 px-4 py-2 shadow-sm">
               <div className="flex items-center gap-1">
                 <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
                 <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
