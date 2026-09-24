@@ -49,6 +49,7 @@ temp/
 !.atl/**/*.md
 !openspec/
 !openspec/**/*.md
+!docs/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
 !QA_feature-hu6-diagrama.md
@@ -62,6 +63,7 @@ frontend/.env.local
 
 # OpenSpec artifacts: versioned via !openspec/ exception above (legacy
 # `openspec/` ignore removed in F12 to enable SDD artifacts in PRs).
+# .atl/ and docs/ Markdown artifacts are versioned via exceptions above.
 
 # CodeGraph local index (per-worktree, never shared)
 .codegraph/

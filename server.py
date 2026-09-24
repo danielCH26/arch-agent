@@ -60,10 +60,11 @@ from app.api.documents import router as documents_router
 from app.api.chat import router as chat_router
 from app.api.users import router as users_router
 from app.api.rag import router as rag_router
+from app.api.patterns import router as patterns_router
 from app.api.elicitation import router as elicitation_router
 from app.api.attachments import router as attachments_router  # F13, issue #17
 from app.api.diagrams import router as diagrams_router  # HU6: historial de diagramas
-from app.api.proposals import router as proposals_router  # HU6: aprobacion de la fase propuesta
+from app.api.proposals import router as proposals_router
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -72,6 +73,7 @@ app.include_router(documents_router)
 app.include_router(chat_router)
 app.include_router(users_router)
 app.include_router(rag_router)
+app.include_router(patterns_router)
 app.include_router(elicitation_router)
 app.include_router(attachments_router)
 app.include_router(diagrams_router)
@@ -92,7 +94,6 @@ async def vendor_mermaid_js():
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=86400"},
     )
-
 
 # Serve SPA static files (built by Vite)
 # Mount AFTER specific routes so /api/* and /register work first

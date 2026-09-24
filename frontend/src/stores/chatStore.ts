@@ -30,7 +30,12 @@ interface ChatState {
   // useEffect can avoid double-firing under React StrictMode.
   loadingHistory: boolean
 
-  sendMessage: (projectId: number | null, text: string, displayText?: string) => Promise<void>
+  sendMessage: (
+    projectId: number | null,
+    text: string,
+    displayText?: string,
+    onComplete?: () => void,
+  ) => Promise<void>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
@@ -47,7 +52,12 @@ export const chatStore = create<ChatState>((set) => ({
   error: null,
   loadingHistory: false,
 
-  sendMessage: async (projectId: number | null, text: string, displayText?: string) => {
+  sendMessage: async (
+    projectId: number | null,
+    text: string,
+    displayText?: string,
+    onComplete?: () => void,
+  ) => {
     // `text` es lo que se manda al backend (POST /api/chat); `displayText`
     // es lo que se muestra en la burbuja del usuario. Por defecto son lo
     // mismo (mensajes tipeados a mano). Ver "Solicitar cambios" en
@@ -136,6 +146,7 @@ export const chatStore = create<ChatState>((set) => ({
       },
       onDone: () => {
         set({ isStreaming: false })
+        onComplete?.()
       },
       onError: (errorMessage: string) => {
         set((state) => ({

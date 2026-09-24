@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { apiFetch } from '../client'
 import { authStore } from '../../stores/authStore'
 
+const { mockRedirectToLogin } = vi.hoisted(() => ({
+  mockRedirectToLogin: vi.fn(),
+}))
+
 // Mock the authStore
 vi.mock('../../stores/authStore', () => ({
   authStore: {
@@ -9,12 +13,13 @@ vi.mock('../../stores/authStore', () => ({
   },
 }))
 
+vi.mock('../navigation', () => ({
+  redirectToLogin: mockRedirectToLogin,
+}))
+
 describe('apiFetch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset location
-    delete (window as any).location
-    window.location = { href: '' } as Location
   })
 
   afterEach(() => {
@@ -87,7 +92,7 @@ describe('apiFetch', () => {
     await expect(apiFetch('/api/test')).rejects.toThrow()
 
     expect(mockLogout).toHaveBeenCalled()
-    expect(window.location.href).toBe('/login')
+    expect(mockRedirectToLogin).toHaveBeenCalledOnce()
   })
 
   it('throws ApiError with status on non-ok response', async () => {

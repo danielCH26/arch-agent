@@ -1,44 +1,28 @@
 import { authStore } from '../stores/authStore'
+import { apiFetch } from './client'
 import type { DiagramDecision } from './diagrams'
 
 export interface ChatRequest {
   project_id: number | null
   message: string
-  // F14 (migracion 0015): opcional. Ver createChatStream — solo se manda
-  // cuando lo que el usuario ve en su burbuja difiere de `message` (hoy:
-  // "Solicitar cambios" sobre un diagrama).
   display_message?: string
 }
 
-// Metadata de un documento/patron recuperado por el pipeline RAG (PGVector).
-// Se usa para poder mostrar/loguear si una respuesta realmente se apoyo en
-// contenido recuperado, en vez de solo confiar en lo que el LLM "dice".
 export interface RagSource {
   source_type: string | null
   name: string | null
   similarity: number | null
 }
 
-// F13 (REQ-PMCP-1 / REQ-ATT-3): un attachment servido por el backend
-// (render Puppeteer → PNG inline). El ``url`` lleva un token firmado
-// (TTL 5 min, ver app/core/attachment_tokens.py) — el <img src=...> no
-// puede llevar Authorization, por eso va en la query string.
 export interface Attachment {
-  // UUID del adjunto (ya viaja dentro de `url`). Identifica el diagrama para
-  // decidir sobre el (POST /api/diagrams/decision -> attachment_id).
   id?: string
   kind: 'screenshot'
   mime: 'image/png'
   url: string
   filename: string
-  // Decision ya registrada para este diagrama (la devuelve GET
-  // /api/chat/history). undefined/null = sin decidir: se muestran los botones.
   decision?: DiagramDecision | null
 }
 
-// F12 (REQ-7 / REQ-8): una fila persistida por el backend, devuelta por
-// GET /api/chat/history. Coincide con la forma del payload que arma
-// app/api/chat.py::chat_history.
 export interface ChatHistoryMessage {
   id: number
   role: 'user' | 'assistant' | 'system'
@@ -48,23 +32,52 @@ export interface ChatHistoryMessage {
   created_at: string | null
 }
 
+export interface ElicitationState {
+  done: boolean
+  question: string | null
+  resumen: Record<string, unknown> | null
+  history: Array<{ pregunta: string; respuesta: string }>
+}
+
+export type ElicitationDecision = 'approve' | 'modify' | 'reject'
+
+export interface ElicitationDecisionResult {
+  decision: ElicitationDecision
+  phase_ready: boolean
+  message: string
+}
+
+export function getElicitationState(projectId: number): Promise<ElicitationState> {
+  return apiFetch<ElicitationState>(`/api/projects/${projectId}/elicitation`)
+}
+
+export function sendElicitationMessage(
+  projectId: number,
+  answer?: string,
+): Promise<ElicitationState> {
+  return apiFetch<ElicitationState>(`/api/projects/${projectId}/elicitation/message`, {
+    method: 'POST',
+    body: JSON.stringify(answer ? { answer } : {}),
+  })
+}
+
+export function submitElicitationDecision(
+  projectId: number,
+  decision: ElicitationDecision,
+  feedback?: string,
+): Promise<ElicitationDecisionResult> {
+  return apiFetch<ElicitationDecisionResult>(`/api/projects/${projectId}/elicitation/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, feedback }),
+  })
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: () => void
   onError: (error: string) => void
-  // Se dispara UNA vez, antes de los primeros tokens, con la lista de
-  // fuentes recuperadas (puede venir vacia si no hubo match o si el
-  // retrieval fallo silenciosamente en el backend).
   onSources?: (sources: RagSource[]) => void
-  // F13: el backend emite un evento ``attachment`` despues del ultimo
-  // token y antes del done cuando el agente renderizo un diagrama
-  // Mermaid. El callback recibe el payload publico (sin storage_path).
   onAttachment?: (attachment: Attachment) => void
-  // HU6 bug fix: el backend YA emitia ``diagram_validated`` (con
-  // valid=false) y ``degraded`` cuando el Mermaid generado era invalido
-  // o fallaba al renderizarse, pero el frontend nunca los escuchaba —
-  // el usuario se quedaba sin diagrama y sin ninguna explicacion de por
-  // que. Este callback cubre ambos casos con un mensaje legible.
   onDiagramIssue?: (message: string) => void
 }
 
@@ -86,7 +99,6 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     try {
       callbacks.onSources?.(JSON.parse(rawData) as RagSource[])
     } catch {
-      // Si viene mal formado, no bloqueamos el resto del stream por esto.
       callbacks.onSources?.([])
     }
     return false
@@ -106,7 +118,7 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     try {
       callbacks.onAttachment(JSON.parse(rawData) as Attachment)
     } catch {
-      // Si viene mal formado, lo descartamos — el resto del stream sigue.
+      // Ignore malformed optional attachment payloads.
     }
     return false
   }
@@ -116,48 +128,39 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
       const data = JSON.parse(rawData) as { valid?: boolean; error?: string | null }
       if (data.valid === false) {
         callbacks.onDiagramIssue(
-          `No pude generar el diagrama: ${data.error || 'sintaxis Mermaid inválida'}.`
+          `No pude generar el diagrama: ${data.error || 'sintaxis Mermaid inválida'}.`,
         )
       }
     } catch {
-      // Payload inesperado — no bloqueamos el resto del stream por esto.
+      // Ignore unexpected optional payloads.
     }
     return false
   }
 
   if (eventName === 'degraded' && rawData) {
-  try {
-    const data = JSON.parse(rawData) as {
-      message?: string
-      source?: string
-      reason?: string
-      nodes?: string[]
-    }
-    // "puppeteer" (falla de render) y el warning de grounding del agente
-    // SI le importan al usuario -- el resto de "agent" (ej. Context7 caido,
-    // tool_calls_missing) es ruido esperado que no afecta lo que ve.
-    // Bug (HU6): antes se filtraba por source==='puppeteer' a secas, lo que
-    // tambien descartaba diagram_grounding_warning (mismo source: 'agent'
-    // que el ruido de Context7), asi que ese warning nunca llegaba a la UI.
-    const isGroundingWarning = data.reason === 'diagram_grounding_warning'
-    if ((data.source === 'puppeteer' || isGroundingWarning) && callbacks.onDiagramIssue) {
-      let text = data.message || 'No se pudo renderizar el diagrama a imagen.'
-      // El criterio de aceptación pide listar los nodos no sustentados, no
-      // solo avisar que hay alguno -- el backend ya los manda en `nodes`.
-      if (isGroundingWarning && data.nodes && data.nodes.length > 0) {
-        text += ` Nodos: ${data.nodes.join(', ')}.`
+    try {
+      const data = JSON.parse(rawData) as {
+        message?: string
+        source?: string
+        reason?: string
+        nodes?: string[]
       }
-      // chatStore.onDiagramIssue ya antepone "⚠️ " al mostrarlo en la
-      // burbuja -- no lo dupliques acá.
-      callbacks.onDiagramIssue(text)
-    } else {
-      console.warn('[chat] degraded event (no-op para el usuario):', data)
+      const isGroundingWarning = data.reason === 'diagram_grounding_warning'
+      if ((data.source === 'puppeteer' || isGroundingWarning) && callbacks.onDiagramIssue) {
+        let text = data.message || 'No se pudo renderizar el diagrama a imagen.'
+        if (isGroundingWarning && data.nodes && data.nodes.length > 0) {
+          text += ` Nodos: ${data.nodes.join(', ')}.`
+        }
+        callbacks.onDiagramIssue(text)
+      } else {
+        console.warn('[chat] degraded event (no-op para el usuario):', data)
+      }
+    } catch {
+      // Ignore unexpected optional payloads.
     }
-  } catch {
-    // payload inesperado, lo ignoramos
+    return false
   }
-  return false
-}
+
   if (eventName === 'done') {
     callbacks.onDone()
     return true
@@ -179,12 +182,7 @@ export function createChatStream(
   message: string,
   projectId: number | null,
   callbacks: StreamCallbacks,
-  // F14 (migracion 0015): lo que el usuario escribio, cuando difiere de
-  // `message` (el texto real que recibe el agente). El backend lo persiste
-  // en Message.display_content para que la burbuja sobreviva a un refresh
-  // (antes solo vivia en el estado de React de chatStore). Omitido/undefined
-  // para el resto de los mensajes.
-  displayMessage?: string
+  displayMessage?: string,
 ): () => void {
   const { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue } = callbacks
   const token = authStore.getState().token
@@ -192,7 +190,6 @@ export function createChatStream(
   const controller = new AbortController()
   const signal = controller.signal
 
-  // Start the stream immediately
   ;(async () => {
     try {
       const response = await fetch('/api/chat', {
@@ -211,8 +208,7 @@ export function createChatStream(
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
-        const errorMessage = (data.detail as string) || 'Chat request failed'
-        onError(errorMessage)
+        onError((data.detail as string) || 'Chat request failed')
         return
       }
 
@@ -230,52 +226,47 @@ export function createChatStream(
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-
         const events = buffer.split(/\r?\n\r?\n/)
         buffer = events.pop() || ''
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue })
+          const shouldStop = dispatchSSEEvent(event, {
+            onToken,
+            onDone,
+            onError,
+            onSources,
+            onAttachment,
+            onDiagramIssue,
+          })
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue })
+        const shouldStop = dispatchSSEEvent(buffer, {
+          onToken,
+          onDone,
+          onError,
+          onSources,
+          onAttachment,
+          onDiagramIssue,
+        })
         if (shouldStop) return
       }
 
-      // Stream ended without explicit done event
       onDone()
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        // Request was cancelled, no need to report error
-        return
-      }
+      if (err instanceof Error && err.name === 'AbortError') return
       onError(err instanceof Error ? err.message : 'Unknown error')
     }
   })()
 
-  // Return cleanup function
   return () => {
     controller.abort()
   }
 }
 
-// -----------------------------------------------------------------------------
-// F12 (REQ-7, REQ-8): history endpoint client
-// -----------------------------------------------------------------------------
-
-/**
- * GET /api/chat/history?project_id=<int>&limit=<int>
- *
- * Returns the last ``limit`` messages (default 5, max 50) for the
- * authenticated user + project, ordered newest-first. The backend is
- * expected to return 200 with `{messages: []}` when Postgres is down
- * (REQ-11 / SCN-5), so any non-ok response is normalised into an empty
- * array rather than throwing — keeps the frontend mount resilient.
- */
 export async function fetchChatHistory(
   projectId: number,
   limit: number = 5,
@@ -290,51 +281,24 @@ export async function fetchChatHistory(
     },
   )
 
-  if (!response.ok) {
-    // Treat 4xx/5xx as "no history to render" — the store handles the
-    // empty case (REQ-8: error path leaves messages untouched and clears
-    // loadingHistory).
-    return []
-  }
+  if (!response.ok) return []
 
   const payload = (await response.json()) as { messages?: ChatHistoryMessage[] }
   if (!Array.isArray(payload.messages)) return []
 
-  // PR #76 review fix #6a: apply ``_normaliseHistoryAttachments`` to every
-  // row before handing the array to the chatStore. Pre-F13 rows have no
-  // ``attachments`` column at all (so ``row.attachments`` is undefined);
-  // corrupted transport payloads could deliver ``null``, a string, or a
-  // dict instead of the expected array — passing those through raw
-  // crashes the renderer's ``message.attachments.map(...)`` downstream.
-  // The helper already lives at the bottom of this file and is exported
-  // (see the export modifier on its declaration); this is the call-site
-  // it was designed for.
   return payload.messages.map((row) => ({
     ...row,
     attachments: _normaliseHistoryAttachments(row.attachments),
   }))
 }
 
-// F13 history-parsing helper: defensively coerce a row's ``attachments``
-// field into the typed ``Attachment[]`` shape. Older rows (pre-F13) will
-// not have the column; missing / non-array values are normalised to ``[]``.
-//
-// Public so the test suite (frontend/src/api/__tests__/chat.test.ts) can
-// exercise the contract directly. PR #76 review fix #6a: previously
-// declared but never called from ``fetchChatHistory`` — that meant an
-// unknown-shape value (``null`` from a pre-F13 row, a string from a
-// legacy schema, or a dict the backend forgot to wrap in an array)
-// would land verbatim in the chatStore and crash the renderer when it
-// tried to map over ``message.attachments``.
-export function _normaliseHistoryAttachments(
-  raw: unknown,
-): Attachment[] {
+export function _normaliseHistoryAttachments(raw: unknown): Attachment[] {
   if (!Array.isArray(raw)) return []
   return raw.filter(
     (item): item is Attachment =>
       typeof item === 'object' &&
       item !== null &&
       (item as Attachment).kind === 'screenshot' &&
-      typeof (item as Attachment).url === 'string'
+      typeof (item as Attachment).url === 'string',
   )
 }
