@@ -37,6 +37,12 @@ temp/
 *.pdf
 *.md
 !README.md
+!.atl/
+!.atl/**/*.md
+!openspec/
+!openspec/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
 !.atl/
@@ -46,6 +52,8 @@ temp/
 !docs/**/*.md
 !docs/adr/
 !docs/adr/**/*.md
+!QA_feature-hu6-diagrama.md
+*.freebuff
 
 # Frontend (Vite + React)
 frontend/node_modules/
@@ -53,4 +61,9 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec + .atl/ + docs/ artifacts: versioned via *.md exceptions above
+# OpenSpec artifacts: versioned via !openspec/ exception above (legacy
+# `openspec/` ignore removed in F12 to enable SDD artifacts in PRs).
+# .atl/ and docs/ Markdown artifacts are versioned via exceptions above.
+
+# CodeGraph local index (per-worktree, never shared)
+.codegraph/

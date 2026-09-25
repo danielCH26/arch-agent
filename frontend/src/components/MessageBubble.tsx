@@ -1,8 +1,22 @@
 import type React from 'react'
+import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Message } from '../stores/chatStore'
+import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
+
+// Texto que se muestra cuando un diagrama ya tiene decision. Es el mismo tanto
+// justo despues de decidir como despues de un F5 (la decision se recupera de
+// GET /api/chat/history), asi el estado no depende de la memoria de React.
+const DIAGRAM_DECISION_TEXT: Record<DiagramDecision, string> = {
+  approve: 'Diagrama aprobado.',
+  reject: 'Diagrama rechazado.',
+  modify: 'Se registró tu solicitud de cambios.',
+}
 
 interface MessageBubbleProps {
   message: Message
+  projectId?: number
+  onSendMessage?: (text: string, displayText?: string) => void
 }
 
 type InlineToken =
@@ -12,6 +26,9 @@ type InlineToken =
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
+const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
+const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
+const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
 
 function splitTableRow(row: string) {
   return row
@@ -65,6 +82,48 @@ function renderInline(content: string) {
 
     return <span key={index}>{token.value}</span>
   })
+}
+
+function extractMermaidFromMessage(content: string): string | null {
+  const explicitMatch = content.match(explicitMermaidFencePattern)
+  if (explicitMatch?.[1]?.trim()) {
+    return explicitMatch[1].trim()
+  }
+
+  let match: RegExpExecArray | null
+  anyCodeFencePattern.lastIndex = 0
+  while ((match = anyCodeFencePattern.exec(content)) !== null) {
+    const code = match[1].trim()
+    const firstLine = code.split(/\r?\n/)[0] ?? ''
+    if (mermaidFirstLinePattern.test(firstLine)) {
+      return code
+    }
+  }
+
+  return null
+}
+
+function buildDiagramAdjustmentPrompt(feedback: string, previousMermaid: string | null): string {
+  if (!previousMermaid) return feedback
+
+  return [
+    'Modifica el siguiente diagrama Mermaid usando mi solicitud de cambio.',
+    'Reglas importantes:',
+    '- Responde UNICAMENTE con un bloque ```mermaid``` que contenga el diagrama completo actualizado.',
+    '- No agregues explicaciones, tablas, leyendas, listas, resumen, recomendaciones ni proximos pasos fuera del bloque Mermaid.',
+    '- Conserva todos los nodos, capas, componentes, relaciones, estilos y subgraphs existentes, salvo que mi cambio pida quitarlos explicitamente.',
+    '- No simplifiques ni reescribas el diagrama desde cero.',
+    '- Aplica solo el cambio solicitado.',
+    '- Usa sintaxis Mermaid robusta: IDs sin espacios, labels complejos entre comillas, y evita HTML o caracteres innecesarios en las etiquetas.',
+    '',
+    'Solicitud de cambio:',
+    feedback,
+    '',
+    'Diagrama Mermaid base:',
+    '```mermaid',
+    previousMermaid,
+    '```',
+  ].join('\n')
 }
 
 function parseHtmlTable(tableMarkup: string) {
@@ -325,7 +384,7 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
@@ -338,8 +397,320 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
+        {!isUser && (
+          <DiagramAttachments
+            attachments={message.attachments}
+            assistantContent={message.content}
+            projectId={projectId}
+            onSendMessage={onSendMessage}
+          />
+        )}
         {!isUser && renderSources(message.sources)}
       </div>
+    </div>
+  )
+}
+
+// F13 (REQ-PMCP-1 / REQ-ATT-3): renders the inline screenshot(s) the agent
+// emitted via `` event: attachment``. Only fires for assistant messages —
+// user messages never carry attachments. No download button in v1 (see
+// design §8 Q-NEW-DOWNLOAD-PNG). The URL already carries the signed
+// token, so no Authorization header is needed.
+//
+// HU6 (F09): mismo patron que el companero implemento para la fase de
+// requerimientos en ChatWindow.tsx (ver handleDecision + showModify de
+// HU5) pero a nivel de attachment individual:
+//   - "Aprobar" no necesita texto libre -> se registra la decision y se
+//     manda un mensaje de confirmacion fijo al chat (igual que antes).
+//   - "Solicitar cambios" YA NO manda un mensaje a medio escribir apenas
+//     se hace click. Abre un textarea inline (como el de HU5) para que
+//     la persona escriba QUE hay que cambiar; solo al confirmar se
+//     registra la decision (con ese feedback) y se envia ese texto real
+//     al chat para que el agente regenere el diagrama.
+//
+// Zoom del diagrama (pedido de Laura): click en la miniatura abre un
+// overlay fullscreen con la imagen en grande; click en cualquier parte
+// del overlay lo cierra. Estado local `expandedUrl` guarda la URL del
+// attachment actualmente ampliado (null = cerrado).
+function DiagramAttachments({
+  attachments,
+  assistantContent,
+  projectId,
+  onSendMessage,
+}: {
+  attachments: Message['attachments']
+  assistantContent: string
+  projectId?: number
+  onSendMessage?: (text: string, displayText?: string) => void
+}) {
+  const [openFeedbackFor, setOpenFeedbackFor] = useState<number | null>(null)
+  // Hallazgo #6 (revisión feature/hu6-diagrama): antes era un único
+  // `useState('')` para TODA la burbuja, así que si abrías "Solicitar
+  // cambios" en el adjunto 0, escribías algo, lo cerrabas sin enviar, y
+  // después clickeabas "Rechazar" en el adjunto 1, `handleReject` mandaba
+  // el texto que habías escrito para el adjunto 0. Ahora es un estado por
+  // índice de adjunto.
+  const [feedbackByIndex, setFeedbackByIndex] = useState<Record<number, string>>({})
+  const [decisionError, setDecisionError] = useState('')
+  const [decidedFor, setDecidedFor] = useState<Record<number, string>>({})
+  const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
+  const [diagramZoom, setDiagramZoom] = useState(2)
+
+  if (!attachments || attachments.length === 0) return null
+
+  const handleApprove = async (index: number) => {
+    setDecisionError('')
+    // Hallazgo #6: antes, si `projectId` faltaba, el `if` de abajo se
+    // saltaba el POST en silencio pero igual se llegaba a
+    // `setDecidedFor(...)` y la burbuja marcaba "Diagrama aprobado." sin
+    // haber persistido nada. Ahora, sin projectId, se corta acá con un
+    // error visible en vez de mostrar un éxito falso.
+    if (!projectId) {
+      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      return
+    }
+    try {
+      await submitDiagramDecision(projectId, 'approve', undefined, attachments[index]?.id)
+    } catch (err) {
+      // HU6: antes el error del backend se perdia (void + sin catch) y la
+      // burbuja marcaba "Diagrama aprobado." aunque el POST hubiera fallado.
+      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+      return
+    }
+    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.approve }))
+    onSendMessage?.('Apruebo el diagrama, continuemos.')
+  }
+
+  // HU6: el boton "Rechazar" existia solo en DiagramHistoryPanel, asi que
+  // desde el chat no habia forma de rechazar un diagrama. Mismo endpoint
+  // (POST /api/diagrams/decision, phase="diagram"), decision="reject".
+  // A diferencia de "Solicitar cambios", no manda ningun mensaje al chat:
+  // rechazar corta el flujo, no pide una nueva iteracion.
+  const handleReject = async (index: number) => {
+    setDecisionError('')
+    if (!projectId) {
+      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      return
+    }
+    const feedbackForThisAttachment = (feedbackByIndex[index] ?? '').trim()
+    try {
+      await submitDiagramDecision(
+        projectId,
+        'reject',
+        feedbackForThisAttachment || undefined,
+        attachments[index]?.id,
+      )
+    } catch (err) {
+      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+      return
+    }
+    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.reject }))
+    setOpenFeedbackFor(null)
+    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
+  }
+
+  const handleSendAdjustment = async (index: number) => {
+    const trimmed = (feedbackByIndex[index] ?? '').trim()
+    if (!trimmed) {
+      setDecisionError('Describe el cambio que necesitas antes de enviarlo.')
+      return
+    }
+    setDecisionError('')
+    if (!projectId) {
+      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      return
+    }
+    try {
+      await submitDiagramDecision(projectId, 'modify', trimmed, attachments[index]?.id)
+    } catch (err) {
+      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
+      return
+    }
+    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.modify }))
+    // El prompt completo (con instrucciones + Mermaid anterior) es lo que
+    // necesita el agente para regenerar el diagrama, pero el usuario solo
+    // escribió su feedback -- eso es lo que debe verse en su propia
+    // burbuja, no el prompt entero (ver nota en chatStore.sendMessage).
+    onSendMessage?.(
+      buildDiagramAdjustmentPrompt(trimmed, extractMermaidFromMessage(assistantContent)),
+      trimmed,
+    )
+    setOpenFeedbackFor(null)
+    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
+    setDecisionError('')
+  }
+
+  // Decision de este diagrama: la recien tomada en esta sesion (`decidedFor`)
+  // o, tras un F5, la que devuelve el historial del chat (`attachment.decision`).
+  // Si hay una, no se vuelven a ofrecer los botones.
+  const decidedTextFor = (attachment: NonNullable<Message['attachments']>[number], index: number) =>
+    decidedFor[index] ??
+    (attachment.decision ? DIAGRAM_DECISION_TEXT[attachment.decision] : undefined)
+
+  const openExpandedDiagram = (url: string) => {
+    setDiagramZoom(2)
+    setExpandedUrl(url)
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      {attachments.map((attachment, index) => (
+        <div key={`${attachment.url}-${index}`}>
+          <img
+            src={attachment.url}
+            alt={attachment.filename}
+            className="my-2 max-h-[70vh] w-full max-w-3xl rounded-lg object-contain cursor-zoom-in"
+            loading="lazy"
+            title="Click para ampliar"
+            onClick={() => openExpandedDiagram(attachment.url)}
+          />
+          {onSendMessage && !decidedTextFor(attachment, index) && (
+            <>
+              <div className="flex gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => void handleApprove(index)}
+                  className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                >
+                  ✅ Aprobar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleReject(index)}
+                  className="text-xs px-2 py-1 rounded bg-red-600 text-white hover:bg-red-700"
+                >
+                  ❌ Rechazar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenFeedbackFor(index)
+                    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
+                    setDecisionError('')
+                  }}
+                  className="text-xs px-2 py-1 rounded bg-gray-300 text-gray-800 hover:bg-gray-400"
+                >
+                  ✏️ Solicitar cambios
+                </button>
+              </div>
+              {openFeedbackFor === index && (
+                <div className="mt-2 space-y-2">
+                  <label className="block text-xs font-medium text-gray-700" htmlFor={`diagram-feedback-${index}`}>
+                    ¿Qué debe ajustarse en el diagrama?
+                  </label>
+                  <textarea
+                    id={`diagram-feedback-${index}`}
+                    value={feedbackByIndex[index] ?? ''}
+                    onChange={(event) =>
+                      setFeedbackByIndex((prev) => ({ ...prev, [index]: event.target.value }))
+                    }
+                    rows={3}
+                    className="w-full rounded border border-gray-300 p-2 text-sm text-gray-900"
+                    placeholder="Describe los cambios que necesitas en el diagrama..."
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSendAdjustment(index)}
+                      className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
+                    >
+                      Enviar ajuste
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenFeedbackFor(null)
+                        setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
+                        setDecisionError('')
+                      }}
+                      className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                  {decisionError && <p className="text-xs text-red-700">{decisionError}</p>}
+                </div>
+              )}
+              {openFeedbackFor !== index && decisionError && (
+                <p className="mt-1 text-xs text-red-700">{decisionError}</p>
+              )}
+            </>
+          )}
+          {decidedTextFor(attachment, index) && (
+            <p className="mt-1 text-xs text-green-700">{decidedTextFor(attachment, index)}</p>
+          )}
+        </div>
+      ))}
+      {expandedUrl &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Visor de diagrama ampliado"
+            className="fixed inset-0 z-[9999] bg-black/90"
+          >
+            <div className="fixed bottom-4 left-1/2 z-10 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded border border-gray-700 bg-white p-2 text-sm shadow-2xl">
+              <span className="px-2 font-semibold text-gray-800">Controles</span>
+              <button
+                type="button"
+                onClick={() => setDiagramZoom((zoom) => Math.max(1, zoom - 0.5))}
+                className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+                aria-label="Alejar diagrama"
+              >
+                -
+              </button>
+              <span
+                className="min-w-14 text-center font-medium text-gray-700"
+                role="status"
+                aria-label={`Zoom actual ${Math.round(diagramZoom * 100)}%`}
+              >
+                {Math.round(diagramZoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setDiagramZoom((zoom) => Math.min(6, zoom + 0.5))}
+                className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+                aria-label="Acercar diagrama"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                onClick={() => setDiagramZoom(2)}
+                className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+              >
+                200%
+              </button>
+              <a
+                href={expandedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+              >
+                Abrir original
+              </a>
+              <button
+                type="button"
+                onClick={() => setExpandedUrl(null)}
+                className="rounded bg-gray-900 px-3 py-1 text-white hover:bg-gray-700"
+                aria-label="Cerrar visor de diagrama"
+              >
+                Cerrar
+              </button>
+            </div>
+            <div className="h-full w-full overflow-auto px-6 pb-24 pt-6">
+              <div className="flex min-h-full min-w-full items-start justify-center">
+                <img
+                  src={expandedUrl}
+                  alt="Diagrama ampliado"
+                  className="h-auto max-w-none rounded bg-white shadow-2xl"
+                  style={{ width: `${diagramZoom * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

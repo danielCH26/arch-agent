@@ -8,12 +8,28 @@ import pytest
 import httpx
 from unittest.mock import MagicMock, patch
 
+from app.core.engram_client import EngramClient
 from app.core.llm_validator import (
     validate_llm_config,
     get_available_models,
     _make_cache_key,
     LLMValidationError,
 )
+
+
+def _build_f12_engram_mock():
+    """F12 (REQ-12): mocks for the four REQ-5 EngramClient retrieval methods.
+
+    Existing tests already mock ``search`` / ``get_observation`` on a bare
+    ``MagicMock``; this helper keeps the surface explicit so a future
+    caller that wires ``save`` / ``delete`` does not silently break.
+    """
+    mock = MagicMock(spec=EngramClient)
+    mock.search.return_value = []
+    mock.get_observation.return_value = {}
+    mock.save.return_value = {"id": 0}
+    mock.delete.return_value = None
+    return mock
 
 
 class TestValidateLLMConfig:

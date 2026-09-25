@@ -1,17 +1,29 @@
 import asyncio
 import json
 import logging
+import re
+from dataclasses import dataclass
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user
-from app.api.sse import SSEStreamCallbackHandler
+from app.api.sse import SSEStreamCallbackHandler, format_done_event
+from app.core.agent import run_agent
+from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
+from app.core.attachment_tokens import build_attachment_url
+from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
+from app.core.session_store import latest_diagram_decisions
+from app.models.approval import Approval
+from app.models.message import Message
 from app.models.project import Project
+from app.models.session import UserSession
 
 # Umbral MINIMO de similitud para considerar un chunk/patron "relevante".
 # Sin esto, similarity_search() siempre devuelve los top-k mas cercanos
@@ -46,9 +58,156 @@ RAG_NEAR_MISS_MARGIN = 0.05
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
+DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
+PROPOSAL_PHASES = {"propuesta", "proposal"}
+# Hallazgo #14 (revisión feature/hu6-diagrama): "graph" hacía match por
+# substring contra "paragraph"/"photograph" y disparaba `_is_diagram_turn`
+# en turnos que no tenían nada que ver con diagramas. Se compila un patrón
+# de límite de palabra en vez de usar `in` sobre el string completo.
+DIAGRAM_REQUEST_TERMS = ("diagrama", "diagram", "mermaid", "flowchart", "graph")
+_DIAGRAM_REQUEST_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(term) for term in DIAGRAM_REQUEST_TERMS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class SyntheticRagDocument:
+    page_content: str
+    metadata: dict[str, Any]
+
 
 def _is_relevant(doc) -> bool:
     return (doc.metadata.get("similarity") or 0.0) >= RAG_MIN_SIMILARITY
+
+
+def _is_diagram_turn(project: Project | None, message: str) -> bool:
+    if project is not None and (project.current_phase or "").lower() in DIAGRAM_PHASES:
+        return True
+    return bool(_DIAGRAM_REQUEST_PATTERN.search(message))
+
+
+def _proposal_from_engram_state(session_row: UserSession, project_id: int) -> str | None:
+    project_state = (session_row.engram_state or {}).get(str(project_id), {})
+    if not isinstance(project_state, dict):
+        return None
+
+    proposal_data = project_state.get("propuesta") or project_state.get("proposal")
+    if proposal_data is None:
+        return None
+    if isinstance(proposal_data, str):
+        return proposal_data.strip() or None
+
+    try:
+        return json.dumps(proposal_data, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(proposal_data)
+
+
+def _load_approved_proposal_doc(
+    *,
+    user_id: int,
+    project_id: int | None,
+) -> SyntheticRagDocument | None:
+    """Recover the last approved proposal for this project's diagram turn.
+
+    The approvals table records phase decisions, not the proposal body. The
+    proposal text lives in chat history, so we use the approved proposal
+    decision as an anchor and retrieve the latest assistant message for the
+    same project before that approval.
+
+    Fixes aplicados (hallazgo #1, revisión feature/hu6-diagrama):
+
+    1. Filtra por `project_id` (migration 0016) además de `session_id`.
+       Antes, como `sessions` es una fila por usuario, aprobar la propuesta
+       del proyecto A hacía que el proyecto B (nunca aprobado) recibiera
+       este doc igual. Filas viejas con `project_id IS NULL` (creadas antes
+       de la migración) se excluyen a propósito: no sabemos a qué proyecto
+       pertenecían, así que no se usan como ancla de verdad para ningún
+       proyecto.
+    2. Ya no filtra directamente por `decision == "approved"`. Se toma la
+       última decisión de esa fase/proyecto sin importar cuál sea, y solo
+       se sigue adelante si esa última decisión es "approved". Antes, un
+       "approved" viejo se seguía encontrando aunque hubiera un
+       "modified"/"rejected" más reciente para el mismo proyecto -- la
+       propuesta ya descartada se reinyectaba igual como "fuente de
+       verdad" del diagrama.
+    """
+    if project_id is None:
+        return None
+
+    db = SessionLocal()
+    try:
+        session_row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+        if session_row is None:
+            return None
+
+        approval = (
+            db.query(Approval)
+            .filter(
+                Approval.session_id == session_row.id,
+                Approval.project_id == project_id,
+                Approval.phase.in_(PROPOSAL_PHASES),
+            )
+            .order_by(Approval.created_at.desc(), Approval.id.desc())
+            .first()
+        )
+        if approval is None or approval.decision != "approved":
+            # None: nunca hubo ninguna decisión para este proyecto.
+            # No "approved": la última decisión fue modify/reject -- la
+            # propuesta vigente (si la hubo) ya quedó descartada.
+            return None
+
+        proposal_from_state = _proposal_from_engram_state(session_row, project_id)
+        if proposal_from_state:
+            return SyntheticRagDocument(
+                page_content=(
+                    "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL "
+                    "DIAGRAMA:\n"
+                    f"{proposal_from_state}"
+                ),
+                metadata={
+                    "source_type": "approved_proposal",
+                    "pattern_name": "Propuesta aprobada",
+                    "similarity": 1.0,
+                    "phase": approval.phase,
+                    "approval_id": approval.id,
+                    "source": "session_engram_state",
+                },
+            )
+
+        message_query = db.query(Message).filter(
+            Message.session_id == session_row.id,
+            Message.project_id == project_id,
+            Message.user_id == user_id,
+            Message.role == "assistant",
+        )
+        if approval.created_at is not None:
+            message_query = message_query.filter(Message.created_at <= approval.created_at)
+
+        proposal_msg = (
+            message_query.order_by(Message.created_at.desc(), Message.id.desc()).first()
+        )
+        if proposal_msg is None or not proposal_msg.content.strip():
+            return None
+
+        return SyntheticRagDocument(
+            page_content=(
+                "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL "
+                "DIAGRAMA:\n"
+                f"{proposal_msg.content}"
+            ),
+            metadata={
+                "source_type": "approved_proposal",
+                "pattern_name": "Propuesta aprobada",
+                "similarity": 1.0,
+                "phase": approval.phase,
+                "approval_id": approval.id,
+                "message_id": proposal_msg.id,
+            },
+        )
+    finally:
+        db.close()
 
 
 def _is_near_miss(doc) -> bool:
@@ -61,6 +220,14 @@ def _is_near_miss(doc) -> bool:
 class ChatRequest(BaseModel):
     project_id: int | None = None
     message: str
+    # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
+    # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
+    # el prompt de "Solicitar cambios" sobre un diagrama, que agrega
+    # instrucciones + el Mermaid anterior), este campo lleva SOLO lo que
+    # el usuario tipeo, para persistirlo en Message.display_content y que
+    # sobreviva a un refresh. None/omitido para el resto de los mensajes
+    # (equivale a "display_content == content").
+    display_message: str | None = None
 
 
 # --- Route -----------------------------------------------------------------
@@ -73,23 +240,64 @@ async def chat(
     """
     Stream agent chat responses as SSE.
 
-    POST /api/chat  →  text/event-stream
+    POST /api/chat  ╬ô├Ñ├å  text/event-stream
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream — "sources" event (metadata RAG) + tokens
-            como "event: token" + final "event: done"
-        400 — no message provided
-        401 — invalid JWT
-        404 — project not found or not owned
-        409 — LLM not configured for user
+        200 text/event-stream ╬ô├ç├╢ "sources" event (metadata RAG) +
+            ("tool_start" / "tool_end")* + tokens as "event: token" +
+            optional "event: degraded" + final "event: done".
+            On hard failure, "event: error" terminates the stream.
+        400 ╬ô├ç├╢ no message provided
+        401 ╬ô├ç├╢ invalid JWT
+        404 ╬ô├ç├╢ project not found or not owned
+        409 ╬ô├ç├╢ LLM not configured for user
+
+    F11 changes (issue #13, design.md Γö¼┬║6.5):
+      - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
+        callbacks=..., rag_documents=...)`` which drives a
+        ``create_agent`` runtime.
+      - The route owns RAG retrieval (unchanged) and emits ``sources``
+        before invoking ``run_agent`` so the FE gets a stable ordering.
+      - ``run_agent`` may emit ``tool_start`` / ``tool_end`` pairs and,
+        on Context7 unavailability, exactly one ``degraded`` event
+        (REQ-6). Tokens and ``done`` come from ``run_agent``.
+      - The SSE handler (``SSEStreamCallbackHandler``) remains the source
+        of truth for tool event bytes (F11.4a).
+      - The optional Langfuse handler (``get_langfuse_handler``) is
+        appended to the callback list when env vars are present, else
+        skipped (REQ-5 / SCN-6).
+        503 -- Postgres unreachable (REQ-11)
+
+    Behaviour change (F12, REQ-4 / REQ-6): each turn inserts a Message(role=user)
+    + Message(role=assistant) row in ONE Postgres transaction that commits BEFORE
+    the SSE handler yields ``event: done``; fire-and-forget Engram mirror fires
+    AFTER the commit. Either store degrades gracefully when the other is down.
     """
     if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacío")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacΓö£┬ío")
 
     user_id = current_user["user_id"]
 
+    # F12 liveness check (REQ-11 / SCN-5): return 503 BEFORE any other DB op.
+    # Must run BEFORE project validation (which uses SessionLocal) and BEFORE
+    # build_langchain_model (which reads LLM config and would otherwise 500).
+    try:
+        with SessionLocal() as _db_probe:
+            from sqlalchemy import text as _text
+            _db_probe.execute(_text("SELECT 1")).scalar()
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Postgres liveness check failed user_id=%s: %s",
+            user_id, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable; chat cannot persist turns right now.",
+        )
+
     # Validate project ownership if provided
+    current_project: Project | None = None
     if body.project_id is not None:
         db = SessionLocal()
         try:
@@ -110,6 +318,7 @@ async def chat(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Proyecto no encontrado",
                 )
+            current_project = project
         finally:
             db.close()
 
@@ -127,10 +336,30 @@ async def chat(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
-    # Build SSE streaming handler
+    # Build SSE streaming handler + optional Langfuse callback
     handler = SSEStreamCallbackHandler()
+    langfuse_handler = get_langfuse_handler()
+    callbacks: list = [handler]
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
+        proposal_doc = None
+        if _is_diagram_turn(current_project, body.message):
+            try:
+                proposal_doc = await asyncio.to_thread(
+                    _load_approved_proposal_doc,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Approved proposal retrieval skipped for user_id=%s project_id=%s: %s",
+                    user_id,
+                    body.project_id,
+                    e,
+                )
+
         try:
             docs, _metrics = await asyncio.to_thread(
                 similarity_search,
@@ -142,11 +371,13 @@ async def chat(
             )
         except Exception as e:
             logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
-            return [], ""
+            docs = []
 
         # Descarta lo que quedo por debajo del umbral de relevancia -- ver
         # comentario junto a RAG_MIN_SIMILARITY.
         relevant_docs = [doc for doc in docs if _is_relevant(doc)]
+        if proposal_doc is not None:
+            relevant_docs = [proposal_doc, *relevant_docs]
 
         # Visibilidad de la zona gris: si hubo candidatos justo por debajo
         # del umbral, dejarlo en el log para poder diagnosticar casos como
@@ -183,13 +414,21 @@ async def chat(
 
     async def event_generator():
         """
-        SSE generator that yields tokens as they arrive from the model.
+        SSE generator that yields events as they arrive from the agent runtime.
 
-        Recupera contexto RAG desde PGVector y lo agrega al prompt.
-        Antes de los tokens, emite un evento 'sources' con la metadata de
-        los documentos recuperados (o [] si no hubo match / hubo error),
-        asi el frontend puede mostrar/loguear si la respuesta se apoyo
-        realmente en la base vectorial.
+        Ordering (design.md Γö¼┬║5.2):
+          sources -> (tool_start/tool_end)* -> token*N -> done
+
+        ``sources`` is emitted by this route BEFORE the agent runs (the agent
+        reuses the pre-fetched ``relevant_docs`` for system-prompt injection).
+        ``run_agent`` may also emit exactly one ``degraded`` event between
+        ``sources`` and the first ``token`` (REQ-6 / SCN-3); the route logs
+        a WARNING when that happens but lets the stream continue.
+
+        F12 (REQ-4, REQ-6): before yielding ``event: done``, persists both Message
+        rows (user + assistant) in ONE Postgres transaction; on SQLAlchemyError,
+        yields ``event: error`` instead of ``done`` (REQ-11). After the commit,
+        fire-and-forgets the Engram mirror.
         """
         try:
             docs, rag_context = await retrieve_context()
@@ -197,23 +436,152 @@ async def chat(
             sources = [_doc_to_source(doc) for doc in docs]
             yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
 
-            prompt = (
-                "Eres un asistente de arquitectura de software. "
-                "Responde en español, de forma clara y accionable.\n\n"
-                "Formato: usa markdown (encabezados, negritas, tablas) libremente, "
-                "pero NUNCA envuelvas la respuesta completa dentro de un bloque de "
-                "codigo (```). Usa ``` unicamente para fragmentos de codigo real o "
-                "diagramas ASCII puntuales, nunca para el mensaje entero.\n\n"
-                "Contexto recuperado desde RAG:\n"
-                f"{rag_context or 'No se encontro contexto relevante.'}\n\n"
-                f"Mensaje del usuario: {body.message}"
-            )
-            async for event in model.astream(prompt):
-                if event.content:
-                    # Yield the token as SSE
-                    yield f"event: token\ndata: {json.dumps(event.content, ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: null\n\n"
+            emitted_done = False
+            full_response = ""
+            # F13 (REQ-ATT-1 / REQ-PMCP-1): collected attachment dicts from
+            # ``event: attachment`` SSE payloads. Persisted alongside the
+            # assistant row in the same pre-``done`` transaction so a
+            # failure on either side rolls back BOTH rows atomically.
+            collected_attachments: list[dict] = []
+
+            def _persist_turn() -> None:
+                """F12 (REQ-4/REQ-6) + F13 (REQ-ATT-1): persist user+
+                assistant rows AND any attachments in ONE transaction.
+
+                Called BEFORE ``event: done`` is yielded so a persistence
+                failure surfaces as ``event: error`` instead of a completed
+                turn. Engram mirror fires only AFTER a successful commit.
+                """
+                db = SessionLocal()
+                try:
+                    session_id = ensure_user_session(db, user_id)
+                    user_msg = save_message(
+                        db,
+                        session_id=session_id,
+                        project_id=body.project_id,
+                        user_id=user_id,
+                        role="user",
+                        content=body.message,
+                        display_content=body.display_message,
+                    )
+                    asst_msg = save_message(
+                        db,
+                        session_id=session_id,
+                        project_id=body.project_id,
+                        user_id=user_id,
+                        role="assistant",
+                        content=full_response,
+                        citations=sources,
+                        attachments=collected_attachments,
+                    )
+                    db.commit()
+
+                    # Fire-and-forget Engram mirror AFTER the commit (REQ-6,
+                    # REQ-10). Failures are logged inside engram_mirror and
+                    # never raised back to the SSE stream.
+                    engram_mirror(user_msg, user_id=user_id, project_id=body.project_id)
+                    engram_mirror(asst_msg, user_id=user_id, project_id=body.project_id)
+                finally:
+                    db.close()
+
+            async for sse_dict in run_agent(
+                model=model,
+                message=body.message,
+                callbacks=callbacks,
+                rag_documents=docs,
+                user_id=user_id,
+                project_id=body.project_id,
+            ):
+                event_name = sse_dict.get("event")
+                payload = sse_dict.get("data")
+
+                if event_name == "degraded":
+                    logger.warning(
+                        "Context7 unavailable for user_id=%s project_id=%s; "
+                        "falling back to RAG-only: %s",
+                        user_id,
+                        body.project_id,
+                        payload,
+                    )
+                    yield f"event: degraded\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "error":
+                    yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    emitted_done = True  # error is terminal
+                    break
+
+                if event_name == "done":
+                    # F12 + F13: persist in ONE tx; on error yield error instead of done (REQ-11).
+                    try:
+                        _persist_turn()
+                    except SQLAlchemyError as exc:
+                        logger.error(
+                            "messages insert failed user_id=%s project_id=%s: %s",
+                            user_id,
+                            body.project_id,
+                            exc,
+                        )
+                        yield f"event: error\ndata: {json.dumps('messages store unavailable', ensure_ascii=False)}\n\n"
+                        emitted_done = True
+                        return
+
+                    yield format_done_event()
+                    emitted_done = True
+                    continue
+
+                if event_name == "token":
+                    if payload:
+                        full_response += payload
+                    yield f"event: token\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "tool_start":
+                    yield f"event: tool_start\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "tool_end":
+                    yield f"event: tool_end\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    continue
+
+                if event_name == "attachment":
+                    # F13 (REQ-PMCP-1 / REQ-ATT-1): the agent yields an
+                    # ``attachment`` SSE event after a successful
+                    # ``puppeteer_screenshot`` call. We strip the server-only
+                    # ``storage_path`` / ``source_url`` from the on-wire
+                    # payload (these would leak the server filesystem to the
+                    # browser) and queue the full dict for the pre-``done``
+                    # transaction so the assistant row + attachments land
+                    # atomically (REQ-ATT-1).
+                    if isinstance(payload, dict):
+                        public_payload = {
+                            # `id` (UUID del adjunto): identifica el diagrama
+                            # para decidir sobre él (POST /api/diagrams/decision).
+                            # Ya viaja dentro de `url`, no expone nada nuevo.
+                            "id": payload.get("id"),
+                            "kind": payload.get("kind", "screenshot"),
+                            "mime": payload.get("mime", "image/png"),
+                            "url": payload.get("url"),
+                            "filename": payload.get("filename"),
+                        }
+                        collected_attachments.append(dict(payload))
+                        yield (
+                            f"event: attachment\ndata: "
+                            f"{json.dumps(public_payload, ensure_ascii=False)}\n\n"
+                        )
+                    continue
+
+                # Unknown event types are ignored on purpose (forward-compat
+                # for future F12+ events).
+                continue
+
+            if not emitted_done:
+                # Defensive: if ``run_agent`` returned without yielding
+                # ``done`` or ``error``, fire ``done`` to keep the FE
+                # contract stable (design.md Γö¼┬║9).
+                yield format_done_event()
         except Exception as e:
+            logger.exception("event_generator failed: %s", e)
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -224,3 +592,122 @@ async def chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/history")
+def chat_history(
+    project_id: int = Query(..., ge=1),
+    limit: int = Query(5, ge=1, le=50),
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, list[dict[str, Any]]]:
+    """
+    GET /api/chat/history?project_id=<int>&limit=<int:1..50,default=5>
+
+    Returns the last ``limit`` messages for ``(user_id, project_id)`` ordered
+    newest-first. Cross-user access returns 404 (REQ-7, do not leak existence).
+    Postgres unreachable returns 200 ``{"messages": []}`` per REQ-11 / SCN-5.
+    """
+    user_id = current_user["user_id"]
+    # FastAPI already clamps via Query(ge=1, le=50); defensive clamp too.
+    limit = max(1, min(50, int(limit)))
+
+    db = SessionLocal()
+    try:
+        # Ownership check: 404 cross-user (REQ-7). Do NOT leak existence.
+        project = (
+            db.query(Project)
+            .filter(Project.id == project_id, Project.user_id == user_id)
+            .first()
+        )
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado",
+            )
+
+        # Resolve the user's session id (lazy-upsert so a fresh user still
+        # gets an empty list, not an exception). REQ-11: any DB failure on
+        # the read path ╬ô├Ñ├å 200 with empty messages (graceful degradation).
+        try:
+            session = (
+                db.query(UserSession).filter(UserSession.user_id == user_id).first()
+            )
+            if session is None:
+                return {"messages": []}
+
+            rows = list_recent(db, session.id, project_id=project_id, limit=limit)
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "history read skipped, Postgres unreachable user_id=%s: %s",
+                user_id,
+                exc,
+            )
+            return {"messages": []}
+
+        # Decisión más reciente de cada diagrama (aprobado / rechazado / con
+        # cambios pedidos). Sin esto, un F5 borraba el estado "ya decidido" de
+        # la burbuja y volvían a aparecer los tres botones. Falla en blando:
+        # si esta consulta falla, el historial se devuelve igual, sin estado.
+        try:
+            decisions = latest_diagram_decisions(
+                db,
+                project_id=project_id,
+                attachment_ids=[
+                    att["id"]
+                    for row in rows
+                    for att in (row.attachments or [])
+                    if isinstance(att, dict) and att.get("id")
+                ],
+            )
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "diagram decisions read skipped user_id=%s project_id=%s: %s",
+                user_id,
+                project_id,
+                exc,
+            )
+            db.rollback()
+            decisions = {}
+
+        return {
+            "messages": [
+                {
+                    "id": row.id,
+                    "role": row.role,
+                    # F14 (migracion 0015): si el mensaje se guardo con un
+                    # display_content propio (hoy: "Solicitar cambios" sobre
+                    # un diagrama), se lo devolvemos en vez del content real
+                    # -- asi la burbuja del usuario sobrevive a un refresh
+                    # en vez de mostrar el prompt tecnico completo (ver
+                    # QA_feature-hu6-diagrama, seccion 0 punto 7). El agente
+                    # nunca ve esta llave: sigue recibiendo body.message tal
+                    # cual en cada turno nuevo.
+                    "content": row.display_content or row.content,
+                    "citations": row.citations or [],
+                    # Bug fix (HU6): esta llave nunca se devolvia, asi que un
+                    # reload de la pagina perdia los diagramas del chat por
+                    # completo (el frontend ya los esperaba, ver
+                    # frontend/src/api/chat.ts::_normaliseHistoryAttachments).
+                    # Ademas se re-firma el token de cada attachment aqui
+                    # (no se reusa el ``url`` guardado, que puede tener mas
+                    # de 5 min y estar vencido) via build_attachment_url.
+                    "attachments": [
+                        {
+                            "id": att["id"],
+                            "kind": att.get("kind", "screenshot"),
+                            "mime": att.get("mime", "image/png"),
+                            "filename": att.get("filename"),
+                            "url": build_attachment_url(att["id"], user_id),
+                            # None = sin decidir; si no, "approve" | "modify" | "reject".
+                            "decision": decisions.get(att["id"]),
+                        }
+                        for att in (row.attachments or [])
+                        if isinstance(att, dict) and att.get("id")
+                    ],
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
+        }
+    finally:
+        db.close()
