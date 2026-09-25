@@ -8,6 +8,7 @@ from app.api.dependencies import JWT_REVOKED, get_current_user
 from app.auth.register import register_user as _register_user
 from app.auth.validators import ValidationError
 from app.core.database import SessionLocal
+from app.core.error_handlers import handle_db_errors
 from app.core.jwt import create_access_token
 from app.models.user import User
 
@@ -63,8 +64,16 @@ def _get_user_by_login(login: str) -> User | None:
 
 # --- Routes ------------------------------------------------------------------
 
-
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@handle_db_errors
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {"description": "Database integrity error"},
+        503: {"description": "Database connection error"},
+    },
+)
 async def register(body: RegisterRequest):
     """
     Register a new user account.
@@ -78,8 +87,15 @@ async def register(body: RegisterRequest):
     token = create_access_token(user.id, user.username)
     return TokenResponse(user_id=user.id, username=user.username, token=token)
 
-
-@router.post("/login", response_model=TokenResponse)
+@handle_db_errors
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    responses={
+        409: {"description": "Database integrity error"},
+        503: {"description": "Database connection error"},
+    },
+)
 async def login(body: LoginRequest):
     """
     Authenticate with username or email + password.
@@ -101,8 +117,14 @@ async def login(body: LoginRequest):
     token = create_access_token(user.id, user.username)
     return TokenResponse(user_id=user.id, username=user.username, token=token)
 
-
-@router.post("/logout", response_model=LogoutResponse)
+@handle_db_errors
+@router.post(
+    "/logout",
+    response_model=LogoutResponse,
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def logout(current_user: dict = Depends(get_current_user)):
     """
     Revoke the current JWT by adding its jti to the revocation list.
@@ -113,8 +135,14 @@ async def logout(current_user: dict = Depends(get_current_user)):
         JWT_REVOKED.add(jti)
     return LogoutResponse(message="Logged out successfully")
 
-
-@router.get("/me", response_model=UserResponse)
+@handle_db_errors
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def me(current_user: dict = Depends(get_current_user)):
     """Return the authenticated user's profile."""
     db = SessionLocal()

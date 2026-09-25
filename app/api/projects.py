@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.api.dependencies import get_current_user
 from app.auth.validators import ValidationError
 from app.models.project import Project
+from app.core.error_handlers import handle_db_errors
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -73,8 +74,14 @@ def _require_project(user_id: int, project_id: int) -> Project:
 
 
 # --- Routes -------------------------------------------------------------------
-
-@router.get("", response_model=list[ProjectOut])
+@handle_db_errors
+@router.get(
+    "",
+    response_model=list[ProjectOut],
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def list_projects(current_user: dict = Depends(get_current_user)):
     """List all projects for the authenticated user."""
     from app.core.database import SessionLocal
@@ -99,8 +106,16 @@ async def list_projects(current_user: dict = Depends(get_current_user)):
     finally:
         db.close()
 
-
-@router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+@handle_db_errors
+@router.post(
+    "",
+    response_model=ProjectOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {"description": "Database integrity error"},
+        503: {"description": "Database connection error"},
+    },
+)
 async def create_project(
     body: ProjectCreate,
     current_user: dict = Depends(get_current_user),
@@ -152,7 +167,14 @@ async def create_project(
         db.close()
 
 
-@router.get("/{project_id}", response_model=ProjectOut)
+@handle_db_errors
+@router.get(
+    "/{project_id}",
+    response_model=ProjectOut,
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def get_project(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -168,8 +190,14 @@ async def get_project(
         created_at=project.created_at.isoformat() if project.created_at else "",
     )
 
-
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@handle_db_errors
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def delete_project(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -185,8 +213,14 @@ async def delete_project(
     finally:
         db.close()
 
-
-@router.get("/{project_id}/phase", response_model=PhaseOut)
+@handle_db_errors
+@router.get(
+    "/{project_id}/phase",
+    response_model=PhaseOut,
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def get_phase(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -199,8 +233,15 @@ async def get_phase(
         available_phases=AVAILABLE_PHASES,
     )
 
-
-@router.post("/{project_id}/advance", response_model=PhaseAdvanceOut)
+@handle_db_errors
+@router.post(
+    "/{project_id}/advance",
+    response_model=PhaseAdvanceOut,
+    responses={
+        409: {"description": "Database integrity error"},
+        503: {"description": "Database connection error"},
+    },
+)
 async def advance_phase(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -252,8 +293,15 @@ async def advance_phase(
     finally:
         db.close()
 
-
-@router.post("/{project_id}/mark-ready", response_model=dict)
+@handle_db_errors
+@router.post(
+    "/{project_id}/mark-ready",
+    response_model=dict,
+    responses={
+        409: {"description": "Database integrity error"},
+        503: {"description": "Database connection error"},
+    },
+)
 async def mark_ready(
     project_id: int,
     current_user: dict = Depends(get_current_user),

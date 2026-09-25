@@ -18,6 +18,7 @@ from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
+from app.core.error_handlers import handle_llm_errors
 from app.core.rag import similarity_search
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
@@ -232,7 +233,15 @@ class ChatRequest(BaseModel):
 
 # --- Route -----------------------------------------------------------------
 
-@router.post("")
+@handle_llm_errors
+@router.post(
+    "",
+    responses={
+        429: {"description": "LLM rate limit exceeded"},
+        502: {"description": "Invalid LLM response"},
+        504: {"description": "LLM timeout"},
+    },
+)
 async def chat(
     body: ChatRequest,
     current_user: dict = Depends(get_current_user),

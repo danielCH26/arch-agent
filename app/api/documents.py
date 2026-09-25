@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
 from app.core.database import SessionLocal
+from app.core.error_handlers import handle_db_errors, handle_file_errors
 from app.core.document_processing import (
     ALLOWED_EXTENSIONS,
     MAX_FILE_SIZE_BYTES,
@@ -82,8 +83,14 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
 
 
 # --- Routes -----------------------------------------------------------------
-
-@router.get("/{project_id}", response_model=list[DocumentOut])
+@handle_db_errors
+@router.get(
+    "/{project_id}",
+    response_model=list[DocumentOut],
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def list_documents(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -107,8 +114,14 @@ async def list_documents(
         for d in docs
     ]
 
-
-@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+@handle_db_errors
+@router.delete(
+    "/{doc_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        503: {"description": "Database connection error"},
+    },
+)
 async def delete_doc(
     doc_id: int,
     current_user: dict = Depends(get_current_user),
@@ -119,10 +132,16 @@ async def delete_doc(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
 
-
+@handle_db_errors
+@handle_file_errors
 @router.post(
     "/upload",
     status_code=status.HTTP_201_CREATED,
+    responses={
+        413: {"description": "File too large"},
+        415: {"description": "File invalid format"},
+        503: {"description": "Database connection error"},
+    },
 )
 async def upload_document(
     project_id: int,
