@@ -1,13 +1,15 @@
 """Cliente mínimo para la API HTTP local de Engram."""
 
 import json
+import logging
 import os
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-
+logger = logging.getLogger(__name__)
 class EngramError(RuntimeError):
     """Engram no está disponible o devolvió una respuesta inválida."""
 
@@ -16,7 +18,8 @@ class EngramClient:
     def __init__(self, base_url: str | None = None, timeout: float = 3.0):
         self.base_url = (base_url or os.getenv("ENGRAM_URL", "http://localhost:7437")).rstrip("/")
         self.timeout = timeout
-
+        self.max_retries = 3
+        self.backoff_base = 0.5
     def create_session(self, session_id: str, project: str, directory: str) -> None:
         self._request("POST", "/sessions", {"id": session_id, "project": project, "directory": directory})
 
@@ -53,11 +56,29 @@ class EngramClient:
             method=method,
             headers={"Content-Type": "application/json"} if data else {},
         )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                payload = response.read().decode("utf-8")
-        except (URLError, OSError) as exc:
-            raise EngramError(f"No fue posible conectar con Engram: {exc}") from exc
+
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    payload = response.read().decode("utf-8")
+                    break
+            except (URLError, TimeoutError, OSError) as exc:
+                last_exc = exc
+                if attempt < self.max_retries - 1:
+                    wait = self.backoff_base * (2 ** attempt)
+                    logger.warning(
+                        "Engram request failed (attempt %s/%s): %s. Retrying in %.1fs",
+                        attempt + 1,
+                        self.max_retries,
+                        exc,
+                        wait,
+                    )
+                    time.sleep(wait)
+        else:
+            raise EngramError(
+                f"No fue posible conectar con Engram tras {self.max_retries} intentos: {last_exc}"
+            ) from last_exc
 
         try:
             return json.loads(payload) if payload else {}

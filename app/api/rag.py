@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_current_user
 from app.core.rag import RAGSearchError, similarity_search
+from app.core.exceptions import RAGEmbeddingError, RAGSearchEmptyError
 
 router = APIRouter(prefix="/api/rag", tags=["rag"])
 
@@ -41,7 +42,14 @@ def _build_response(results, metrics: dict[str, float]) -> RAGSearchResponse:
     )
 
 
-@router.post("/search", response_model=RAGSearchResponse)
+@router.post(
+    "/search",
+    response_model=RAGSearchResponse,
+    responses={
+        400: {"description": "RAG search error"},
+        503: {"description": "Embedding service unavailable"},
+    },
+)
 async def search_rag(
     body: RAGSearchRequest,
     current_user: dict = Depends(get_current_user),
@@ -56,12 +64,26 @@ async def search_rag(
             scope=body.scope,
             category=body.category,
         )
+    except RAGEmbeddingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Error de embedding: {e}",
+        )
+    except RAGSearchEmptyError:
+        return _build_response([], {"search_ms": 0.0, "embedding_ms": 0.0, "total_ms": 0.0})
     except RAGSearchError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return _build_response(results, metrics)
 
 
-@router.get("/patterns/search", response_model=RAGSearchResponse)
+@router.get(
+    "/patterns/search",
+    response_model=RAGSearchResponse,
+    responses={
+        400: {"description": "RAG search error"},
+        503: {"description": "Embedding service unavailable"},
+    },
+)
 async def search_patterns(
     q: str = Query(..., min_length=1),
     k: int = Query(default=5, ge=1, le=20),
@@ -77,12 +99,26 @@ async def search_patterns(
             scope="patterns",
             category=category,
         )
+    except RAGEmbeddingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Error de embedding: {e}",
+        )
+    except RAGSearchEmptyError:
+        return _build_response([], {"search_ms": 0.0, "embedding_ms": 0.0, "total_ms": 0.0})
     except RAGSearchError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return _build_response(results, metrics)
 
 
-@router.get("/documents/search", response_model=RAGSearchResponse)
+@router.get(
+    "/documents/search",
+    response_model=RAGSearchResponse,
+    responses={
+        400: {"description": "RAG search error"},
+        503: {"description": "Embedding service unavailable"},
+    },
+)
 async def search_documents(
     q: str = Query(..., min_length=1),
     project_id: Optional[int] = Query(default=None),
@@ -98,6 +134,13 @@ async def search_documents(
             k=k,
             scope="documents",
         )
+    except RAGEmbeddingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Error de embedding: {e}",
+        )
+    except RAGSearchEmptyError:
+        return _build_response([], {"search_ms": 0.0, "embedding_ms": 0.0, "total_ms": 0.0})
     except RAGSearchError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return _build_response(results, metrics)

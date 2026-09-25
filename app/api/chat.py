@@ -10,6 +10,7 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
+from app.core.error_handlers import handle_llm_errors
 from app.core.rag import similarity_search
 from app.models.project import Project
 
@@ -65,7 +66,15 @@ class ChatRequest(BaseModel):
 
 # --- Route -----------------------------------------------------------------
 
-@router.post("")
+@handle_llm_errors
+@router.post(
+    "",
+    responses={
+        429: {"description": "LLM rate limit exceeded"},
+        502: {"description": "Invalid LLM response"},
+        504: {"description": "LLM timeout"},
+    },
+)
 async def chat(
     body: ChatRequest,
     current_user: dict = Depends(get_current_user),
