@@ -35,10 +35,16 @@ interface ProposalsState {
   iterations: Proposal[]
   inFlight: InFlightStatus
   error: string | null
+  // HU9: paso + porcentaje del último evento `progress` recibido. null
+  // cuando no hay generación en curso.
+  progress: { step: string; percent: number } | null
 
   // Streaming actions
   generate: (projectId: number) => Promise<void>
   modify: (proposalId: number, feedback: string) => Promise<void>
+  // HU9: corta el stream en curso (aborta el fetch, que a su vez hace que
+  // el backend detecte la desconexión vía `request.is_disconnected()`).
+  cancel: () => void
 
   // Decision action
   decide: (
@@ -81,20 +87,27 @@ function proposalFromOut(out: ProposalOut): Proposal {
   }
 }
 
+// HU9: referencia al abort() del stream en curso. Vive fuera del store
+// (no es estado reactivo, es una función) igual que el patrón ya usado en
+// `createProposalStream` (api/proposals.ts) para el propio AbortController.
+let _abortCurrentStream: (() => void) | null = null
+
 export const proposalsStore = create<ProposalsState>((set, get) => ({
   currentProposal: null,
   iterations: [],
   inFlight: 'idle',
   error: null,
+  progress: null,
 
   generate: async (projectId: number) => {
     set({
       inFlight: 'generating',
       error: null,
+      progress: null,
       currentProposal: emptyProposal(projectId),
     })
 
-    createProposalStream(
+    _abortCurrentStream = createProposalStream(
       'generate',
       { project_id: projectId },
       {
@@ -104,6 +117,9 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               ? { currentProposal: { ...state.currentProposal, citations } }
               : {},
           )
+        },
+        onProgress: (step, percent) => {
+          set({ progress: { step, percent } })
         },
         onToken: (token) => {
           set((state) =>
@@ -131,14 +147,21 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               currentProposal: finalized,
               iterations: [finalized, ...state.iterations],
               inFlight: 'idle',
+              progress: null,
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message })
+          set({ inFlight: 'idle', error: message, progress: null })
         },
       },
     )
+  },
+
+  cancel: () => {
+    _abortCurrentStream?.()
+    _abortCurrentStream = null
+    set({ inFlight: 'idle', progress: null })
   },
 
   modify: async (proposalId: number, feedback: string) => {
@@ -148,6 +171,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     set({
       inFlight: 'modifying',
       error: null,
+      progress: null,
       currentProposal: prior
         ? {
             ...emptyProposal(prior.project_id),
@@ -156,7 +180,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
         : emptyProposal(0),
     })
 
-    createProposalStream(
+    _abortCurrentStream = createProposalStream(
       'modify',
       { project_id: prior?.project_id ?? 0, feedback, proposal_id: proposalId },
       {
@@ -166,6 +190,9 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               ? { currentProposal: { ...state.currentProposal, citations } }
               : {},
           )
+        },
+        onProgress: (step, percent) => {
+          set({ progress: { step, percent } })
         },
         onToken: (token) => {
           set((state) =>
@@ -194,11 +221,12 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               currentProposal: finalized,
               iterations: [finalized, ...state.iterations],
               inFlight: 'idle',
+              progress: null,
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message })
+          set({ inFlight: 'idle', error: message, progress: null })
         },
       },
     )
@@ -256,11 +284,14 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   },
 
   reset: () => {
+    _abortCurrentStream?.()
+    _abortCurrentStream = null
     set({
       currentProposal: null,
       iterations: [],
       inFlight: 'idle',
       error: null,
+      progress: null,
     })
   },
 

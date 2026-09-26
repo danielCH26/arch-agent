@@ -18,7 +18,7 @@ import json
 import logging
 import os
 from time import perf_counter
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from langchain_core.documents import Document
 
@@ -94,14 +94,18 @@ class ProposalGenerator:
         project_id: int | None = None,
         feedback: str | None = None,
         prior_proposal_id: int | None = None,
+        cancel_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[tuple[str, Any]]:
         """Yield SSE-ready events for one proposal generation.
 
         Event order:
-          1. ``("sources", list[dict])`` -- RAG pattern metadata filtered by
+          1. ``("progress", {"step": str, "percent": int})`` -- emitted at up
+             to 4 checkpoints (HU9): loading_project, retrieving_context,
+             generating, persisting. Best-effort, purely informational.
+          2. ``("sources", list[dict])`` -- RAG pattern metadata filtered by
              ``RAG_MIN_SIMILARITY``. Always emitted, even when empty.
-          2. ``("token", str)`` -- one per LLM token. Many events.
-          3. ``("done", {"proposal_id": int, "citations": list[dict]})`` --
+          3. ("token", str)`` -- one per LLM token. Many events.
+          4. ``("done", {"proposal_id": int, "citations": list[dict]})`` --
              emitted ONCE after the ``proposals`` row + ``interaction_log``
              row are committed. Citations here mirror the ``sources`` payload
              so the frontend can hydrate its store from a single source.
@@ -109,6 +113,12 @@ class ProposalGenerator:
         On any unrecoverable failure during streaming the generator yields
         ``("error", str)`` exactly once and stops. The DB write is skipped
         so the user can retry without leaving orphan ``proposed`` rows.
+
+        ``cancel_check`` (HU9): optional awaitable predicate (typically
+        ``Request.is_disconnected``) polled during the LLM token loop. When
+        it returns True the generator stops consuming the LLM stream and
+        returns WITHOUT persisting -- same contract as any other failure
+        path here.
         """
         effective_project_id = project_id if project_id is not None else self.project_id
         if effective_project_id is None:
@@ -121,6 +131,7 @@ class ProposalGenerator:
         started_at = perf_counter()
 
         # 1. Load project + session (ownership + FK).
+        yield ("progress", {"step": "loading_project", "percent": 10})
         try:
             project, session_id = await asyncio.to_thread(
                 _load_project_and_session, self.user_id, effective_project_id
@@ -149,6 +160,7 @@ class ProposalGenerator:
         )
 
         # 4. Retrieve patterns from PGVector.
+        yield ("progress", {"step": "retrieving_context", "percent": 30})
         try:
             docs = await asyncio.to_thread(
                 _retrieve_patterns, summary_query, self.user_id
@@ -180,13 +192,23 @@ class ProposalGenerator:
             return
 
         # 6. Stream LLM tokens + accumulate the full markdown.
+        yield ("progress", {"step": "generating", "percent": 50})
         full_markdown_chunks: list[str] = []
         try:
             async for event in model.astream(prompt):
+                if cancel_check is not None and await cancel_check():
+                    raise _ProposalCancelled()
                 chunk = getattr(event, "content", None)
                 if chunk:
                     full_markdown_chunks.append(chunk)
                     yield ("token", chunk)
+        except _ProposalCancelled:
+            logger.info(
+                "Proposal generation cancelled by client project_id=%s user_id=%s",
+                effective_project_id,
+                self.user_id,
+            )
+            return
         except Exception as exc:
             logger.warning(
                 "LLM stream failed for project_id=%s user_id=%s: %s",
@@ -206,6 +228,7 @@ class ProposalGenerator:
             return
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
+        yield ("progress", {"step": "persisting", "percent": 90})
         try:
             proposal_id, interaction_id = await asyncio.to_thread(
                 _persist_proposal_and_log,
@@ -359,6 +382,10 @@ def _build_prompt(
 
 class _ProposalDomainError(Exception):
     """Distinguished from generic exceptions so the SSE error message is clean."""
+
+
+class _ProposalCancelled(Exception):
+    """Señal interna: el cliente se desconectó mientras el LLM generaba (HU9)."""
 
 
 def _load_project_and_session(user_id: int, project_id: int) -> tuple[Project, int]:

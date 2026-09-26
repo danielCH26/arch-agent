@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import AsyncIterator, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -91,6 +92,13 @@ class ProposalOut(BaseModel):
 
 def _emit_sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _as_utc(dt):
+    """Normaliza un datetime de Postgres (a veces naive) a aware-UTC (HU9)."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 async def _sse_stream(
@@ -241,6 +249,7 @@ def _apply_project_proposal_decision(
 @router.post("/api/proposals/generate")
 async def generate_proposal(
     body: GenerateRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = int(current_user["user_id"])
@@ -248,13 +257,44 @@ async def generate_proposal(
     db = SessionLocal()
     try:
         _require_owned_project(db, user_id=user_id, project_id=body.project_id)
+
+        # HU9 criterio 1: ancla de tiempo = última aprobación de la fase
+        # "requerimientos" de este proyecto. Mide desde la aprobación real,
+        # así que incluye el tiempo que tarde el usuario en clickear
+        # "Generar propuesta" (la UI no dispara la generación sola, ver
+        # proposal.md decisión #5) -- no es puramente latencia de backend.
+        requirements_approval = (
+            db.query(Approval)
+            .filter(
+                Approval.project_id == body.project_id,
+                Approval.phase == "requerimientos",
+                Approval.decision == "approved",
+            )
+            .order_by(Approval.created_at.desc(), Approval.id.desc())
+            .first()
+        )
+        requirements_approved_at = _as_utc(
+            requirements_approval.created_at if requirements_approval else None
+        )
     finally:
         db.close()
 
     generator = ProposalGenerator(user_id=user_id, project_id=body.project_id)
 
     async def event_iterator():
-        async for event, payload in generator.generate_stream(project_id=body.project_id):
+        async for event, payload in generator.generate_stream(
+            project_id=body.project_id,
+            cancel_check=request.is_disconnected,
+        ):
+            if event == "done" and requirements_approved_at is not None:
+                elapsed_s = (
+                    datetime.now(timezone.utc) - requirements_approved_at
+                ).total_seconds()
+                logger.info(
+                    "HU9 time_to_first_proposal project_id=%s elapsed_s=%.1f",
+                    body.project_id,
+                    elapsed_s,
+                )
             yield event, payload
 
     return StreamingResponse(
@@ -268,6 +308,7 @@ async def generate_proposal(
 async def modify_proposal(
     proposal_id: int,
     body: ModifyRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = int(current_user["user_id"])
@@ -305,6 +346,7 @@ async def modify_proposal(
             project_id=project_id,
             feedback=body.feedback,
             prior_proposal_id=proposal_id,
+            cancel_check=request.is_disconnected,
         ):
             yield event, payload
 

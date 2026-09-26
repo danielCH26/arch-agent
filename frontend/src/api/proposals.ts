@@ -34,6 +34,7 @@ export type ProposalDecision = 'approve' | 'modify' | 'reject'
 interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
+  onProgress: (step: string, percent: number) => void
   onDone: (proposalId: number, citations: ProposalCitation[]) => void
   onError: (error: string) => void
 }
@@ -70,6 +71,16 @@ function dispatchProposalSSE(
       callbacks.onSources(JSON.parse(rawData) as ProposalCitation[])
     } catch {
       callbacks.onSources([])
+    }
+    return false
+  }
+
+  if (eventName === 'progress' && rawData) {
+    try {
+      const parsed = JSON.parse(rawData) as { step: string; percent: number }
+      callbacks.onProgress(parsed.step, parsed.percent)
+    } catch {
+      // Progreso es best-effort: un payload malformado no debe cortar el stream.
     }
     return false
   }
@@ -120,7 +131,7 @@ export function createProposalStream(
   payload: { project_id: number; feedback?: string; proposal_id?: number },
   callbacks: ProposalStreamCallbacks,
 ): () => void {
-  const { onToken, onSources, onDone, onError } = callbacks
+  const { onToken, onSources, onProgress, onDone, onError } = callbacks
   const token = authStore.getState().token
   const url =
     endpoint === 'generate'
@@ -178,6 +189,7 @@ export function createProposalStream(
           const shouldStop = dispatchProposalSSE(event, {
             onToken,
             onSources,
+            onProgress,
             onDone,
             onError,
           })
@@ -189,6 +201,7 @@ export function createProposalStream(
         const shouldStop = dispatchProposalSSE(buffer, {
           onToken,
           onSources,
+          onProgress,
           onDone,
           onError,
         })

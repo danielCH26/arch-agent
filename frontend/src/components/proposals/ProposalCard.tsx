@@ -34,6 +34,8 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
   const iterations = proposalsStore((s) => s.iterations)
   const error = proposalsStore((s) => s.error)
   const generate = proposalsStore((s) => s.generate)
+  const progress = proposalsStore((s) => s.progress)
+  const cancel = proposalsStore((s) => s.cancel)
 
   // Empty state when nothing has streamed yet (parent decided to mount us).
   if (!currentProposal && iterations.length === 0 && !forceMount) {
@@ -71,7 +73,31 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
         {currentProposal?.content_markdown
           ? renderProposalMarkdown(currentProposal.content_markdown)
           : inFlight === 'generating' || inFlight === 'modifying'
-            ? <p className="italic text-gray-400">Generando propuesta...</p>
+            ? (
+                <div className="flex flex-col gap-2" data-testid="proposal-progress">
+                  <p className="italic text-gray-400">
+                    {progress?.step === 'loading_project' && 'Cargando proyecto...'}
+                    {progress?.step === 'retrieving_context' && 'Buscando patrones relevantes...'}
+                    {progress?.step === 'generating' && 'Generando propuesta...'}
+                    {progress?.step === 'persisting' && 'Guardando propuesta...'}
+                    {!progress && 'Generando propuesta...'}
+                  </p>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className="h-full rounded-full bg-blue-500 transition-all"
+                      style={{ width: `${progress?.percent ?? 5}%` }}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="proposal-cancel"
+                    onClick={cancel}
+                    className="self-start text-xs font-medium text-gray-500 underline hover:text-gray-700"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )
             : <p className="italic text-gray-400">Aún no hay propuesta.</p>}
       </div>
 
