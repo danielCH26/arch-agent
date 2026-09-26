@@ -206,6 +206,19 @@ def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
 
     patches = []
 
+    # F12 (REQ-11): the route opens a throwaway session for the Postgres
+    # liveness probe (``with SessionLocal() as _db_probe``) before doing
+    # anything else, and a second one for ``_persist_turn`` right before
+    # ``event: done``. Both need a session double that survives being
+    # used as a context manager AND called directly, without ever
+    # touching a real Postgres connection.
+    fake_db = MagicMock(name="fake-db-session")
+    fake_db.__enter__ = MagicMock(return_value=fake_db)
+    fake_db.__exit__ = MagicMock(return_value=False)
+
+    p_session = patch.object(chat_module, "SessionLocal", return_value=fake_db)
+    patches.append(p_session)
+
     # Build a fake model.
     fake_model = MagicMock(name="fake-model")
     fake_model.model_name = "fake-model"
