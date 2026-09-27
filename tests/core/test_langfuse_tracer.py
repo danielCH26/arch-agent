@@ -163,3 +163,56 @@ def test_callback_handler_alias_is_a_class_or_none():
     assert langfuse_tracer.CallbackHandler is None or callable(
         langfuse_tracer.CallbackHandler
     )
+
+
+# ---------------------------------------------------------------------------
+# flush() -- used by chat.py/elicitation.py (F14) to export a trace right
+# away instead of waiting for the SDK's background export cycle.
+# ---------------------------------------------------------------------------
+
+
+def test_flush_noop_when_callbackhandler_none(monkeypatch):
+    """No SDK / import failed -> flush() is a silent no-op, never raises."""
+    from app.core import langfuse_tracer
+
+    monkeypatch.setattr(langfuse_tracer, "CallbackHandler", None)
+    langfuse_tracer.flush()  # must not raise
+
+
+def test_flush_calls_get_client_flush(monkeypatch):
+    """flush() reaches the SDK's get_client().flush() -- this is what
+    chat.py/elicitation.py rely on to export a trace immediately instead of
+    waiting for the SDK's background export cycle (regression: elicitation
+    used to skip this call entirely, see PR #79 review)."""
+    from app.core import langfuse_tracer
+
+    monkeypatch.setattr(langfuse_tracer, "CallbackHandler", object())
+
+    flushed = {"called": False}
+
+    class FakeClient:
+        def flush(self):
+            flushed["called"] = True
+
+    import langfuse as langfuse_module
+    monkeypatch.setattr(langfuse_module, "get_client", lambda: FakeClient())
+
+    langfuse_tracer.flush()
+    assert flushed["called"] is True
+
+
+def test_flush_swallows_export_errors(monkeypatch):
+    """A network/export failure during flush() must never bubble up -- a
+    Langfuse outage should not turn into a 500 for the user."""
+    from app.core import langfuse_tracer
+
+    monkeypatch.setattr(langfuse_tracer, "CallbackHandler", object())
+
+    class FailingClient:
+        def flush(self):
+            raise ConnectionError("langfuse-web unreachable")
+
+    import langfuse as langfuse_module
+    monkeypatch.setattr(langfuse_module, "get_client", lambda: FailingClient())
+
+    langfuse_tracer.flush()  # must not raise

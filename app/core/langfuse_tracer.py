@@ -76,3 +76,25 @@ def get_langfuse_handler() -> Any:
         )
         return None
     return _build_handler()
+
+
+def flush() -> None:
+    """Flush pending Langfuse spans, swallowing any SDK/network error.
+
+    Used by chat.py/elicitation.py to export a trace right away instead of
+    waiting for the SDK's background export cycle (PR #79 review: a request
+    that finishes quickly could exit before the background exporter ran,
+    silently dropping the trace).
+
+    Safe to call even when Langfuse is not installed or not configured
+    (``CallbackHandler is None`` in that case) -- this never raises, so a
+    Langfuse outage or a missing wheel never breaks the caller.
+    """
+    if CallbackHandler is None:
+        return
+    try:
+        from langfuse import get_client
+
+        get_client().flush()
+    except Exception as e:  # pragma: no cover - defensive, mirrors _build_handler
+        _LOGGER.warning("Langfuse flush failed; some traces may be delayed. error=%s", e)

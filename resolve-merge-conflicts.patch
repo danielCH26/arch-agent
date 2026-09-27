@@ -1,0 +1,607 @@
+diff --git a/.gitignore b/.gitignore
+--- a/.gitignore
++++ b/.gitignore
+@@ -37,14 +37,9 @@
+ *.pdf
+ *.md
+ !README.md
+-!.atl/
+-!.atl/**/*.md
+-!openspec/
+-!openspec/**/*.md
+-!docs/adr/
+-!docs/adr/**/*.md
+ !README_hu2.md
+ !QA_criterios_aceptacion_RAG_final.md
++!QA_feature-hu6-diagrama.md
+ !.atl/
+ !.atl/**/*.md
+ !openspec/
+@@ -52,8 +47,6 @@
+ !docs/**/*.md
+ !docs/adr/
+ !docs/adr/**/*.md
+-!QA_feature-hu6-diagrama.md
+-*.freebuff
+ 
+ # Frontend (Vite + React)
+ frontend/node_modules/
+@@ -67,3 +60,4 @@
+ 
+ # CodeGraph local index (per-worktree, never shared)
+ .codegraph/
++.freebuff/
+diff --git a/app/core/langfuse_tracer.py b/app/core/langfuse_tracer.py
+--- a/app/core/langfuse_tracer.py
++++ b/app/core/langfuse_tracer.py
+@@ -76,3 +76,25 @@
+         )
+         return None
+     return _build_handler()
++
++
++def flush() -> None:
++    """Flush pending Langfuse spans, swallowing any SDK/network error.
++
++    Used by chat.py/elicitation.py to export a trace right away instead of
++    waiting for the SDK's background export cycle (PR #79 review: a request
++    that finishes quickly could exit before the background exporter ran,
++    silently dropping the trace).
++
++    Safe to call even when Langfuse is not installed or not configured
++    (``CallbackHandler is None`` in that case) -- this never raises, so a
++    Langfuse outage or a missing wheel never breaks the caller.
++    """
++    if CallbackHandler is None:
++        return
++    try:
++        from langfuse import get_client
++
++        get_client().flush()
++    except Exception as e:  # pragma: no cover - defensive, mirrors _build_handler
++        _LOGGER.warning("Langfuse flush failed; some traces may be delayed. error=%s", e)
+diff --git a/app/api/chat.py b/app/api/chat.py
+--- a/app/api/chat.py
++++ b/app/api/chat.py
+@@ -13,7 +13,7 @@
+ from app.api.dependencies import get_current_user
+ from app.api.sse import SSEStreamCallbackHandler, format_done_event
+ from app.core.agent import run_agent
+-from app.core.langfuse_tracer import get_langfuse_handler
++from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
+ from app.core.llm_loader import build_langchain_model, LLMConfigError
+ from app.core.database import SessionLocal
+ from app.core.attachment_tokens import build_attachment_url
+@@ -583,6 +583,11 @@
+         except Exception as e:
+             logger.exception("event_generator failed: %s", e)
+             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
++        finally:
++            # F14: exporta la traza de inmediato en vez de depender solo del
++            # ciclo en segundo plano del SDK de Langfuse (PR #79 review).
++            if langfuse_handler is not None:
++                flush_langfuse()
+ 
+     return StreamingResponse(
+         event_generator(),
+diff --git a/app/api/elicitation.py b/app/api/elicitation.py
+--- a/app/api/elicitation.py
++++ b/app/api/elicitation.py
+@@ -9,6 +9,7 @@
+ from app.api.projects import AVAILABLE_PHASES, _require_project
+ from app.core import elicitation_agent
+ from app.core.database import SessionLocal
++from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
+ from app.core.llm_loader import build_langchain_model, LLMConfigError
+ from app.core.session_store import load_session_state, record_approval_decision, save_session_state
+ from app.models.project import Project
+@@ -170,6 +171,9 @@
+             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+         )
+ 
++    # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).
++    langfuse_handler = get_langfuse_handler()
++
+     try:
+         decision = elicitation_agent.next_step(model, history, project.description or "")
+         if decision.done:
+@@ -201,6 +205,12 @@
+             "sin espacio de salida). Intenta de nuevo o prueba con otro "
+             "modelo en la configuración de LLM.",
+         )
++    finally:
++        # F14: exportar la traza de inmediato -- no depender solo del ciclo
++        # en segundo plano del SDK, que puede no alcanzar a correr si el
++        # proceso se reinicia justo después de esta respuesta (PR #79 review).
++        if langfuse_handler is not None:
++            flush_langfuse()
+ 
+     phase_data = {
+         "preguntas_respuestas": history,
+diff --git a/tests/core/test_langfuse_tracer.py b/tests/core/test_langfuse_tracer.py
+--- a/tests/core/test_langfuse_tracer.py
++++ b/tests/core/test_langfuse_tracer.py
+@@ -163,3 +163,56 @@
+     assert langfuse_tracer.CallbackHandler is None or callable(
+         langfuse_tracer.CallbackHandler
+     )
++
++
++# ---------------------------------------------------------------------------
++# flush() -- used by chat.py/elicitation.py (F14) to export a trace right
++# away instead of waiting for the SDK's background export cycle.
++# ---------------------------------------------------------------------------
++
++
++def test_flush_noop_when_callbackhandler_none(monkeypatch):
++    """No SDK / import failed -> flush() is a silent no-op, never raises."""
++    from app.core import langfuse_tracer
++
++    monkeypatch.setattr(langfuse_tracer, "CallbackHandler", None)
++    langfuse_tracer.flush()  # must not raise
++
++
++def test_flush_calls_get_client_flush(monkeypatch):
++    """flush() reaches the SDK's get_client().flush() -- this is what
++    chat.py/elicitation.py rely on to export a trace immediately instead of
++    waiting for the SDK's background export cycle (regression: elicitation
++    used to skip this call entirely, see PR #79 review)."""
++    from app.core import langfuse_tracer
++
++    monkeypatch.setattr(langfuse_tracer, "CallbackHandler", object())
++
++    flushed = {"called": False}
++
++    class FakeClient:
++        def flush(self):
++            flushed["called"] = True
++
++    import langfuse as langfuse_module
++    monkeypatch.setattr(langfuse_module, "get_client", lambda: FakeClient())
++
++    langfuse_tracer.flush()
++    assert flushed["called"] is True
++
++
++def test_flush_swallows_export_errors(monkeypatch):
++    """A network/export failure during flush() must never bubble up -- a
++    Langfuse outage should not turn into a 500 for the user."""
++    from app.core import langfuse_tracer
++
++    monkeypatch.setattr(langfuse_tracer, "CallbackHandler", object())
++
++    class FailingClient:
++        def flush(self):
++            raise ConnectionError("langfuse-web unreachable")
++
++    import langfuse as langfuse_module
++    monkeypatch.setattr(langfuse_module, "get_client", lambda: FailingClient())
++
++    langfuse_tracer.flush()  # must not raise
+diff --git a/tests/api/test_elicitation.py b/tests/api/test_elicitation.py
+--- a/tests/api/test_elicitation.py
++++ b/tests/api/test_elicitation.py
+@@ -18,21 +18,48 @@
+ """
+ from __future__ import annotations
+ 
+-from unittest.mock import patch
++import asyncio
++from unittest.mock import MagicMock, patch
+ 
+ import pytest
++from fastapi import HTTPException
+ from fastapi.testclient import TestClient
+ from sqlalchemy import create_engine
+ from sqlalchemy.orm import sessionmaker
+ from sqlalchemy.pool import StaticPool
+ 
+-from app.core import database
++from app.api.elicitation import (
++    ElicitationMessageIn,
++    get_elicitation_state,
++    send_elicitation_message,
++)
++from app.core import database, elicitation_agent
+ from app.core.database import Base
++from app.core.llm_loader import LLMConfigError
+ 
+ PHASE = "requerimientos"  # AVAILABLE_PHASES[0] en app/api/projects.py
+ 
+ _TEST_TABLES = ["users", "sessions", "projects", "approvals"]
+ 
++# --- Helpers para TestGetElicitationState / TestSendElicitationMessage -----
++# (mocking puro, sin TestClient ni DB real -- igual que el resto de
++# tests/api/ antes de la migración a `fake_db` que usa TestDecideElicitation)
++
++CURRENT_USER = {"user_id": 1, "username": "testuser"}
++
++
++def run(coro):
++    return asyncio.run(coro)
++
++
++def make_project(project_id=1, description="Un CRM interno"):
++    project = MagicMock()
++    project.id = project_id
++    project.user_id = CURRENT_USER["user_id"]
++    project.description = description
++    project.phase_ready = False
++    return project
++
+ 
+ @pytest.fixture()
+ def fake_db():
+@@ -334,3 +361,372 @@
+         )
+ 
+         assert response.status_code == 403
++
++
++class TestGetElicitationState:
++    """GET /api/projects/{id}/elicitation"""
++
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_no_session_yet_returns_empty_state(self, mock_load, mock_require):
++        mock_require.return_value = make_project()
++        mock_load.return_value = None
++
++        result = run(get_elicitation_state(project_id=1, current_user=CURRENT_USER))
++
++        assert result.done is False
++        assert result.question is None
++        assert result.resumen is None
++        assert result.history == []
++
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_pending_question_is_returned(self, mock_load, mock_require):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [],
++                "pending_question": "¿Quiénes usarán el sistema?",
++                "resumen": None,
++            }}}
++        }
++
++        result = run(get_elicitation_state(project_id=1, current_user=CURRENT_USER))
++
++        assert result.done is False
++        assert result.question == "¿Quiénes usarán el sistema?"
++
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_resumen_present_means_done(self, mock_load, mock_require):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": None,
++                "resumen": {"problema": "x", "usuarios": "y", "funcionalidades": [],
++                            "restricciones": [], "calidad": []},
++            }}}
++        }
++
++        result = run(get_elicitation_state(project_id=1, current_user=CURRENT_USER))
++
++        assert result.done is True
++        assert result.resumen["problema"] == "x"
++
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_project_isolation_does_not_leak_between_projects(self, mock_load, mock_require):
++        """
++        Bug encontrado en revisión de PR: sessions es una fila por usuario,
++        no por proyecto. Si engram_state se indexara solo por fase, el
++        proyecto 2 vería el resumen del proyecto 1 (o viceversa).
++        """
++        mock_require.side_effect = lambda user_id, project_id: make_project(project_id)
++        mock_load.return_value = {
++            "engram_state": {
++                "1": {"requerimientos": {
++                    "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                    "pending_question": None,
++                    "resumen": {"problema": "proyecto uno", "usuarios": "", "funcionalidades": [],
++                                "restricciones": [], "calidad": []},
++                }},
++                "2": {"requerimientos": {
++                    "preguntas_respuestas": [],
++                    "pending_question": "¿Qué problema resuelve el proyecto 2?",
++                    "resumen": None,
++                }},
++            }
++        }
++
++        result_1 = run(get_elicitation_state(project_id=1, current_user=CURRENT_USER))
++        result_2 = run(get_elicitation_state(project_id=2, current_user=CURRENT_USER))
++
++        assert result_1.done is True
++        assert result_1.resumen["problema"] == "proyecto uno"
++        assert result_2.done is False
++        assert result_2.question == "¿Qué problema resuelve el proyecto 2?"
++        assert result_2.resumen is None
++
++
++class TestSendElicitationMessage:
++    """POST /api/projects/{id}/elicitation/message"""
++
++    @patch("app.api.elicitation.save_session_state")
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_first_call_returns_forced_first_question_without_llm(
++        self, mock_load, mock_require, mock_build_model, mock_save
++    ):
++        """Historial vacío -> FIRST_QUESTION determinística, sin llamar al LLM."""
++        mock_require.return_value = make_project()
++        mock_load.return_value = None
++        mock_build_model.return_value = MagicMock()
++
++        result = run(send_elicitation_message(
++            project_id=1, body=ElicitationMessageIn(), current_user=CURRENT_USER
++        ))
++
++        assert result.done is False
++        assert result.question == elicitation_agent.FIRST_QUESTION
++        mock_build_model.return_value.invoke.assert_not_called()
++
++    @patch("app.api.elicitation.flush_langfuse")
++    @patch("app.api.elicitation.get_langfuse_handler")
++    @patch("app.api.elicitation.save_session_state")
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    @patch("app.core.elicitation_agent.next_step")
++    def test_flushes_langfuse_after_a_real_llm_call(
++        self, mock_next_step, mock_load, mock_require, mock_build_model,
++        mock_save, mock_get_handler, mock_flush,
++    ):
++        """Regresión (PR #79 review): una llamada real al LLM en elicitación
++        debe exportar la traza de inmediato, no depender solo del ciclo en
++        segundo plano del SDK de Langfuse."""
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": "pregunta pendiente",
++                "resumen": None,
++            }}}
++        }
++        mock_build_model.return_value = MagicMock()
++        mock_get_handler.return_value = MagicMock()  # Langfuse "configurado"
++        mock_next_step.return_value = elicitation_agent.ElicitationDecision(
++            done=False, question="siguiente pregunta", reason="sigue"
++        )
++
++        run(send_elicitation_message(
++            project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
++            current_user=CURRENT_USER,
++        ))
++
++        mock_flush.assert_called_once()
++
++    @patch("app.api.elicitation.flush_langfuse")
++    @patch("app.api.elicitation.get_langfuse_handler")
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    @patch("app.core.elicitation_agent.next_step")
++    def test_flushes_langfuse_even_when_the_llm_call_fails(
++        self, mock_next_step, mock_load, mock_require, mock_build_model,
++        mock_get_handler, mock_flush,
++    ):
++        """La traza de una llamada fallida tambien debe exportarse -- por
++        eso el flush vive en un ``finally``, no solo en el camino feliz."""
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": "pregunta pendiente",
++                "resumen": None,
++            }}}
++        }
++        mock_build_model.return_value = MagicMock()
++        mock_get_handler.return_value = MagicMock()
++        mock_next_step.side_effect = elicitation_agent.ElicitationLLMError("rate limit")
++
++        with pytest.raises(HTTPException):
++            run(send_elicitation_message(
++                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
++                current_user=CURRENT_USER,
++            ))
++
++        mock_flush.assert_called_once()
++
++    @patch("app.api.elicitation.load_session_state")
++    def test_400_when_resumen_already_generated(self, mock_load):
++        with patch("app.api.elicitation._require_project", return_value=make_project()):
++            mock_load.return_value = {
++                "engram_state": {"1": {"requerimientos": {
++                    "preguntas_respuestas": [],
++                    "pending_question": None,
++                    "resumen": {"problema": "x"},
++                }}}
++            }
++
++            with pytest.raises(HTTPException) as exc_info:
++                run(send_elicitation_message(
++                    project_id=1, body=ElicitationMessageIn(answer="algo"),
++                    current_user=CURRENT_USER,
++                ))
++
++        assert exc_info.value.status_code == 400
++        assert "decision" in exc_info.value.detail
++
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_400_when_answering_without_pending_question(self, mock_load, mock_require):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [],
++                "pending_question": None,
++                "resumen": None,
++            }}}
++        }
++
++        with pytest.raises(HTTPException) as exc_info:
++            run(send_elicitation_message(
++                project_id=1, body=ElicitationMessageIn(answer="una respuesta"),
++                current_user=CURRENT_USER,
++            ))
++
++        assert exc_info.value.status_code == 400
++        assert "pendiente" in exc_info.value.detail
++
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_re_asks_pending_question_without_calling_llm_when_no_answer(
++        self, mock_load, mock_require, mock_build_model
++    ):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": "¿Y las restricciones de tiempo?",
++                "resumen": None,
++            }}}
++        }
++
++        result = run(send_elicitation_message(
++            project_id=1, body=ElicitationMessageIn(), current_user=CURRENT_USER
++        ))
++
++        assert result.question == "¿Y las restricciones de tiempo?"
++        mock_build_model.assert_not_called()
++
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_409_when_llm_not_configured(self, mock_load, mock_require, mock_build_model):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": "pregunta pendiente",
++                "resumen": None,
++            }}}
++        }
++        mock_build_model.side_effect = LLMConfigError("sin config")
++
++        with pytest.raises(HTTPException) as exc_info:
++            run(send_elicitation_message(
++                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
++                current_user=CURRENT_USER,
++            ))
++
++        assert exc_info.value.status_code == 409
++
++    @patch("app.api.elicitation.elicitation_agent.next_step")
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_503_when_llm_call_fails(self, mock_load, mock_require, mock_build_model, mock_next_step):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": "pregunta pendiente",
++                "resumen": None,
++            }}}
++        }
++        mock_build_model.return_value = MagicMock()
++        mock_next_step.side_effect = elicitation_agent.ElicitationLLMError("rate limit")
++
++        with pytest.raises(HTTPException) as exc_info:
++            run(send_elicitation_message(
++                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
++                current_user=CURRENT_USER,
++            ))
++
++        assert exc_info.value.status_code == 503
++
++    @patch("app.api.elicitation.elicitation_agent.next_step")
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_502_when_model_returns_invalid_json(
++        self, mock_load, mock_require, mock_build_model, mock_next_step
++    ):
++        mock_require.return_value = make_project()
++        mock_load.return_value = {
++            "engram_state": {"1": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                "pending_question": "pregunta pendiente",
++                "resumen": None,
++            }}}
++        }
++        mock_build_model.return_value = MagicMock()
++        mock_next_step.side_effect = elicitation_agent.ElicitationAgentError(
++            "El modelo no devolvió JSON válido: ..."
++        )
++
++        with pytest.raises(HTTPException) as exc_info:
++            run(send_elicitation_message(
++                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
++                current_user=CURRENT_USER,
++            ))
++
++        # El detalle debe ser accionable para el usuario, no el error técnico crudo.
++        assert exc_info.value.status_code == 502
++        assert "JSON" not in exc_info.value.detail
++        assert "modelo de ia" in exc_info.value.detail.lower()
++
++    @patch("app.api.elicitation.elicitation_agent.next_step")
++    @patch("app.api.elicitation.build_langchain_model")
++    @patch("app.api.elicitation._require_project")
++    @patch("app.api.elicitation.load_session_state")
++    def test_project_isolation_when_saving_new_state(
++        self, mock_load, mock_require, mock_build_model, mock_next_step
++    ):
++        """
++        Responder en el proyecto 1 no debe pisar (ni leer) el estado del
++        proyecto 2 dentro del mismo engram_state compartido por el usuario.
++        """
++        mock_require.side_effect = lambda user_id, project_id: make_project(project_id)
++        shared_engram_state = {
++            "2": {"requerimientos": {
++                "preguntas_respuestas": [{"pregunta": "otra", "respuesta": "otra"}],
++                "pending_question": None,
++                "resumen": {"problema": "proyecto dos", "usuarios": "", "funcionalidades": [],
++                            "restricciones": [], "calidad": []},
++            }}
++        }
++        mock_load.return_value = {
++            "engram_state": {
++                "1": {"requerimientos": {
++                    "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
++                    "pending_question": "¿algo más?",
++                    "resumen": None,
++                }},
++                **shared_engram_state,
++            }
++        }
++        mock_build_model.return_value = MagicMock()
++        mock_next_step.return_value = elicitation_agent.ElicitationDecision(
++            done=False, question="siguiente pregunta", reason="sigue"
++        )
++
++        saved_state = {}
++
++        def fake_save(user_id, project_id, active_phase, engram_state):
++            saved_state.update(engram_state)
++
++        with patch("app.api.elicitation.save_session_state", side_effect=fake_save):
++            result = run(send_elicitation_message(
++                project_id=1, body=ElicitationMessageIn(answer="respuesta a la pregunta"),
++                current_user=CURRENT_USER,
++            ))
++
++        assert result.question == "siguiente pregunta"
++        # El estado del proyecto 2 se conserva intacto tras guardar el del proyecto 1.
++        assert saved_state["2"]["requerimientos"]["resumen"]["problema"] == "proyecto dos"
++        assert saved_state["1"]["requerimientos"]["pending_question"] == "siguiente pregunta"
++

@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
-from app.core.langfuse_tracer import get_langfuse_handler
+from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
@@ -583,6 +583,11 @@ async def chat(
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+        finally:
+            # F14: exporta la traza de inmediato en vez de depender solo del
+            # ciclo en segundo plano del SDK de Langfuse (PR #79 review).
+            if langfuse_handler is not None:
+                flush_langfuse()
 
     return StreamingResponse(
         event_generator(),
