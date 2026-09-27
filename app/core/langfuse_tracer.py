@@ -3,11 +3,14 @@ Langfuse tracing factory.
 
 ``get_langfuse_handler()`` returns a configured ``CallbackHandler`` when both
 ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` are present in the
-environment, otherwise ``None``. Without credentials the app simply runs
-untraced -- no Langfuse coupling, no crash.
+environment, otherwise ``None``. The free-tier default is untraced (no
+credentials, no Langfuse coupling).
 
 The ``langfuse`` import is guarded so the module is import-safe when the
 ``langfuse`` wheel is not installed in the current environment.
+
+Issue: #13 - [F11] Context7 MCP integration.
+ADR: docs/adr/010-context7-agent-runtime.md.
 """
 from __future__ import annotations
 
@@ -46,6 +49,8 @@ def _build_handler() -> Any:
     try:
         return CallbackHandler()
     except Exception as e:
+        # Construction can fail on bad credentials, missing OTLP endpoint,
+        # network unreachable at startup, etc. SCN-6 / design.md §15 risk 2.
         _LOGGER.warning(
             "Langfuse CallbackHandler construction failed; agent will run "
             "without tracing. error=%s",
@@ -57,13 +62,13 @@ def _build_handler() -> Any:
 def get_langfuse_handler() -> Any:
     """Return a Langfuse ``CallbackHandler`` or ``None``.
 
-    When the env vars are missing or empty (Langfuse not configured), this returns
+    When the env vars are missing or empty (free-tier default), this returns
     ``None`` and emits a WARNING so the misconfiguration is visible in the
-    backend log even though the chat flow still works.
+    backend log even though the chat flow still works (REQ-5, SCN-6).
 
     SDK construction errors (bad credentials, missing OTLP endpoint, etc.)
     are swallowed into the same ``None`` + WARNING path so a Langfuse outage
-    never breaks the chat response.
+    never breaks the chat response (design.md §9).
     """
     if not _env_present():
         _LOGGER.warning(
@@ -75,6 +80,11 @@ def get_langfuse_handler() -> Any:
 
 def flush() -> None:
     """Flush pending Langfuse spans, swallowing any SDK/network error.
+
+    Used by chat.py/elicitation.py to export a trace right away instead of
+    waiting for the SDK's background export cycle (PR #79 review: a request
+    that finishes quickly could exit before the background exporter ran,
+    silently dropping the trace).
 
     Safe to call even when Langfuse is not installed or not configured
     (``CallbackHandler is None`` in that case) -- this never raises, so a

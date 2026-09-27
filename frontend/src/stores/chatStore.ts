@@ -1,5 +1,11 @@
 import { create } from 'zustand'
-import { createChatStream, type RagSource } from '../api/chat'
+import {
+  createChatStream,
+  fetchChatHistory,
+  type Attachment,
+  type ChatHistoryMessage,
+  type RagSource,
+} from '../api/chat'
 
 export interface Message {
   id: string
@@ -9,33 +15,63 @@ export interface Message {
   // mientras no ha llegado el evento 'sources'; [] si llego pero no hubo
   // match relevante.
   sources?: RagSource[]
+  // F13 (REQ-PMCP-1 / REQ-ATT-3): uno o mas attachments inline (PNG de
+  // un diagrama Mermaid renderizado). El backend emite ``event: attachment``
+  // despues del ultimo token; el callback los apendea aqui para que el
+  // componente MessageBubble los renderice bajo el bloque de markdown.
+  attachments?: Attachment[]
 }
 
 interface ChatState {
   messages: Message[]
   isStreaming: boolean
   error: string | null
+  // F12 (REQ-8): true while loadHistory is in flight so the mount-time
+  // useEffect can avoid double-firing under React StrictMode.
+  loadingHistory: boolean
 
-  sendMessage: (projectId: number | null, text: string, onComplete?: () => void) => Promise<void>
+  sendMessage: (
+    projectId: number | null,
+    text: string,
+    displayText?: string,
+    onComplete?: () => void,
+  ) => Promise<void>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
   appendToLastAssistantMessage: (content: string) => void
   clearMessages: () => void
   setError: (error: string | null) => void
+  // F12 (REQ-8): replaces messages atomically with the backend history.
+  loadHistory: (projectId: number, limit?: number) => Promise<void>
 }
 
 export const chatStore = create<ChatState>((set) => ({
   messages: [],
   isStreaming: false,
   error: null,
+  loadingHistory: false,
 
-  sendMessage: async (projectId: number | null, text: string, onComplete?: () => void) => {
-    // Add user message
+  sendMessage: async (
+    projectId: number | null,
+    text: string,
+    displayText?: string,
+    onComplete?: () => void,
+  ) => {
+    // `text` es lo que se manda al backend (POST /api/chat); `displayText`
+    // es lo que se muestra en la burbuja del usuario. Por defecto son lo
+    // mismo (mensajes tipeados a mano). Ver "Solicitar cambios" en
+    // MessageBubble.tsx: ahi se arma un prompt largo con instrucciones +
+    // el Mermaid anterior para que el agente lo use, pero el usuario solo
+    // escribio su feedback -- eso es lo unico que deberia ver en su propia
+    // burbuja, no el prompt entero. F14 (migracion 0015): `displayText`
+    // tambien viaja al backend (ver createChatStream mas abajo) y se
+    // persiste en Message.display_content, asi que ya sobrevive a un
+    // refresh — GET /api/chat/history devuelve display_content or content.
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: text,
+      content: displayText ?? text,
     }
     set((state) => ({
       messages: [...state.messages, userMessage],
@@ -56,6 +92,10 @@ export const chatStore = create<ChatState>((set) => ({
     let fullResponse = ''
 
     // Start the stream - cleanup is handled internally
+    // F14 (migracion 0015): `displayText` (cuando viene) tambien se manda
+    // al backend como `display_message` para que quede persistido en
+    // Message.display_content — antes solo se usaba para la burbuja local
+    // de arriba, y se perdia en cualquier refresh.
     createChatStream(text, projectId, {
       onSources: (sources) => {
         set((state) => ({
@@ -66,6 +106,36 @@ export const chatStore = create<ChatState>((set) => ({
       },
       onToken: (token: string) => {
         fullResponse += token
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: fullResponse }
+              : msg
+          ),
+        }))
+      },
+      // F13: append each `` event: attachment`` payload to the in-flight
+    // assistant message's ``attachments`` list. The order in which the
+    // events arrive is preserved so the UI can stack the screenshots
+    // chronologically under the source code.
+    onAttachment: (attachment: Attachment) => {
+      set((state) => ({
+        messages: state.messages.map((msg) =>
+          msg.id === assistantMessageId
+            ? {
+                ...msg,
+                attachments: [...(msg.attachments ?? []), attachment],
+              }
+            : msg
+        ),
+      }))
+    },
+      // HU6 bug fix: antes esto no existia y una falla de Mermaid
+      // (validacion o render) dejaba al usuario sin diagrama y sin
+      // ninguna pista de que paso. Lo agregamos como una nota al final
+      // del mensaje del asistente, en la misma burbuja.
+      onDiagramIssue: (message: string) => {
+        fullResponse += `\n\n⚠️ ${message}`
         set((state) => ({
           messages: state.messages.map((msg) =>
             msg.id === assistantMessageId
@@ -89,7 +159,7 @@ export const chatStore = create<ChatState>((set) => ({
           ),
         }))
       },
-    })
+    }, displayText)
 
     // Store cleanup function for potential cancellation
     // Note: We don't expose cancellation in this implementation
@@ -149,5 +219,31 @@ export const chatStore = create<ChatState>((set) => ({
 
   setError: (error: string | null) => {
     set({ error })
+  },
+
+  // F12 (REQ-8): fetch history for (user, project) and replace messages
+  // atomically. On error: leave messages untouched and clear the flag.
+  loadHistory: async (projectId: number, limit: number = 5) => {
+    set({ loadingHistory: true })
+    try {
+      const rows = await fetchChatHistory(projectId, limit)
+      // The backend returns rows newest-first; the chat UI shows them in
+      // chronological order so the conversation reads top-to-bottom.
+      const ordered = [...rows].reverse()
+      const messages: Message[] = ordered.map((row: ChatHistoryMessage) => ({
+        id: `history-${row.id}`,
+        role: row.role,
+        content: row.content,
+        sources: row.citations,
+        attachments: row.attachments,
+      }))
+      // Atomic replacement: do not interleave with in-flight streaming
+      // tokens (REQ-9 guards in ChatWindow ensure this is a no-op while
+      // a stream is active).
+      set({ messages, loadingHistory: false })
+    } catch {
+      // Per REQ-8: on error, clear loadingHistory and leave messages untouched.
+      set({ loadingHistory: false })
+    }
   },
 }))

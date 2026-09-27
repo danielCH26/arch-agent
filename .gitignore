@@ -39,6 +39,7 @@ temp/
 !README.md
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
+!QA_feature-hu6-diagrama.md
 !.atl/
 !.atl/**/*.md
 !openspec/
@@ -53,6 +54,10 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# OpenSpec + .atl/ + docs/ artifacts: versioned via *.md exceptions above
+# OpenSpec artifacts: versioned via !openspec/ exception above (legacy
+# `openspec/` ignore removed in F12 to enable SDD artifacts in PRs).
+# .atl/ and docs/ Markdown artifacts are versioned via exceptions above.
 
+# CodeGraph local index (per-worktree, never shared)
+.codegraph/
 .freebuff/

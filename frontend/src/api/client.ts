@@ -1,4 +1,5 @@
 import { authStore } from '../stores/authStore'
+import { redirectToLogin } from './navigation'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -35,7 +36,7 @@ export async function apiFetch<T>(
     // Token inválido o expirado — limpiar estado y redirigir
     authStore.getState().logout()
     // Redirigir usando replace para no agregar a historial
-    window.location.replace('/login')
+    redirectToLogin()
     throw new ApiError(401, 'Session expired')
   }
 

@@ -129,13 +129,14 @@ if docker compose exec -T backend true >/dev/null 2>&1; then
     set +a
     export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-app:5432/${POSTGRES_DB}"
 
+    # Sin `|| warn`: con `set -e` un fallo aqui debe cortar el setup. Ambos
+    # pasos son idempotentes (schema.sql usa IF NOT EXISTS y el runner solo
+    # aplica lo pendiente), asi que re-correrlos no es un error esperado.
     docker compose exec -T -e DATABASE_URL="$DATABASE_URL" backend \
-        python3 scripts/init_db.py || \
-        warn "init_db falló (puede ser normal si ya hay tablas)"
+        python3 scripts/init_db.py
 
     docker compose exec -T -e DATABASE_URL="$DATABASE_URL" backend \
-        python3 migrations/run_migrations.py || \
-        warn "Migraciones fallaron (puede ser normal si ya están aplicadas)"
+        python3 -m migrations.run_migrations
 fi
 
 # --- 6. Esperar backend ---------------------------------------------------
