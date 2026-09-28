@@ -156,7 +156,11 @@ export function ChatPage() {
           </div>
         ) : (
           <div className="h-full">
-            <ChatWindow projectId={projectId} />
+            <ChatWindow
+              projectId={projectId}
+              phase={phase?.current_phase}
+              onProposalPhaseChanged={refreshAfterPhaseChange}
+            />
           </div>
         )}
       </div>

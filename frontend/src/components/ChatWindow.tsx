@@ -2,13 +2,16 @@ import { useEffect, useRef } from 'react'
 import { chatStore } from '../stores/chatStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
+import { ProposalCard } from './ProposalCard'
 import robotAvatar from '../assets/robot-avatar.png'
 
 interface ChatWindowProps {
   projectId: number
+  phase?: string | null
+  onProposalPhaseChanged?: () => void | Promise<void>
 }
 
-export function ChatWindow({ projectId }: ChatWindowProps) {
+export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory } = chatStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -37,6 +40,9 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {phase === 'propuesta' && (
+          <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
+        )}
         {loadingHistory && messages.length === 0 && (
           <div className="flex justify-center py-8" aria-label="Cargando historial del chat">
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-200 border-b-sky-600" />
