@@ -70,3 +70,14 @@ def test_build_prompt_with_citations_asks_for_bracket_numbers():
     )
     assert "[1] CQRS" in prompt
     assert "cita el numero entre corchetes" in prompt
+
+
+def test_build_prompt_tells_the_model_to_decide_instead_of_offering_alternatives():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+    assert "REGLA DE DECISION" in prompt
+    assert "UNA sola opcion" in prompt
+    assert "no le pidas al usuario que elija" in prompt
+    # La regla va antes del formato de salida para que el modelo la vea primero.
+    assert prompt.index("REGLA DE DECISION") < prompt.index("Formato OBLIGATORIO")

@@ -143,6 +143,66 @@ describe('ChatWindow — fase propuesta', () => {
 
     await waitFor(() => expect(proposalsStore.getState().currentProposal?.id).toBe(7))
     const advance = await screen.findByTestId('advance-phase')
-    expect(advance.textContent).toContain('Diagrama')
+    expect(advance.textContent).toContain('Refinamiento')
+  })
+})
+
+describe('ChatWindow — fase refinamiento (diagrama automático)', () => {
+  const originalSendMessage = chatStore.getState().sendMessage
+  const originalLoadHistory = chatStore.getState().loadHistory
+
+  beforeEach(() => resetStores())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    chatStore.setState({ sendMessage: originalSendMessage, loadHistory: originalLoadHistory })
+    resetStores()
+  })
+
+  it('al entrar sin diagramas genera el diagrama solo, sin que el usuario lo pida', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    chatStore.setState({ sendMessage, loadHistory: vi.fn().mockResolvedValue(undefined) })
+    const diagramsApi = await import('../../api/diagrams')
+    vi.spyOn(diagramsApi, 'fetchDiagramHistory').mockResolvedValue([])
+
+    render(<ChatWindow projectId={1} phase="refinamiento" />)
+
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+    expect(sendMessage.mock.calls[0][0]).toBe(1)
+    expect(sendMessage.mock.calls[0][1]).toContain('diagrama')
+  })
+
+  it('si el proyecto ya tiene diagramas no vuelve a generarlo', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    chatStore.setState({ sendMessage, loadHistory: vi.fn().mockResolvedValue(undefined) })
+    const diagramsApi = await import('../../api/diagrams')
+    const fetchHistory = vi.spyOn(diagramsApi, 'fetchDiagramHistory').mockResolvedValue([
+      {
+        message_id: 1,
+        id: 'abc',
+        url: '/x.png',
+        filename: 'x.png',
+        created_at: '2026-09-28T00:00:00',
+        decision: null,
+      },
+    ])
+
+    render(<ChatWindow projectId={1} phase="refinamiento" />)
+
+    await waitFor(() => expect(fetchHistory).toHaveBeenCalled())
+    expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('en otras fases no genera el diagrama', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    chatStore.setState({ sendMessage, loadHistory: vi.fn().mockResolvedValue(undefined) })
+    const diagramsApi = await import('../../api/diagrams')
+    const fetchHistory = vi.spyOn(diagramsApi, 'fetchDiagramHistory').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getElicitationState').mockResolvedValue(DONE_STATE)
+
+    render(<ChatWindow projectId={1} phase="requerimientos" />)
+
+    await screen.findByText('Aprobar')
+    expect(fetchHistory).not.toHaveBeenCalled()
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 })

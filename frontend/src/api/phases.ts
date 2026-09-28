@@ -2,14 +2,15 @@
 // Cada una tiene su pantalla en el front:
 //   requerimientos -> elicitación (preguntas + resumen a aprobar)
 //   propuesta      -> tarjeta de propuesta de arquitectura
-//   refinamiento   -> chat que genera el DIAGRAMA (Mermaid)
+//   refinamiento   -> genera el DIAGRAMA (Mermaid) de la propuesta aprobada y permite
+//                     refinarlo; el letrero muestra el nombre real de la fase
 //   revision       -> última fase (sin pantalla propia todavía)
 export const PHASES = ['requerimientos', 'propuesta', 'refinamiento', 'revision'] as const
 
 export const PHASE_LABELS: Record<string, string> = {
   requerimientos: 'Requerimientos',
   propuesta: 'Propuesta',
-  refinamiento: 'Diagrama',
+  refinamiento: 'Refinamiento',
   revision: 'Revisión',
 }
 

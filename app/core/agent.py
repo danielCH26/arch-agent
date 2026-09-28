@@ -79,7 +79,10 @@ DIAGRAM_HINT: str = (
     "capas existentes salvo que el usuario pida quitarlos explicitamente; "
     "aplica solo el cambio pedido y devuelve el diagrama completo. En "
     "ese caso responde unicamente con el bloque ```mermaid``` actualizado, "
-    "sin tablas, explicaciones, leyendas ni proximos pasos fuera del bloque."
+    "sin tablas, explicaciones, leyendas ni proximos pasos fuera del bloque. "
+    "Dibuja UN solo nodo por componente: si la propuesta menciona "
+    "alternativas (\"X o Y\", \"X / Y\"), no dibujes ambas ni dupliques "
+    "nodos; usa la primera o la que la propuesta marque como principal."
 )
 
 _TOOL_RESULT_MAX_CHARS: int = 4000

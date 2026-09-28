@@ -1286,3 +1286,9 @@ def test_grounding_still_flags_invented_components(label):
     code = f'flowchart LR\n  X["{label}"] --> Y["API Gateway"]'
 
     assert label in find_ungrounded_mermaid_nodes(code, [_approved_proposal_doc()])
+
+
+def test_diagram_hint_asks_for_one_node_per_component():
+    from app.core.agent import DIAGRAM_HINT
+
+    assert "UN solo nodo por componente" in DIAGRAM_HINT

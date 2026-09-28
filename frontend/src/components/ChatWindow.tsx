@@ -6,6 +6,7 @@ import {
   type ElicitationDecision,
   type ElicitationState,
 } from '../api/chat'
+import { fetchDiagramHistory } from '../api/diagrams'
 import { nextPhase, phaseLabel } from '../api/phases'
 import { chatStore } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
@@ -59,6 +60,21 @@ function SummaryView({ resumen }: { resumen: Record<string, unknown> }) {
   )
 }
 
+// Mensaje que se manda solo al entrar a la fase de refinamiento: el usuario no
+// tiene que pedir el diagrama a mano (es el mismo texto que escribia antes).
+const AUTO_DIAGRAM_PROMPT = 'genera el diagrama de la propuesta aprobada'
+
+const HISTORY_WAIT_MS = 5000
+
+// loadHistory reemplaza los mensajes de forma atomica: si se manda el mensaje
+// automatico antes de que termine, la carga lo pisaria.
+async function waitForHistoryLoad(timeoutMs = HISTORY_WAIT_MS) {
+  const start = Date.now()
+  while (chatStore.getState().loadingHistory && Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
 function shouldMountProposalCard(
   currentPhase: string | null,
   inFlight: 'idle' | 'generating' | 'modifying' | 'deciding',
@@ -96,6 +112,12 @@ export function ChatWindow({
   const isElicitation = currentPhase === 'requerimientos'
   const proposalLifecycle = proposalsStore((s) => s.currentProposal?.lifecycle)
   const upcomingPhase = nextPhase(currentPhase)
+  // Proyecto para el que ya se intento generar el diagrama solo (evita repetirlo
+  // por re-renders / StrictMode). La fase vigente se lee desde un ref para
+  // validarla justo antes de enviar.
+  const autoDiagramFor = useRef<number | null>(null)
+  const phaseRef = useRef(currentPhase)
+  phaseRef.current = currentPhase
 
   const renderElicitationState = useCallback((state: ElicitationState) => {
     const restored = state.history.flatMap((item, index) => [
@@ -152,6 +174,31 @@ export function ChatWindow({
     if (state.isStreaming || state.loadingHistory) return
     void state.loadHistory(projectId)
   }, [isElicitation, projectId])
+
+  // Fase de refinamiento: al entrar, si el proyecto todavia no tiene ningun
+  // diagrama, se genera solo (antes habia que escribir "genera el diagrama...").
+  // Si ya hay diagramas (volver a entrar / F5) no se vuelve a generar, y ante
+  // cualquier falla no se hace nada: el usuario todavia puede pedirlo a mano.
+  useEffect(() => {
+    if (currentPhase !== 'refinamiento') return
+    if (autoDiagramFor.current === projectId) return
+    if (proposalsStore.getState().inFlight !== 'idle') return
+    autoDiagramFor.current = projectId
+
+    void (async () => {
+      try {
+        await waitForHistoryLoad()
+        const diagrams = await fetchDiagramHistory(projectId)
+        if (diagrams.length > 0) return
+        if (phaseRef.current !== 'refinamiento') return
+        const state = chatStore.getState()
+        if (state.isStreaming || state.loadingHistory) return
+        await state.sendMessage(projectId, AUTO_DIAGRAM_PROMPT)
+      } catch {
+        // Silencioso a proposito.
+      }
+    })()
+  }, [currentPhase, projectId])
 
   // La tarjeta de propuesta vive en un store global: si cambia el proyecto se
   // limpia para no mostrar la propuesta de otro.
