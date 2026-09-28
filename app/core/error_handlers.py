@@ -55,19 +55,22 @@ def handle_llm_errors(func):
             _logger.warning("LLM timeout in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=504,
-                detail="El modelo está tardando demasiado. Por favor intenta de nuevo.",
+                detail="El modelo de IA está tardando más de lo esperado. "
+                       "Por favor, intentá de nuevo en unos segundos.",
             )
         except LLMRateLimitError as e:
             _logger.warning("LLM rate limit in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=429,
-                detail="Demasiadas solicitudes. Por favor intenta en un minuto.",
+                detail="Estás haciendo muchas solicitudes al modelo. "
+                       "Esperá un minuto e intentá de nuevo.",
             )
         except LLMInvalidResponseError as e:
             _logger.warning("LLM invalid response in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=502,
-                detail="El modelo devolvio una respuesta invalida. Por favor intenta de nuevo.",
+                detail="El modelo de IA devolvió una respuesta inválida. "
+                       "Por favor, intentá de nuevo o cambiá de modelo.",
             )
 
     return wrapper
@@ -88,13 +91,15 @@ def handle_db_errors(func):
             _logger.error("DB connection error in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=503,
-                detail="Base de datos no disponible. Por favor intenta luego.",
+                detail="No pudimos conectar con la base de datos. "
+                       "Es un problema temporal, intentá de nuevo en unos segundos.",
             )
         except DatabaseIntegrityError as e:
             _logger.warning("DB integrity error in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=409,
-                detail="Ya existe un recurso con esos datos.",
+                detail="Ya existe un recurso con esos datos. "
+                       "Cambiá los valores y volvé a intentar.",
             )
 
     return wrapper
@@ -114,13 +119,15 @@ def handle_file_errors(func):
             _logger.warning("File too large in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=413,
-                detail="Archivo muy grande (maximo 10MB).",
+                detail="El archivo es demasiado grande. "
+                       "El tamaño máximo permitido es 10 MB.",
             )
         except FileInvalidFormatError as e:
             _logger.warning("Invalid file format in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=415,
-                detail="Formato no soportado (usa PDF, MD o TXT).",
+                detail="El formato del archivo no es compatible. "
+                       "Usá PDF, Markdown o texto plano.",
             )
 
     return wrapper
@@ -142,7 +149,8 @@ def handle_rag_errors(func):
             _logger.error("RAG embedding error in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=503,
-                detail="No se pudo procesar la consulta. Por favor intenta de nuevo.",
+                detail="No pudimos procesar tu consulta. "
+                       "Verificá tu conexión e intentá de nuevo.",
             )
         # RAGSearchEmptyError is NOT an error to the user; let it propagate.
 

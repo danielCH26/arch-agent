@@ -1,0 +1,39 @@
+# backend/.dockerignore
+# Excluir todo lo que NO sea código del backend del contexto de Docker.
+# Sin esto, el cache se invalida con cada commit (por .git) y el build
+# re-copia frontend/, docs/, tests/, etc.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Frontend (no se necesita para el backend)
+frontend
+
+# Tests (corren fuera del contenedor en CI)
+tests
+tests/
+
+# Documentación
+docs
+openspec
+
+# Configuración sensible / backups
+.env
+.env.*
+*.env.backup*
+.env.backup*
+
+# Logs y temporales
+*.log
+*.tmp
+__pycache__
+__pycache__
+.pytest_cache
+.cache
+
+# IDEs
+.vscode
+.idea
+.DS_Store
