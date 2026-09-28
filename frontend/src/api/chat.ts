@@ -15,6 +15,15 @@ export interface RagSource {
   similarity: number | null
 }
 
+export interface Attachment {
+  id?: string
+  kind: 'screenshot'
+  mime: 'image/png'
+  url: string
+  filename: string
+  decision?: 'approve' | 'modify' | 'reject' | null
+}
+
 /**
  * Mensaje almacenado por el backend. El endpoint devuelve los mensajes más
  * recientes primero; el store los invierte antes de mostrarlos en el chat.
@@ -24,6 +33,7 @@ export interface ChatHistoryMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   citations?: RagSource[]
+  attachments?: Attachment[]
   created_at: string | null
 }
 
@@ -35,6 +45,7 @@ interface StreamCallbacks {
   // fuentes recuperadas (puede venir vacia si no hubo match o si el
   // retrieval fallo silenciosamente en el backend).
   onSources?: (sources: RagSource[]) => void
+  onAttachment?: (attachment: Attachment) => void
 }
 
 function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
@@ -71,6 +82,18 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     return false
   }
 
+  if (eventName === 'attachment' && rawData) {
+    try {
+      const attachment = JSON.parse(rawData) as Attachment
+      if (attachment.kind === 'screenshot' && typeof attachment.url === 'string') {
+        callbacks.onAttachment?.(attachment)
+      }
+    } catch {
+      // Un adjunto malformado no debe interrumpir el stream del chat.
+    }
+    return false
+  }
+
   if (eventName === 'done') {
     callbacks.onDone()
     return true
@@ -93,7 +116,7 @@ export function createChatStream(
   projectId: number | null,
   callbacks: StreamCallbacks
 ): () => void {
-  const { onToken, onDone, onError, onSources } = callbacks
+  const { onToken, onDone, onError, onSources, onAttachment } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -142,13 +165,13 @@ export function createChatStream(
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources })
+          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources, onAttachment })
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources })
+        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources, onAttachment })
         if (shouldStop) return
       }
 
@@ -179,5 +202,21 @@ export async function fetchChatHistory(
     `/api/chat/history?project_id=${encodeURIComponent(String(projectId))}&limit=${clampedLimit}`,
   )
 
-  return Array.isArray(payload.messages) ? payload.messages : []
+  if (!Array.isArray(payload.messages)) return []
+
+  return payload.messages.map((message) => ({
+    ...message,
+    attachments: normalizeAttachments(message.attachments),
+  }))
+}
+
+function normalizeAttachments(value: unknown): Attachment[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (attachment): attachment is Attachment =>
+      typeof attachment === 'object' &&
+      attachment !== null &&
+      (attachment as Attachment).kind === 'screenshot' &&
+      typeof (attachment as Attachment).url === 'string',
+  )
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { advancePhase, getProject, getProjectPhase, markReady, PhaseInfo, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
+import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
 import { ElicitationPanel } from '../components/ElicitationPanel'
 import { PhaseStepper } from '../components/PhaseStepper'
 import { projectsStore } from '../stores/projectsStore'
@@ -17,6 +18,7 @@ export function ChatPage() {
   const [error, setError] = useState('')
   const [phaseActionError, setPhaseActionError] = useState('')
   const [phaseActionLoading, setPhaseActionLoading] = useState(false)
+  const [diagramHistoryOpen, setDiagramHistoryOpen] = useState(false)
 
   useEffect(() => {
     if (!projectId || isNaN(projectId)) {
@@ -109,6 +111,15 @@ export function ChatPage() {
             {phase.phase_ready ? 'Fase lista para avanzar.' : 'Fase en progreso.'}
           </span>
           <div className="flex gap-2">
+            {!isElicitationPhase && (
+              <button
+                type="button"
+                onClick={() => setDiagramHistoryOpen(true)}
+                className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-sm text-sky-700 hover:bg-sky-50"
+              >
+                Diagramas
+              </button>
+            )}
             {!isElicitationPhase && !phase.phase_ready && (
               <button
                 type="button"
@@ -149,6 +160,11 @@ export function ChatPage() {
           </div>
         )}
       </div>
+      <DiagramHistoryPanel
+        projectId={projectId}
+        open={diagramHistoryOpen}
+        onClose={() => setDiagramHistoryOpen(false)}
+      />
     </div>
   )
 }

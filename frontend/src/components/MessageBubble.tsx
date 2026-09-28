@@ -1,9 +1,13 @@
+import { useState } from 'react'
 import type React from 'react'
+import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
 import type { Message } from '../stores/chatStore'
 import robotAvatar from '../assets/robot-avatar.png'
 
 interface MessageBubbleProps {
   message: Message
+  projectId?: number
+  onSendMessage?: (text: string) => void
 }
 
 type InlineToken =
@@ -326,7 +330,7 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
@@ -348,8 +352,157 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
+        {!isUser && (
+          <DiagramAttachments
+            attachments={message.attachments}
+            projectId={projectId}
+            onSendMessage={onSendMessage}
+          />
+        )}
         {!isUser && renderSources(message.sources)}
       </div>
+    </div>
+  )
+}
+
+const decisionLabels: Record<DiagramDecision, string> = {
+  approve: 'Diagrama aprobado.',
+  reject: 'Diagrama rechazado.',
+  modify: 'Cambios solicitados para el diagrama.',
+}
+
+function DiagramAttachments({
+  attachments,
+  projectId,
+  onSendMessage,
+}: {
+  attachments: Message['attachments']
+  projectId?: number
+  onSendMessage?: (text: string) => void
+}) {
+  const [feedbackIndex, setFeedbackIndex] = useState<number | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [status, setStatus] = useState<Record<number, string>>({})
+  const [submitting, setSubmitting] = useState<number | null>(null)
+  const [error, setError] = useState('')
+  const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
+
+  if (!attachments?.length) return null
+
+  const recordDecision = async (index: number, decision: DiagramDecision, comment?: string) => {
+    const attachment = attachments[index]
+    if (!projectId) {
+      setError('No se puede registrar la decisión sin un proyecto activo.')
+      return false
+    }
+
+    setSubmitting(index)
+    setError('')
+    try {
+      await submitDiagramDecision(projectId, decision, comment, attachment.id)
+      setStatus((current) => ({ ...current, [index]: decisionLabels[decision] }))
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo registrar la decisión.')
+      return false
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
+  const requestChanges = async (index: number) => {
+    const trimmedFeedback = feedback.trim()
+    if (!trimmedFeedback) {
+      setError('Describe los cambios que necesitas antes de enviarlos.')
+      return
+    }
+    if (await recordDecision(index, 'modify', trimmedFeedback)) {
+      setFeedbackIndex(null)
+      setFeedback('')
+      onSendMessage?.(`Solicito estos ajustes en el diagrama: ${trimmedFeedback}`)
+    }
+  }
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-sky-200 pt-3">
+      {attachments.map((attachment, index) => {
+        const decided = status[index] ?? (attachment.decision ? decisionLabels[attachment.decision] : null)
+        const isSubmitting = submitting === index
+
+        return (
+          <div key={`${attachment.id ?? attachment.url}-${index}`} className="rounded-xl border border-sky-200 bg-white/70 p-2">
+            <img
+              src={attachment.url}
+              alt={attachment.filename || 'Diagrama generado'}
+              className="max-h-[420px] w-full cursor-zoom-in rounded-lg bg-white object-contain"
+              loading="lazy"
+              onClick={() => setExpandedUrl(attachment.url)}
+              title="Haz clic para ampliar"
+            />
+
+            {decided ? (
+              <p className="mt-2 text-xs font-medium text-gray-600">{decided}</p>
+            ) : onSendMessage ? (
+              <div className="mt-2">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={async () => {
+                      if (await recordDecision(index, 'approve')) onSendMessage('Apruebo el diagrama, continuemos.')
+                    }}
+                    className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    Aprobar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => void recordDecision(index, 'reject')}
+                    className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+                  >
+                    Rechazar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => { setFeedbackIndex(index); setFeedback(''); setError('') }}
+                    className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
+                  >
+                    Solicitar cambios
+                  </button>
+                </div>
+
+                {feedbackIndex === index && (
+                  <div className="mt-3 space-y-2">
+                    <label htmlFor={`diagram-feedback-${index}`} className="block text-xs font-medium text-gray-700">¿Qué debe ajustarse?</label>
+                    <textarea
+                      id={`diagram-feedback-${index}`}
+                      value={feedback}
+                      onChange={(event) => setFeedback(event.target.value)}
+                      rows={3}
+                      className="w-full rounded-lg border border-sky-200 bg-white p-2 text-sm text-gray-900 outline-none focus:border-sky-500"
+                      placeholder="Describe los cambios que necesitas en el diagrama..."
+                    />
+                    <div className="flex gap-2">
+                      <button type="button" disabled={isSubmitting} onClick={() => void requestChanges(index)} className="rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50">Enviar ajuste</button>
+                      <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
+
+      {error && <p className="rounded-lg bg-red-50 p-2 text-xs text-red-700">{error}</p>}
+
+      {expandedUrl && (
+        <div className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-slate-950/80 p-6" onClick={() => setExpandedUrl(null)} role="button" tabIndex={0} aria-label="Cerrar diagrama ampliado">
+          <img src={expandedUrl} alt="Diagrama ampliado" className="max-h-full max-w-full rounded-xl bg-white shadow-2xl" />
+        </div>
+      )}
     </div>
   )
 }

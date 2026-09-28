@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import {
   createChatStream,
   fetchChatHistory,
+  type Attachment,
   type ChatHistoryMessage,
   type RagSource,
 } from '../api/chat'
@@ -14,6 +15,7 @@ export interface Message {
   // mientras no ha llegado el evento 'sources'; [] si llego pero no hubo
   // match relevante.
   sources?: RagSource[]
+  attachments?: Attachment[]
 }
 
 interface ChatState {
@@ -85,6 +87,16 @@ export const chatStore = create<ChatState>((set, get) => ({
           messages: state.messages.map((msg) =>
             msg.id === assistantMessageId
               ? { ...msg, content: fullResponse }
+              : msg
+          ),
+        }))
+      },
+      onAttachment: (attachment) => {
+        if (get().activeProjectId !== projectId) return
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, attachments: [...(msg.attachments ?? []), attachment] }
               : msg
           ),
         }))
@@ -194,6 +206,7 @@ export const chatStore = create<ChatState>((set, get) => ({
         role: row.role,
         content: row.content,
         sources: row.citations,
+        attachments: row.attachments,
       }))
       set({ messages, loadingHistory: false })
     } catch (err) {
