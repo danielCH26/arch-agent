@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app  # noqa: F401  (imported to register the router)
+from server import app  # noqa: F401  (imported to register the router)
 
 
 # ---------------------------------------------------------------------------

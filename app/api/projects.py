@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
 from app.auth.validators import ValidationError
+from app.core.database import SessionLocal
 from app.models.project import Project
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -109,7 +110,6 @@ PHASE_LABELS = {
 
 def _require_project(user_id: int, project_id: int) -> Project:
     """Load project and raise 403/404 if not found or not owned."""
-    from app.core.database import SessionLocal
 
     db = SessionLocal()
     try:
@@ -132,7 +132,6 @@ def _require_project(user_id: int, project_id: int) -> Project:
 @router.get("", response_model=list[ProjectOut])
 async def list_projects(current_user: dict = Depends(get_current_user)):
     """List all projects for the authenticated user."""
-    from app.core.database import SessionLocal
     from sqlalchemy import desc
 
     db = SessionLocal()
@@ -161,7 +160,6 @@ async def create_project(
     current_user: dict = Depends(get_current_user),
 ):
     """Create a new project (phase: requerimientos)."""
-    from app.core.database import SessionLocal
 
     name = body.name.strip()
     if not name:
@@ -231,7 +229,6 @@ async def delete_project(
 ):
     """Delete a project."""
     project = _require_project(current_user["user_id"], project_id)
-    from app.core.database import SessionLocal
 
     db = SessionLocal()
     try:
@@ -266,7 +263,6 @@ async def get_phases(
     current_user: dict = Depends(get_current_user),
 ):
     """List all 5 phases + current/pending state (REQ-SA-4, REQ-SA-12)."""
-    from app.core.database import SessionLocal
     from app.core.phase_decisions import get_pending_decision
 
     _require_project(current_user["user_id"], project_id)
@@ -341,7 +337,6 @@ async def post_phase_decision(
         422 on invalid phase/action (forwarded from PhaseDecisionError).
         404 when the project does not exist or is not owned by the caller.
     """
-    from app.core.database import SessionLocal
     from app.core.phase_decisions import (
         IDEMPOTENCY_WINDOW_SECONDS,
         InvalidActionError,
@@ -411,15 +406,16 @@ async def post_phase_decision(
             },
         )
     except (InvalidPhaseError, InvalidActionError) as exc:
-        # REQ-SA-34: structured detail, never str(exc).
+        # REQ-SA-34: structured detail, never str(exc). Use the exception
+        # class name as a stable, non-leaking identifier.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"error": "validation_error", "message": str(exc)},
+            detail={"error": "validation_error", "kind": type(exc).__name__},
         )
     except PhaseDecisionError as exc:
         raise HTTPException(
             status_code=exc.http_status,
-            detail={"error": "phase_decision_error", "message": str(exc)},
+            detail={"error": "phase_decision_error", "kind": type(exc).__name__},
         )
     finally:
         db.close()
@@ -453,7 +449,6 @@ async def advance_phase(
 ):
     """Advance to the next phase. REQ-SA-36: HU10-owned phases require a
     recent ``approved`` row before this endpoint flips ``phase_ready``."""
-    from app.core.database import SessionLocal
     from app.core.phase_decisions import (
         PhaseNotApprovedError,
         assert_hu10_approval_for_current_phase,

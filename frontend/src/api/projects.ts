@@ -57,8 +57,5 @@ export async function advancePhase(projectId: number): Promise<PhaseAdvanceRespo
   })
 }
 
-export async function markReady(projectId: number): Promise<{ phase_ready: boolean; message: string }> {
-  return apiFetch<{ phase_ready: boolean; message: string }>(`/api/projects/${projectId}/mark-ready`, {
-    method: 'POST',
-  })
-}
+// REQ-SA-23 / REQ-SA-24: `markReady` retired from frontend. Backend endpoint
+// returns 404. Use `getProjectPhase` + `approvals.decide()` instead.
