@@ -248,6 +248,9 @@ class TestProcessFile:
             # process_file llama internamente a load_document
             # pero como mock_load está parcheado, no llega al filesystem
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                # sniff_file_type valida los bytes reales, no solo la extensión
+                # declarada — necesitamos la firma %PDF- para que coincida.
+                f.write(b"%PDF-1.4\n")
                 tmp_path = f.name
 
             try:
@@ -267,6 +270,9 @@ class TestProcessFile:
         mock_load.side_effect = DocumentProcessingError("Test error")
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            # sniff_file_type valida los bytes reales, no solo la extensión
+            # declarada — necesitamos la firma %PDF- para que coincida.
+            f.write(b"%PDF-1.4\n")
             tmp_path = f.name
 
         try:

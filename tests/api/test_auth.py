@@ -174,7 +174,7 @@ class TestAuthModels:
     def test_login_request(self):
         from app.api.auth import LoginRequest
 
-        req = LoginRequest(username="testuser")
+        req = LoginRequest(username="testuser", password="testpass123")
         assert req.username == "testuser"
 
     def test_token_response(self):

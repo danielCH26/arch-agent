@@ -67,6 +67,15 @@ services:
       - ./fuentes:/app/fuentes:ro
     ports:
       - "8000:8000"
+    # Aplica el schema (idempotente) y las migraciones pendientes ANTES de
+    # levantar uvicorn. Si alguno falla, el contenedor sale con error (queda
+    # visible en `docker compose logs backend`) en vez de arrancar contra una
+    # DB desactualizada. Sobrescribir `command` reemplaza el CMD del
+    # Dockerfile, por eso se repiten los flags de uvicorn.
+    command: >
+      sh -c "python scripts/init_db.py &&
+             python -m migrations.run_migrations &&
+             exec uvicorn server:app --host 0.0.0.0 --port 8000 --proxy-headers"
     restart: unless-stopped
 
   # ===========================================================================
@@ -130,9 +139,12 @@ services:
     build:
       context: ./infrastructure/puppeteer-mcp
     image: arch-agent-puppeteer-mcp:latest
-    environment:
-      NODE_ENV: production
-    mem_limit: 512m
+      environment:
+        NODE_ENV: production
+        ALLOW_DANGEROUS: "true"
+        DOCKER_CONTAINER: "true"
+        PUPPETEER_LAUNCH_OPTIONS: '{"args":["--no-sandbox","--disable-setuid-sandbox"]}'
+      mem_limit: 1g
     healthcheck:
       # El server oficial responde 404 a /health pero el connection-refused
       # ya dispara unhealthy, asi que spider + exit-0 es suficiente.
@@ -164,7 +176,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ===========================================================================
+   # ===========================================================================
   # LANGFUSE — Web UI
   # ===========================================================================
   langfuse-web:
@@ -186,8 +198,13 @@ services:
       SALT: ${LANGFUSE_SALT}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
       NEXTAUTH_URL: http://localhost:3000
+      HOSTNAME: "0.0.0.0"
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID}
       LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY}
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME}
@@ -202,12 +219,62 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       S3_REGION: ${S3_REGION}
-      REDIS_URL: redis://redis:6379
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD}@redis:6379
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================================================
+  # LANGFUSE — Worker (procesa la cola de ingestion: Redis/S3 -> ClickHouse)
+  # Sin este servicio, langfuse-web recibe y acepta las trazas pero nunca
+  # las persiste de forma consultable — la UI queda en "Waiting for first
+  # trace" para siempre, sin ningun error visible.
+  # ===========================================================================
+  langfuse-worker:
+    container_name: langfuse-worker
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://${LANGFUSE_DB_USER}:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/${LANGFUSE_DB_NAME}
+      SALT: ${LANGFUSE_SALT}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD}@redis:6379
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3030/api/health"]
       interval: 10s
       timeout: 5s
       retries: 10

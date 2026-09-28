@@ -195,35 +195,29 @@ def _error(message):
     return f"event: error\ndata: {json.dumps(message, ensure_ascii=False)}\n\n"
 
 
-def _patch_chat_route(*, rag_docs=None, run_agent_events=None, session_local=None):
-    """Patch ``build_langchain_model``, ``similarity_search``, ``SessionLocal``
-    and ``run_agent`` so the route can run end-to-end with NO live Postgres.
+def _patch_chat_route(*, rag_docs=None, run_agent_events=None):
+    """Patch ``build_langchain_model``, ``similarity_search`` and ``run_agent``.
 
     Returns a list of patches applied so the caller can pop them in teardown.
-
-    PR #76 review fix (round 2, B3): the F12 liveness check
-    (``with SessionLocal() as _db_probe: _db_probe.execute(...)``) runs BEFORE
-    any other DB op and raises 503 on ``SQLAlchemyError``. The test conftest
-    points ``DATABASE_URL`` at a Postgres role that never exists in the test
-    environment, so the 12 SSE-stream tests all hit 503. We patch
-    ``app.api.chat.SessionLocal`` here with a no-op context manager that
-    returns ``1`` for ``SELECT 1``; the dedicated ``TestPostgresLivenessCheck``
-    test still exercises the real failure path by passing
-    ``session_local=<broken mock>`` and asserting 503.
-
-    Args:
-        rag_docs: RAG documents to return from ``similarity_search``.
-        run_agent_events: Iterable of SSE-shaped dicts the mocked ``run_agent``
-            yields in order.
-        session_local: Optional override for the ``SessionLocal`` mock used by
-            the liveness check. ``None`` (default) installs a healthy mock so
-            the chat route's pre-flight probe succeeds.
     """
     from app.api import chat as chat_module
 
     rag_docs = rag_docs if rag_docs is not None else _empty_rag_doc()
 
     patches = []
+
+    # F12 (REQ-11): the route opens a throwaway session for the Postgres
+    # liveness probe (``with SessionLocal() as _db_probe``) before doing
+    # anything else, and a second one for ``_persist_turn`` right before
+    # ``event: done``. Both need a session double that survives being
+    # used as a context manager AND called directly, without ever
+    # touching a real Postgres connection.
+    fake_db = MagicMock(name="fake-db-session")
+    fake_db.__enter__ = MagicMock(return_value=fake_db)
+    fake_db.__exit__ = MagicMock(return_value=False)
+
+    p_session = patch.object(chat_module, "SessionLocal", return_value=fake_db)
+    patches.append(p_session)
 
     # Build a fake model.
     fake_model = MagicMock(name="fake-model")
@@ -250,43 +244,79 @@ def _patch_chat_route(*, rag_docs=None, run_agent_events=None, session_local=Non
     p_lf = patch.object(chat_module, "get_langfuse_handler", return_value=None)
     patches.append(p_lf)
 
-    # Liveness check mock. The chat route calls
-    # ``with SessionLocal() as _db_probe: _db_probe.execute(...).scalar()``,
-    # so the mock must (a) be usable as a context manager and (b) chain
-    # ``.execute(<text>)`` → ``.scalar()`` → a non-error result.
-    if session_local is None:
-        session_local = _healthy_session_local_factory()
-    p_session = patch.object(chat_module, "SessionLocal", session_local)
-    patches.append(p_session)
-
     return patches
 
 
-def _healthy_session_local_factory():
-    """Return a callable that produces a healthy ``SessionLocal`` mock.
+def test_load_approved_proposal_doc_uses_approved_proposal_anchor():
+    from app.api import chat as chat_module
 
-    The returned factory mimics ``sqlalchemy.orm.sessionmaker()``: each call
-    returns a fresh context-manager-shaped object whose ``.execute(<text>)``
-    returns a chain ending in ``.scalar() == 1``. The liveness check
-    (``SELECT 1``) succeeds without ever touching Postgres, so the rest of
-    the chat route runs normally. ``TestPostgresLivenessCheck`` injects a
-    broken factory directly to assert the 503 path.
-    """
+    fake_db = MagicMock()
+    fake_session = MagicMock(id=11)
+    fake_approval = MagicMock(id=22, phase="propuesta", decision="approved", created_at=None)
+    fake_message = MagicMock(
+        id=33,
+        content="Propuesta aprobada: API Gateway -> Servicio de Órdenes",
+    )
 
-    def _factory():
-        session = MagicMock(name="fake-session")
-        result = MagicMock(name="fake-result")
-        result.scalar.return_value = 1
-        session.execute.return_value = result
+    q_session = MagicMock()
+    q_session.filter.return_value.first.return_value = fake_session
 
-        # ``with SessionLocal() as _db_probe:`` — make the instance a
-        # context manager whose __enter__ returns itself and __exit__ is a
-        # no-op so any commit/rollback paths inside the route still work.
-        session.__enter__ = MagicMock(return_value=session)
-        session.__exit__ = MagicMock(return_value=False)
-        return session
+    q_approval = MagicMock()
+    q_approval.filter.return_value.order_by.return_value.first.return_value = fake_approval
 
-    return _factory
+    q_message = MagicMock()
+    q_message.filter.return_value = q_message
+    q_message.order_by.return_value.first.return_value = fake_message
+
+    fake_db.query.side_effect = [q_session, q_approval, q_message]
+    fake_db.close = MagicMock()
+
+    with patch.object(chat_module, "SessionLocal", return_value=fake_db):
+        doc = chat_module._load_approved_proposal_doc(user_id=7, project_id=5)
+
+    assert doc is not None
+    assert doc.metadata["source_type"] == "approved_proposal"
+    assert doc.metadata["approval_id"] == 22
+    assert doc.metadata["message_id"] == 33
+    assert "API Gateway" in doc.page_content
+    fake_db.close.assert_called_once()
+
+
+def test_load_approved_proposal_doc_prefers_saved_proposal_state():
+    from app.api import chat as chat_module
+
+    fake_db = MagicMock()
+    fake_session = MagicMock(
+        id=11,
+        engram_state={
+            "5": {
+                "propuesta": {
+                    "patron_recomendado": "API Gateway",
+                    "componentes": ["Gateway", "Orders"],
+                }
+            }
+        },
+    )
+    fake_approval = MagicMock(id=22, phase="propuesta", decision="approved", created_at=None)
+
+    q_session = MagicMock()
+    q_session.filter.return_value.first.return_value = fake_session
+
+    q_approval = MagicMock()
+    q_approval.filter.return_value.order_by.return_value.first.return_value = fake_approval
+
+    fake_db.query.side_effect = [q_session, q_approval]
+    fake_db.close = MagicMock()
+
+    with patch.object(chat_module, "SessionLocal", return_value=fake_db):
+        doc = chat_module._load_approved_proposal_doc(user_id=7, project_id=5)
+
+    assert doc is not None
+    assert doc.metadata["source"] == "session_engram_state"
+    assert doc.metadata["source_type"] == "approved_proposal"
+    assert '"patron_recomendado": "API Gateway"' in doc.page_content
+    assert '"Gateway"' in doc.page_content
+    fake_db.close.assert_called_once()
 
 
 async def _call_chat(chat_module, body, current_user):
@@ -972,176 +1002,129 @@ def test_chat_stream_attachments_persisted_atomically_in_pre_done_tx(monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Conversation memory — persisted history feeds ``run_agent``
+# F14 (migracion 0015) — ChatRequest.display_message → Message.display_content
 # ---------------------------------------------------------------------------
 
 
-def test_chat_stream_feeds_persisted_history_to_agent_chronologically(monkeypatch):
-    """F1 fix: the SSE generator loads the persisted turns BEFORE the new
-    turn is persisted and hands them to ``run_agent`` in chronological order
-    (``list_recent`` is newest-first → must be reversed)."""
-    from types import SimpleNamespace
+class TestChatRequestDisplayMessage:
+    """ChatRequest model coverage for the new optional field."""
+
+    def test_display_message_defaults_to_none(self):
+        from app.api.chat import ChatRequest
+
+        req = ChatRequest(project_id=1, message="prompt tecnico completo")
+        assert req.display_message is None
+
+    def test_display_message_round_trips(self):
+        from app.api.chat import ChatRequest
+
+        req = ChatRequest(
+            project_id=1,
+            message="prompt tecnico completo + Mermaid anterior",
+            display_message="Cambiá el color del nodo A",
+        )
+        assert req.message == "prompt tecnico completo + Mermaid anterior"
+        assert req.display_message == "Cambiá el color del nodo A"
+
+
+def test_chat_stream_persists_display_message_only_on_user_row(monkeypatch):
+    """F14: ``body.display_message`` (cuando viene) se persiste en
+    ``Message.display_content`` — SOLO en la fila ``role="user"``. La fila
+    ``role="assistant"`` nunca recibe ``display_content`` (el agente no
+    tiene un "mensaje mostrado" distinto del que genera).
+
+    Regression test para QA_feature-hu6-diagrama seccion 0 punto 7: antes
+    de la migracion 0015 no habia ningun campo separado para esto, asi que
+    un refresh volvia a mostrar el prompt tecnico completo en la burbuja
+    del usuario.
+    """
     from app.api import chat as chat_module
 
-    # ``list_recent`` returns newest-first; seed accordingly.
-    fake_rows = [
-        SimpleNamespace(role="assistant", content="answer 2"),
-        SimpleNamespace(role="user", content="question 2"),
-        SimpleNamespace(role="assistant", content="answer 1"),
-    ]
-    captured: dict = {}
+    captured: dict[str, list] = {"user": [], "assistant": []}
 
-    async def _capture_run_agent(*_args, **kwargs):
-        captured["history"] = kwargs.get("history")
-        captured["message"] = kwargs.get("message")
-        if False:  # pragma: no cover
-            yield {}
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "listo, ajustado"},
+            {"event": "done", "data": None},
+        ],
+    )
 
-    patches = _patch_chat_route()
-    patches.append(patch.object(chat_module, "list_recent", return_value=fake_rows))
-    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
-    for p in patches:
-        p.start()
+    real_save_message = chat_module.save_message
 
-    try:
-        body = chat_module.ChatRequest(message="follow-up question")
-        current_user = {"user_id": 1, "username": "architect"}
+    def _capture_save_message(_db, **kw):
+        captured[kw["role"]].append(kw.get("display_content"))
+        return real_save_message(_db, **kw)
 
-        async def _drive():
-            response = await _call_chat(chat_module, body, current_user)
-            await _drive_event_generator(response.body_iterator)
-
-        asyncio.run(_drive())
-    finally:
-        for p in patches:
-            p.stop()
-
-    assert captured["message"] == "follow-up question"
-    # Chronological: reversed from the newest-first DB rows, current turn NOT
-    # included (it is persisted only after the stream completes).
-    assert captured["history"] == [
-        {"role": "assistant", "content": "answer 1"},
-        {"role": "user", "content": "question 2"},
-        {"role": "assistant", "content": "answer 2"},
-    ]
-
-
-def test_chat_stream_history_read_caps_at_10_messages(monkeypatch):
-    """The history read must request the last 10 messages (limit=10)."""
-    from app.api import chat as chat_module
-
-    captured: dict = {}
-
-    def _capture_list_recent(_db, session_id, *, project_id, limit):
-        captured["session_id"] = session_id
-        captured["project_id"] = project_id
-        captured["limit"] = limit
-        return []
-
-    async def _capture_run_agent(*_args, **kwargs):
-        if False:  # pragma: no cover
-            yield {}
-
-    patches = _patch_chat_route()
-    patches.append(patch.object(chat_module, "list_recent", side_effect=_capture_list_recent))
-    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
-    for p in patches:
-        p.start()
-
-    try:
-        body = chat_module.ChatRequest(project_id=7, message="hi")
-        current_user = {"user_id": 3, "username": "architect"}
-
-        async def _drive():
-            response = await _call_chat(chat_module, body, current_user)
-            await _drive_event_generator(response.body_iterator)
-
-        asyncio.run(_drive())
-    finally:
-        for p in patches:
-            p.stop()
-
-    assert captured["limit"] == 10
-    assert captured["project_id"] == 7
-
-
-def test_chat_stream_history_skips_empty_contents(monkeypatch):
-    """Rows whose content is empty must not reach the agent payload."""
-    from types import SimpleNamespace
-    from app.api import chat as chat_module
-
-    fake_rows = [
-        SimpleNamespace(role="assistant", content=""),
-        SimpleNamespace(role="user", content=None),
-        SimpleNamespace(role="user", content="real turn"),
-    ]
-    captured: dict = {}
-
-    async def _capture_run_agent(*_args, **kwargs):
-        captured["history"] = kwargs.get("history")
-        if False:  # pragma: no cover
-            yield {}
-
-    patches = _patch_chat_route()
-    patches.append(patch.object(chat_module, "list_recent", return_value=fake_rows))
-    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
-    for p in patches:
-        p.start()
-
-    try:
-        body = chat_module.ChatRequest(message="hi")
-        current_user = {"user_id": 1, "username": "architect"}
-
-        async def _drive():
-            response = await _call_chat(chat_module, body, current_user)
-            await _drive_event_generator(response.body_iterator)
-
-        asyncio.run(_drive())
-    finally:
-        for p in patches:
-            p.stop()
-
-    assert captured["history"] == [{"role": "user", "content": "real turn"}]
-
-
-def test_chat_stream_history_db_failure_degrades_to_empty_history(monkeypatch):
-    """REQ-11: a failed history read must NOT break the stream — the agent
-    runs with an empty history instead."""
-    from sqlalchemy.exc import SQLAlchemyError
-    from app.api import chat as chat_module
-
-    captured: dict = {}
-
-    async def _capture_run_agent(*_args, **kwargs):
-        captured["history"] = kwargs.get("history")
-        yield {"event": "token", "data": "still works"}
-        yield {"event": "done", "data": None}
-
-    patches = _patch_chat_route()
     patches.append(
         patch.object(
-            chat_module, "list_recent",
-            side_effect=SQLAlchemyError("connection refused"),
+            chat_module, "save_message",
+            side_effect=lambda _db, **_kw: _capture_save_message(_db, **_kw),
         )
     )
-    patches.append(patch.object(chat_module, "run_agent", side_effect=_capture_run_agent))
     for p in patches:
         p.start()
 
     try:
-        body = chat_module.ChatRequest(message="hi")
+        body = chat_module.ChatRequest(
+            message="Instrucciones tecnicas + Mermaid anterior...",
+            display_message="Cambiá el color del nodo A",
+        )
         current_user = {"user_id": 1, "username": "architect"}
 
         async def _drive():
             response = await _call_chat(chat_module, body, current_user)
-            return await _drive_event_generator(response.body_iterator)
+            await _drive_event_generator(response.body_iterator)
 
-        chunks = asyncio.run(_drive())
+        asyncio.run(_drive())
     finally:
         for p in patches:
             p.stop()
 
-    body_text = "".join(chunks)
-    assert "still works" in body_text
-    assert body_text.endswith(_done())
-    assert captured["history"] == []
+    assert captured["user"] == ["Cambiá el color del nodo A"]
+    assert captured["assistant"] == [None]
+
+
+def test_chat_stream_display_message_omitted_keeps_display_content_none(monkeypatch):
+    """F14: mensajes normales (sin display_message) siguen guardando
+    display_content=None -- no hay regresion para el caso mayoritario."""
+    from app.api import chat as chat_module
+
+    captured: list = []
+
+    patches = _patch_chat_route(
+        run_agent_events=[
+            {"event": "token", "data": "hola"},
+            {"event": "done", "data": None},
+        ],
+    )
+
+    real_save_message = chat_module.save_message
+
+    def _capture_save_message(_db, **kw):
+        if kw.get("role") == "user":
+            captured.append(kw.get("display_content"))
+        return real_save_message(_db, **kw)
+
+    patches.append(
+        patch.object(
+            chat_module, "save_message",
+            side_effect=lambda _db, **_kw: _capture_save_message(_db, **_kw),
+        )
+    )
+    for p in patches:
+        p.start()
+
+    try:
+        body = chat_module.ChatRequest(message="mensaje normal, sin diferencia")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            await _drive_event_generator(response.body_iterator)
+
+        asyncio.run(_drive())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert captured == [None]

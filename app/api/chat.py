@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,11 +13,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
-from app.core.langfuse_tracer import get_langfuse_handler
+from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
+from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
+from app.core.session_store import latest_diagram_decisions
+from app.models.approval import Approval
+from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
@@ -52,9 +58,156 @@ RAG_NEAR_MISS_MARGIN = 0.05
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
+DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
+PROPOSAL_PHASES = {"propuesta", "proposal"}
+# Hallazgo #14 (revisión feature/hu6-diagrama): "graph" hacía match por
+# substring contra "paragraph"/"photograph" y disparaba `_is_diagram_turn`
+# en turnos que no tenían nada que ver con diagramas. Se compila un patrón
+# de límite de palabra en vez de usar `in` sobre el string completo.
+DIAGRAM_REQUEST_TERMS = ("diagrama", "diagram", "mermaid", "flowchart", "graph")
+_DIAGRAM_REQUEST_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(term) for term in DIAGRAM_REQUEST_TERMS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class SyntheticRagDocument:
+    page_content: str
+    metadata: dict[str, Any]
+
 
 def _is_relevant(doc) -> bool:
     return (doc.metadata.get("similarity") or 0.0) >= RAG_MIN_SIMILARITY
+
+
+def _is_diagram_turn(project: Project | None, message: str) -> bool:
+    if project is not None and (project.current_phase or "").lower() in DIAGRAM_PHASES:
+        return True
+    return bool(_DIAGRAM_REQUEST_PATTERN.search(message))
+
+
+def _proposal_from_engram_state(session_row: UserSession, project_id: int) -> str | None:
+    project_state = (session_row.engram_state or {}).get(str(project_id), {})
+    if not isinstance(project_state, dict):
+        return None
+
+    proposal_data = project_state.get("propuesta") or project_state.get("proposal")
+    if proposal_data is None:
+        return None
+    if isinstance(proposal_data, str):
+        return proposal_data.strip() or None
+
+    try:
+        return json.dumps(proposal_data, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(proposal_data)
+
+
+def _load_approved_proposal_doc(
+    *,
+    user_id: int,
+    project_id: int | None,
+) -> SyntheticRagDocument | None:
+    """Recover the last approved proposal for this project's diagram turn.
+
+    The approvals table records phase decisions, not the proposal body. The
+    proposal text lives in chat history, so we use the approved proposal
+    decision as an anchor and retrieve the latest assistant message for the
+    same project before that approval.
+
+    Fixes aplicados (hallazgo #1, revisión feature/hu6-diagrama):
+
+    1. Filtra por `project_id` (migration 0016) además de `session_id`.
+       Antes, como `sessions` es una fila por usuario, aprobar la propuesta
+       del proyecto A hacía que el proyecto B (nunca aprobado) recibiera
+       este doc igual. Filas viejas con `project_id IS NULL` (creadas antes
+       de la migración) se excluyen a propósito: no sabemos a qué proyecto
+       pertenecían, así que no se usan como ancla de verdad para ningún
+       proyecto.
+    2. Ya no filtra directamente por `decision == "approved"`. Se toma la
+       última decisión de esa fase/proyecto sin importar cuál sea, y solo
+       se sigue adelante si esa última decisión es "approved". Antes, un
+       "approved" viejo se seguía encontrando aunque hubiera un
+       "modified"/"rejected" más reciente para el mismo proyecto -- la
+       propuesta ya descartada se reinyectaba igual como "fuente de
+       verdad" del diagrama.
+    """
+    if project_id is None:
+        return None
+
+    db = SessionLocal()
+    try:
+        session_row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+        if session_row is None:
+            return None
+
+        approval = (
+            db.query(Approval)
+            .filter(
+                Approval.session_id == session_row.id,
+                Approval.project_id == project_id,
+                Approval.phase.in_(PROPOSAL_PHASES),
+            )
+            .order_by(Approval.created_at.desc(), Approval.id.desc())
+            .first()
+        )
+        if approval is None or approval.decision != "approved":
+            # None: nunca hubo ninguna decisión para este proyecto.
+            # No "approved": la última decisión fue modify/reject -- la
+            # propuesta vigente (si la hubo) ya quedó descartada.
+            return None
+
+        proposal_from_state = _proposal_from_engram_state(session_row, project_id)
+        if proposal_from_state:
+            return SyntheticRagDocument(
+                page_content=(
+                    "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL "
+                    "DIAGRAMA:\n"
+                    f"{proposal_from_state}"
+                ),
+                metadata={
+                    "source_type": "approved_proposal",
+                    "pattern_name": "Propuesta aprobada",
+                    "similarity": 1.0,
+                    "phase": approval.phase,
+                    "approval_id": approval.id,
+                    "source": "session_engram_state",
+                },
+            )
+
+        message_query = db.query(Message).filter(
+            Message.session_id == session_row.id,
+            Message.project_id == project_id,
+            Message.user_id == user_id,
+            Message.role == "assistant",
+        )
+        if approval.created_at is not None:
+            message_query = message_query.filter(Message.created_at <= approval.created_at)
+
+        proposal_msg = (
+            message_query.order_by(Message.created_at.desc(), Message.id.desc()).first()
+        )
+        if proposal_msg is None or not proposal_msg.content.strip():
+            return None
+
+        return SyntheticRagDocument(
+            page_content=(
+                "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL "
+                "DIAGRAMA:\n"
+                f"{proposal_msg.content}"
+            ),
+            metadata={
+                "source_type": "approved_proposal",
+                "pattern_name": "Propuesta aprobada",
+                "similarity": 1.0,
+                "phase": approval.phase,
+                "approval_id": approval.id,
+                "message_id": proposal_msg.id,
+            },
+        )
+    finally:
+        db.close()
 
 
 def _is_near_miss(doc) -> bool:
@@ -67,6 +220,14 @@ def _is_near_miss(doc) -> bool:
 class ChatRequest(BaseModel):
     project_id: int | None = None
     message: str
+    # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
+    # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
+    # el prompt de "Solicitar cambios" sobre un diagrama, que agrega
+    # instrucciones + el Mermaid anterior), este campo lleva SOLO lo que
+    # el usuario tipeo, para persistirlo en Message.display_content y que
+    # sobreviva a un refresh. None/omitido para el resto de los mensajes
+    # (equivale a "display_content == content").
+    display_message: str | None = None
 
 
 # --- Route -----------------------------------------------------------------
@@ -136,6 +297,7 @@ async def chat(
         )
 
     # Validate project ownership if provided
+    current_project: Project | None = None
     if body.project_id is not None:
         db = SessionLocal()
         try:
@@ -156,6 +318,7 @@ async def chat(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Proyecto no encontrado",
                 )
+            current_project = project
         finally:
             db.close()
 
@@ -181,6 +344,22 @@ async def chat(
         callbacks.append(langfuse_handler)
 
     async def retrieve_context() -> tuple[list, str]:
+        proposal_doc = None
+        if _is_diagram_turn(current_project, body.message):
+            try:
+                proposal_doc = await asyncio.to_thread(
+                    _load_approved_proposal_doc,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Approved proposal retrieval skipped for user_id=%s project_id=%s: %s",
+                    user_id,
+                    body.project_id,
+                    e,
+                )
+
         try:
             docs, _metrics = await asyncio.to_thread(
                 similarity_search,
@@ -192,11 +371,13 @@ async def chat(
             )
         except Exception as e:
             logger.warning("RAG retrieval skipped for user_id=%s project_id=%s: %s", user_id, body.project_id, e)
-            return [], ""
+            docs = []
 
         # Descarta lo que quedo por debajo del umbral de relevancia -- ver
         # comentario junto a RAG_MIN_SIMILARITY.
         relevant_docs = [doc for doc in docs if _is_relevant(doc)]
+        if proposal_doc is not None:
+            relevant_docs = [proposal_doc, *relevant_docs]
 
         # Visibilidad de la zona gris: si hubo candidatos justo por debajo
         # del umbral, dejarlo en el log para poder diagnosticar casos como
@@ -281,6 +462,7 @@ async def chat(
                         user_id=user_id,
                         role="user",
                         content=body.message,
+                        display_content=body.display_message,
                     )
                     asst_msg = save_message(
                         db,
@@ -352,11 +534,11 @@ async def chat(
                 model=model,
                 message=body.message,
                 callbacks=callbacks,
-                rag_documents=docs,
-                user_id=user_id,
-                project_id=body.project_id,
+                 rag_documents=docs,
+                 user_id=user_id,
+                 project_id=body.project_id,
                 history=history,
-            ):
+             ):
                 event_name = sse_dict.get("event")
                 payload = sse_dict.get("data")
 
@@ -420,6 +602,10 @@ async def chat(
                     # atomically (REQ-ATT-1).
                     if isinstance(payload, dict):
                         public_payload = {
+                            # `id` (UUID del adjunto): identifica el diagrama
+                            # para decidir sobre él (POST /api/diagrams/decision).
+                            # Ya viaja dentro de `url`, no expone nada nuevo.
+                            "id": payload.get("id"),
                             "kind": payload.get("kind", "screenshot"),
                             "mime": payload.get("mime", "image/png"),
                             "url": payload.get("url"),
@@ -444,6 +630,11 @@ async def chat(
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
             yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+        finally:
+            # F14: exporta la traza de inmediato en vez de depender solo del
+            # ciclo en segundo plano del SDK de Langfuse (PR #79 review).
+            if langfuse_handler is not None:
+                flush_langfuse()
 
     return StreamingResponse(
         event_generator(),
@@ -505,13 +696,66 @@ def chat_history(
             )
             return {"messages": []}
 
+        # Decisión más reciente de cada diagrama (aprobado / rechazado / con
+        # cambios pedidos). Sin esto, un F5 borraba el estado "ya decidido" de
+        # la burbuja y volvían a aparecer los tres botones. Falla en blando:
+        # si esta consulta falla, el historial se devuelve igual, sin estado.
+        try:
+            decisions = latest_diagram_decisions(
+                db,
+                project_id=project_id,
+                attachment_ids=[
+                    att["id"]
+                    for row in rows
+                    for att in (row.attachments or [])
+                    if isinstance(att, dict) and att.get("id")
+                ],
+            )
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "diagram decisions read skipped user_id=%s project_id=%s: %s",
+                user_id,
+                project_id,
+                exc,
+            )
+            db.rollback()
+            decisions = {}
+
         return {
             "messages": [
                 {
                     "id": row.id,
                     "role": row.role,
-                    "content": row.content,
+                    # F14 (migracion 0015): si el mensaje se guardo con un
+                    # display_content propio (hoy: "Solicitar cambios" sobre
+                    # un diagrama), se lo devolvemos en vez del content real
+                    # -- asi la burbuja del usuario sobrevive a un refresh
+                    # en vez de mostrar el prompt tecnico completo (ver
+                    # QA_feature-hu6-diagrama, seccion 0 punto 7). El agente
+                    # nunca ve esta llave: sigue recibiendo body.message tal
+                    # cual en cada turno nuevo.
+                    "content": row.display_content or row.content,
                     "citations": row.citations or [],
+                    # Bug fix (HU6): esta llave nunca se devolvia, asi que un
+                    # reload de la pagina perdia los diagramas del chat por
+                    # completo (el frontend ya los esperaba, ver
+                    # frontend/src/api/chat.ts::_normaliseHistoryAttachments).
+                    # Ademas se re-firma el token de cada attachment aqui
+                    # (no se reusa el ``url`` guardado, que puede tener mas
+                    # de 5 min y estar vencido) via build_attachment_url.
+                    "attachments": [
+                        {
+                            "id": att["id"],
+                            "kind": att.get("kind", "screenshot"),
+                            "mime": att.get("mime", "image/png"),
+                            "filename": att.get("filename"),
+                            "url": build_attachment_url(att["id"], user_id),
+                            # None = sin decidir; si no, "approve" | "modify" | "reject".
+                            "decision": decisions.get(att["id"]),
+                        }
+                        for att in (row.attachments or [])
+                        if isinstance(att, dict) and att.get("id")
+                    ],
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
                 for row in rows

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -83,6 +84,45 @@ def test_build_system_prompt_composes_sections():
     assert LIBRARY_HINT in prompt
     assert "Saga" in prompt
     assert "body" in prompt
+
+
+def test_find_ungrounded_mermaid_nodes_warns_on_nodes_absent_from_context():
+    from app.core.agent import find_ungrounded_mermaid_nodes
+
+    docs = [
+        _make_doc(
+            "Propuesta aprobada: API Gateway conecta con Order Service y Payment Service.",
+            source_type="approved_proposal",
+            pattern_name="Propuesta aprobada",
+        )
+    ]
+    mermaid = """
+flowchart TD
+  API_Gateway["API Gateway"] --> Order_Service["Order Service"]
+  Order_Service --> Payment_Service["Payment Service"]
+  Order_Service --> Fraud_Service["Fraud Service"]
+"""
+
+    assert find_ungrounded_mermaid_nodes(mermaid, docs) == ["Fraud Service"]
+
+
+def test_extract_mermaid_node_names_unescapes_quot_entity():
+    """Regresion (docs/QA_feature-hu6-diagrama.md, secciones 4 y 10):
+    ``sanitize_mermaid_labels`` (mermaid_validator.py) escapa comillas
+    internas de un label a la entidad ``#quot;`` para que Mermaid renderice
+    bien -- p. ej. ``Cliente "Premium"`` sale del sanitizador como
+    ``Cliente #quot;Premium#quot;``. ``_extract_mermaid_node_names`` es lo
+    que arma la lista de nodos de la advertencia de grounding que ve el
+    usuario, y debe revertir ese escape (no mostrar la entidad cruda).
+    """
+    from app.core.agent import _extract_mermaid_node_names
+
+    code = 'flowchart TD\nA["Cliente #quot;Premium#quot;"]-->B["API Gateway"]'
+
+    names = _extract_mermaid_node_names(code)
+
+    assert 'Cliente "Premium"' in names
+    assert not any("#quot;" in name for name in names)
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +237,6 @@ def test_run_agent_no_context7_degraded_when_context7_ok():
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools", AsyncMock(
              return_value=([MagicMock(name="resolve-library-id"), MagicMock(name="query-docs")], None),
-         )), \
-         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(
-             return_value=([], None),
          )):
         async def _drive():
             events = []
@@ -259,8 +296,7 @@ def test_run_agent_skips_context7_when_architect_pattern_present():
     ]
 
     with patch.object(agent, "build_agent", side_effect=_capture_build), \
-         patch.object(agent, "_try_get_context7_tools", AsyncMock()) as c7, \
-         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
+         patch.object(agent, "_try_get_context7_tools", AsyncMock()) as c7:
 
         async def _drive():
             events = []
@@ -279,7 +315,8 @@ def test_run_agent_skips_context7_when_architect_pattern_present():
 
     # Context7 fetch must NOT have been called.
     c7.assert_not_called()
-    # Agent must have been built with empty tools (puppeteer mocked to empty too).
+    # Agent must have been built with empty tools (puppeteer ya no se le
+    # ofrece al LLM como tool -- ver SIMPLIFICADO en agent.py).
     assert captured_tools["tools"] == []
 
 
@@ -316,8 +353,7 @@ def test_run_agent_streams_tokens_then_done():
     fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
-         patch.object(agent, "_try_get_context7_tools", AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
+         patch.object(agent, "_try_get_context7_tools", AsyncMock(return_value=([], None))):
 
         async def _drive():
             events = []
@@ -368,8 +404,7 @@ def test_run_agent_emits_tool_start_and_end_around_tokens():
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([MagicMock(name="t1")], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
+                      AsyncMock(return_value=([MagicMock(name="t1")], None))):
 
         async def _drive():
             events = []
@@ -437,8 +472,7 @@ def test_run_agent_yields_error_when_astream_raises():
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools", AsyncMock(return_value=([], None))):
+                      AsyncMock(return_value=([], None))):
 
         async def _drive():
             events = []
@@ -598,124 +632,6 @@ def test_run_agent_records_none_project_as_string_none():
 
 
 # ---------------------------------------------------------------------------
-# Conversation memory — ``history`` prepends persisted turns to the payload
-# ---------------------------------------------------------------------------
-
-
-def _capture_payload_astream(captured: dict):
-    """Build a fake ``astream_events`` that records its ``input`` payload."""
-    async def _empty_astream(*_a, **_kw):
-        if False:  # pragma: no cover
-            yield {}
-
-    def _capture(input, config=None, **kwargs):
-        captured["input"] = input
-        return _empty_astream()
-
-    return _capture
-
-
-def test_run_agent_payload_without_history_is_single_user_message():
-    """No history → payload is exactly the historical single-message shape."""
-    from app.core import agent
-
-    fake_agent = MagicMock()
-    captured: dict = {}
-    fake_agent.astream_events = _capture_payload_astream(captured)
-
-    with patch.object(agent, "build_agent", return_value=fake_agent), \
-         patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools",
-                      AsyncMock(return_value=([], None))):
-
-        async def _drive():
-            async for _ in agent.run_agent(
-                model=MagicMock(model_name="m"),
-                message="hi",
-                callbacks=[],
-                rag_documents=[],
-            ):
-                pass
-
-        asyncio.run(_drive())
-
-    assert captured["input"] == {"messages": [{"role": "user", "content": "hi"}]}
-
-
-def test_run_agent_payload_with_history_prepends_prior_turns_chronologically():
-    """Non-empty history → prior turns precede the current user message in
-    the SAME order they were persisted (chronological), so the model sees
-    a real conversation instead of an amnesiac single turn."""
-    from app.core import agent
-
-    fake_agent = MagicMock()
-    captured: dict = {}
-    fake_agent.astream_events = _capture_payload_astream(captured)
-
-    history = [
-        {"role": "user", "content": "question 1"},
-        {"role": "assistant", "content": "answer 1"},
-        {"role": "user", "content": "question 2"},
-    ]
-
-    with patch.object(agent, "build_agent", return_value=fake_agent), \
-         patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools",
-                      AsyncMock(return_value=([], None))):
-
-        async def _drive():
-            async for _ in agent.run_agent(
-                model=MagicMock(model_name="m"),
-                message="follow-up",
-                callbacks=[],
-                rag_documents=[],
-                history=history,
-            ):
-                pass
-
-        asyncio.run(_drive())
-
-    assert captured["input"] == {"messages": [
-        {"role": "user", "content": "question 1"},
-        {"role": "assistant", "content": "answer 1"},
-        {"role": "user", "content": "question 2"},
-        {"role": "user", "content": "follow-up"},
-    ]}
-
-
-def test_run_agent_payload_with_empty_history_matches_no_history():
-    """``history=[]`` must behave EXACTLY like ``history=None`` (byte-identical
-    payload) so callers that simply omit the argument see no difference."""
-    from app.core import agent
-
-    fake_agent = MagicMock()
-    captured: dict = {}
-    fake_agent.astream_events = _capture_payload_astream(captured)
-
-    with patch.object(agent, "build_agent", return_value=fake_agent), \
-         patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools",
-                      AsyncMock(return_value=([], None))):
-
-        async def _drive():
-            async for _ in agent.run_agent(
-                model=MagicMock(model_name="m"),
-                message="hi",
-                callbacks=[],
-                rag_documents=[],
-                history=[],
-            ):
-                pass
-
-        asyncio.run(_drive())
-
-    assert captured["input"] == {"messages": [{"role": "user", "content": "hi"}]}
-
-
-# ---------------------------------------------------------------------------
 # PR #76 review fix #2b — ``degraded`` event when model never invokes tools
 # ---------------------------------------------------------------------------
 
@@ -748,12 +664,14 @@ def test_run_agent_emits_tool_calls_missing_when_tools_available_unused():
 
     fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
 
-    advertised_tools = [MagicMock(name="puppeteer_screenshot")]
+    # Puppeteer ya no se le ofrece al LLM como tool (ver SIMPLIFICADO en
+    # agent.py) -- las unicas tools que llegan a `run_agent` son las de
+    # Context7, asi que son las que se usan aca para simular "tools
+    # advertised pero nunca invocadas".
+    advertised_tools = [MagicMock(name="resolve-library-id")]
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools",
                       AsyncMock(return_value=(advertised_tools, None))):
 
         async def _drive():
@@ -806,9 +724,9 @@ def test_run_agent_does_not_emit_tool_calls_missing_when_a_tool_was_used():
         return chunk
 
     raw_events = [
-        {"event": "on_tool_start", "name": "puppeteer_screenshot",
-         "data": {"input": {"mermaid": "graph TD\nA-->B"}}},
-        {"event": "on_tool_end", "name": "puppeteer_screenshot",
+        {"event": "on_tool_start", "name": "resolve-library-id",
+         "data": {"input": {"libraryName": "mermaid"}}},
+        {"event": "on_tool_end", "name": "resolve-library-id",
          "data": {"output": "ok"}},
         {"event": "on_chat_model_stream", "name": "M",
          "data": {"chunk": _make_chunk("Diagrama renderizado")}},
@@ -819,8 +737,6 @@ def test_run_agent_does_not_emit_tool_calls_missing_when_a_tool_was_used():
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools",
                       AsyncMock(return_value=([MagicMock(name="t")], None))):
 
         async def _drive():
@@ -870,8 +786,6 @@ def test_run_agent_does_not_emit_tool_calls_missing_when_no_tools_advertised():
 
     with patch.object(agent, "build_agent", return_value=fake_agent), \
          patch.object(agent, "_try_get_context7_tools",
-                      AsyncMock(return_value=([], None))), \
-         patch.object(agent, "_try_get_puppeteer_tools",
                       AsyncMock(return_value=([], None))):
 
         async def _drive():
@@ -893,3 +807,482 @@ def test_run_agent_does_not_emit_tool_calls_missing_when_no_tools_advertised():
         for ev in events
     ), f"unexpected tool_calls_missing in RAG-only mode: {types}"
     assert types[-1] == "done"
+
+
+# ---------------------------------------------------------------------------
+# _astream_agent — on_tool_error (hallazgo #11, revisión feature/hu6-diagrama)
+# ---------------------------------------------------------------------------
+
+
+def test_astream_agent_on_tool_error_sanitizes_message_but_logs_detail_serverside(caplog):
+    """Antes se mandaba `str(error)` crudo en el evento SSE. sse.py::
+    _emit_tool_end deliberadamente no hace esto porque un error de tool
+    puede exponer hosts internos, paths del filesystem, etc. El cliente
+    debe recibir un mensaje generico; el detalle completo solo va al log
+    server-side."""
+    from app.core.agent import _astream_agent
+
+    internal_detail = "Connection refused: internal-db.svc.cluster.local:5432"
+    fake_agent = MagicMock()
+    raw_events = [
+        {
+            "event": "on_tool_error",
+            "name": "fetch_url",
+            "data": {"error": Exception(internal_detail)},
+        },
+    ]
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    async def _drive():
+        events = []
+        async for ev in _astream_agent(fake_agent, "hola", []):
+            events.append(ev)
+        return events
+
+    with caplog.at_level("WARNING"):
+        events = asyncio.run(_drive())
+
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["event"] == "tool_end"
+    assert ev["data"] == {
+        "tool": "fetch_url",
+        "result_length": 0,
+        "status": "error",
+        "error": "Error ejecutando la herramienta.",
+    }
+    # El detalle interno nunca debe llegar al payload que ve el cliente.
+    assert internal_detail not in json.dumps(ev)
+    # ... pero sí debe quedar loggeado server-side para poder debuggear.
+    assert internal_detail in caplog.text
+
+
+def test_astream_agent_on_tool_error_uses_fallback_tool_name_when_missing():
+    from app.core.agent import _astream_agent
+
+    fake_agent = MagicMock()
+    raw_events = [
+        {"event": "on_tool_error", "name": None, "data": {"error": Exception("boom")}},
+    ]
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    async def _drive():
+        events = []
+        async for ev in _astream_agent(fake_agent, "hola", []):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(_drive())
+
+    assert events[0]["data"]["tool"] == "tool"
+
+
+# ---------------------------------------------------------------------------
+# _render_mermaid_server_side (hallazgos #2, #4, #9 — render server-side de
+# diagramas via el SDK crudo de mcp). El paquete `mcp` no siempre esta
+# instalado en el entorno de tests, asi que se inyecta un modulo fake en
+# sys.modules antes de importar la funcion bajo prueba.
+# ---------------------------------------------------------------------------
+
+
+class _FakeContentBlock:
+    def __init__(self, *, type_, text=None, data=None, mime_type=None):
+        self.type = type_
+        self.text = text
+        self.data = data
+        self.mimeType = mime_type
+
+
+class _FakeToolResult:
+    def __init__(self, content):
+        self.content = content
+
+
+def _install_fake_mcp_module(monkeypatch, *, session):
+    """Instala `mcp` y `mcp.client.streamable_http` falsos en sys.modules,
+    con `ClientSession`/`streamablehttp_client` como context managers async
+    que ceden `session` (o un stream/tuple dummy en el caso del client http).
+    """
+    import sys
+    import types as _types
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return (MagicMock(), MagicMock(), MagicMock())
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeClientSessionCtx:
+        def __init__(self, read, write):
+            self._read = read
+            self._write = write
+
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def _streamablehttp_client(url):
+        return _FakeStreamCtx()
+
+    mcp_module = _types.ModuleType("mcp")
+    mcp_module.ClientSession = _FakeClientSessionCtx
+
+    mcp_client_module = _types.ModuleType("mcp.client")
+    mcp_client_http_module = _types.ModuleType("mcp.client.streamable_http")
+    mcp_client_http_module.streamablehttp_client = _streamablehttp_client
+
+    monkeypatch.setitem(sys.modules, "mcp", mcp_module)
+    monkeypatch.setitem(sys.modules, "mcp.client", mcp_client_module)
+    monkeypatch.setitem(
+        sys.modules, "mcp.client.streamable_http", mcp_client_http_module
+    )
+
+
+def test_render_mermaid_server_side_returns_attachment_on_success(monkeypatch, tmp_path):
+    """Hallazgo #9 (poll en vez de sleep fijo) + camino feliz: navigate,
+    poll de document.title hasta 'mermaid-rendered', screenshot, y el PNG
+    resultante se guarda a disco."""
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", str(tmp_path))
+    from app.core import agent
+
+    png_bytes = b"\x89PNG\r\n\x1a\nFAKE"
+    import base64 as _b64
+
+    fake_session = AsyncMock()
+    fake_session.initialize = AsyncMock(return_value=None)
+
+    async def _call_tool(name, args):
+        if name == "puppeteer_navigate":
+            return _FakeToolResult([])
+        if name == "puppeteer_evaluate":
+            # Primera consulta de _wait_for_mermaid_render: ya renderizado.
+            return _FakeToolResult(
+                [_FakeContentBlock(type_="text", text="mermaid-rendered")]
+            )
+        if name == "puppeteer_screenshot":
+            return _FakeToolResult(
+                [
+                    _FakeContentBlock(
+                        type_="image",
+                        data=_b64.b64encode(png_bytes).decode("ascii"),
+                        mime_type="image/png",
+                    )
+                ]
+            )
+        raise AssertionError(f"tool inesperada: {name}")
+
+    fake_session.call_tool = AsyncMock(side_effect=_call_tool)
+
+    _install_fake_mcp_module(monkeypatch, session=fake_session)
+    monkeypatch.setattr(
+        "app.core.puppeteer_mcp._resolve_url", lambda: "http://puppeteer.local/mcp"
+    )
+
+    result = asyncio.run(
+        agent._render_mermaid_server_side("flowchart TD\nA-->B", fetch_timeout=5.0)
+    )
+
+    assert result is not None
+    assert result["kind"] == "screenshot"
+    assert result["mime"] == "image/png"
+    assert os.path.exists(result["storage_path"])
+    with open(result["storage_path"], "rb") as f:
+        assert f.read() == png_bytes
+
+    called_tools = [c.args[0] for c in fake_session.call_tool.call_args_list]
+    assert called_tools == [
+        "puppeteer_navigate",
+        "puppeteer_evaluate",
+        "puppeteer_screenshot",
+    ]
+
+
+def test_render_mermaid_server_side_returns_none_and_skips_screenshot_on_mermaid_error(
+    monkeypatch, tmp_path
+):
+    """Bug real HU6: antes se tomaba el screenshot igual aunque mermaid.run()
+    hubiera fallado en el navegador, mostrando el mensaje de error rojo como
+    si fuera el diagrama. Ahora: si document.title == 'mermaid-error', se
+    corta ANTES de pedir el screenshot."""
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", str(tmp_path))
+    from app.core import agent
+
+    fake_session = AsyncMock()
+    fake_session.initialize = AsyncMock(return_value=None)
+
+    async def _call_tool(name, args):
+        if name == "puppeteer_navigate":
+            return _FakeToolResult([])
+        if name == "puppeteer_evaluate" and "document.title" in args.get("script", ""):
+            return _FakeToolResult(
+                [_FakeContentBlock(type_="text", text="mermaid-error")]
+            )
+        if name == "puppeteer_evaluate":
+            # Segunda llamada: lee #status con el mensaje real del error.
+            return _FakeToolResult(
+                [_FakeContentBlock(type_="text", text="ERROR mermaid.run: Parse error")]
+            )
+        raise AssertionError(
+            f"no deberia llamarse '{name}' si mermaid.run() fallo"
+        )
+
+    fake_session.call_tool = AsyncMock(side_effect=_call_tool)
+
+    _install_fake_mcp_module(monkeypatch, session=fake_session)
+    monkeypatch.setattr(
+        "app.core.puppeteer_mcp._resolve_url", lambda: "http://puppeteer.local/mcp"
+    )
+
+    result = asyncio.run(
+        agent._render_mermaid_server_side("flowchart TD\nA[bad(label]", fetch_timeout=5.0)
+    )
+
+    assert result is None
+    called_tools = [c.args[0] for c in fake_session.call_tool.call_args_list]
+    assert "puppeteer_screenshot" not in called_tools
+
+
+def test_render_mermaid_server_side_returns_none_when_mcp_sdk_unavailable(
+    monkeypatch, tmp_path
+):
+    """Si el SDK crudo de mcp no esta instalado, se degrada a None en vez
+    de reventar el turno completo."""
+    import sys
+
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "mcp", None)
+    from app.core import agent
+
+    result = asyncio.run(
+        agent._render_mermaid_server_side("flowchart TD\nA-->B", fetch_timeout=5.0)
+    )
+
+    assert result is None
+# ---------------------------------------------------------------------------
+# run_agent — rate limit de Puppeteer chequeado justo antes de renderizar
+# (hallazgo #2, revisión feature/hu6-diagrama). Reemplaza al viejo
+# ``test_rate_limit_handler_in_try_get_puppeteer_tools`` en
+# tests/core/test_puppeteer_mcp.py, que llamaba a
+# ``agent._try_get_puppeteer_tools`` -- funcion que ya no existe tras este
+# refactor (el chequeo se movio a un import local dentro de ``run_agent``,
+# justo antes de ``_render_mermaid_server_side``).
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_emits_degraded_with_rate_limited_reason_before_render(monkeypatch):
+    """Hallazgo #2: si la cuota de Puppeteer ya esta agotada cuando el
+    turno llega al bloque mermaid, `run_agent` debe emitir `degraded` con
+    `source="puppeteer"` / `reason="puppeteer_rate_limited"` en vez de
+    omitir el diagrama en silencio, y NO debe llegar a llamar a
+    `_render_mermaid_server_side` (no tiene sentido intentar renderizar
+    si ya sabemos que el rate limit lo va a rechazar)."""
+    from app.core import agent, puppeteer_mcp
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    mermaid_reply = "Aca esta el diagrama:\n```mermaid\nflowchart TD\nA-->B\n```"
+    raw_events = [
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk(mermaid_reply)}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    # Agota la (unica) cuota del usuario ANTES de correr el turno.
+    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
+    puppeteer_mcp._RATE_LIMITER.clear()
+    puppeteer_mcp._check_rate_limit(user_id=7)
+
+    render_mock = AsyncMock()
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))), \
+         patch.object(agent, "_render_mermaid_server_side", render_mock):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="dibuja el diagrama",
+                callbacks=[],
+                rag_documents=[],
+                user_id=7,
+                project_id=1,
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    render_mock.assert_not_called()
+
+    degraded_events = [
+        ev for ev in events
+        if ev["event"] == "degraded"
+        and ev["data"].get("reason") == "puppeteer_rate_limited"
+    ]
+    assert len(degraded_events) == 1, f"eventos: {[ev['event'] for ev in events]}"
+    payload = degraded_events[0]["data"]
+    assert payload["source"] == "puppeteer"
+    assert payload["fallback"] == "text_only"
+
+    types = [ev["event"] for ev in events]
+    # El mermaid sigue siendo validado igual (solo falla el render a imagen).
+    assert "diagram_validated" in types
+    assert types[-1] == "done"
+
+
+def test_run_agent_does_not_consume_rate_limit_when_reply_has_no_diagram(monkeypatch):
+    """Hallazgo #2 (regresion): antes `_check_rate_limit(user_id)` se
+    llamaba al PRINCIPIO de todos los turnos, no solo los que terminan en
+    diagrama -- eso gastaba cuota en cualquier mensaje de chat normal. Un
+    turno sin bloque ```mermaid``` en la respuesta no debe tocar el rate
+    limiter en absoluto."""
+    from app.core import agent, puppeteer_mcp
+
+    fake_agent = MagicMock()
+
+    def _make_chunk(text: str):
+        chunk = MagicMock()
+        chunk.content = text
+        return chunk
+
+    raw_events = [
+        {"event": "on_chat_model_stream", "name": "M",
+         "data": {"chunk": _make_chunk("Respuesta normal, sin diagrama.")}},
+        {"event": "on_chat_model_end", "name": "M", "data": {}},
+    ]
+    fake_agent.astream_events = lambda *a, **kw: _aiter_from_list(raw_events)
+
+    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
+    puppeteer_mcp._RATE_LIMITER.clear()
+
+    with patch.object(agent, "build_agent", return_value=fake_agent), \
+         patch.object(agent, "_try_get_context7_tools",
+                      AsyncMock(return_value=([], None))):
+
+        async def _drive():
+            events = []
+            async for ev in agent.run_agent(
+                model=MagicMock(model_name="m"),
+                message="como funciona el patron saga?",
+                callbacks=[],
+                rag_documents=[],
+                user_id=7,
+                project_id=1,
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_drive())
+
+    # Ninguna llamada a _check_rate_limit -> la ventana del usuario sigue
+    # vacia (si el bug volviera, tendria un timestamp cargado aca).
+    assert puppeteer_mcp._RATE_LIMITER.get(7, []) == []
+    assert not any(
+        ev["event"] == "degraded"
+        and ev.get("data", {}).get("source") == "puppeteer"
+        for ev in events
+    )
+    assert events[-1]["event"] == "done"
+
+# ---------------------------------------------------------------------------
+# HTML de preview de Mermaid: NO debe embeber mermaid.js (bug HU6: el data URL
+# de ~4.5 MB era rechazado con HTTP 413 por supergateway, limite 100 KB)
+# ---------------------------------------------------------------------------
+
+
+def test_mermaid_preview_html_references_bundle_by_url_not_inline():
+    from app.core import agent
+
+    html = agent._build_mermaid_preview_html('flowchart LR\n  A["Nodo 1"] --> B["Nodo 2"]')
+
+    assert f"<script src='{agent._MERMAID_JS_URL}'></script>" in html
+    # Si alguien vuelve a embeber el bundle, el HTML pasa de unos pocos KB a MBs.
+    assert len(html) < 20_000
+
+
+def test_mermaid_data_url_stays_under_gateway_body_limit():
+    from app.core import agent
+
+    data_url = agent._mermaid_html_to_data_url(
+        agent._build_mermaid_preview_html("flowchart LR\n  A --> B")
+    )
+
+    # supergateway usa express.json() sin `limit` -> 100 KB por request.
+    assert len(data_url) < 100_000
+
+
+def test_describe_exception_flattens_exception_groups():
+    from app.core import agent
+
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [RuntimeError("413 Payload Too Large"), ValueError("otra")],
+    )
+
+    text = agent._describe_exception(group)
+
+    assert "RuntimeError: 413 Payload Too Large" in text
+    assert "ValueError: otra" in text
+    assert "TaskGroup" not in text
+
+
+# ---------------------------------------------------------------------------
+# Grounding: falso positivo "Base de Datos PostgreSQL" vs propuesta "PostgreSQL"
+# ---------------------------------------------------------------------------
+
+_APPROVED_PROPOSAL_DOC_TEXT = (
+    "PROPUESTA APROBADA PARA USAR COMO FUENTE DE VERDAD EN EL DIAGRAMA:\n"
+    "Arquitectura de microservicios: API Gateway, Servicio de Órdenes, "
+    "Servicio de Pagos, Servicio de Inventario, PostgreSQL"
+)
+
+
+def _approved_proposal_doc():
+    return _make_doc(
+        _APPROVED_PROPOSAL_DOC_TEXT,
+        "approved_proposal",
+        pattern_name="Propuesta aprobada",
+    )
+
+
+def test_grounding_accepts_label_that_elaborates_a_proposal_term():
+    """La propuesta dice 'PostgreSQL'; el modelo rotula 'Base de Datos
+    PostgreSQL'. Todas las palabras distintivas estan en el contexto -> no
+    debe salir la advertencia."""
+    from app.core.agent import find_ungrounded_mermaid_nodes
+
+    code = (
+        "flowchart LR\n"
+        '  G["API Gateway"] --> O["Servicio de Órdenes"]\n'
+        '  O --> DB["Base de Datos PostgreSQL"]'
+    )
+
+    assert find_ungrounded_mermaid_nodes(code, [_approved_proposal_doc()]) == []
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Servicio de Blockchain",       # componente inventado
+        "Base de Datos MongoDB",        # otra tecnologia que la propuesta no menciona
+        "Servicio de Pagos Externos",   # una palabra distintiva de mas
+        "Cache Redis",
+    ],
+)
+def test_grounding_still_flags_invented_components(label):
+    from app.core.agent import find_ungrounded_mermaid_nodes
+
+    code = f'flowchart LR\n  X["{label}"] --> Y["API Gateway"]'
+
+    assert label in find_ungrounded_mermaid_nodes(code, [_approved_proposal_doc()])

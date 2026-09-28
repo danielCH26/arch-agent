@@ -1,4 +1,4 @@
--- =============================================================================
+--- =============================================================================
 -- Schema inicial de arch-agent (aplicado por scripts/init_db.py).
 --
 -- Las migraciones incrementales viven en migrations/NNNN_*.sql (ver
@@ -155,9 +155,6 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
 
--- architect_pattern_chunks.chunk_metadata (migration 0009)
-ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;
-
 -- =============================================================================
 -- F12 — capability engram-conversation-memory (issue #14, migration 0008)
 -- Tabla messages: source-of-truth para el historial de chat.
@@ -195,3 +192,30 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
 ALTER TABLE messages
     ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
 
+-- approvals.project_id (migration 0016) -- fix de aislamiento entre
+-- proyectos: session_id solo no alcanza porque sessions es 1 fila por
+-- usuario, no por proyecto (ver hallazgo #1, revisión feature/hu6-diagrama).
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_approvals_project_phase
+    ON approvals (project_id, phase);
+
+-- approvals.attachment_id (migration 0017) -- decisión POR diagrama: UUID del
+-- adjunto (messages.attachments[].id) sobre el que se decidió. Permite que el
+-- chat y el historial recuerden qué diagramas ya tienen una decisión.
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS attachment_id VARCHAR(64);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_attachment_id
+    ON approvals (attachment_id);
+
+-- =============================================================================
+-- F14 — display_content (migracion 0015). Idempotente para DBs creadas por
+-- init_db.py antes de que corriera la migracion 0015.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS display_content TEXT NULL;
+
+-- architect_pattern_chunks.chunk_metadata (migration 0009)
+ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;

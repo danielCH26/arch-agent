@@ -123,6 +123,7 @@ class TestDocumentModels:
             file_size_bytes=1024,
             chunk_count=5,
             version=1,
+            processed=True,
             created_at="2026-08-28T00:00:00",
         )
         assert doc.filename == "test.pdf"
@@ -168,7 +169,14 @@ class TestUploadEndpointDuplicates:
     def _run_upload(**kwargs):
         """Helper para correr el endpoint async en tests sync."""
         from app.api.documents import upload_document
+        from fastapi import BackgroundTasks
         import asyncio
+        # ``background_tasks`` no tiene default (FastAPI lo inyecta en runtime);
+        # llamado directamente hay que pasarle una instancia real.
+        kwargs.setdefault("background_tasks", BackgroundTasks())
+        # ``suffix`` sí tiene default, pero es un objeto ``Query(False, ...)``
+        # cuando se llama fuera del framework -- forzamos el bool real.
+        kwargs.setdefault("suffix", False)
         return asyncio.run(upload_document(**kwargs))
 
     def _fake_upload_file(self, content: bytes = b"fake-pdf-content", filename: str = "test.pdf"):
@@ -188,6 +196,7 @@ class TestUploadEndpointDuplicates:
         doc.file_size_bytes = 100
         doc.chunk_count = 1
         doc.version = version
+        doc.processed = False
         doc.created_at = datetime(2026, 1, 1, 12, 0, 0)
         return doc
 
@@ -215,14 +224,14 @@ class TestUploadEndpointDuplicates:
         assert "overwrite=true" in body["detail"]
 
     @patch("app.api.documents.check_duplicate")
-    @patch("app.api.documents.overwrite_document")
+    @patch("app.api.documents.overwrite_document_pending")
     @patch("app.api.documents.get_document_by_id")
     @patch("app.api.documents.get_embeddings")
     @patch("app.api.documents.process_file")
     def test_overwrite_true_calls_overwrite_document(
         self, mock_process, mock_get_emb, mock_get_doc, mock_overwrite, mock_check,
     ):
-        """Con ?overwrite=true y duplicado → llama overwrite_document (preserva version)."""
+        """Con ?overwrite=true y duplicado → llama overwrite_document_pending (preserva version)."""
         mock_check.return_value = 2  # hay duplicado v2
         mock_process.return_value = [MagicMock(page_content="chunk")]
         mock_emb = MagicMock()
@@ -238,21 +247,21 @@ class TestUploadEndpointDuplicates:
             current_user={"user_id": 1, "username": "testuser", "jti": None},
         )
 
-        # overwrite_document debe ser llamado (no save_document)
+        # overwrite_document_pending debe ser llamado (no save_document_pending)
         mock_overwrite.assert_called_once()
         # Devuelve DocumentOut con la MISMA version que tenia antes
         assert result.version == 2
         assert result.id == 42
 
     @patch("app.api.documents.check_duplicate")
-    @patch("app.api.documents.save_document")
+    @patch("app.api.documents.save_document_pending")
     @patch("app.api.documents.get_document_by_id")
     @patch("app.api.documents.get_embeddings")
     @patch("app.api.documents.process_file")
     def test_no_duplicate_calls_save_with_version_1(
         self, mock_process, mock_get_emb, mock_get_doc, mock_save, mock_check,
     ):
-        """Sin duplicado → save_document con version=1."""
+        """Sin duplicado → save_document_pending con version=1."""
         mock_check.return_value = None
         mock_process.return_value = [MagicMock(page_content="chunk")]
         mock_emb = MagicMock()
