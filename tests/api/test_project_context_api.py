@@ -107,6 +107,34 @@ class TestElicitationReceivesDocuments:
     @patch("app.api.elicitation.get_langfuse_handler", return_value=None)
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state", return_value={"engram_state": {}})
+    @patch("app.api.elicitation.load_documents_text")
+    @patch("app.core.elicitation_agent.next_step")
+    def test_first_elicitation_turn_uses_uploaded_documents_automatically(
+        self, mock_next, mock_docs, _mock_load, mock_require, mock_build,
+        _mock_handler, _mock_save,
+    ):
+        mock_require.return_value = _project()
+        mock_build.return_value = MagicMock()
+        mock_docs.return_value = (
+            "### Documento: alcance.md\nEl MVP debe operar sin conexión.",
+            ["alcance.md"],
+        )
+        mock_next.return_value = elicitation_agent.ElicitationDecision(
+            False, "¿Qué perfiles usarán el MVP?", "faltan usuarios"
+        )
+
+        result = run(send_elicitation_message(
+            project_id=1, body=ElicitationMessageIn(), current_user=CURRENT_USER,
+        ))
+
+        assert result.question == "¿Qué perfiles usarán el MVP?"
+        assert "operar sin conexión" in mock_next.call_args.kwargs["documents_context"]
+
+    @patch("app.api.elicitation.save_session_state")
+    @patch("app.api.elicitation.get_langfuse_handler", return_value=None)
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
     @patch("app.api.elicitation.load_documents_text")
     @patch("app.core.elicitation_agent.generate_summary")

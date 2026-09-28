@@ -2,7 +2,7 @@
  * Proposal-specific markdown renderer.
  *
  * Proposals (per REQ-1 + the generator's prompt) are produced with a fixed
- * shape: three `## <Section>` headings followed by bullet lists, plus a
+ * shape: four `## <Section>` headings followed by bullet lists, plus a
  * possible paragraph or two of context. We deliberately keep this renderer
  * narrower than `MessageBubble`'s full markdown so we don't have to lift
  * 150+ LoC of table-parsing logic out of MessageBubble (which is slice-1

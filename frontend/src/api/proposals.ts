@@ -5,6 +5,7 @@ export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
   similarity: number | null
+  source_role?: 'primary' | 'consulted_not_cited'
   // Backend caps the snippet to 240 chars; useful for tooltips in CitationList.
   snippet?: string | null
 }
@@ -252,4 +253,9 @@ export async function getProposal(proposalId: number): Promise<ProposalOut> {
  */
 export async function getLatestProposal(projectId: number): Promise<ProposalOut | null> {
   return apiFetch<ProposalOut | null>(`/api/projects/${projectId}/proposals/latest`)
+}
+
+/** Todas las versiones persistidas, de más reciente a más antigua. */
+export async function getProposalHistory(projectId: number): Promise<ProposalOut[]> {
+  return apiFetch<ProposalOut[]>(`/api/projects/${projectId}/proposals`)
 }

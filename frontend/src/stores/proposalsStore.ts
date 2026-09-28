@@ -6,6 +6,7 @@ import {
   type ProposalOut,
   createProposalStream,
   decideProposal,
+  getProposalHistory,
   getLatestProposal,
   getProposal as fetchProposal,
 } from '../api/proposals'
@@ -33,6 +34,8 @@ export type InFlightStatus = 'idle' | 'generating' | 'modifying' | 'deciding'
 
 interface ProposalsState {
   currentProposal: Proposal | null
+  /** Draft for the next iteration. The approved/current version stays intact. */
+  pendingProposal: Proposal | null
   iterations: Proposal[]
   inFlight: InFlightStatus
   error: string | null
@@ -88,6 +91,7 @@ function proposalFromOut(out: ProposalOut): Proposal {
 
 export const proposalsStore = create<ProposalsState>((set, get) => ({
   currentProposal: null,
+  pendingProposal: null,
   iterations: [],
   inFlight: 'idle',
   error: null,
@@ -97,6 +101,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       inFlight: 'generating',
       error: null,
       currentProposal: emptyProposal(projectId),
+      pendingProposal: null,
     })
 
     createProposalStream(
@@ -137,21 +142,23 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             }
             return {
               currentProposal: finalized,
+              pendingProposal: null,
               iterations: [finalized, ...state.iterations],
               inFlight: 'idle',
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message })
+          set({ inFlight: 'idle', error: message, pendingProposal: null })
         },
       },
     )
   },
 
   modify: async (proposalId: number, feedback: string) => {
-    // Snapshot the prior iteration so we can hydrate UI instantly while the
-    // new stream starts. The new iteration replaces currentProposal on done.
+    // Keep the current iteration visible and immutable while the next one is
+    // streamed. Replacing it with an empty draft made feedback appear to erase
+    // the proposal until the request finished.
     const current = get().currentProposal
     const prior =
       get().iterations.find((p) => p.id === proposalId) ??
@@ -159,12 +166,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     set({
       inFlight: 'modifying',
       error: null,
-      currentProposal: prior
-        ? {
-            ...emptyProposal(prior.project_id),
-            iteration: prior.iteration, // updated on done
-          }
-        : emptyProposal(0),
+      pendingProposal: emptyProposal(prior?.project_id ?? 0),
     })
 
     createProposalStream(
@@ -173,19 +175,19 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       {
         onSources: (citations) => {
           set((state) =>
-            state.currentProposal
-              ? { currentProposal: { ...state.currentProposal, citations } }
+            state.pendingProposal
+              ? { pendingProposal: { ...state.pendingProposal, citations } }
               : {},
           )
         },
         onToken: (token) => {
           set((state) =>
-            state.currentProposal
+            state.pendingProposal
               ? {
-                  currentProposal: {
-                    ...state.currentProposal,
+                  pendingProposal: {
+                    ...state.pendingProposal,
                     content_markdown:
-                      state.currentProposal.content_markdown + token,
+                      state.pendingProposal.content_markdown + token,
                   },
                 }
               : {},
@@ -193,7 +195,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
         },
         onDone: (newProposalId, citations, iteration) => {
           set((state) => {
-            const base = state.currentProposal ?? emptyProposal(0)
+            const base = state.pendingProposal ?? emptyProposal(0)
             const finalized: Proposal = {
               ...base,
               id: newProposalId,
@@ -203,13 +205,17 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             }
             return {
               currentProposal: finalized,
-              iterations: [finalized, ...state.iterations],
+              pendingProposal: null,
+              iterations: [
+                finalized,
+                ...state.iterations.filter((proposal) => proposal.id !== finalized.id),
+              ],
               inFlight: 'idle',
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message })
+          set({ inFlight: 'idle', error: message, pendingProposal: null })
         },
       },
     )
@@ -280,12 +286,17 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       return
     }
     try {
-      const out = await getLatestProposal(projectId)
+      const [out, history] = await Promise.all([
+        getLatestProposal(projectId),
+        getProposalHistory(projectId).catch(() => []),
+      ])
       if (get().inFlight !== 'idle') return
-      const hydrated = out ? proposalFromOut(out) : null
+      const hydratedHistory = history.map(proposalFromOut)
+      const hydrated = hydratedHistory[0] ?? (out ? proposalFromOut(out) : null)
       set({
         currentProposal: hydrated,
-        iterations: hydrated ? [hydrated] : [],
+        pendingProposal: null,
+        iterations: hydratedHistory.length > 0 ? hydratedHistory : (hydrated ? [hydrated] : []),
         error: null,
       })
     } catch {
@@ -296,6 +307,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   reset: () => {
     set({
       currentProposal: null,
+      pendingProposal: null,
       iterations: [],
       inFlight: 'idle',
       error: null,

@@ -61,15 +61,38 @@ def test_build_prompt_without_citations_does_not_ask_for_bracket_numbers():
     assert "NO uses numeros entre corchetes" in prompt
 
 
-def test_build_prompt_with_citations_asks_for_bracket_numbers():
-    from app.core.proposal_generator import _build_prompt
+def test_build_prompt_marks_one_primary_pattern_and_secondary_references():
+    from app.core.proposal_generator import _build_prompt, _select_citations
+    from langchain_core.documents import Document
 
-    citations = [{"pattern_name": "CQRS", "snippet": "separa lectura y escritura"}]
+    citations = _select_citations([
+        Document(page_content="separa lectura y escritura", metadata={"pattern_id": 1, "pattern_name": "CQRS", "similarity": 0.9}),
+        Document(page_content="coordina servicios", metadata={"pattern_id": 2, "pattern_name": "Saga", "similarity": 0.8}),
+    ])
     prompt = _build_prompt(
         citations=citations, prior_content=None, feedback=None, project_name="P"
     )
     assert "[1] CQRS" in prompt
-    assert "cita el numero entre corchetes" in prompt
+    assert citations[0]["source_role"] == "primary"
+    assert citations[1]["source_role"] == "consulted_not_cited"
+    assert "Patrón principal: <nombre>" in prompt
+    assert "Consultados no citados: Saga" in prompt
+    assert "cita el numero entre corchetes" not in prompt
+
+
+def test_microservices_prompt_includes_distributed_architecture_baseline():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "Microservicios", "source_role": "primary"}],
+        prior_content=None,
+        feedback=None,
+        project_name="Pedidos",
+    )
+
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" in prompt
+    assert "API Gateway" in prompt
+    assert "base de datos privada por servicio" in prompt
 
 
 def test_build_prompt_tells_the_model_to_decide_instead_of_offering_alternatives():
@@ -81,3 +104,36 @@ def test_build_prompt_tells_the_model_to_decide_instead_of_offering_alternatives
     assert "no le pidas al usuario que elija" in prompt
     # La regla va antes del formato de salida para que el modelo la vea primero.
     assert prompt.index("REGLA DE DECISION") < prompt.index("Formato OBLIGATORIO")
+
+
+def test_build_prompt_requires_a_concrete_primary_pattern_justification():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "Microservicios", "source_role": "primary"}],
+        prior_content=None,
+        feedback=None,
+        project_name="Pedidos",
+    )
+
+    assert "## Justificación del patrón principal" in prompt
+    assert "Motivo de elección" in prompt
+    assert "Reflejo en la arquitectura" in prompt
+    assert "Beneficio esperado" in prompt
+    assert "Riesgo o costo" in prompt
+
+
+def test_build_prompt_makes_budget_team_and_timeline_design_constraints():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[],
+        prior_content=None,
+        feedback=None,
+        project_name="Inventario",
+        requirements_text="Restricciones:\n- Presupuesto: 20 millones COP\n- Equipo de 3\n- MVP en 12 semanas",
+    )
+
+    assert "RESTRICCIONES DE VIABILIDAD" in prompt
+    assert "presupuesto, el tamaño y capacidad del equipo, y el plazo" in prompt
+    assert "no inventes cifras" in prompt

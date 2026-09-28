@@ -86,6 +86,15 @@ def test_build_system_prompt_composes_sections():
     assert "body" in prompt
 
 
+def test_diagram_hint_limits_monitoring_connections_and_deployment_edges():
+    from app.core.agent import DIAGRAM_HINT
+
+    assert "tres flechas punteadas" in DIAGRAM_HINT
+    assert "OTel_Collector" in DIAGRAM_HINT
+    assert "Nunca dibujes flechas desde Docker" in DIAGRAM_HINT
+    assert "máximo de tres conexiones directas saliendo del Gateway" in DIAGRAM_HINT
+
+
 def test_find_ungrounded_mermaid_nodes_warns_on_nodes_absent_from_context():
     from app.core.agent import find_ungrounded_mermaid_nodes
 

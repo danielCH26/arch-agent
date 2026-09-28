@@ -472,6 +472,43 @@ async def get_proposal(
 
 
 @router.get(
+    "/api/projects/{project_id}/proposals",
+    response_model=list[ProposalOut],
+)
+async def get_proposal_history(
+    project_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return every persisted proposal version without collapsing feedback history."""
+    user_id = int(current_user["user_id"])
+
+    db = SessionLocal()
+    try:
+        _require_owned_project(db, user_id=user_id, project_id=project_id)
+        proposals = (
+            db.query(Proposal)
+            .filter(Proposal.project_id == project_id)
+            .order_by(Proposal.iteration.desc(), Proposal.id.desc())
+            .all()
+        )
+        return [
+            ProposalOut(
+                id=int(proposal.id),
+                project_id=int(proposal.project_id),
+                iteration=int(proposal.iteration),
+                content=_content_to_text(proposal.content),
+                citations=list(proposal.citations or []),
+                feedback=proposal.feedback,
+                lifecycle=proposal.lifecycle,
+                created_at=proposal.created_at.isoformat() if proposal.created_at else "",
+            )
+            for proposal in proposals
+        ]
+    finally:
+        db.close()
+
+
+@router.get(
     "/api/projects/{project_id}/proposals/latest",
     response_model=Optional[ProposalOut],
 )

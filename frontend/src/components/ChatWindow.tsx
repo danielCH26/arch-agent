@@ -6,8 +6,8 @@ import {
   type ElicitationDecision,
   type ElicitationState,
 } from '../api/chat'
-import { fetchDiagramHistory } from '../api/diagrams'
-import { nextPhase, phaseLabel } from '../api/phases'
+import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
+import { isRefinementPhase, nextPhase, phaseLabel } from '../api/phases'
 import { chatStore } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
@@ -109,7 +109,10 @@ export function ChatWindow({
   const [approvedLocal, setApprovedLocal] = useState(false)
   const [advancing, setAdvancing] = useState(false)
   const [advanceError, setAdvanceError] = useState('')
+  const [approvedDiagram, setApprovedDiagram] = useState<DiagramVersion | null>(null)
+  const [loadingApprovedDiagram, setLoadingApprovedDiagram] = useState(false)
   const isElicitation = currentPhase === 'requerimientos'
+  const isRefinement = isRefinementPhase(currentPhase)
   const proposalLifecycle = proposalsStore((s) => s.currentProposal?.lifecycle)
   const upcomingPhase = nextPhase(currentPhase)
   // Proyecto para el que ya se intento generar el diagrama solo (evita repetirlo
@@ -175,29 +178,47 @@ export function ChatWindow({
     void state.loadHistory(projectId)
   }, [isElicitation, projectId])
 
-  // Fase de refinamiento: al entrar, si el proyecto todavia no tiene ningun
+  // Refinamiento (también "diagram"/"diagrama" por compatibilidad): al entrar,
+  // si el proyecto todavia no tiene ningun
   // diagrama, se genera solo (antes habia que escribir "genera el diagrama...").
   // Si ya hay diagramas (volver a entrar / F5) no se vuelve a generar, y ante
   // cualquier falla no se hace nada: el usuario todavia puede pedirlo a mano.
   useEffect(() => {
-    if (currentPhase !== 'refinamiento') return
+    if (!isRefinementPhase(currentPhase)) return
     if (autoDiagramFor.current === projectId) return
     if (proposalsStore.getState().inFlight !== 'idle') return
     autoDiagramFor.current = projectId
+    setLoadingApprovedDiagram(true)
 
     void (async () => {
       try {
         await waitForHistoryLoad()
         const diagrams = await fetchDiagramHistory(projectId)
-        if (diagrams.length > 0) return
-        if (phaseRef.current !== 'refinamiento') return
+        if (diagrams.length > 0) {
+          setApprovedDiagram(
+            diagrams.find((diagram) => diagram.decision === 'approve') ?? diagrams[0],
+          )
+          return
+        }
+        setApprovedDiagram(null)
+        if (!isRefinementPhase(phaseRef.current)) return
         const state = chatStore.getState()
         if (state.isStreaming || state.loadingHistory) return
         await state.sendMessage(projectId, AUTO_DIAGRAM_PROMPT)
       } catch {
         // Silencioso a proposito.
+      } finally {
+        setLoadingApprovedDiagram(false)
       }
     })()
+  }, [currentPhase, projectId])
+
+  useEffect(() => {
+    if (!isRefinementPhase(currentPhase)) {
+      autoDiagramFor.current = null
+      setApprovedDiagram(null)
+      setLoadingApprovedDiagram(false)
+    }
   }, [currentPhase, projectId])
 
   // La tarjeta de propuesta vive en un store global: si cambia el proyecto se
@@ -327,7 +348,7 @@ export function ChatWindow({
         {loadingElicitation && messages.length === 0 && (
           <div className="text-center text-gray-500 py-8">Preparando la elicitación...</div>
         )}
-        {messages.length === 0 && !busy && !loadingHistory && !showProposalCard && (
+        {messages.length === 0 && !busy && !loadingHistory && !showProposalCard && !isRefinement && (
           <div className="text-center text-gray-500 py-8">
             <svg className="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -338,6 +359,23 @@ export function ChatWindow({
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} />
         ))}
+        {isRefinement && loadingApprovedDiagram && !approvedDiagram && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900" data-testid="approved-diagram-loading">
+            Cargando el diagrama de la propuesta aprobada...
+          </div>
+        )}
+        {isRefinement && approvedDiagram && (
+          <figure className="overflow-hidden rounded-lg border border-gray-200 bg-white p-3" data-testid="approved-diagram">
+            <figcaption className="mb-3 text-sm font-semibold text-gray-800">
+              Diagrama de la propuesta aprobada
+            </figcaption>
+            <img
+              src={approvedDiagram.url}
+              alt="Diagrama de la estructura aprobada"
+              className="h-auto w-full"
+            />
+          </figure>
+        )}
         {isElicitation && summary && <SummaryView resumen={summary} />}
         {showProposalCard && <ProposalCard forceMount projectId={projectId} />}
         {busy && (

@@ -171,6 +171,17 @@ describe('ChatWindow — fase refinamiento (diagrama automático)', () => {
     expect(sendMessage.mock.calls[0][1]).toContain('diagrama')
   })
 
+  it('trata la fase heredada "diagram" como refinamiento', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    chatStore.setState({ sendMessage, loadHistory: vi.fn().mockResolvedValue(undefined) })
+    const diagramsApi = await import('../../api/diagrams')
+    vi.spyOn(diagramsApi, 'fetchDiagramHistory').mockResolvedValue([])
+
+    render(<ChatWindow projectId={1} phase="diagram" />)
+
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(1, expect.stringContaining('diagrama')))
+  })
+
   it('si el proyecto ya tiene diagramas no vuelve a generarlo', async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined)
     chatStore.setState({ sendMessage, loadHistory: vi.fn().mockResolvedValue(undefined) })
@@ -190,6 +201,9 @@ describe('ChatWindow — fase refinamiento (diagrama automático)', () => {
 
     await waitFor(() => expect(fetchHistory).toHaveBeenCalled())
     expect(sendMessage).not.toHaveBeenCalled()
+    expect(await screen.findByTestId('approved-diagram')).toBeInTheDocument()
+    expect(screen.getByText('Diagrama de la propuesta aprobada')).toBeInTheDocument()
+    expect(screen.getByAltText('Diagrama de la estructura aprobada')).toHaveAttribute('src', '/x.png')
   })
 
   it('en otras fases no genera el diagrama', async () => {

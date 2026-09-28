@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import unicodedata
 from time import perf_counter
 from typing import Any, AsyncIterator
 
@@ -370,7 +371,72 @@ def _select_citations(
                 "snippet": (doc.page_content or "")[:240],
             }
         )
+    # La primera coincidencia es la que el motor selecciona como sustento
+    # principal de la propuesta. El resto aporta contexto, pero no se debe
+    # presentar como si estuviera citado: esa distinción llega hasta la UI.
+    for index, citation in enumerate(citations):
+        citation["source_role"] = (
+            "primary" if index == 0 else "consulted_not_cited"
+        )
+
     return citations
+
+
+def _architecture_baseline(
+    *,
+    citations: list[dict],
+    project_name: str,
+    description: str | None,
+    requirements_text: str | None,
+    prior_content: str | None,
+) -> str:
+    """Return the minimum structural shape for the inferred architecture."""
+    context = " ".join(
+        [
+            project_name or "",
+            description or "",
+            requirements_text or "",
+            prior_content or "",
+            *[str(citation.get("pattern_name") or "") for citation in citations],
+        ]
+    )
+    normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFD", context.casefold())
+        if unicodedata.category(char) != "Mn"
+    )
+
+    if "microserv" in normalized:
+        return (
+            "ESTRUCTURA BASE SELECCIONADA: microservicios.\n"
+            "En Componentes incluye obligatoriamente un API Gateway como punto "
+            "de entrada, servicios de negocio desacoplados por dominio, una "
+            "base de datos privada por servicio, comunicacion asincrona mediante "
+            "broker de eventos cuando haya integracion entre dominios y "
+            "observabilidad centralizada. No modeles una unica base de datos "
+            "compartida ni un monolito disfrazado de servicios.\n"
+            "El diagrama posterior debe poder mostrar Cliente -> API Gateway -> "
+            "Servicios y las dependencias de cada servicio con su propia base de "
+            "datos usando esos mismos nombres.\n"
+        )
+    if "event driven" in normalized or "event-driven" in normalized or "orientada a eventos" in normalized:
+        return (
+            "ESTRUCTURA BASE SELECCIONADA: orientada a eventos.\n"
+            "Incluye productores, broker o bus de eventos, consumidores "
+            "independientes, contratos de evento versionados y manejo de "
+            "reintentos/idempotencia.\n"
+        )
+    if "hexagonal" in normalized or "ports and adapters" in normalized:
+        return (
+            "ESTRUCTURA BASE SELECCIONADA: arquitectura hexagonal.\n"
+            "Distingue dominio y casos de uso de los puertos; presenta los "
+            "adaptadores de entrada y salida como dependencias externas.\n"
+        )
+    return (
+        "ESTRUCTURA BASE SELECCIONADA: arquitectura en capas.\n"
+        "Distingue presentacion, aplicacion, dominio e infraestructura y evita "
+        "dependencias que salten capas.\n"
+    )
 
 
 def _retrieve_patterns(query: str, user_id: int) -> list[Document]:
@@ -415,7 +481,21 @@ def _build_prompt(
     requirements_text: str | None = None,
     documents_text: str | None = None,
 ) -> str:
-    """Compose the structured prompt that drives the LLM to produce 3 sections."""
+    """Compose the structured prompt that drives the LLM to produce 4 sections."""
+    primary_citation = next(
+        (citation for citation in citations if citation.get("source_role") == "primary"),
+        citations[0] if citations else None,
+    )
+    secondary_citations = [citation for citation in citations if citation is not primary_citation]
+    primary_pattern = (
+        str(primary_citation.get("pattern_name") or "Patrón seleccionado")
+        if primary_citation
+        else None
+    )
+    secondary_patterns = [
+        str(citation.get("pattern_name") or "Patrón sin nombre")
+        for citation in secondary_citations
+    ]
     if citations:
         context_blocks = []
         for index, cite in enumerate(citations, start=1):
@@ -424,9 +504,9 @@ def _build_prompt(
             )
         context_section = "\n\n".join(context_blocks)
         candidates_intro = (
-            "Patrones candidatos (son los mas cercanos de la base de conocimiento; "
-            "usa solo los que apliquen al proyecto y cita el numero entre corchetes "
-            "donde corresponda):\n"
+            "Patrones recuperados de la base de conocimiento. El primero es el "
+            "patron principal seleccionado; los restantes son solo contexto y no "
+            "deben presentarse como citas:\n"
         )
     else:
         context_section = "No se recuperaron patrones de la base de conocimiento."
@@ -460,7 +540,7 @@ def _build_prompt(
             "- Parte de la propuesta previa y conserva tal cual todo lo que el "
             "usuario no pidio cambiar.\n"
             "- Aplica cada cambio de forma literal y en TODAS las secciones donde "
-            "corresponda (Componentes, Tecnologias y Patrones).\n"
+            "corresponda (Componentes, Tecnologias, Patrones y Justificación).\n"
             "- Si el usuario dice que quiere \"solo\" ciertas tecnologias, o pide "
             "reemplazar una por otra, ELIMINA las demas de ese aspecto; no las "
             "dejes junto a las nuevas.\n"
@@ -493,6 +573,46 @@ def _build_prompt(
             "cambios solicitados por el usuario.\n"
         )
 
+    source_rules = ""
+    if primary_pattern:
+        source_rules = (
+            "\nFUENTES Y REFERENCIAS:\n"
+            f"- El unico patron que puedes presentar como fuente principal es: {primary_pattern}.\n"
+            "- En la seccion ## Patrones escribe exactamente una linea con el "
+            "formato `- Patrón principal: <nombre>`.\n"
+        )
+        if secondary_patterns:
+            source_rules += (
+                "- Las referencias secundarias no son citas. Escribe una unica "
+                "linea con el formato exacto `- Consultados no citados: "
+                f"{', '.join(secondary_patterns)}`.\n"
+            )
+
+    architecture_baseline = _architecture_baseline(
+        citations=citations,
+        project_name=project_name,
+        description=description,
+        requirements_text=requirements_text,
+        prior_content=prior_content,
+    )
+
+    viability_rules = (
+        "RESTRICCIONES DE VIABILIDAD (obligatorias):\n"
+        "- Extrae del resumen y de los documentos el presupuesto, el tamaño y "
+        "capacidad del equipo, y el plazo de entrega. Trátalos como límites de "
+        "diseño, no como notas informativas.\n"
+        "- Ajusta complejidad, tecnologías, operación, despliegue y alcance a "
+        "esos límites. Con poco presupuesto, equipo pequeño o plazo corto, "
+        "prioriza un MVP simple, pocas dependencias operativas y servicios "
+        "gestionados cuando apliquen; no propongas infraestructura distribuida "
+        "costosa sin una justificación concreta.\n"
+        "- Con presupuesto, equipo o plazo sin definir, no inventes cifras. "
+        "Declara la incertidumbre como riesgo o supuesto en la justificación y "
+        "elige la opción más conservadora y viable.\n"
+        "- En la justificación del patrón principal explica explícitamente cómo "
+        "la decisión respeta esos tres factores.\n"
+    )
+
     return (
         "Eres un arquitecto de software. Tu tarea es redactar una propuesta de "
         "arquitectura para el proyecto indicado, en español, usando markdown.\n\n"
@@ -500,6 +620,8 @@ def _build_prompt(
         f"{project_section}"
         f"{prior_section}"
         f"{feedback_section}"
+        f"\n{architecture_baseline}"
+        f"\n{viability_rules}"
         "\nREGLA DE DECISION: tu trabajo es DECIDIR, no dejar la eleccion al "
         "usuario. Elige UNA sola opcion por aspecto (un estilo arquitectonico "
         "principal, una base de datos, un broker, un framework, etc.) y "
@@ -507,13 +629,25 @@ def _build_prompt(
         "alternativas ni uses formulas como \"X o Y\", \"X / Y\" o \"X (o Z)\"; "
         "no le pidas al usuario que elija. Si dudas, elige la mejor opcion. "
         "El usuario podra pedir cambios despues con «Modificar».\n"
-        "\nFormato OBLIGATORIO (responde exactamente con estas tres secciones, "
+        "\nFormato OBLIGATORIO (responde exactamente con estas cuatro secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
         "## Tecnologias\n- ...\n\n"
         "## Patrones\n- ...\n\n"
+        "## Justificación del patrón principal\n"
+        "- Motivo de elección: explica por qué el patrón principal responde a "
+        "los requisitos concretos del proyecto.\n"
+        "- Reflejo en la arquitectura: relaciona el patrón con los componentes "
+        "y conexiones que aparecerán en el diagrama.\n"
+        "- Beneficio esperado: indica el beneficio técnico u operativo principal.\n"
+        "- Riesgo o costo: explica una consecuencia o complejidad que debe gestionarse.\n\n"
+        "Esta justificación debe hablar exclusivamente del patrón principal, "
+        "no de las referencias 'Consultados no citados', y debe ser concreta: "
+        "no uses frases genéricas como 'mejora la escalabilidad' sin vincularlas "
+        "a componentes o requisitos de esta propuesta.\n\n"
         f"{candidates_intro}"
         f"{context_section}\n"
+        f"{source_rules}"
         f"{closing_reminder}"
     )
 
