@@ -123,13 +123,16 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               : {},
           )
         },
-        onDone: (proposalId, citations) => {
+        onDone: (proposalId, citations, iteration) => {
           set((state) => {
             const base = state.currentProposal ?? emptyProposal(projectId)
             const finalized: Proposal = {
               ...base,
               id: proposalId,
               citations,
+              // Iteración real guardada en la DB (antes quedaba en 0 y la
+              // siguiente modificación se mostraba como "iteración 1").
+              iteration: iteration ?? (base.iteration || 1),
               // lifecycle stays 'proposed' until the user clicks Aprobar/Rechazar.
             }
             return {
@@ -149,7 +152,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   modify: async (proposalId: number, feedback: string) => {
     // Snapshot the prior iteration so we can hydrate UI instantly while the
     // new stream starts. The new iteration replaces currentProposal on done.
-    const prior = get().iterations.find((p) => p.id === proposalId)
+    const current = get().currentProposal
+    const prior =
+      get().iterations.find((p) => p.id === proposalId) ??
+      (current?.id === proposalId ? current : undefined)
     set({
       inFlight: 'modifying',
       error: null,
@@ -185,7 +191,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               : {},
           )
         },
-        onDone: (newProposalId, citations) => {
+        onDone: (newProposalId, citations, iteration) => {
           set((state) => {
             const base = state.currentProposal ?? emptyProposal(0)
             const finalized: Proposal = {
@@ -193,7 +199,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               id: newProposalId,
               citations,
               feedback,
-              iteration: (prior?.iteration ?? 0) + 1,
+              iteration: iteration ?? (prior?.iteration ?? 0) + 1,
             }
             return {
               currentProposal: finalized,

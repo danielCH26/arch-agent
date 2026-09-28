@@ -34,7 +34,11 @@ export type ProposalDecision = 'approve' | 'modify' | 'reject'
 interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
-  onDone: (proposalId: number, citations: ProposalCitation[]) => void
+  onDone: (
+    proposalId: number,
+    citations: ProposalCitation[],
+    iteration?: number,
+  ) => void
   onError: (error: string) => void
 }
 
@@ -89,8 +93,9 @@ function dispatchProposalSSE(
       const parsed = JSON.parse(rawData) as {
         proposal_id: number
         citations: ProposalCitation[]
+        iteration?: number
       }
-      callbacks.onDone(parsed.proposal_id, parsed.citations ?? [])
+      callbacks.onDone(parsed.proposal_id, parsed.citations ?? [], parsed.iteration)
     } catch {
       callbacks.onError('Malformed SSE done payload')
     }

@@ -41,6 +41,25 @@ logger = logging.getLogger(__name__)
 # See ``docs/adr/009-sse-pattern-reuse.md`` for the rationale.
 RAG_MIN_SIMILARITY = 0.85
 
+# En la fase de propuesta YA NO se usa RAG_MIN_SIMILARITY como corte. La
+# consulta se arma con el nombre/descripcion/requerimientos del proyecto, asi
+# que siempre esta dentro del dominio: en vez de descartar candidatos por un
+# umbral fijo (que con multilingual-e5-small dejaba la lista vacia), se trae
+# de la base los PROPOSAL_RAG_TOP_N patrones mas cercanos. El umbral sigue
+# vigente en el chat (app/api/chat.py), donde si hay preguntas fuera de tema.
+#   PROPOSAL_RAG_TOP_N           patrones distintos que se citan (default 3)
+#   PROPOSAL_RAG_CANDIDATE_CHUNKS chunks que se piden a PGVector antes de
+#                                agrupar por patron (default 20)
+#   PROPOSAL_RAG_MIN_SIMILARITY  piso opcional; 0.0 = sin piso (default)
+PROPOSAL_RAG_TOP_N = int(os.getenv("PROPOSAL_RAG_TOP_N", "3"))
+PROPOSAL_RAG_CANDIDATE_CHUNKS = int(os.getenv("PROPOSAL_RAG_CANDIDATE_CHUNKS", "20"))
+PROPOSAL_RAG_MIN_SIMILARITY = float(os.getenv("PROPOSAL_RAG_MIN_SIMILARITY", "0.0"))
+
+# Tope de caracteres de la propuesta previa que se le pasa al LLM al iterar.
+# Antes eran 1500: una propuesta completa mide 5000+, asi que el modelo nunca
+# veia la parte donde estaba lo que el usuario queria cambiar.
+PRIOR_PROPOSAL_MAX_CHARS = int(os.getenv("PROPOSAL_PRIOR_MAX_CHARS", "12000"))
+
 # Default maximum number of iterations per project. Mirrors the design
 # (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
 # at request time so ops can tune it without code changes.
@@ -99,10 +118,12 @@ class ProposalGenerator:
         """Yield SSE-ready events for one proposal generation.
 
         Event order:
-          1. ``("sources", list[dict])`` -- RAG pattern metadata filtered by
-             ``RAG_MIN_SIMILARITY``. Always emitted, even when empty.
+          1. ``("sources", list[dict])`` -- metadata de los ``PROPOSAL_RAG_TOP_N``
+             patrones mas relevantes (uno por patron, sin umbral de
+             similitud). Always emitted, even when empty.
           2. ``("token", str)`` -- one per LLM token. Many events.
-          3. ``("done", {"proposal_id": int, "citations": list[dict]})`` --
+          3. ``("done", {"proposal_id": int, "citations": list[dict],
+             "iteration": int})`` --
              emitted ONCE after the ``proposals`` row + ``interaction_log``
              row are committed. Citations here mirror the ``sources`` payload
              so the frontend can hydrate its store from a single source.
@@ -176,7 +197,10 @@ class ProposalGenerator:
                 _retrieve_patterns, summary_query, self.user_id
             )
         except Exception as exc:  # RAG should never block generation
-            logger.warning(
+            # logger.exception (con traceback): antes era un warning de una
+            # linea y un fallo de PGVector/embeddings quedaba disfrazado de
+            # "Sin contexto recuperado" sin dejar pista de la causa real.
+            logger.exception(
                 "RAG retrieval failed for project_id=%s user_id=%s: %s",
                 effective_project_id,
                 self.user_id,
@@ -184,7 +208,24 @@ class ProposalGenerator:
             )
             docs = []
 
-        citations = _filter_citations(docs)
+        citations = _select_citations(docs)
+        logger.info(
+            "Proposal RAG project_id=%s candidates=%s cited=%s top=%s",
+            effective_project_id,
+            len(docs),
+            len(citations),
+            [
+                (c.get("pattern_name"), round(c.get("similarity") or 0.0, 3))
+                for c in citations
+            ],
+        )
+        if not docs:
+            logger.warning(
+                "Proposal RAG devolvio 0 candidatos para project_id=%s: revisa que "
+                "architect_pattern_chunks tenga filas con embedding "
+                "(python scripts/seed_patterns.py)",
+                effective_project_id,
+            )
         yield ("sources", citations)
 
         # 5. Build structured prompt and acquire LLM model.
@@ -232,7 +273,7 @@ class ProposalGenerator:
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
         try:
-            proposal_id, interaction_id = await asyncio.to_thread(
+            proposal_id, interaction_id, saved_iteration = await asyncio.to_thread(
                 _persist_proposal_and_log,
                 session_id=session_id,
                 project_id=effective_project_id,
@@ -267,7 +308,7 @@ class ProposalGenerator:
             "Proposal persisted project_id=%s proposal_id=%s iteration=%s latency_ms=%s",
             effective_project_id,
             proposal_id,
-            next_iteration or 1,
+            saved_iteration,
             latency_ms,
         )
 
@@ -277,6 +318,7 @@ class ProposalGenerator:
             {
                 "proposal_id": proposal_id,
                 "citations": citations,
+                "iteration": saved_iteration,
             },
         )
 
@@ -284,18 +326,42 @@ class ProposalGenerator:
 # --- Pure helpers ---------------------------------------------------------
 
 
-def _is_relevant(doc: Document) -> bool:
-    """Pattern must clear the RAG similarity threshold (see RAG_MIN_SIMILARITY)."""
-    similarity = doc.metadata.get("similarity") or 0.0
-    return similarity >= RAG_MIN_SIMILARITY
+def _select_citations(
+    docs: list[Document],
+    top_n: int | None = None,
+    min_similarity: float | None = None,
+) -> list[dict]:
+    """Elige los patrones mas relevantes y los proyecta al payload de citations.
 
+    No aplica el umbral ``RAG_MIN_SIMILARITY``: ordena por similitud, se queda
+    con un solo chunk por patron (el mejor) y devuelve los ``top_n`` primeros.
+    Solo descarta por similitud si se configura un piso explicito
+    (``PROPOSAL_RAG_MIN_SIMILARITY`` > 0).
+    """
+    limit = PROPOSAL_RAG_TOP_N if top_n is None else top_n
+    floor = PROPOSAL_RAG_MIN_SIMILARITY if min_similarity is None else min_similarity
 
-def _filter_citations(docs: list[Document]) -> list[dict]:
-    """Project RAG documents to the citations payload the SSE contract expects."""
+    ranked = sorted(
+        docs,
+        key=lambda doc: doc.metadata.get("similarity") or 0.0,
+        reverse=True,
+    )
+
     citations: list[dict] = []
-    for doc in docs:
-        if not _is_relevant(doc):
+    seen: set = set()
+    for doc in ranked:
+        if len(citations) >= limit:
+            break
+        similarity = doc.metadata.get("similarity") or 0.0
+        if similarity < floor:
             continue
+        key = doc.metadata.get("pattern_id")
+        if key is None:
+            key = doc.metadata.get("pattern_name")
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
         citations.append(
             {
                 "pattern_id": doc.metadata.get("pattern_id"),
@@ -309,10 +375,12 @@ def _filter_citations(docs: list[Document]) -> list[dict]:
 
 def _retrieve_patterns(query: str, user_id: int) -> list[Document]:
     """Wrap ``similarity_search(scope='patterns')`` so failures don't break the stream."""
+    # Se piden varios chunks porque un mismo patron tiene varios; luego
+    # ``_select_citations`` agrupa por patron y corta en PROPOSAL_RAG_TOP_N.
     docs, _metrics = similarity_search(
         query=query,
         user_id=user_id,
-        k=5,
+        k=PROPOSAL_RAG_CANDIDATE_CHUNKS,
         scope="patterns",
     )
     return docs
@@ -355,20 +423,48 @@ def _build_prompt(
                 f"[{index}] {cite.get('pattern_name')}\n{cite.get('snippet') or ''}"
             )
         context_section = "\n\n".join(context_blocks)
+        candidates_intro = (
+            "Patrones candidatos (son los mas cercanos de la base de conocimiento; "
+            "usa solo los que apliquen al proyecto y cita el numero entre corchetes "
+            "donde corresponda):\n"
+        )
     else:
-        context_section = "No se recuperaron patrones relevantes."
-
-    feedback_section = ""
-    if feedback:
-        feedback_section = (
-            f"\n\nFeedback del usuario para iterar:\n{feedback.strip()}\n"
+        context_section = "No se recuperaron patrones de la base de conocimiento."
+        # Sin contexto NO se pide citar con [n]: el modelo se inventaba
+        # referencias [1]..[6] que no existian.
+        candidates_intro = (
+            "No hay patrones recuperados de la base de conocimiento. Propon los "
+            "patrones que apliquen con tu conocimiento general y NO uses numeros "
+            "entre corchetes ni afirmes que provienen de la base de conocimiento.\n"
         )
 
+    # La propuesta previa va COMPLETA (antes se cortaba a 1500 chars y el LLM
+    # nunca veia la parte que el usuario queria cambiar) y el feedback va
+    # despues, como instruccion de maxima prioridad y con reglas explicitas:
+    # sin eso el modelo regeneraba desde cero y ignoraba el cambio.
     prior_section = ""
     if prior_content:
         prior_section = (
-            "\n\nPropuesta previa (a mejorar):\n"
-            f"{prior_content[:1500]}\n"
+            "\n\nPropuesta previa (es la base sobre la que trabajas; NO la "
+            "reescribas desde cero):\n"
+            f"{prior_content[:PRIOR_PROPOSAL_MAX_CHARS]}\n"
+        )
+
+    feedback_section = ""
+    if feedback and feedback.strip():
+        feedback_section = (
+            "\n\nCAMBIOS SOLICITADOS POR EL USUARIO (prioridad maxima: pesan mas "
+            "que los requerimientos, los documentos y los patrones candidatos):\n"
+            f"{feedback.strip()}\n\n"
+            "Reglas para aplicar los cambios:\n"
+            "- Parte de la propuesta previa y conserva tal cual todo lo que el "
+            "usuario no pidio cambiar.\n"
+            "- Aplica cada cambio de forma literal y en TODAS las secciones donde "
+            "corresponda (Componentes, Tecnologias y Patrones).\n"
+            "- Si el usuario dice que quiere \"solo\" ciertas tecnologias, o pide "
+            "reemplazar una por otra, ELIMINA las demas de ese aspecto; no las "
+            "dejes junto a las nuevas.\n"
+            "- No agregues tecnologias de ese aspecto que el usuario no nombro.\n"
         )
 
     project_section = ""
@@ -390,21 +486,28 @@ def _build_prompt(
             f"{documents_text.strip()}\n"
         )
 
+    closing_reminder = ""
+    if feedback and feedback.strip():
+        closing_reminder = (
+            "\nRecordatorio final: la propuesta que escribas DEBE reflejar los "
+            "cambios solicitados por el usuario.\n"
+        )
+
     return (
         "Eres un arquitecto de software. Tu tarea es redactar una propuesta de "
         "arquitectura para el proyecto indicado, en español, usando markdown.\n\n"
         f"Proyecto: {project_name}\n"
         f"{project_section}"
-        f"{feedback_section}"
         f"{prior_section}"
+        f"{feedback_section}"
         "\nFormato OBLIGATORIO (responde exactamente con estas tres secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
         "## Tecnologias\n- ...\n\n"
         "## Patrones\n- ...\n\n"
-        "Patrones candidatos (usa solo los que apliquen; cita el numero entre "
-        "corchetes donde corresponda):\n"
+        f"{candidates_intro}"
         f"{context_section}\n"
+        f"{closing_reminder}"
     )
 
 
@@ -509,11 +612,11 @@ def _persist_proposal_and_log(
     markdown: str,
     citations: list[dict],
     feedback: str | None,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Insert proposal + interaction_log (+ approval for modify) atomically.
 
-    Returns ``(proposal_id, interaction_id)`` for the SSE done payload and
-    the Engram mirror. Idempotency on (project_id, iteration) is delegated
+    Returns ``(proposal_id, interaction_id, iteration)`` for the SSE done
+    payload and the Engram mirror. Idempotency on (project_id, iteration) is delegated
     to the DB UNIQUE constraint -- a duplicate INSERT raises IntegrityError
     which the caller turns into a 409.
     """
@@ -582,7 +685,7 @@ def _persist_proposal_and_log(
         interaction_id = int(log.id)
 
         db.commit()
-        return proposal_id, interaction_id
+        return proposal_id, interaction_id, int(iteration)
     except _ProposalDomainError:
         db.rollback()
         raise
