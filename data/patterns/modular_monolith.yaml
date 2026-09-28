@@ -1,5 +1,6 @@
 pattern_name: "Monolito modular (Modular Monolith)"
 category: "Monolítica"
+complexity: "baja"
 description: >
   Un único despliegue, pero organizado internamente en módulos con límites
   explícitos (bounded contexts), como paso intermedio antes de migrar a

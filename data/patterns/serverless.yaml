@@ -1,5 +1,6 @@
 pattern_name: "Serverless (Function-as-a-Service)"
 category: "Distribuida"
+complexity: "media"
 description: >
   La lógica se despliega como funciones individuales que ejecuta el proveedor
   cloud bajo demanda, sin gestionar servidores directamente.

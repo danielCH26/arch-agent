@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import unicodedata
 from time import perf_counter
 from typing import Any, AsyncIterator
@@ -50,10 +51,10 @@ RAG_MIN_SIMILARITY = 0.85
 # vigente en el chat (app/api/chat.py), donde si hay preguntas fuera de tema.
 #   PROPOSAL_RAG_TOP_N           patrones distintos que se citan (default 3)
 #   PROPOSAL_RAG_CANDIDATE_CHUNKS chunks que se piden a PGVector antes de
-#                                agrupar por patron (default 20)
+#                                agrupar por patron (default 40)
 #   PROPOSAL_RAG_MIN_SIMILARITY  piso opcional; 0.0 = sin piso (default)
 PROPOSAL_RAG_TOP_N = int(os.getenv("PROPOSAL_RAG_TOP_N", "3"))
-PROPOSAL_RAG_CANDIDATE_CHUNKS = int(os.getenv("PROPOSAL_RAG_CANDIDATE_CHUNKS", "20"))
+PROPOSAL_RAG_CANDIDATE_CHUNKS = int(os.getenv("PROPOSAL_RAG_CANDIDATE_CHUNKS", "40"))
 PROPOSAL_RAG_MIN_SIMILARITY = float(os.getenv("PROPOSAL_RAG_MIN_SIMILARITY", "0.0"))
 
 # Tope de caracteres de la propuesta previa que se le pasa al LLM al iterar.
@@ -209,7 +210,26 @@ class ProposalGenerator:
             )
             docs = []
 
-        citations = _select_citations(docs)
+        logger.info(
+            "Proposal RAG raw project_id=%s top_chunks=%s",
+            effective_project_id,
+            [
+                (
+                    d.metadata.get("pattern_name"),
+                    d.metadata.get("chunk_type"),
+                    round(d.metadata.get("similarity") or 0.0, 3),
+                )
+                for d in sorted(
+                    docs, key=lambda d: d.metadata.get("similarity") or 0.0, reverse=True
+                )[:8]
+            ],
+        )
+        explicit_text = "\n".join(
+            part
+            for part in (project.name, project.description, requirements_text, feedback)
+            if part
+        )
+        citations = _select_citations(docs, explicit_text=explicit_text)
         logger.info(
             "Proposal RAG project_id=%s candidates=%s cited=%s top=%s",
             effective_project_id,
@@ -327,42 +347,138 @@ class ProposalGenerator:
 # --- Pure helpers ---------------------------------------------------------
 
 
+# Complejidad operativa que exige cada patron (columna architect_patterns.
+# complexity, definida en data/patterns/*.yaml). La similitud semantica sola
+# no sabe si un patron es proporcional al tamano del proyecto: al ordenar los
+# candidatos se le resta PROPOSAL_COMPLEXITY_PENALTY por nivel (baja=0,
+# media=1, alta=2). Es un empate suave: un patron pesado con MUCHA mas
+# similitud sigue ganando, y no se penaliza si el usuario lo pidio por nombre.
+# Poner 0 desactiva el ajuste.
+PROPOSAL_COMPLEXITY_PENALTY = float(os.getenv("PROPOSAL_COMPLEXITY_PENALTY", "0.03"))
+_COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
+
+
+def _normalize_text(text: str | None) -> str:
+    """Minusculas y sin acentos, para comparar texto libre."""
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", (text or "").casefold())
+        if unicodedata.category(char) != "Mn"
+    )
+
+
+def _pattern_aliases(pattern_name: str) -> list[str]:
+    """Nombres con los que un usuario suele referirse a un patron.
+
+    "Arquitectura hexagonal (Puertos y Adaptadores)" ->
+    ["arquitectura hexagonal (puertos y adaptadores)", "arquitectura hexagonal",
+     "hexagonal", "puertos y adaptadores"].
+    """
+    normalized = _normalize_text(pattern_name)
+    aliases = {normalized}
+    for part in re.split(r"[()+]", normalized):
+        part = part.strip()
+        if len(part) < 3:
+            continue
+        aliases.add(part)
+        aliases.add(re.sub(r"^arquitectura\s+", "", part))
+    # "microservicios" -> tambien "microservicio"
+    aliases |= {a[:-1] for a in list(aliases) if len(a) >= 8 and a.endswith("s")}
+    return sorted(a for a in aliases if len(a) >= 3)
+
+
+def _explicitly_requested(pattern_name: str | None, explicit_text: str | None) -> bool:
+    """True si el usuario nombra el patron en sus requerimientos o cambios."""
+    if not pattern_name or not explicit_text:
+        return False
+    haystack = _normalize_text(explicit_text)
+    return any(
+        re.search(r"\b" + re.escape(alias), haystack)
+        for alias in _pattern_aliases(pattern_name)
+    )
+
+
+# Chunks que describen CUANDO NO usar un patron. Su texto menciona justo los
+# casos que suelen ser el proyecto ("equipos pequenos, presupuesto limitado"),
+# asi que puntuan muy alto por similitud (los embeddings no entienden la
+# negacion) y terminaban eligiendo como principal al patron que menos aplica
+# (p. ej. Microservicios). No cuentan como evidencia de que el patron encaja:
+# solo sirven para bajarlo de posicion.
+AVOID_CHUNK_TYPES = frozenset({"when_not_to_use"})
+
+
 def _select_citations(
     docs: list[Document],
     top_n: int | None = None,
     min_similarity: float | None = None,
+    explicit_text: str | None = None,
 ) -> list[dict]:
-    """Elige los patrones mas relevantes y los proyecta al payload de citations.
+    """Elige los patrones que mejor encajan y los proyecta al payload de citations.
 
-    No aplica el umbral ``RAG_MIN_SIMILARITY``: ordena por similitud, se queda
-    con un solo chunk por patron (el mejor) y devuelve los ``top_n`` primeros.
+    No aplica el umbral ``RAG_MIN_SIMILARITY``. Por cada patron:
+      * su puntaje es el del mejor chunk que habla de cuando SI usarlo
+        (resumen, señales de decision, tradeoffs...); los chunks
+        ``when_not_to_use`` no cuentan como evidencia a favor;
+      * si su chunk ``when_not_to_use`` se parece mas al proyecto que
+        cualquiera de sus chunks a favor, el proyecto cae en el caso "no usar"
+        y el patron pasa detras de los que si encajan.
+    Luego ordena (similitud menos una penalizacion por complejidad, salvo que
+    el usuario nombre el patron en ``explicit_text``), deja un chunk por patron
+    y devuelve los ``top_n`` primeros.
     Solo descarta por similitud si se configura un piso explicito
     (``PROPOSAL_RAG_MIN_SIMILARITY`` > 0).
     """
     limit = PROPOSAL_RAG_TOP_N if top_n is None else top_n
     floor = PROPOSAL_RAG_MIN_SIMILARITY if min_similarity is None else min_similarity
 
-    ranked = sorted(
-        docs,
-        key=lambda doc: doc.metadata.get("similarity") or 0.0,
-        reverse=True,
-    )
+    def _sim(doc: Document) -> float:
+        return doc.metadata.get("similarity") or 0.0
 
-    citations: list[dict] = []
-    seen: set = set()
-    for doc in ranked:
-        if len(citations) >= limit:
-            break
-        similarity = doc.metadata.get("similarity") or 0.0
-        if similarity < floor:
-            continue
+    def _is_avoid(doc: Document) -> bool:
+        return doc.metadata.get("chunk_type") in AVOID_CHUNK_TYPES
+
+    # Si TODOS los candidatos son "no usar" no hay evidencia a favor de nadie:
+    # se conserva el comportamiento anterior en vez de devolver una lista vacia.
+    use_avoid_signal = any(not _is_avoid(doc) for doc in docs)
+
+    best_fit: dict[Any, Document] = {}
+    best_avoid: dict[Any, float] = {}
+    for index, doc in enumerate(docs):
         key = doc.metadata.get("pattern_id")
         if key is None:
             key = doc.metadata.get("pattern_name")
-        if key is not None:
-            if key in seen:
-                continue
-            seen.add(key)
+        if key is None:
+            key = ("_sin_patron", index)  # sin identidad: no se deduplica
+
+        if use_avoid_signal and _is_avoid(doc):
+            best_avoid[key] = max(best_avoid.get(key, 0.0), _sim(doc))
+            continue
+        current = best_fit.get(key)
+        if current is None or _sim(doc) > _sim(current):
+            best_fit[key] = doc
+
+    def _avoided(key: Any) -> bool:
+        return key in best_avoid and best_avoid[key] > _sim(best_fit[key])
+
+    def _score(doc: Document) -> float:
+        level = _COMPLEXITY_LEVEL.get(doc.metadata.get("complexity"), 0)
+        if not level or _explicitly_requested(
+            doc.metadata.get("pattern_name"), explicit_text
+        ):
+            return _sim(doc)
+        return _sim(doc) - PROPOSAL_COMPLEXITY_PENALTY * level
+
+    ordered = sorted(
+        best_fit.items(),
+        key=lambda item: (_avoided(item[0]), -_score(item[1])),
+    )
+
+    citations: list[dict] = []
+    for _key, doc in ordered:
+        if len(citations) >= limit:
+            break
+        if _sim(doc) < floor:
+            continue
         citations.append(
             {
                 "pattern_id": doc.metadata.get("pattern_id"),
@@ -382,6 +498,22 @@ def _select_citations(
     return citations
 
 
+def _strip_secondary_references(text: str | None) -> str:
+    """Quita la linea ``- Consultados no citados: ...`` de una propuesta previa.
+
+    Esa linea lista patrones que solo se consultaron como contexto. Si se
+    dejara, un patron secundario (p. ej. Microservicios) activaria su
+    estructura base en cada iteracion aunque nunca se haya elegido.
+    """
+    if not text:
+        return ""
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if "consultados no citados" not in line.casefold()
+    )
+
+
 def _architecture_baseline(
     *,
     citations: list[dict],
@@ -389,42 +521,64 @@ def _architecture_baseline(
     description: str | None,
     requirements_text: str | None,
     prior_content: str | None,
+    feedback: str | None = None,
 ) -> str:
-    """Return the minimum structural shape for the inferred architecture."""
+    """Return the minimum structural shape for the inferred architecture.
+
+    Solo cuenta el patron PRINCIPAL (no los consultados) y el feedback del
+    usuario: los patrones secundarios son contexto y no deben imponer una
+    estructura. La estructura base queda subordinada a las RESTRICCIONES DE
+    VIABILIDAD (presupuesto, equipo, plazo).
+    """
+    primary_citation = next(
+        (citation for citation in citations if citation.get("source_role") == "primary"),
+        citations[0] if citations else None,
+    )
+    primary_name = (
+        str(primary_citation.get("pattern_name") or "") if primary_citation else ""
+    )
     context = " ".join(
         [
             project_name or "",
             description or "",
             requirements_text or "",
-            prior_content or "",
-            *[str(citation.get("pattern_name") or "") for citation in citations],
+            feedback or "",
+            _strip_secondary_references(prior_content),
+            primary_name,
         ]
     )
-    normalized = "".join(
-        char
-        for char in unicodedata.normalize("NFD", context.casefold())
-        if unicodedata.category(char) != "Mn"
-    )
+    normalized = _normalize_text(context)
 
     if "microserv" in normalized:
         return (
-            "ESTRUCTURA BASE SELECCIONADA: microservicios.\n"
-            "En Componentes incluye obligatoriamente un API Gateway como punto "
-            "de entrada, servicios de negocio desacoplados por dominio, una "
-            "base de datos privada por servicio, comunicacion asincrona mediante "
-            "broker de eventos cuando haya integracion entre dominios y "
-            "observabilidad centralizada. No modeles una unica base de datos "
-            "compartida ni un monolito disfrazado de servicios.\n"
-            "El diagrama posterior debe poder mostrar Cliente -> API Gateway -> "
-            "Servicios y las dependencias de cada servicio con su propia base de "
-            "datos usando esos mismos nombres.\n"
+            "ESTRUCTURA BASE SELECCIONADA: microservicios (sujeta a las "
+            "RESTRICCIONES DE VIABILIDAD).\n"
+            "Si el presupuesto, el equipo o el alcance son pequenos o no estan "
+            "definidos, aplica la version MINIMA: 2 o 3 servicios por dominio "
+            "de negocio, cada uno con su propia base de datos logica, "
+            "comunicacion sincrona simple (HTTP/REST), sin broker de eventos y "
+            "con logs basicos en lugar de observabilidad centralizada; explica "
+            "en 'Riesgo o costo' por que no se propone la version completa.\n"
+            "Version completa (solo si presupuesto y equipo la justifican): "
+            "incluye un API Gateway como punto de entrada, servicios de negocio "
+            "desacoplados por dominio, una base de datos privada por servicio, "
+            "comunicacion asincrona mediante broker de eventos cuando haya "
+            "integracion entre dominios y observabilidad centralizada.\n"
+            "En ambos casos no modeles una unica base de datos compartida ni un "
+            "monolito disfrazado de servicios.\n"
+            "El diagrama posterior debe poder mostrar Cliente -> (API Gateway, "
+            "si se incluye) -> Servicios y las dependencias de cada servicio "
+            "con su propia base de datos usando esos mismos nombres.\n"
         )
     if "event driven" in normalized or "event-driven" in normalized or "orientada a eventos" in normalized:
         return (
-            "ESTRUCTURA BASE SELECCIONADA: orientada a eventos.\n"
+            "ESTRUCTURA BASE SELECCIONADA: orientada a eventos (sujeta a las "
+            "RESTRICCIONES DE VIABILIDAD).\n"
             "Incluye productores, broker o bus de eventos, consumidores "
             "independientes, contratos de evento versionados y manejo de "
-            "reintentos/idempotencia.\n"
+            "reintentos/idempotencia. Con presupuesto o equipo pequenos, limita "
+            "los eventos a los flujos que realmente lo necesiten y prefiere un "
+            "broker gestionado o de bajo costo.\n"
         )
     if "hexagonal" in normalized or "ports and adapters" in normalized:
         return (
@@ -594,23 +748,62 @@ def _build_prompt(
         description=description,
         requirements_text=requirements_text,
         prior_content=prior_content,
+        feedback=feedback,
     )
 
     viability_rules = (
-        "RESTRICCIONES DE VIABILIDAD (obligatorias):\n"
+        "RESTRICCIONES DE VIABILIDAD (obligatorias; tienen prioridad sobre la "
+        "ESTRUCTURA BASE y sobre los patrones candidatos):\n"
         "- Extrae del resumen y de los documentos el presupuesto, el tamaño y "
         "capacidad del equipo, y el plazo de entrega. Trátalos como límites de "
         "diseño, no como notas informativas.\n"
-        "- Ajusta complejidad, tecnologías, operación, despliegue y alcance a "
-        "esos límites. Con poco presupuesto, equipo pequeño o plazo corto, "
-        "prioriza un MVP simple, pocas dependencias operativas y servicios "
-        "gestionados cuando apliquen; no propongas infraestructura distribuida "
-        "costosa sin una justificación concreta.\n"
+        "- PROPORCIONALIDAD: dimensiona la solución al proyecto, no al patrón. "
+        "Un proyecto sencillo (CRUD, pocos usuarios, MVP, prototipo o trabajo "
+        "académico, equipo pequeño o presupuesto bajo) se resuelve con un solo "
+        "despliegue, una sola base de datos y servicios gestionados o de capa "
+        "gratuita. Cada pieza que agregue costo u operación (broker de "
+        "mensajes, API Gateway propio, orquestador tipo Kubernetes, segunda "
+        "base de datos, caché distribuida, service mesh, CQRS, event sourcing, "
+        "observabilidad centralizada) SOLO se incluye si un requisito "
+        "explícito la exige (volumen, disponibilidad, integración). Si no "
+        "hay ese requisito, no la incluyas.\n"
+        "- Mantén Componentes y Tecnologías al mínimo necesario (como "
+        "referencia, entre 3 y 6 componentes en un proyecto sencillo; no "
+        "más de 6) y prefiere tecnologías open source, conocidas por el "
+        "equipo y de bajo costo de operación.\n"
+        "- No agregues capas que el framework ya trae (por ejemplo "
+        "Repository/DAO sobre un ORM, un API Gateway propio dentro de un "
+        "monolito, GraphQL además de REST). Para tareas programadas o "
+        "recordatorios usa el planificador del framework o un cron; una cola "
+        "con broker (Celery + Redis, RabbitMQ...) solo si un requisito exige "
+        "reintentos, volumen alto o procesamiento pesado.\n"
+        "- No inventes métricas (latencias, usuarios concurrentes, "
+        "disponibilidad, SLAs) que no estén en los requerimientos.\n"
+        "- Si el patrón principal recuperado es más pesado de lo que el "
+        "proyecto necesita, preséntalo igualmente como principal pero aplícalo "
+        "en su versión mínima viable. Lo que dejas fuera por costo o tamaño va "
+        "en una línea de 'Riesgo o costo' como evolución futura, no en "
+        "Componentes.\n"
         "- Con presupuesto, equipo o plazo sin definir, no inventes cifras. "
-        "Declara la incertidumbre como riesgo o supuesto en la justificación y "
-        "elige la opción más conservadora y viable.\n"
+        "Asume presupuesto y equipo pequeños, declara la incertidumbre como "
+        "riesgo o supuesto en la justificación y elige la opción más "
+        "conservadora y viable.\n"
+        "- Excepción: si el usuario pide expresamente una tecnología o "
+        "componente (en los requerimientos o en los cambios solicitados), "
+        "respétalo y señala su costo en 'Riesgo o costo'.\n"
         "- En la justificación del patrón principal explica explícitamente cómo "
         "la decisión respeta esos tres factores.\n"
+    )
+
+    coherence_rules = (
+        "COHERENCIA (obligatoria): el patrón principal debe ser el que "
+        "realmente describen los Componentes. Todo componente, servicio o "
+        "gateway que nombres en 'Reflejo en la arquitectura' debe estar en "
+        "la lista de Componentes; no menciones 'servicios internos' que no "
+        "hayas listado. Si el proyecto es un solo despliegue, expresa el "
+        "patrón principal en su versión mínima dentro de ese despliegue "
+        "(por ejemplo, una capa de API dentro del mismo proyecto) y no como "
+        "piezas de infraestructura separadas.\n"
     )
 
     return (
@@ -620,14 +813,16 @@ def _build_prompt(
         f"{project_section}"
         f"{prior_section}"
         f"{feedback_section}"
-        f"\n{architecture_baseline}"
         f"\n{viability_rules}"
+        f"\n{architecture_baseline}"
+        f"\n{coherence_rules}"
         "\nREGLA DE DECISION: tu trabajo es DECIDIR, no dejar la eleccion al "
         "usuario. Elige UNA sola opcion por aspecto (un estilo arquitectonico "
         "principal, una base de datos, un broker, un framework, etc.) y "
         "justificala en una linea con base en los requerimientos. NO ofrezcas "
-        "alternativas ni uses formulas como \"X o Y\", \"X / Y\" o \"X (o Z)\"; "
-        "no le pidas al usuario que elija. Si dudas, elige la mejor opcion. "
+        "alternativas ni uses formulas como \"X o Y\", \"X / Y\", \"X/Y\" (por "
+        "ejemplo REST/GraphQL) o \"X (o Z)\"; "
+        "no le pidas al usuario que elija. Si dudas, elige la opcion mas simple y barata que cumpla los requerimientos. "
         "El usuario podra pedir cambios despues con «Modificar».\n"
         "\nFormato OBLIGATORIO (responde exactamente con estas cuatro secciones, "
         "en este orden, con esos encabezados):\n\n"
@@ -640,7 +835,9 @@ def _build_prompt(
         "- Reflejo en la arquitectura: relaciona el patrón con los componentes "
         "y conexiones que aparecerán en el diagrama.\n"
         "- Beneficio esperado: indica el beneficio técnico u operativo principal.\n"
-        "- Riesgo o costo: explica una consecuencia o complejidad que debe gestionarse.\n\n"
+        "- Riesgo o costo: explica una consecuencia o complejidad que debe "
+        "gestionarse e indica, en una línea, qué se dejó fuera a propósito por "
+        "presupuesto, equipo o plazo.\n\n"
         "Esta justificación debe hablar exclusivamente del patrón principal, "
         "no de las referencias 'Consultados no citados', y debe ser concreta: "
         "no uses frases genéricas como 'mejora la escalabilidad' sin vincularlas "
