@@ -25,6 +25,7 @@ from langchain_core.documents import Document
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.rag import similarity_search
 from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
 from app.models.project import Project
@@ -143,9 +144,30 @@ class ProposalGenerator:
 
         next_iteration = prior_iteration + 1 if prior_iteration else None
 
-        # 3. Build summary query for RAG (project name + description + feedback).
+        # 2b. Contexto del proyecto que antes NO llegaba al prompt: el resumen
+        # de requerimientos aprobado y el texto de los PDF/MD subidos.
+        requirements_text = await asyncio.to_thread(
+            load_requirements_text, self.user_id, effective_project_id
+        )
+        documents_text, document_names = await asyncio.to_thread(
+            load_documents_text, self.user_id, effective_project_id
+        )
+        logger.info(
+            "Proposal context project_id=%s requirements_chars=%s documents=%s",
+            effective_project_id,
+            len(requirements_text),
+            document_names,
+        )
+
+        # 3. Build summary query for RAG (project name + description + feedback
+        # + requerimientos, para que los patrones se elijan por lo que el
+        # usuario realmente pidió y no solo por el nombre del proyecto).
         summary_query = _build_summary_query(
-            project.name, project.description, feedback, prior_content
+            project.name,
+            project.description,
+            feedback,
+            prior_content,
+            requirements_text,
         )
 
         # 4. Retrieve patterns from PGVector.
@@ -171,6 +193,9 @@ class ProposalGenerator:
             prior_content=prior_content,
             feedback=feedback,
             project_name=project.name,
+            description=project.description,
+            requirements_text=requirements_text,
+            documents_text=documents_text,
         )
 
         try:
@@ -298,11 +323,14 @@ def _build_summary_query(
     description: str | None,
     feedback: str | None,
     prior_content: str | None,
+    requirements_text: str | None = None,
 ) -> str:
     """Concatenate project metadata + (optional) feedback into a RAG query."""
     parts = [project_name or "proyecto"]
     if description:
         parts.append(description)
+    if requirements_text:
+        parts.append(requirements_text[:1500])
     if feedback:
         parts.append(feedback)
     if prior_content:
@@ -315,6 +343,9 @@ def _build_prompt(
     prior_content: str | None,
     feedback: str | None,
     project_name: str,
+    description: str | None = None,
+    requirements_text: str | None = None,
+    documents_text: str | None = None,
 ) -> str:
     """Compose the structured prompt that drives the LLM to produce 3 sections."""
     if citations:
@@ -340,10 +371,30 @@ def _build_prompt(
             f"{prior_content[:1500]}\n"
         )
 
+    project_section = ""
+    if description and description.strip():
+        project_section += f"Descripción: {description.strip()}\n"
+    if requirements_text and requirements_text.strip():
+        project_section += (
+            "\nRequerimientos aprobados por el usuario (resumen de la "
+            "elicitación). La propuesta DEBE respetarlos:\n"
+            f"{requirements_text.strip()}\n"
+        )
+    if documents_text and documents_text.strip():
+        project_section += (
+            "\nDocumentos aportados por el usuario (actas de reunión, notas, "
+            "especificaciones). Cualquier restricción que mencionen (plazos, "
+            "presupuesto, equipo, tecnologías) debe reflejarse en la propuesta; "
+            "si un documento contradice el resumen de requerimientos, prioriza "
+            "el documento (es información más reciente):\n"
+            f"{documents_text.strip()}\n"
+        )
+
     return (
         "Eres un arquitecto de software. Tu tarea es redactar una propuesta de "
         "arquitectura para el proyecto indicado, en español, usando markdown.\n\n"
         f"Proyecto: {project_name}\n"
+        f"{project_section}"
         f"{feedback_section}"
         f"{prior_section}"
         "\nFormato OBLIGATORIO (responde exactamente con estas tres secciones, "

@@ -6,6 +6,7 @@ import {
   type ProposalOut,
   createProposalStream,
   decideProposal,
+  getLatestProposal,
   getProposal as fetchProposal,
 } from '../api/proposals'
 
@@ -49,6 +50,10 @@ interface ProposalsState {
 
   // Read helper (used to re-sync after a 409, see design §10)
   refresh: (proposalId: number) => Promise<void>
+
+  // Rehidrata la propuesta viva del proyecto desde el backend (al recargar o
+  // volver a entrar a la fase). No toca nada si hay un stream en curso.
+  loadLatest: (projectId: number) => Promise<void>
 
   // Cleanup
   reset: () => void
@@ -252,6 +257,33 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       const message =
         err instanceof Error ? err.message : 'Failed to refresh proposal'
       set({ error: message })
+    }
+  },
+
+  loadLatest: async (projectId) => {
+    if (get().inFlight !== 'idle') return
+    const current = get().currentProposal
+    // Ya hay una propuesta cargada de ESTE proyecto (y no rechazada): no
+    // pisarla. Una de otro proyecto o una rechazada sí se reemplaza.
+    if (
+      current &&
+      current.id != null &&
+      current.project_id === projectId &&
+      current.lifecycle !== 'rejected'
+    ) {
+      return
+    }
+    try {
+      const out = await getLatestProposal(projectId)
+      if (get().inFlight !== 'idle') return
+      const hydrated = out ? proposalFromOut(out) : null
+      set({
+        currentProposal: hydrated,
+        iterations: hydrated ? [hydrated] : [],
+        error: null,
+      })
+    } catch {
+      // Silencioso: si falla, la tarjeta queda con el botón "Generar propuesta".
     }
   },
 

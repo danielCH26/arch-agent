@@ -68,7 +68,9 @@ muestra al usuario).
 SUMMARY_SYSTEM_PROMPT = """\
 Eres un product manager resumiendo los requerimientos levantados durante \
 una sesión de elicitación. Basado ÚNICAMENTE en las preguntas y \
-respuestas proporcionadas -- no inventes información que no esté ahí.
+respuestas proporcionadas y, si existen, en los documentos aportados por el \
+usuario -- no inventes información que no esté ahí. Si un documento \
+contradice una respuesta anterior, prioriza el documento (es más reciente).
 
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
@@ -174,11 +176,22 @@ def _invoke_json(
         ) from e
 
 
+def _documents_section(documents_context: Optional[str]) -> str:
+    if not documents_context or not documents_context.strip():
+        return ""
+    return (
+        "\n\nDocumentos aportados por el usuario (actas, notas, "
+        "especificaciones; ya son información conocida, no la vuelvas a "
+        f"preguntar):\n{documents_context.strip()}"
+    )
+
+
 def next_step(
     model: BaseChatModel,
     history: list[dict],
     project_description: str = "",
     callbacks: Optional[list[Any]] = None,
+    documents_context: Optional[str] = None,
 ) -> ElicitationDecision:
     """
     Decide la siguiente pregunta progresiva, o si el contexto ya es
@@ -206,6 +219,7 @@ def next_step(
         f"Descripción inicial del proyecto: "
         f"{project_description or '(no proporcionada)'}\n\n"
         f"Preguntas y respuestas hasta ahora:\n{_history_to_text(history)}"
+        f"{_documents_section(documents_context)}"
     )
 
     data = _invoke_json(
@@ -251,6 +265,7 @@ def generate_summary(
     history: list[dict],
     project_description: str = "",
     callbacks: Optional[list[Any]] = None,
+    documents_context: Optional[str] = None,
 ) -> dict:
     """
     Genera el resumen estructurado del contexto capturado (criterio de
@@ -260,6 +275,7 @@ def generate_summary(
         f"Descripción inicial del proyecto: "
         f"{project_description or '(no proporcionada)'}\n\n"
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
+        f"{_documents_section(documents_context)}"
     )
     return _invoke_json(
         model,

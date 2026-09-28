@@ -239,3 +239,12 @@ export async function decideProposal(
 export async function getProposal(proposalId: number): Promise<ProposalOut> {
   return apiFetch<ProposalOut>(`/api/proposals/${proposalId}`)
 }
+
+/**
+ * Última propuesta viva (proposed/approved) del proyecto, o null si no hay.
+ * Sirve para rehidratar la tarjeta al recargar / volver a entrar a la fase:
+ * antes la propuesta solo vivía en memoria del front.
+ */
+export async function getLatestProposal(projectId: number): Promise<ProposalOut | null> {
+  return apiFetch<ProposalOut | null>(`/api/projects/${projectId}/proposals/latest`)
+}
