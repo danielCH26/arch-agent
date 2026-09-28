@@ -1,5 +1,10 @@
 import { create } from 'zustand'
-import { createChatStream, type RagSource } from '../api/chat'
+import {
+  createChatStream,
+  fetchChatHistory,
+  type ChatHistoryMessage,
+  type RagSource,
+} from '../api/chat'
 
 export interface Message {
   id: string
@@ -15,6 +20,8 @@ interface ChatState {
   messages: Message[]
   isStreaming: boolean
   error: string | null
+  loadingHistory: boolean
+  activeProjectId: number | null
 
   sendMessage: (projectId: number | null, text: string) => Promise<void>
   addUserMessage: (content: string) => void
@@ -23,12 +30,17 @@ interface ChatState {
   appendToLastAssistantMessage: (content: string) => void
   clearMessages: () => void
   setError: (error: string | null) => void
+  loadHistory: (projectId: number, limit?: number) => Promise<void>
 }
 
-export const chatStore = create<ChatState>((set) => ({
+let latestHistoryRequest = 0
+
+export const chatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   error: null,
+  loadingHistory: false,
+  activeProjectId: null,
 
   sendMessage: async (projectId: number | null, text: string) => {
     // Add user message
@@ -41,6 +53,7 @@ export const chatStore = create<ChatState>((set) => ({
       messages: [...state.messages, userMessage],
       isStreaming: true,
       error: null,
+      activeProjectId: projectId,
     }))
 
     // Create placeholder for assistant response
@@ -58,6 +71,7 @@ export const chatStore = create<ChatState>((set) => ({
     // Start the stream - cleanup is handled internally
     createChatStream(text, projectId, {
       onSources: (sources) => {
+        if (get().activeProjectId !== projectId) return
         set((state) => ({
           messages: state.messages.map((msg) =>
             msg.id === assistantMessageId ? { ...msg, sources } : msg
@@ -65,6 +79,7 @@ export const chatStore = create<ChatState>((set) => ({
         }))
       },
       onToken: (token: string) => {
+        if (get().activeProjectId !== projectId) return
         fullResponse += token
         set((state) => ({
           messages: state.messages.map((msg) =>
@@ -75,9 +90,11 @@ export const chatStore = create<ChatState>((set) => ({
         }))
       },
       onDone: () => {
+        if (get().activeProjectId !== projectId) return
         set({ isStreaming: false })
       },
       onError: (errorMessage: string) => {
+        if (get().activeProjectId !== projectId) return
         set((state) => ({
           isStreaming: false,
           error: errorMessage,
@@ -143,10 +160,48 @@ export const chatStore = create<ChatState>((set) => ({
   },
 
   clearMessages: () => {
-    set({ messages: [], error: null })
+    set({ messages: [], error: null, activeProjectId: null })
   },
 
   setError: (error: string | null) => {
     set({ error })
+  },
+
+  loadHistory: async (projectId: number, limit: number = 50) => {
+    const requestId = ++latestHistoryRequest
+
+    // Nunca mostramos la conversación de otro proyecto mientras llega esta
+    // respuesta. Esto también produce el estado de carga del diseño actual.
+    set({
+      messages: [],
+      error: null,
+      loadingHistory: true,
+      // Si la persona cambia de proyecto durante un stream, los callbacks del
+      // stream anterior se ignoran por activeProjectId. Liberamos el input
+      // para que el proyecto recién abierto no quede bloqueado.
+      isStreaming: false,
+      activeProjectId: projectId,
+    })
+
+    try {
+      const rows = await fetchChatHistory(projectId, limit)
+      if (requestId !== latestHistoryRequest) return
+
+      // La API entrega los más recientes primero; el chat se lee de arriba
+      // hacia abajo en orden cronológico.
+      const messages: Message[] = [...rows].reverse().map((row: ChatHistoryMessage) => ({
+        id: `history-${row.id}`,
+        role: row.role,
+        content: row.content,
+        sources: row.citations,
+      }))
+      set({ messages, loadingHistory: false })
+    } catch (err) {
+      if (requestId !== latestHistoryRequest) return
+      set({
+        loadingHistory: false,
+        error: err instanceof Error ? err.message : 'No se pudo cargar el historial del chat',
+      })
+    }
   },
 }))

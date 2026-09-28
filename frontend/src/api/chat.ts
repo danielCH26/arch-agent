@@ -1,4 +1,5 @@
 import { authStore } from '../stores/authStore'
+import { apiFetch } from './client'
 
 export interface ChatRequest {
   project_id: number | null
@@ -12,6 +13,18 @@ export interface RagSource {
   source_type: string | null
   name: string | null
   similarity: number | null
+}
+
+/**
+ * Mensaje almacenado por el backend. El endpoint devuelve los mensajes más
+ * recientes primero; el store los invierte antes de mostrarlos en el chat.
+ */
+export interface ChatHistoryMessage {
+  id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  citations?: RagSource[]
+  created_at: string | null
 }
 
 interface StreamCallbacks {
@@ -154,4 +167,17 @@ export function createChatStream(
   return () => {
     controller.abort()
   }
+}
+
+/** Obtiene el historial persistido para un único proyecto autenticado. */
+export async function fetchChatHistory(
+  projectId: number,
+  limit: number = 50,
+): Promise<ChatHistoryMessage[]> {
+  const clampedLimit = Math.max(1, Math.min(50, Math.floor(limit)))
+  const payload = await apiFetch<{ messages?: ChatHistoryMessage[] }>(
+    `/api/chat/history?project_id=${encodeURIComponent(String(projectId))}&limit=${clampedLimit}`,
+  )
+
+  return Array.isArray(payload.messages) ? payload.messages : []
 }

@@ -9,8 +9,21 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({ projectId }: ChatWindowProps) {
-  const { messages, isStreaming, error } = chatStore()
+  const { messages, isStreaming, error, loadingHistory } = chatStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Cada proyecto tiene una conversación propia en el backend. El guard evita
+  // el doble GET que React StrictMode puede disparar durante el montaje.
+  useEffect(() => {
+    const state = chatStore.getState()
+    if (
+      (state.loadingHistory || state.isStreaming) &&
+      state.activeProjectId === projectId
+    ) {
+      return
+    }
+    void state.loadHistory(projectId)
+  }, [projectId])
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -24,7 +37,13 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.length === 0 && !isStreaming && (
+        {loadingHistory && messages.length === 0 && (
+          <div className="flex justify-center py-8" aria-label="Cargando historial del chat">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-200 border-b-sky-600" />
+          </div>
+        )}
+
+        {messages.length === 0 && !isStreaming && !loadingHistory && (
           <div className="text-center text-gray-500 py-8">
             <svg className="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -59,7 +78,7 @@ export function ChatWindow({ projectId }: ChatWindowProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      <ChatInput projectId={projectId} onSend={handleSend} disabled={isStreaming} />
+      <ChatInput projectId={projectId} onSend={handleSend} disabled={isStreaming || loadingHistory} />
     </div>
   )
 }
