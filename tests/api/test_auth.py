@@ -60,6 +60,99 @@ class TestGetUserByLogin:
             assert result is None
 
 
+class TestLoginRoute:
+    """Regression tests for POST /api/auth/login.
+
+    Covers the demo_user 500-bug fix: a user with is_demo_user=True must
+    short-circuit to a clean 401 (NOT call bcrypt.checkpw on the placeholder
+    hash, which raises ValueError). Also covers the generic invalid-login
+    paths for full coverage.
+    """
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        # backend's uvicorn runs `server:app` (server.py at repo root)
+        from server import app
+
+        return TestClient(app)
+
+    def test_demo_user_login_returns_401_not_500(self):
+        """The seed gives demo_user a placeholder password_hash that bcrypt
+        rejects with ValueError. The route MUST short-circuit on is_demo_user
+        BEFORE bcrypt.checkpw, otherwise the route returns 500. Found by
+        orchestrator when user tried to log in after a fresh `down -v`."""
+        from unittest.mock import MagicMock, patch
+
+        demo = MagicMock()
+        demo.is_demo_user = True
+        demo.password_hash = "seed-demo-not-a-real-hash"  # not a bcrypt hash
+
+        with patch("app.api.auth.SessionLocal") as mock_session:
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.first.return_value = demo
+            mock_session.return_value = mock_db
+
+            resp = self._client().post(
+                "/api/auth/login",
+                json={"username": "demo_user", "password": "demo123"},
+            )
+
+        assert resp.status_code == 401, (
+            f"demo_user login must be blocked at 401, got {resp.status_code} {resp.text}"
+        )
+        assert resp.json() == {"detail": "Invalid username or password"}
+
+    def test_real_user_login_wrong_password_returns_401(self):
+        from unittest.mock import MagicMock, patch
+
+        real = MagicMock()
+        real.id = 2
+        real.username = "admin"
+        real.is_demo_user = False
+        # Valid bcrypt hash for "WrongPassword" — generated offline.
+        import bcrypt as _bcrypt
+        real.password_hash = _bcrypt.hashpw(b"WrongPassword", _bcrypt.gensalt()).decode()
+
+        with patch("app.api.auth.SessionLocal") as mock_session:
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.first.return_value = real
+            mock_session.return_value = mock_db
+
+            resp = self._client().post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "NotMatching"},
+            )
+
+        assert resp.status_code == 401
+        assert resp.json() == {"detail": "Invalid username or password"}
+
+    def test_real_user_login_correct_password_returns_200_and_token(self):
+        from unittest.mock import MagicMock, patch
+
+        real = MagicMock()
+        real.id = 2
+        real.username = "admin"
+        real.is_demo_user = False
+        import bcrypt as _bcrypt
+        real.password_hash = _bcrypt.hashpw(b"Admin123!", _bcrypt.gensalt()).decode()
+
+        with patch("app.api.auth.SessionLocal") as mock_session:
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.first.return_value = real
+            mock_session.return_value = mock_db
+
+            resp = self._client().post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "Admin123!"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user_id"] == 2
+        assert body["username"] == "admin"
+        assert isinstance(body.get("token"), str) and body["token"]
+
+
 class TestAuthModels:
     """Tests de modelos Pydantic."""
 

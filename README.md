@@ -15,11 +15,8 @@ cp .env.example .env
 # 2. Levantar el stack Docker completo (Postgres, backend FastAPI, SPA, Engram, Langfuse)
 docker compose up -d
 
-# El backend aplica schema.sql y las migraciones pendientes al arrancar
-# (ver `command` en docker-compose.yml); si cambias migrations/, reconstruye:
-#   docker compose up -d --build backend
-
-# 3. (Opcional) Setup automatizado: genera JWT y ENCRYPTION_KEY, espera al backend
+# 3. (Opcional) Setup automatizado: genera JWT y ENCRYPTION_KEY, inicializa DB,
+# corre migrations, espera al backend
 bash scripts/setup-local.sh
 ```
 
@@ -256,6 +253,32 @@ event: degraded | data: {"source":"agent","reason":"tool_calls_missing",...}
 (modelos sin tool calling → el frontend recibe `event: degraded` con `reason: "tool_calls_missing"` en lugar del `event: attachment` esperado — fix #2b del round de revisión PR #76).
 
 `llama3` sigue siendo un buen default para **pruebas de texto puro** (elicitación, RAG) — solo no lo uses para validar tool calling.
+
+---
+
+## ⚠️ Windows: crash-loop de puppeteer-mcp por CRLF (checkout viejo)
+
+**Síntoma:** en Windows, el sidecar `puppeteer-mcp` entra en crash-loop con `exec /entrypoint.sh: no such file or directory` y estado `Restarting (255)`.
+
+**Causa:** los working trees creados antes de que existiera `.gitattributes` conservan CRLF en los archivos de texto para siempre: git los considera "sin cambios" (el clean filter normaliza la comparación) y nunca los reescribe — `git status` se ve limpio. El Dockerfile ya elimina los CR al momento del build (`sed -i 's/\r$//'`), pero un checkout viejo, apoyado en un estado anterior del branch, puede no tener esa defensa.
+
+**Verificá si tu checkout está afectado** con el detector incluido:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify-line-endings.ps1
+```
+
+**Recuperación** (por archivo afectado, PowerShell-friendly):
+
+```powershell
+git fetch origin
+git checkout <branch>   ; # asegurate de estar en el head más reciente
+git rm --cached infrastructure/puppeteer-mcp/entrypoint.sh
+git checkout HEAD -- infrastructure/puppeteer-mcp/entrypoint.sh
+# verificar: git ls-files --eol -- infrastructure/puppeteer-mcp/entrypoint.sh  → debe mostrar w/lf
+```
+
+> **Gotcha:** `git checkout -- <path>` solo es un **no-op** para estos archivos eol-stale — git cree que ya están en el estado correcto. El `git rm --cached` previo es lo que fuerza el re-smudge respetando `eol=lf`.
 
 ---
 

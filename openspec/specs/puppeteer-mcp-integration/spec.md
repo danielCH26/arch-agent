@@ -17,7 +17,7 @@ Render fenced Mermaid code blocks emitted by the agent as inline PNG images thro
 | ID | Requirement |
 |---|---|
 | REQ-PMCP-1 | When the agent emits a fenced `mermaid` block, `_persist_turn` SHALL save the PNG under `/app/uploads/screenshots/<id>.png` AND the SSE handler SHALL emit `event: attachment` with `{kind, mime, url, filename}` BEFORE `event: done`. |
-| REQ-PMCP-2 | `get_puppeteer_tools()` SHALL expose a positive allow-list containing exactly `puppeteer_screenshot` AND a hardened `puppeteer_evaluate` restricted to `data:` URLs; `puppeteer_navigate` / `puppeteer_click` / `puppeteer_fill` / `puppeteer_select` / `puppeteer_hover` SHALL be filtered out. |
+| REQ-PMCP-2 | `get_puppeteer_tools()` SHALL expose a positive allow-list containing exactly `puppeteer_screenshot`; `puppeteer_navigate` / `puppeteer_click` / `puppeteer_fill` / `puppeteer_select` / `puppeteer_hover` / `puppeteer_evaluate` / `puppeteer_pdf` SHALL be filtered out. |
 | REQ-PMCP-3 | Per-call budget SHALL be `asyncio.wait_for(timeout=15s)` AND a 2 MB byte cap on the PNG response. |
 | REQ-PMCP-4 | Per-user render rate limit SHALL be 5 renders / 60 s; the 6th request SHALL emit `event: degraded` with `reason="puppeteer_rate_limited"` AND the agent SHALL fall back to a textual diagram description. |
 | REQ-PMCP-5 | Render tool calls SHALL flow through the existing `CallbackHandler` wiring so a Langfuse span appears automatically when `LANGFUSE_PUBLIC_KEY` AND `LANGFUSE_SECRET_KEY` are set (no new tracer code). |
@@ -28,7 +28,7 @@ Render fenced Mermaid code blocks emitted by the agent as inline PNG images thro
 |---|---|
 | SCN-PMCP-1 | Agent emits a Mermaid block; SSE stream completes. THEN `_persist_turn` writes `/app/uploads/screenshots/<uuid>.png` AND SSE emits `event: attachment` carrying `{kind:"screenshot", mime:"image/png", url:"/api/chat/attachments/<id>?token=…", filename:"diagram-<ts>.png"}` BEFORE `event: done`. |
 | SCN-PMCP-2 | Agent emits NO Mermaid block; SSE stream completes. THEN zero `event: attachment` events appear. |
-| SCN-PMCP-3 | Puppeteer MCP server returns the full default tool set. THEN `get_puppeteer_tools()` returns exactly `puppeteer_screenshot` AND hardened `puppeteer_evaluate`; `puppeteer_navigate` is absent. |
+| SCN-PMCP-3 | Puppeteer MCP server returns the full default tool set. THEN `get_puppeteer_tools()` returns exactly `puppeteer_screenshot`; `puppeteer_navigate`, `puppeteer_click`, `puppeteer_fill`, `puppeteer_select`, `puppeteer_hover`, `puppeteer_evaluate`, and `puppeteer_pdf` are all absent. |
 | SCN-PMCP-4 | Render does not complete within 15 s. THEN `PuppeteerUnavailable(reason="puppeteer_timeout")` is raised AND SSE emits `event: error` with `data: "messages store unavailable"` (mirrors F12 SCN-7). |
 | SCN-PMCP-5 | Render returns a PNG larger than 2 MB. THEN the route rejects the response AND SSE emits `event: error`. |
 | SCN-PMCP-6 | User at 5 renders / 60 s; a 6th is requested. THEN SSE emits `event: degraded` with `reason="puppeteer_rate_limited"` AND the agent produces a textual diagram description. |
@@ -40,6 +40,30 @@ Render fenced Mermaid code blocks emitted by the agent as inline PNG images thro
 - Multi-turn memory-driven rendering decisions: F14 (requires `run_agent` to read conversation history).
 - `puppeteer_pdf` and the community `merill-git/mcp-server-puppeteer` fork: not adopted.
 - Horizontal scaling of the sidecar / a render queue.
+
+## Spec/Implementation Alignment — REQ-PMCP-2
+
+The first cut of REQ-PMCP-2 above promised a *positive* allow-list of
+`{puppeteer_screenshot, puppeteer_evaluate (hardened to data: URLs)}`.
+The shipped implementation is **strictly narrower**: the allow-list is
+`{puppeteer_screenshot}` only. `puppeteer_evaluate` is filtered out
+alongside the navigation/interaction tools.
+
+Rationale (PR #76 review round 2, B5): `puppeteer_evaluate` runs
+arbitrary JavaScript inside the browser context. Even with the
+"hardened to `data:` URLs only" constraint, the function still gives
+the LLM a way to inject script content that the Chromium process
+executes — which is the exact surface that turns the sidecar into a
+general-purpose renderer. The F13 scope (Mermaid-only PNG snapshots
+of just-emitted blocks) does not need arbitrary JS execution, so we
+drop the tool entirely. The full argument is recorded in ADR-013
+§Security; this is also why REQ-PMCP-2 names `puppeteer_evaluate`
+in the deny list.
+
+Tests in `tests/core/test_puppeteer_mcp.py::test_get_puppeteer_tools_allow_list_filters_navigate_etc`
+pin the implementation to the narrower set — `puppeteer_evaluate` is
+one of the eight upstream tools the fixture exercises, and the test
+asserts the output is *exactly* `["puppeteer_screenshot"]`.
 
 ## Risks
 

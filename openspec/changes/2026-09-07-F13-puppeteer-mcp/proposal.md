@@ -26,7 +26,7 @@ Two concrete advances for arch-agent as a product. **First**, it turns the assis
 
 **Backend** — new `app/core/puppeteer_mcp.py` (~200 LOC, mirrors `app/core/context7_mcp.py`); extend `app/core/agent.py` to fetch Puppeteer tools additively and emit a `DIAGRAM_HINT` in the system prompt; new helpers `save_attachment(...)` / `list_attachments(...)` in `app/core/message_store.py`; new `app/models/message.py` `Attachment` shape (JSONB); new `app/api/attachments.py` `GET /api/chat/attachments/{id}` endpoint; extend `app/api/chat.py` `_persist_turn` (lines 232-267) to persist attachments inside the same pre-`done` transaction; SSE emits `event: attachment`.
 **Infrastructure** — new `puppeteer-mcp` compose service based on a custom `node:20-bookworm-slim` image that pre-bakes `@modelcontextprotocol/server-puppeteer` + Chromium + `streamable_http` transport on `:8931/mcp`; new `infrastructure/puppeteer-mcp/Dockerfile`; `docker-compose.yml` delta (one new service + `mem_limit: 512m`).
-**Migrations** — `migrations/0009_add_message_attachments.sql` (additive `attachments JSONB DEFAULT '[]'` on `messages`) + `schema.sql` mirror.
+**Migrations** — `migrations/0011_add_message_attachments.sql` (additive `attachments JSONB DEFAULT '[]'` on `messages`) + `schema.sql` mirror.
 **Configuration** — `.env.example` entries near line 98: `PUPPETEER_MCP_URL=http://puppeteer-mcp:8931/mcp`, `PUPPETEER_RENDER_TIMEOUT_SECONDS=15`, `PUPPETEER_MAX_RENDER_BYTES=2097152`, `PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE=5`.
 **Frontend** — extend `frontend/src/api/chat.ts` `dispatchSSEEvent` for `event: attachment`; extend `Message.attachments?: Attachment[]` in `frontend/src/stores/chatStore.ts`; render `<img src={a.url}>` inline in `frontend/src/components/MessageBubble.tsx`.
 **Tests** — `tests/core/test_puppeteer_mcp.py` (mirror `test_context7_mcp.py`); extend `tests/api/test_chat.py` with `event: attachment` assertions; new `tests/api/test_attachments.py` (401 / 404 / 200); Vitest for `chatStore.test.ts` (attachment append) and `MessageBubble.test.tsx` (image render).
@@ -87,7 +87,7 @@ Two concrete advances for arch-agent as a product. **First**, it turns the assis
 | `app/api/chat.py` | **MODIFIED** | `_persist_turn` (line 232) extended to insert attachments in the same transaction; SSE `event_generator` emits `event: attachment`. |
 | `app/api/attachments.py` | **NEW** (~60 LOC) | `GET /api/chat/attachments/{id}` — signed-token verification, cross-user 404, `Content-Type` from the row, streams from `/app/uploads/screenshots/<id>.png`. |
 | `app/api/dependencies.py` | **MODIFIED (if needed)** | Add `get_message_store` dependency or piggyback on the existing one. |
-| `migrations/0009_add_message_attachments.sql` | **NEW** | Idempotent `ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb`. Mirrors `0008_add_messages_table.sql` pattern. |
+| `migrations/0011_add_message_attachments.sql` | **NEW** | Idempotent `ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb`. Mirrors `0008_add_messages_table.sql` pattern. |
 | `schema.sql` | **MODIFIED** | Mirror the `ALTER TABLE` block for greenfield DB parity. |
 | `infrastructure/puppeteer-mcp/Dockerfile` | **NEW** (~40 LOC) | `node:20-bookworm-slim` + system libs (`libnss3`, `libatk1.0-0`, `libxss1`, `libasound2`, `libgbm1`, `libcups2`) + `npm i -g @modelcontextprotocol/server-puppeteer` + Chromium pre-bake + warm-up entrypoint. |
 | `docker-compose.yml` | **MODIFIED** | Add `puppeteer-mcp` service (port 8931 internal, `mem_limit: 512m`, restart: on-failure); `backend` gets `PUPPETEER_MCP_URL=http://puppeteer-mcp:8931/mcp`. |
@@ -144,7 +144,7 @@ Plus negative criteria:
 ## 11. Rollback plan
 
 1. **Stop and remove the sidecar** — `docker compose down puppeteer-mcp`; revert the `docker-compose.yml` delta (one service).
-2. **Drop the migration** — `migrations/0009_add_message_attachments.sql` is reversible (`ALTER TABLE messages DROP COLUMN IF EXISTS attachments`); `schema.sql` reverts on the same commit.
+2. **Drop the migration** — `migrations/0011_add_message_attachments.sql` is reversible (`ALTER TABLE messages DROP COLUMN IF EXISTS attachments`); `schema.sql` reverts on the same commit.
 3. **Revert `app/api/chat.py:_persist_turn`** — remove the attachment-insert block; SSE stops emitting `event: attachment`; the agent falls back to F11 + F12 behaviour. `GET /api/chat/attachments/{id}` returns 404 (or 410 Gone if explicitly removed).
 4. **Revert the frontend** — `chatStore.Message.attachments` and `MessageBubble.tsx` `<img>` slot revert to undefined / no render; the frontend continues to work without rendering attachments.
 5. **Revert `app/core/puppeteer_mcp.py`** — remove the file; `app/core/agent.py` reverts to `_try_get_context7_tools` only. `requirements.txt` stays unchanged.

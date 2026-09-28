@@ -464,7 +464,7 @@ def _emit_sse(event: str, data: str | dict) -> str: ...     # mirrors app/api/ch
 
 ## 9. Migration strategy
 
-File: `C:\Users\danie\Downloads\arch-agent\migrations\0008_proposals_and_logs.sql`. **Not applied by this phase** — apply phase owns the DDL. Idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DO $$ … EXCEPTION WHEN duplicate_object THEN NULL $$` for constraints, or rely on `IF NOT EXISTS` + inline `CHECK`). Number is `0008` to avoid collision with PR #64's `0007_add_document_chunks_indexes.sql`.
+File: `C:\Users\danie\Downloads\arch-agent\migrations\0008_proposals_and_logs.sql`. **Not applied by this phase** — apply phase owns the DDL. Idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DO $$ … EXCEPTION WHEN duplicate_object THEN NULL $$` for constraints, or rely on `IF NOT EXISTS` + inline `CHECK`). Number is `0008` to avoid collision with PR #64's `0007_add_document_chunks_indexes.sql` (later renumbered to `0012_add_document_chunks_indexes.sql` in PR #76 review fix #4; F08's actual filename is `0014_proposal_approvals_table.sql`).
 
 ```sql
 -- proposals

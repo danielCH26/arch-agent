@@ -87,7 +87,7 @@ In-memory `dict[user_id, list[float]]` sliding window keyed by `user_id`. **Sing
 
 ## 3. Data model
 
-### 3.1 Migration `0009_add_message_attachments.sql` (NEW, idempotent)
+### 3.1 Migration `0011_add_message_attachments.sql` (NEW, idempotent)
 
 ```sql
 -- Migration 0009: messages.attachments JSONB (F13, issue #17)
@@ -187,7 +187,7 @@ Auth posture: **query-string token only**. The endpoint does NOT call `get_curre
 | `app/api/attachments.py` (NEW) | ~80 | `GET /api/chat/attachments/{id}` route. Steps: (1) read `?token=`, call `verify_attachment_token(token, id, user_id)` → 401 on miss; (2) look up `Message` by id with `attachments JSONB` containing the id → 404 (the lookup itself cross-checks `(user_id, project_id)` ownership so 404 is the only outcome for cross-user); (3) `FileResponse(path, media_type=att["mime"], headers={"Content-Disposition": f'inline; filename="{att["filename"]}"', "Cache-Control": "private, max-age=300"})`. Explicit `HTTPException(401)` and `HTTPException(404)` branches; no WARNING logs on these paths (avoid info-leak; mirrors `chat_history` posture). |
 | `app/api/__init__.py` | +2 | Register `attachments` router alongside the existing chat router. |
 | `app/main.py` | +5 | Startup hook `await attachment_tokens._ensure_uploads_dir()`. |
-| `migrations/0009_add_message_attachments.sql` (NEW) | ~5 | Idempotent `ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;` (see §3.1). |
+| `migrations/0011_add_message_attachments.sql` (NEW) | ~5 | Idempotent `ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;` (see §3.1). |
 | `schema.sql` | +1 | Mirror the `ALTER TABLE` block after the `messages` table definition (line 131). |
 | `infrastructure/puppeteer-mcp/Dockerfile` (NEW) | ~30 | `FROM node:20-bookworm-slim`; `RUN apt-get update && apt-get install -y --no-install-recommends libnss3 libatk1.0-0 libatk-bridge2.0-0 libxss1 libasound2 libgbm1 libcups2 fonts-liberation ca-certificates && rm -rf /var/lib/apt/lists/*`; `RUN npm i -g @modelcontextprotocol/server-puppeteer` (pre-bake); `RUN npx -y @modelcontextprotocol/server-puppeteer --version` (warm cache); `COPY entrypoint.sh /entrypoint.sh`; `ENTRYPOINT ["/entrypoint.sh"]`; `EXPOSE 8931`. |
 | `infrastructure/puppeteer-mcp/entrypoint.sh` (NEW) | ~10 | `#!/bin/sh`; `set -e`; warm Chromium once (`npx -y @modelcontextprotocol/server-puppeteer --help >/dev/null 2>&1 || true`); exec `npx -y @modelcontextprotocol/server-puppeteer --port 8931 --executable-path /usr/bin/chromium` (the upstream server's `--port` flag activates `streamable_http` per the MCP transport spec). |
