@@ -2,10 +2,19 @@
 
 HU10 v2 MUST serialise concurrent decisions via ``SELECT ... FOR UPDATE``
 on the ``projects`` row. SQLite does not enforce row locks, so this test
-MUST run against a real Postgres database -- not SQLite. The test fires
-N concurrent approves via threads and asserts exactly one row is inserted
-into ``approvals`` for ``(project_id, phase)``; the rest MUST receive a
-``PhaseMismatchError`` or a 409 with the typed body.
+MUST run against a real Postgres database -- not SQLite.
+
+Spec-mandated outcome for concurrent IDENTICAL actions (same action +
+payload + feedback): the first thread inserts; every other thread blocks
+on the row lock, then finds the first thread's committed row via the
+idempotency lookup (REQ-SA-30.1) and returns THAT SAME row with
+``idempotent=true`` and HTTP 200. Net effect: exactly ONE INSERT + one
+idempotent 200 per serialised retry -- NOT one 200 + one 409.
+
+Concurrent DIFFERENT actions (approve + reject) serialise through the
+same single lock with no deadlock and no partial state; different
+actions are accepted, not conflicted (REQ-SA-30.2): both return 200
+with ``idempotent=false``.
 
 Run via::
 
@@ -96,17 +105,19 @@ def fresh_project(db_engine):
 
 
 # ---------------------------------------------------------------------------
-# Test: two concurrent approves on the same (project, phase)
+# Test: two concurrent identical approves on the same (project, phase)
 # ---------------------------------------------------------------------------
 
 
-def _call_record_decision(*, user_id: int, project_id: int, phase: str):
+def _call_record_decision(
+    *, user_id: int, project_id: int, phase: str, action: str = "approve"
+):
     """Run record_decision in a worker thread with its own DB session.
 
     Each thread gets its own ``SessionLocal`` because SQLAlchemy sessions
     are not thread-safe. The helper opens a session, calls
-    ``record_decision``, and returns either ``PhaseDecisionResult`` or
-    the raised exception (PhaseMismatchError / PhaseDecisionError).
+    ``record_decision``, commits, and returns either
+    ``PhaseDecisionResult`` (the 200 shape) or the raised exception.
     """
     from app.core.database import SessionLocal
     from app.core.phase_decisions import record_decision
@@ -118,7 +129,7 @@ def _call_record_decision(*, user_id: int, project_id: int, phase: str):
             user_id=user_id,
             project_id=project_id,
             phase=phase,
-            action="approve",
+            action=action,
         )
         db.commit()
         return result
@@ -130,17 +141,15 @@ def _call_record_decision(*, user_id: int, project_id: int, phase: str):
 
 
 def test_concurrent_double_click_serialises_via_for_update(fresh_project):
-    """REQ-SA-31: two simultaneous approves for (project, phase) yield
-    exactly one INSERT; the second one returns PhaseMismatchError because
-    ``project.phase_ready`` was already True when the lock was acquired.
+    """REQ-SA-31 + REQ-SA-30.1: concurrent IDENTICAL approves serialise via
+    FOR UPDATE into exactly ONE INSERT + idempotent 200s.
 
-    Concretely: the lock holder flips ``phase_ready=True`` on commit.
-    The waiting thread acquires the lock next, loads the (now-updated)
-    project, finds ``phase_ready=True``, and proceeds with its own INSERT
-    (the helper does not currently treat phase_ready=True as a hard
-    conflict -- it inserts the row and the response is still 200). To
-    keep the assertion strict, we additionally check that NO two rows
-    share the same ``payload_hash`` (idempotency contract holds).
+    The lock winner inserts the row; every serialised thread then finds
+    that committed row via the idempotency lookup and returns it with
+    ``idempotent=true`` and the SAME ``decision_id``. Assert one row,
+    matching ids, and the idempotent flags -- the serialized responses
+    intentionally SHARE one payload_hash (that IS the idempotency
+    contract working, not a regression).
     """
     from app.core.database import SessionLocal
     from app.models.approval import Approval
@@ -164,18 +173,27 @@ def test_concurrent_double_click_serialises_via_for_update(fresh_project):
     successes = [r for r in results if not isinstance(r, Exception)]
     typed_errors = [r for r in results if isinstance(r, Exception)]
 
-    # All N inserts SHOULD land (FOR UPDATE serialises but doesn't reject).
-    # The idempotency key guarantees that retries inside the window are
-    # still distinguishable by payload_hash.
-    assert len(successes) >= 1, "at least one approve MUST succeed"
-    # No two successful results can share a payload_hash -- that would
-    # indicate a regression of the idempotency contract.
-    payload_hashes = [s.approval.payload_hash for s in successes]
-    assert len(set(payload_hashes)) == len(payload_hashes), (
-        f"duplicate payload_hash across successful inserts: {payload_hashes}"
+    # Identical retries are NEVER rejected: every request returns 200.
+    assert not typed_errors, (
+        f"concurrent identical approves must not error: {typed_errors!r}"
+    )
+    assert len(successes) == N
+
+    # All responses carry the SAME decision_id (the first committed row).
+    decision_ids = {s.approval.id for s in successes}
+    assert len(decision_ids) == 1, (
+        f"expected one shared decision_id, got {decision_ids!r}"
     )
 
-    # Verify the DB has the expected rows.
+    # Exactly the lock winner performed the INSERT (idempotent=False);
+    # the N-1 serialised retries returned the same row idempotently.
+    idempotent_flags = [s.idempotent for s in successes]
+    assert idempotent_flags.count(False) == 1, (
+        f"expected exactly one non-idempotent insert, got {idempotent_flags!r}"
+    )
+    assert idempotent_flags.count(True) == N - 1
+
+    # Exactly ONE approvals row persisted for (project_id, phase).
     db = SessionLocal()
     try:
         rows = (
@@ -184,25 +202,29 @@ def test_concurrent_double_click_serialises_via_for_update(fresh_project):
                 Approval.project_id == project.id,
                 Approval.phase == "requerimientos",
             )
-            .order_by(Approval.created_at.asc())
             .all()
         )
-        assert len(rows) >= 1
-        # Every row carries project_id (REQ-SA-27).
-        assert all(r.project_id == project.id for r in rows)
+        assert len(rows) == 1, (
+            f"expected exactly one approvals row, got {len(rows)}"
+        )
+        assert rows[0].id == next(iter(decision_ids))
+        # The single row carries project_id (REQ-SA-27).
+        assert rows[0].project_id == project.id
     finally:
         db.close()
 
 
-def test_concurrent_approve_and_reject_picks_one(fresh_project):
-    """REQ-SA-31: a concurrent approve + reject serialise via FOR UPDATE.
+def test_concurrent_approve_and_reject_serialise_without_conflict(fresh_project):
+    """REQ-SA-31 + REQ-SA-30.2: concurrent approve + reject serialise via
+    FOR UPDATE without deadlock or partial state.
 
-    Either ordering is acceptable (approve-then-reject OR
-    reject-then-approve), but the final ``projects.phase_ready`` MUST
-    reflect whichever transaction committed LAST.
+    Different actions derive different idempotency keys, so BOTH requests
+    are accepted (200, ``idempotent=false``) -- NOT 409. Final state:
+    exactly 2 approvals rows for (project_id, phase) carrying the 2
+    distinct actions.
     """
     from app.core.database import SessionLocal
-    from app.models.project import Project
+    from app.models.approval import Approval
 
     user, project = fresh_project
 
@@ -210,76 +232,43 @@ def test_concurrent_approve_and_reject_picks_one(fresh_project):
 
     def worker(action: str):
         barrier.wait()
-        return _call_record_decision(
+        return action, _call_record_decision(
             user_id=user.id,
             project_id=project.id,
             phase="requerimientos",
-        ).__class__._action if False else _call_record_decision(
-            user_id=user.id, project_id=project.id, phase="requerimientos"
+            action=action,
         )
 
-    # Both threads call the same shape but the first one forces approve,
-    # the second forces reject by overriding ``action`` via a thin wrapper.
-    # Simpler: just call _call_record_decision with a patched action.
-    import app.core.phase_decisions as pd_module
-
-    real_record_decision = pd_module.record_decision
-
-    def approve_record_decision(db, **kwargs):
-        kwargs["action"] = "approve"
-        return real_record_decision(db, **kwargs)
-
-    def reject_record_decision(db, **kwargs):
-        kwargs["action"] = "reject"
-        return real_record_decision(db, **kwargs)
-
-    def worker_approve():
-        barrier.wait()
-        from app.core.database import SessionLocal
-
-        db = SessionLocal()
-        try:
-            result = approve_record_decision(
-                db,
-                user_id=user.id,
-                project_id=project.id,
-                phase="requerimientos",
-            )
-            db.commit()
-            return ("approve", result)
-        finally:
-            db.close()
-
-    def worker_reject():
-        barrier.wait()
-        from app.core.database import SessionLocal
-
-        db = SessionLocal()
-        try:
-            result = reject_record_decision(
-                db,
-                user_id=user.id,
-                project_id=project.id,
-                phase="requerimientos",
-            )
-            db.commit()
-            return ("reject", result)
-        finally:
-            db.close()
-
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(worker_approve), pool.submit(worker_reject)]
+        futures = [pool.submit(worker, "approve"), pool.submit(worker, "reject")]
         outcomes = [f.result() for f in as_completed(futures)]
+
+    actions = {action for action, _ in outcomes}
+    assert actions == {"approve", "reject"}
+
+    # Both actions serialize safely through the single projects row lock:
+    # no deadlock, no partial state, no typed error.
+    for action, result in outcomes:
+        assert not isinstance(result, Exception), (
+            f"{action} must not raise under serialisation: {result!r}"
+        )
+        # Different actions => different hashes => both non-idempotent.
+        assert result.idempotent is False
 
     db = SessionLocal()
     try:
-        refreshed = db.get(Project, project.id)
-        # Last writer wins on phase_ready.
-        if outcomes[0][0] == "approve" and outcomes[1][0] == "reject":
-            # If reject committed last, phase_ready must be False.
-            assert refreshed.phase_ready is False
-        else:
-            # If approve committed last, phase_ready must be True.
-            assert refreshed.phase_ready is True
+        rows = (
+            db.query(Approval)
+            .filter(
+                Approval.project_id == project.id,
+                Approval.phase == "requerimientos",
+            )
+            .all()
+        )
+        assert len(rows) == 2, f"expected exactly 2 approvals rows, got {len(rows)}"
+        # DB stores the past-tense mapping (DECISION_TO_DB).
+        assert {r.decision for r in rows} == {"approved", "rejected"}
+        # Every row carries project_id (REQ-SA-27).
+        assert all(r.project_id == project.id for r in rows)
     finally:
         db.close()
