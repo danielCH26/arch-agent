@@ -144,3 +144,72 @@ describe('approvalsStore integration — fetchHistory populates pendingByPhase (
     })
   })
 })
+
+describe('approvalsStore integration — fetchHistory replaces pendingByPhase per project (REQ-SA-27)', () => {
+  beforeEach(() => {
+    useApprovalsStore.setState({
+      pendingByPhase: {},
+      historyByPhase: {},
+      currentProjectId: null,
+      phases: null,
+      loading: false,
+      error: null,
+    })
+  })
+
+  it('drops the previous project pending entry when fetching another project (no cross-project leak)', async () => {
+    // Project A: pending propuesta (real FastAPI /phases body shape).
+    const responseA = {
+      phases: [
+        { phase: 'requerimientos', label: 'Requerimientos', status: 'approved' },
+        { phase: 'propuesta', label: 'Propuesta', status: 'current' },
+        { phase: 'refinamiento', label: 'Refinamiento', status: 'pending' },
+        { phase: 'revision', label: 'Revisión', status: 'pending' },
+        { phase: 'final', label: 'Cierre', status: 'pending' },
+      ],
+      current_phase: 'propuesta',
+      phase_ready: false,
+      available_phases: [
+        'requerimientos',
+        'propuesta',
+        'refinamiento',
+        'revision',
+        'final',
+      ],
+      pending_decision: {
+        phase: 'propuesta',
+        since: '2026-09-27T22:00:00Z',
+        last_decision: 'approved',
+        last_decided_at: '2026-09-27T22:00:00Z',
+      },
+    }
+
+    // Project B: same phase structure, NO pending decision anywhere —
+    // `GET /phases` returns the authoritative map for THIS project.
+    const responseB = {
+      ...responseA,
+      pending_decision: null,
+    }
+
+    const spy = vi.spyOn(clientModule, 'apiFetch')
+    spy.mockResolvedValueOnce(responseA)
+    spy.mockResolvedValueOnce(responseB)
+
+    const store = useApprovalsStore.getState()
+
+    // Project A mounts its pending propuesta entry.
+    await store.fetchHistory(1)
+    const afterA = useApprovalsStore.getState()
+    expect(afterA.currentProjectId).toBe(1)
+    expect(afterA.pendingByPhase.propuesta).toEqual(responseA.pending_decision)
+
+    // Switching to project B MUST drop A's stale entry: the fetched
+    // response replaces the map (merge would leak A's decision into B
+    // and let the user approve a decision B never had).
+    await store.fetchHistory(2)
+    const afterB = useApprovalsStore.getState()
+    expect(afterB.currentProjectId).toBe(2)
+    expect(afterB.pendingByPhase).not.toHaveProperty('propuesta')
+    expect(Object.keys(afterB.pendingByPhase)).toHaveLength(0)
+  })
+})

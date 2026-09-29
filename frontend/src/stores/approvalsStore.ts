@@ -75,7 +75,13 @@ export const useApprovalsStore = create<ApprovalsState>()((set, get) => ({
     set({ loading: true, error: null, currentProjectId: projectId })
     try {
       const response = await getPhases(projectId)
-      const next: Record<Phase, PendingDecision | null> = { ...get().pendingByPhase }
+      // GET /phases is the AUTHORITATIVE pending map for THIS project.
+      // Build the new map purely from the response (REPLACE, never merge
+      // with the previous one): `pendingByPhase` is keyed by phase name
+      // only, so merging would leak a previous project's pending entry
+      // into the newly-opened project and let the user approve a
+      // decision that project never had (audit fix, REQ-SA-27 spirit).
+      const next: Record<Phase, PendingDecision | null> = {}
       if (response.pending_decision) {
         next[response.pending_decision.phase] = response.pending_decision
       }
