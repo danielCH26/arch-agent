@@ -6,7 +6,8 @@ Closes PR #78 blockers + important findings:
     * REQ-SA-28: ``record_decision`` rejects ``phase != project.current_phase``
       with a typed 409 carrying ``{current_phase}`` so the frontend can
       show a useful error.
-    * REQ-SA-30: idempotency key = ``SHA256(canonical_json({action, payload}))[:32]``.
+    * REQ-SA-30: idempotency key =
+      ``SHA256(canonical_json({action, payload, feedback}))[:32]``.
       Identical retries within 60 s return the same ``decision_id`` with
       ``idempotent=True``; different-action retries are accepted (the
       v1 blanket 60s window is gone).
@@ -182,16 +183,31 @@ def _next_phase(current: str) -> Optional[str]:
     return AVAILABLE_PHASES[idx + 1]
 
 
-def _canonical_payload_hash(action: str, payload: Optional[dict]) -> str:
+def _canonical_payload_hash(
+    action: str,
+    payload: Optional[dict],
+    feedback: Optional[str] = None,
+) -> str:
     """REQ-SA-30: SHA256 hex truncated to 32 chars of
-    ``canonical_json({action, payload})``.
+    ``canonical_json({action, payload, feedback})``.
 
     The action is included so ``modify`` + ``approve`` are different keys
     — this is the rule that unblocks legitimate ``modify -> approve``
-    flows inside the 60s window.
+    flows inside the 60s window. The normalized ``feedback`` (``None`` and
+    whitespace-only collapse to ``""``) is included so two ``modify``
+    submissions with different feedback text are never collapsed into one
+    idempotent key — the real frontend sends ``feedback`` and no
+    ``payload``, so dropping it from the key silently returned the
+    original decision for corrected feedback.
+
+    Pure and deterministic: same inputs always produce the same key.
     """
     blob = json.dumps(
-        {"action": action, "payload": payload or {}},
+        {
+            "action": action,
+            "payload": payload or {},
+            "feedback": (feedback or "").strip(),
+        },
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -227,8 +243,8 @@ def record_decision(
          A concurrent caller blocks here until the holder commits.
       3. Validate ``phase == project.current_phase``; raise
          ``PhaseMismatchError`` (mapped to 409) otherwise (REQ-SA-28).
-      4. Derive the idempotency key from ``(action, payload)`` if the
-         caller did not pass one explicitly (REQ-SA-30).
+   4. Derive the idempotency key from ``(action, payload, feedback)``
+      if the caller did not pass one explicitly (REQ-SA-30).
       5. Look up the most recent ``Approval`` for
          ``(project_id, phase, created_at >= now-60s)``. If its
          ``payload_hash`` matches the new key, return it with
@@ -272,7 +288,7 @@ def record_decision(
         )
 
     # ---- 4. Idempotency key derivation (REQ-SA-30) ----
-    key = idempotency_key or _canonical_payload_hash(action, payload)
+    key = idempotency_key or _canonical_payload_hash(action, payload, feedback)
 
     # ---- 5. Idempotent retry check (REQ-SA-30.1) ----
     recent = db.execute(

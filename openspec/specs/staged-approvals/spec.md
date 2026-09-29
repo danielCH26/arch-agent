@@ -318,8 +318,8 @@ Frontend `markReady` client export **MUST** be deleted from `frontend/src/api/pr
 
 ### Important findings closed (REQ-SA-30..36)
 
-### REQ-SA-30: Idempotency key = `(action, payload_hash)` per request
-**MUST** derive idempotency from `(action, payload_hash)` of the request body. Identical retries within 60s **MUST** return 200 with `idempotent: true`. Different-action retries within window **MUST** be allowed (60s window applies only to identical retries). **Rationale**: closes PR #78 important finding (60s window blocked normal modify->approve flows).
+### REQ-SA-30: Idempotency key = `(action, payload_hash, feedback)` per request
+**MUST** derive idempotency from `(action, canonical payload, normalized feedback)` of the request body, where feedback is normalized as `(feedback or "").strip()` (absent feedback counts as the empty string). Identical retries within 60s **MUST** return 200 with `idempotent: true`. Two submissions with the same action and payload but DIFFERENT feedback are NOT identical and **MUST** be accepted as new decisions (new `decision_id`, feedback persisted). Different-action retries within window **MUST** be allowed (60s window applies only to identical retries). **Rationale**: closes PR #78 important finding (60s window blocked normal modify->approve flows); amended after audit — the real frontend sends `feedback` and never `payload`, so a key of `(action, payload)` alone collapsed corrected feedback into the original decision.
 
 #### Scenario: SCN-SA-30.1 Identical retry returns idempotent 200
 - GIVEN an `approve` recorded 30s ago

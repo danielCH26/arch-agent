@@ -4,7 +4,8 @@ Covers:
     * REQ-SA-27: per-project filter (``(project_id, phase)`` — not session_id).
     * REQ-SA-28: ``PhaseMismatchError`` when ``phase != project.current_phase``.
     * REQ-SA-30: identical retries return ``idempotent=True``; different-action
-      retries are accepted.
+      AND different-feedback retries are accepted (a corrected ``modify``
+      feedback is never collapsed into the original decision).
     * REQ-SA-31: ``with_for_update`` issued on the projects row.
     * REQ-SA-34: typed ``DecisionConflict`` body; never ``str(exc)``.
     * REQ-SA-36: single-owner gate (``requerimientos`` skips, others require
@@ -88,6 +89,26 @@ def test_canonical_payload_hash_changes_with_payload():
     a = _canonical_payload_hash("modify", {"feedback": "use event-driven"})
     b = _canonical_payload_hash("modify", {"feedback": "use modular monolith"})
     assert a != b
+
+
+def test_canonical_payload_hash_changes_with_feedback():
+    """REQ-SA-30 (audit fix): feedback affects the hash; same action +
+    payload with different feedback is NOT idempotent. Absent (None) and
+    whitespace-only feedback normalize to the empty string."""
+    a = _canonical_payload_hash("modify", None, "usa event-driven")
+    b = _canonical_payload_hash("modify", None, "usa event-driven, no monolito")
+    assert a != b
+    # None / missing / whitespace-only feedback collapse to one key.
+    assert _canonical_payload_hash("approve", None, None) == _canonical_payload_hash(
+        "approve", None, ""
+    )
+    assert _canonical_payload_hash("approve", None, "  ") == _canonical_payload_hash(
+        "approve", None
+    )
+    # Two-arg calls (legacy signature) equal explicit empty feedback.
+    assert _canonical_payload_hash("reject", {"x": 1}) == _canonical_payload_hash(
+        "reject", {"x": 1}, ""
+    )
 
 
 def test_canonical_payload_hash_stable_for_identical_inputs():
@@ -287,6 +308,58 @@ def test_record_decision_different_action_within_window_is_accepted():
     assert result.idempotent is False
     mock_writer.assert_called_once()
     assert project.phase_ready is False  # modify keeps phase_ready=False
+
+
+def test_same_action_different_feedback_is_accepted_not_idempotent():
+    """REQ-SA-30 (audit fix): two `modify` submissions with DIFFERENT
+    feedback inside the 60s window are NOT idempotent — the second call
+    inserts a NEW decision and the stored row carries the NEW feedback.
+    Regression guard for the real frontend (`PhaseActions.tsx`), which
+    sends `feedback` and never `payload`."""
+    db, project = _make_db_with_project(current_phase="propuesta")
+
+    # Recent approval is a `modify` with the FIRST feedback text.
+    recent = MagicMock()
+    recent.id = 77
+    recent.payload_hash = _canonical_payload_hash(
+        "modify", None, "usa event-driven"
+    )
+    recent.created_at = datetime.utcnow()
+
+    executions = iter([project, recent])
+
+    def execute_side_effect(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.side_effect = lambda: next(executions, None)
+        return result
+
+    db.execute.side_effect = execute_side_effect
+
+    with patch(
+        "app.core.phase_decisions.record_approval_decision"
+    ) as mock_writer:
+        mock_writer.return_value = MagicMock(id=78, decision="modified")
+        # SAME action + payload, DIFFERENT feedback -> hash differs -> accepted.
+        result = record_decision(
+            db,
+            user_id=1,
+            project_id=7,
+            phase="propuesta",
+            action="modify",
+            feedback="usa event-driven, no monolito",
+        )
+
+    assert result.idempotent is False
+    assert result.approval.id == 78  # NEW decision_id, not the recent 77
+    mock_writer.assert_called_once()
+    # The stored approval row carries the NEW feedback.
+    _, kwargs = mock_writer.call_args
+    assert kwargs["feedback"] == "usa event-driven, no monolito"
+    # The row's hash matches the NEW feedback, not the recent one.
+    assert result.approval.payload_hash == _canonical_payload_hash(
+        "modify", None, "usa event-driven, no monolito"
+    )
+    assert result.approval.payload_hash != recent.payload_hash
 
 
 # ---------------------------------------------------------------------------
