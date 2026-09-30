@@ -1,12 +1,56 @@
 import { authStore } from '../stores/authStore'
 import { apiFetch, ApiError } from './client'
 
+export interface CitationSource {
+  type: 'curated_catalog' | 'source_upload'
+  label: string
+  filename: string | null
+}
+
 export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
   similarity: number | null
   // Backend caps the snippet to 240 chars; useful for tooltips in CitationList.
   snippet?: string | null
+  // HU8: number the LLM uses as `[n]` inside the proposal markdown.
+  index?: number | null
+  category?: string | null
+  chunk_type?: string | null
+  source?: CitationSource | null
+  // `/api/patterns/{id}` -- lets the user read the full indexed text.
+  verify_url?: string | null
+  // True when at least one `[n]` in the proposal references this source.
+  cited?: boolean
+}
+
+export interface ProposalJustification {
+  decisions_total: number
+  decisions_cited: number
+  coverage: number
+  cites_patterns: boolean
+  cited_indices: number[]
+  invalid_refs: number[]
+  uncited_decisions: { section: string; text: string }[]
+}
+
+export interface PatternChunk {
+  id: number
+  chunk_type: string
+  chunk_text: string
+  source: string
+}
+
+export interface PatternDetail {
+  id: number
+  pattern_name: string
+  category: string | null
+  description: string | null
+  use_cases: string | null
+  tradeoffs: { ventajas?: string[]; desventajas?: string[] } | null
+  when_not_to_use: string | null
+  decision_signals: unknown[] | null
+  chunks: PatternChunk[]
 }
 
 export interface ProposalOut {
@@ -18,6 +62,7 @@ export interface ProposalOut {
   feedback: string | null
   lifecycle: 'proposed' | 'approved' | 'rejected'
   created_at: string
+  justification?: ProposalJustification | null
 }
 
 export interface ProposalDecisionResponse {
@@ -34,7 +79,11 @@ export type ProposalDecision = 'approve' | 'modify' | 'reject'
 interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
-  onDone: (proposalId: number, citations: ProposalCitation[]) => void
+  onDone: (
+    proposalId: number,
+    citations: ProposalCitation[],
+    justification: ProposalJustification | null,
+  ) => void
   onError: (error: string) => void
 }
 
@@ -89,8 +138,13 @@ function dispatchProposalSSE(
       const parsed = JSON.parse(rawData) as {
         proposal_id: number
         citations: ProposalCitation[]
+        justification?: ProposalJustification
       }
-      callbacks.onDone(parsed.proposal_id, parsed.citations ?? [])
+      callbacks.onDone(
+        parsed.proposal_id,
+        parsed.citations ?? [],
+        parsed.justification ?? null,
+      )
     } catch {
       callbacks.onError('Malformed SSE done payload')
     }
@@ -238,4 +292,9 @@ export async function decideProposal(
 
 export async function getProposal(proposalId: number): Promise<ProposalOut> {
   return apiFetch<ProposalOut>(`/api/proposals/${proposalId}`)
+}
+
+/** HU8: full pattern (all indexed chunks + source) behind a citation. */
+export async function getPatternDetail(patternId: number): Promise<PatternDetail> {
+  return apiFetch<PatternDetail>(`/api/patterns/${patternId}`)
 }

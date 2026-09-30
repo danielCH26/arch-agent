@@ -6,7 +6,9 @@ from pydantic import BaseModel
 from app.api.dependencies import get_current_user
 from app.core.database import SessionLocal
 from app.core.pattern_document_storage import get_pattern_source_chunks
+from app.core.pattern_justification import CURATED_SOURCE_LABEL
 from app.models.architect_pattern import ArchitectPattern
+from app.models.architect_pattern_chunk import ArchitectPatternChunk
 
 router = APIRouter(prefix="/api/patterns", tags=["patterns"])
 
@@ -52,6 +54,66 @@ async def list_patterns(
         total = base_query.count()
         items = base_query.offset(offset).limit(limit).all()
         return PatternListOut(total=total, items=items)
+    finally:
+        db.close()
+
+
+class PatternChunkOut(BaseModel):
+    id: int
+    chunk_type: str
+    chunk_text: str
+    source: str
+
+
+class PatternDetailOut(PatternOut):
+    decision_signals: Optional[list]
+    chunks: list[PatternChunkOut]
+
+
+@router.get("/{pattern_id}", response_model=PatternDetailOut)
+async def get_pattern(
+    pattern_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Detalle de un patrón con todos los chunks indexados en el RAG (HU8).
+
+    Es el destino de ``verify_url`` en las citas de una propuesta: permite al
+    usuario leer el texto completo que respaldó cada decisión y de qué fuente
+    proviene (catálogo curado o documento subido).
+    """
+    db = SessionLocal()
+    try:
+        pattern = db.query(ArchitectPattern).filter(ArchitectPattern.id == pattern_id).first()
+        if pattern is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patrón no encontrado")
+
+        chunks = (
+            db.query(ArchitectPatternChunk)
+            .filter(ArchitectPatternChunk.pattern_id == pattern_id)
+            .order_by(ArchitectPatternChunk.id)
+            .all()
+        )
+        return PatternDetailOut(
+            id=pattern.id,
+            pattern_name=pattern.pattern_name,
+            category=pattern.category,
+            description=pattern.description,
+            use_cases=pattern.use_cases,
+            tradeoffs=pattern.tradeoffs,
+            when_not_to_use=pattern.when_not_to_use,
+            decision_signals=pattern.decision_signals,
+            chunks=[
+                PatternChunkOut(
+                    id=chunk.id,
+                    chunk_type=chunk.chunk_type,
+                    chunk_text=chunk.chunk_text,
+                    source=(chunk.chunk_metadata or {}).get("filename")
+                    or CURATED_SOURCE_LABEL,
+                )
+                for chunk in chunks
+            ],
+        )
     finally:
         db.close()
 
