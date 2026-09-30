@@ -35,7 +35,7 @@ export const projectsStore = create<ProjectsState>((set) => ({
       const projects = await projectsApi.listProjects()
       set({ projects, status: 'idle' })
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load projects'
+      const message = error instanceof Error ? error.message : 'No se pudieron cargar los proyectos.'
       set({ status: 'error', error: message })
     }
   },
@@ -50,7 +50,7 @@ export const projectsStore = create<ProjectsState>((set) => ({
       }))
       return newProject
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create project'
+      const message = error instanceof Error ? error.message : 'No se pudo crear el proyecto.'
       set({ status: 'error', error: message })
       throw error
     }
@@ -66,7 +66,7 @@ export const projectsStore = create<ProjectsState>((set) => ({
         status: 'idle',
       }))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete project'
+      const message = error instanceof Error ? error.message : 'No se pudo eliminar el proyecto.'
       set({ status: 'error', error: message })
       throw error
     }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { authStore } from '../stores/authStore'
 import { projectsStore } from '../stores/projectsStore'
+import { ErrorBoundary } from './ErrorBoundary'
 import { Logo } from './Logo'
 import { ArchiveIcon, ChatIcon, ClockIcon, DocumentIcon } from './NavIcons'
 
@@ -278,7 +279,9 @@ export function Layout() {
 
         {/* Main content */}
         <main className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-          <Outlet />
+          <ErrorBoundary resetKey={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

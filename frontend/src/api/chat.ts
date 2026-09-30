@@ -1,5 +1,5 @@
 import { authStore } from '../stores/authStore'
-import { apiFetch } from './client'
+import { apiFetch, errorMessageFromResponse, safeFetch } from './client'
 
 export interface ChatRequest {
   project_id: number | null
@@ -157,7 +157,7 @@ export function createChatStream(
   // Start the stream immediately
   ;(async () => {
     try {
-      const response = await fetch('/api/chat', {
+      const response = await safeFetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -173,13 +173,12 @@ export function createChatStream(
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
-        const errorMessage = (data.detail as string) || 'Chat request failed'
-        callbacks.onError(errorMessage)
+        callbacks.onError(errorMessageFromResponse(response.status, data))
         return
       }
 
       if (!response.body) {
-        callbacks.onError('No response body')
+        callbacks.onError('El servidor no devolvió una respuesta. Inténtalo de nuevo.')
         return
       }
 
@@ -215,7 +214,7 @@ export function createChatStream(
         // Request was cancelled, no need to report error
         return
       }
-      callbacks.onError(err instanceof Error ? err.message : 'Unknown error')
+      callbacks.onError(err instanceof Error ? err.message : 'Ocurrió un error inesperado. Inténtalo de nuevo.')
     }
   })()
 

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { errorMessageFromResponse, safeFetch } from '../api/client'
 
 interface User {
   id: number
@@ -32,7 +33,7 @@ export const authStore = create<AuthState>()(
       login: async (username: string, password: string) => {
         set({ status: 'loading', error: null })
         try {
-          const response = await fetch('/api/auth/login', {
+          const response = await safeFetch('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password }),
@@ -40,7 +41,11 @@ export const authStore = create<AuthState>()(
 
           if (!response.ok) {
             const data = await response.json().catch(() => ({}))
-            throw new Error((data.detail as string) || 'Invalid credentials')
+            throw new Error(
+              response.status === 401
+                ? (typeof data.detail === 'string' && data.detail) || 'Usuario o contraseña incorrectos.'
+                : errorMessageFromResponse(response.status, data),
+            )
           }
 
           const data = await response.json() as { user_id: number; username: string; token: string }
@@ -50,7 +55,7 @@ export const authStore = create<AuthState>()(
             status: 'idle',
           })
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Login failed'
+          const message = error instanceof Error ? error.message : 'No se pudo iniciar sesión.'
           set({ status: 'error', error: message })
           throw error
         }
@@ -59,7 +64,7 @@ export const authStore = create<AuthState>()(
       register: async (username: string, email: string, password: string) => {
         set({ status: 'loading', error: null })
         try {
-          const response = await fetch('/api/auth/register', {
+          const response = await safeFetch('/api/auth/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, email, password }),
@@ -67,7 +72,7 @@ export const authStore = create<AuthState>()(
 
           if (!response.ok) {
             const data = await response.json().catch(() => ({}))
-            throw new Error((data.detail as string) || 'Registration failed')
+            throw new Error(errorMessageFromResponse(response.status, data))
           }
 
           const data = await response.json() as { user_id: number; username: string; token: string }
@@ -77,7 +82,7 @@ export const authStore = create<AuthState>()(
             status: 'idle',
           })
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Registration failed'
+          const message = error instanceof Error ? error.message : 'No se pudo crear la cuenta.'
           set({ status: 'error', error: message })
           throw error
         }

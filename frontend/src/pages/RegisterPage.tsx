@@ -21,25 +21,25 @@ export function RegisterPage() {
     e.preventDefault()
     setError('')
 
-    // Client-side validation
+    // Validación en el cliente
     if (!username.trim()) {
-      setError('Username is required')
+      setError('Ingresa un nombre de usuario.')
       return
     }
     if (!email.trim()) {
-      setError('Email is required')
+      setError('Ingresa tu correo electrónico.')
       return
     }
     if (!password.trim()) {
-      setError('Password is required')
+      setError('Ingresa una contraseña.')
       return
     }
     if (password.length < 6) {
-      setError('Password must be at least 6 characters')
+      setError('La contraseña debe tener al menos 6 caracteres.')
       return
     }
     if (password !== confirmPassword) {
-      setError('Passwords do not match')
+      setError('Las contraseñas no coinciden.')
       return
     }
 
@@ -48,7 +48,7 @@ export function RegisterPage() {
       await register(username, email, password)
       navigate('/projects', { replace: true })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Registration failed'
+      const message = err instanceof Error ? err.message : 'No se pudo crear la cuenta.'
       setError(message)
     } finally {
       setIsSubmitting(false)

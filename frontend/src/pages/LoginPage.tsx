@@ -22,7 +22,7 @@ export function LoginPage() {
     setError('')
 
     if (!username.trim() || !password.trim()) {
-      setError('Please enter username and password')
+      setError('Ingresa tu nombre de usuario y contraseña.')
       return
     }
 
@@ -31,7 +31,7 @@ export function LoginPage() {
       await login(username, password)
       navigate(from, { replace: true })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Login failed'
+      const message = err instanceof Error ? err.message : 'No se pudo iniciar sesión.'
       setError(message)
     } finally {
       setIsSubmitting(false)

@@ -1,4 +1,4 @@
-import { apiFetch } from './client'
+import { apiFetch, errorMessageFromResponse, NETWORK_ERROR_MESSAGE } from './client'
 import { authStore } from '../stores/authStore'
 
 export interface Document {
@@ -89,22 +89,21 @@ export async function uploadDocument(
           const body = JSON.parse(xhr.responseText) as DuplicateInfo
           reject(new DuplicateFileError(body))
         } catch {
-          reject(new Error('Duplicate file'))
+          reject(new Error('Ya existe un documento con ese nombre.'))
         }
         return
       }
 
       // Otros errores
       try {
-        const data = JSON.parse(xhr.responseText)
-        reject(new Error((data.detail as string) || 'Upload failed'))
+        reject(new Error(errorMessageFromResponse(xhr.status, JSON.parse(xhr.responseText))))
       } catch {
-        reject(new Error('Upload failed'))
+        reject(new Error(errorMessageFromResponse(xhr.status, null)))
       }
     })
 
     xhr.addEventListener('error', () => {
-      reject(new Error('Network error'))
+      reject(new Error(NETWORK_ERROR_MESSAGE))
     })
 
     xhr.send(formData)

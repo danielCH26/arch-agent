@@ -1,5 +1,5 @@
 import { authStore } from '../stores/authStore'
-import { apiFetch } from './client'
+import { apiFetch, errorMessageFromResponse, safeFetch } from './client'
 
 export interface ProposalCitation {
   pattern_id: number | null
@@ -102,7 +102,7 @@ export function createProposalStream(
 
   void (async () => {
     try {
-      const response = await fetch(url, {
+      const response = await safeFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify(body),
@@ -115,7 +115,7 @@ export function createProposalStream(
       }
       if (!response.ok) {
         const error = await response.json().catch(() => ({}))
-        callbacks.onError((error.detail as string) || 'No se pudo generar la propuesta.')
+        callbacks.onError(errorMessageFromResponse(response.status, error))
         return
       }
       if (!response.body) {
