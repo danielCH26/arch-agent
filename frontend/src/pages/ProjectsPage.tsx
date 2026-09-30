@@ -15,7 +15,7 @@ export function ProjectsPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-semibold text-gray-700">Mis proyectos</h1>
+          <h1 className="font-display text-3xl font-semibold text-gray-700">Mis proyectos</h1>
           <p className="mt-1 text-gray-600">Gestiona y revisa tus diseños de arquitectura</p>
         </div>
         <button
@@ -25,7 +25,7 @@ export function ProjectsPage() {
           <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Nuevo Proyecto
+          Nuevo proyecto
         </button>
       </div>
 
@@ -56,7 +56,7 @@ export function ProjectsPage() {
               <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
-              Nuevo Proyecto
+              Nuevo proyecto
             </button>
           </div>
         </div>

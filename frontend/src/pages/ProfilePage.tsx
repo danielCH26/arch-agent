@@ -158,7 +158,7 @@ export function ProfilePage() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
           </svg>
         </div>
-        <h1 className="text-2xl font-semibold text-gray-900">{profile.username}</h1>
+        <h1 className="font-display text-2xl font-semibold text-gray-900">{profile.username}</h1>
       </div>
 
       <form onSubmit={handleProfileSubmit} className="space-y-6">

@@ -10,7 +10,7 @@ export function Logo({ size = 64, className = '' }: LogoProps) {
   return (
     <img
       src={robotImg}
-      alt="ArqAgent"
+      alt="ArchAgent"
       draggable={false}
       className={`w-auto select-none ${className}`}
       style={{ height: size }}

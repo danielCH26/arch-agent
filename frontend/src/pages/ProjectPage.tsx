@@ -53,7 +53,7 @@ export function ProjectPage() {
   // This shouldn't normally be shown since we redirect, but as a fallback
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900">{project?.name}</h1>
+      <h1 className="font-display text-2xl font-bold text-gray-900">{project?.name}</h1>
       {project?.description && (
         <p className="mt-2 text-gray-600">{project.description}</p>
       )}

@@ -35,11 +35,11 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e4f2fa] to-[#f7fbf9] px-4 py-12">
       <div className="grid w-full max-w-5xl grid-cols-1 gap-6 md:grid-cols-2">
         <div className="flex flex-col justify-center rounded-3xl bg-white p-8 shadow-[0px_10px_40px_rgba(14,84,206,0.12)] sm:p-12">
-          <span className="mb-6 text-xl font-semibold text-gray-900">
-            Arq<span className="text-[#0e54ce]">Agent</span>
+          <span className="mb-6 font-display text-xl font-semibold text-gray-900">
+            <span className="text-[#0e54ce]">Arch</span>Agent
           </span>
 
-          <h1 className="text-3xl font-bold text-gray-900 sm:text-4xl">{title}</h1>
+          <h1 className="font-display text-3xl font-bold text-gray-900 sm:text-4xl">{title}</h1>
           <p className="mt-2 text-sm text-gray-500">{subtitle}</p>
 
           <div className="mt-8">{children}</div>
@@ -54,7 +54,7 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
             }}
           />
 
-          <h2 className="relative z-10 w-full text-center text-3xl font-bold leading-tight text-gray-900">
+          <h2 className="relative z-10 w-full text-center font-display text-3xl font-bold leading-tight text-gray-900">
             Tu asistente de ingeniería de software,
             <br />
             listo para ayudar

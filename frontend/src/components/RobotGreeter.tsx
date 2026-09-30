@@ -38,7 +38,7 @@ export function RobotGreeter() {
       }`}
       style={{ aspectRatio: '1129 / 970' }}
     >
-      <img src={bodyImg} alt="Asistente robot de ArqAgent" draggable={false} className="absolute inset-0 h-full w-full" />
+      <img src={bodyImg} alt="Asistente robot de ArchAgent" draggable={false} className="absolute inset-0 h-full w-full" />
       {[restArm, waveAArm, waveBArm].map((src) => (
         <img
           key={src}

@@ -50,8 +50,8 @@ export function Layout() {
         <div className="flex flex-col items-center gap-2 px-4 pb-4 pt-6">
           <Link to="/projects" className="flex flex-col items-center gap-1">
             <Logo size={64} />
-            <span className="text-2xl text-gray-900">
-              <span className="text-[#0e54ce]">Arq</span>Agent
+            <span className="font-display text-2xl text-gray-900">
+              <span className="text-[#0e54ce]">Arch</span>Agent
             </span>
           </Link>
         </div>
