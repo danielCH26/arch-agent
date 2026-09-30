@@ -229,7 +229,9 @@ class ProposalGenerator:
             for part in (project.name, project.description, requirements_text, feedback)
             if part
         )
-        citations = _select_citations(docs, explicit_text=explicit_text)
+        citations = _select_citations(
+            docs, explicit_text=explicit_text, feedback=feedback
+        )
         logger.info(
             "Proposal RAG project_id=%s candidates=%s cited=%s top=%s",
             effective_project_id,
@@ -268,8 +270,11 @@ class ProposalGenerator:
 
         # 6. Stream LLM tokens + accumulate the full markdown.
         full_markdown_chunks: list[str] = []
+        finish_reason: str | None = None
         try:
             async for event in model.astream(prompt):
+                metadata = getattr(event, "response_metadata", None) or {}
+                finish_reason = metadata.get("finish_reason") or finish_reason
                 chunk = getattr(event, "content", None)
                 if chunk:
                     full_markdown_chunks.append(chunk)
@@ -290,6 +295,28 @@ class ProposalGenerator:
             # frontend can show a banner and the user can retry without an
             # empty ``proposed`` row confusing the lifecycle.
             yield ("error", "LLM returned no content")
+            return
+
+        # Una propuesta cortada a la mitad (limite de tokens del modelo, stream
+        # cerrado por el proveedor) NO se guarda: quedaria como iteracion vigente,
+        # gastaria una de las PROPOSAL_MAX_ITER y la siguiente modificacion
+        # partiria de un texto al que le faltan secciones.
+        missing_sections = _missing_sections(full_markdown)
+        if finish_reason == "length" or missing_sections:
+            logger.warning(
+                "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s",
+                effective_project_id,
+                finish_reason,
+                missing_sections,
+                len(full_markdown),
+            )
+            yield (
+                "error",
+                "El modelo dejó la propuesta incompleta"
+                + (f" (faltan: {', '.join(missing_sections)})" if missing_sections else "")
+                + ". No se guardó ni consumió una iteración; intenta de nuevo. "
+                "Si se repite, sube el límite de tokens de salida del modelo.",
+            )
             return
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
@@ -354,7 +381,11 @@ class ProposalGenerator:
 # media=1, alta=2). Es un empate suave: un patron pesado con MUCHA mas
 # similitud sigue ganando, y no se penaliza si el usuario lo pidio por nombre.
 # Poner 0 desactiva el ajuste.
-PROPOSAL_COMPLEXITY_PENALTY = float(os.getenv("PROPOSAL_COMPLEXITY_PENALTY", "0.03"))
+# Con multilingual-e5-small las similitudes de los patrones caen en una banda
+# estrecha (~0.80-0.90), asi que 0.03 por nivel no alcanzaba para bajar a
+# CQRS/microservicios en un proyecto chico: 0.08 (alta = 0.16) si, y un patron
+# pesado con muchisima mas similitud, o nombrado por el usuario, aun puede ganar.
+PROPOSAL_COMPLEXITY_PENALTY = float(os.getenv("PROPOSAL_COMPLEXITY_PENALTY", "0.08"))
 _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 
 
@@ -382,6 +413,9 @@ def _pattern_aliases(pattern_name: str) -> list[str]:
             continue
         aliases.add(part)
         aliases.add(re.sub(r"^arquitectura\s+", "", part))
+        aliases.add(re.sub(r"^arquitectura\s+(?:en\s+)?", "", part))  # "capas"
+        if part.startswith("monolito"):
+            aliases.add("monolito")
     # "microservicios" -> tambien "microservicio"
     aliases |= {a[:-1] for a in list(aliases) if len(a) >= 8 and a.endswith("s")}
     return sorted(a for a in aliases if len(a) >= 3)
@@ -398,6 +432,56 @@ def _explicitly_requested(pattern_name: str | None, explicit_text: str | None) -
     )
 
 
+# Palabras que, justo antes del nombre de un patron, indican que el usuario lo
+# QUIERE QUITAR ("sin CQRS", "no quiero microservicios", "cambia CQRS por X",
+# "X en vez de CQRS", "cambia la arquitectura de CQRS a X"). Solo se permite
+# relleno corto entre la palabra y el patron, para que "cambia la arquitectura
+# a hexagonal" NO cuente como rechazo de hexagonal.
+_REJECT_FILLER = (
+    r"(?:(?:el|la|los|las|un|una|de|del|con|usar|use|uses|utilices|utilizar|usemos|"
+    r"hagas|hacer|implementes|implementar|apliques|aplicar|incluyas|incluir|"
+    r"tengas|tener|quiero|quisiera|deseo|necesito|me\s+gusta|patron|arquitectura|"
+    r"estilo|modelo|enfoque)\s+)*"
+)
+_REJECT_CUE = re.compile(
+    r"(?:\b(?:sin|no|ni|nada\s+de|quita\w*|elimina\w*|remueve\w*|remover|evita\w*|"
+    r"descarta\w*|deja\w*\s+de|abandona\w*|olvida\w*|reemplaza\w*|sustituye\w*|"
+    r"cambia\w*(?:\s+de)?|cambio\s+de|pasa\w*\s+de|migra\w*\s+de)"
+    r"|en\s+(?:vez|lugar)\s+del?)\s+" + _REJECT_FILLER + r"$"
+)
+_CLAUSE_BREAK = re.compile(r"[.,;:!?\n]")
+
+
+def _is_rejected_mention(normalized_text: str, start: int) -> bool:
+    """True si la mencion que empieza en ``start`` va precedida de un rechazo."""
+    prefix = _CLAUSE_BREAK.split(normalized_text[max(0, start - 80) : start])[-1]
+    return bool(_REJECT_CUE.search(prefix))
+
+
+def _keyword_wanted(keywords: tuple[str, ...], normalized_text: str) -> bool:
+    """True si alguna keyword aparece al menos una vez SIN ser rechazada."""
+    return any(
+        not _is_rejected_mention(normalized_text, match.start())
+        for keyword in keywords
+        for match in re.finditer(re.escape(keyword), normalized_text)
+    )
+
+
+def _feedback_stance(pattern_name: str | None, feedback: str | None) -> str | None:
+    """Como nombra el feedback a un patron: ``"want"``, ``"reject"`` o ``None``."""
+    if not pattern_name or not feedback:
+        return None
+    haystack = _normalize_text(feedback)
+    rejected = [
+        _is_rejected_mention(haystack, match.start())
+        for alias in _pattern_aliases(pattern_name)
+        for match in re.finditer(r"\b" + re.escape(alias), haystack)
+    ]
+    if not rejected:
+        return None
+    return "reject" if all(rejected) else "want"
+
+
 # Chunks que describen CUANDO NO usar un patron. Su texto menciona justo los
 # casos que suelen ser el proyecto ("equipos pequenos, presupuesto limitado"),
 # asi que puntuan muy alto por similitud (los embeddings no entienden la
@@ -412,6 +496,7 @@ def _select_citations(
     top_n: int | None = None,
     min_similarity: float | None = None,
     explicit_text: str | None = None,
+    feedback: str | None = None,
 ) -> list[dict]:
     """Elige los patrones que mejor encajan y los proyecta al payload de citations.
 
@@ -427,6 +512,12 @@ def _select_citations(
     y devuelve los ``top_n`` primeros.
     Solo descarta por similitud si se configura un piso explicito
     (``PROPOSAL_RAG_MIN_SIMILARITY`` > 0).
+
+    ``feedback`` (los cambios que pide el usuario al modificar) MANDA sobre el
+    ranking: el patron que el feedback pide pasa a ser el principal aunque tenga
+    menos similitud o mas complejidad, y el que el feedback quita ("sin CQRS",
+    "cambia CQRS por X") no se cita. ``explicit_text`` (requerimientos) solo
+    evita la penalizacion por complejidad.
     """
     limit = PROPOSAL_RAG_TOP_N if top_n is None else top_n
     floor = PROPOSAL_RAG_MIN_SIMILARITY if min_similarity is None else min_similarity
@@ -468,16 +559,29 @@ def _select_citations(
             return _sim(doc)
         return _sim(doc) - PROPOSAL_COMPLEXITY_PENALTY * level
 
+    stance = {
+        key: _feedback_stance(doc.metadata.get("pattern_name"), feedback)
+        for key, doc in best_fit.items()
+    }
+
     ordered = sorted(
         best_fit.items(),
-        key=lambda item: (_avoided(item[0]), -_score(item[1])),
+        key=lambda item: (
+            stance[item[0]] == "reject",
+            stance[item[0]] != "want",
+            _avoided(item[0]),
+            -_score(item[1]),
+        ),
     )
 
     citations: list[dict] = []
     for _key, doc in ordered:
         if len(citations) >= limit:
             break
-        if _sim(doc) < floor:
+        if stance[_key] == "reject":
+            continue
+        # Lo que el usuario pidio por nombre se cita aunque no llegue al piso.
+        if stance[_key] != "want" and _sim(doc) < floor:
             continue
         citations.append(
             {
@@ -496,6 +600,34 @@ def _select_citations(
         )
 
     return citations
+
+
+_REQUIRED_HEADINGS = (
+    ("Componentes", r"componentes"),
+    ("Tecnologias", r"tecnologias"),
+    ("Patrones", r"patrones"),
+    ("Justificación del patrón principal", r"justificacion del patron principal"),
+)
+
+
+def _missing_sections(markdown: str | None) -> list[str]:
+    """Secciones obligatorias que faltan en la propuesta (lista vacia = completa).
+
+    Comprueba los cuatro encabezados ``##`` del formato y que la justificacion
+    llegue hasta su ultimo punto (``Riesgo o costo``), que es lo primero que se
+    pierde cuando la respuesta se corta.
+    """
+    normalized = _normalize_text(markdown)
+    missing = [
+        label
+        for label, pattern in _REQUIRED_HEADINGS
+        if not re.search(r"^\s*#{1,6}\s*" + pattern + r"\b", normalized, re.MULTILINE)
+    ]
+    if "Justificación del patrón principal" not in missing and (
+        "riesgo o costo" not in normalized
+    ):
+        missing.append("Riesgo o costo")
+    return missing
 
 
 def _strip_secondary_references(text: str | None) -> str:
@@ -537,19 +669,25 @@ def _architecture_baseline(
     primary_name = (
         str(primary_citation.get("pattern_name") or "") if primary_citation else ""
     )
-    context = " ".join(
+    # Con feedback la propuesta previa NO cuenta: si el usuario pidio cambiar de
+    # arquitectura, el texto de la version anterior (que sigue diciendo
+    # "microservicios", "CQRS"...) hacia que la estructura base se quedara con
+    # el estilo viejo. El patron principal ya incorpora el feedback.
+    has_feedback = bool(feedback and feedback.strip())
+    prior_context = "" if has_feedback else _strip_secondary_references(prior_content)
+    context = "\n".join(
         [
             project_name or "",
             description or "",
             requirements_text or "",
             feedback or "",
-            _strip_secondary_references(prior_content),
+            prior_context,
             primary_name,
         ]
     )
     normalized = _normalize_text(context)
 
-    if "microserv" in normalized:
+    if _keyword_wanted(("microserv",), normalized):
         return (
             "ESTRUCTURA BASE SELECCIONADA: microservicios (sujeta a las "
             "RESTRICCIONES DE VIABILIDAD).\n"
@@ -570,7 +708,7 @@ def _architecture_baseline(
             "si se incluye) -> Servicios y las dependencias de cada servicio "
             "con su propia base de datos usando esos mismos nombres.\n"
         )
-    if "event driven" in normalized or "event-driven" in normalized or "orientada a eventos" in normalized:
+    if _keyword_wanted(("event driven", "event-driven", "orientada a eventos"), normalized):
         return (
             "ESTRUCTURA BASE SELECCIONADA: orientada a eventos (sujeta a las "
             "RESTRICCIONES DE VIABILIDAD).\n"
@@ -580,7 +718,7 @@ def _architecture_baseline(
             "los eventos a los flujos que realmente lo necesiten y prefiere un "
             "broker gestionado o de bajo costo.\n"
         )
-    if "hexagonal" in normalized or "ports and adapters" in normalized:
+    if _keyword_wanted(("hexagonal", "ports and adapters"), normalized):
         return (
             "ESTRUCTURA BASE SELECCIONADA: arquitectura hexagonal.\n"
             "Distingue dominio y casos de uso de los puertos; presenta los "
@@ -699,6 +837,12 @@ def _build_prompt(
             "reemplazar una por otra, ELIMINA las demas de ese aspecto; no las "
             "dejes junto a las nuevas.\n"
             "- No agregues tecnologias de ese aspecto que el usuario no nombro.\n"
+            "- Si el usuario pide CAMBIAR el estilo o patron arquitectonico (por "
+            "ejemplo de CQRS a capas), el patron nuevo pasa a ser el principal "
+            "aunque los patrones candidatos digan otra cosa: reescribe Componentes, "
+            "Patrones y Justificacion para el patron nuevo y ELIMINA los "
+            "componentes que solo existian por el anterior (p. ej. el Read Model "
+            "de CQRS). La regla de FUENTES Y REFERENCIAS no aplica a ese cambio.\n"
         )
 
     project_section = ""
@@ -729,9 +873,15 @@ def _build_prompt(
 
     source_rules = ""
     if primary_pattern:
+        primary_suffix = (
+            " (salvo que los CAMBIOS SOLICITADOS pidan otro patron).\n"
+            if feedback and feedback.strip()
+            else ".\n"
+        )
         source_rules = (
             "\nFUENTES Y REFERENCIAS:\n"
-            f"- El unico patron que puedes presentar como fuente principal es: {primary_pattern}.\n"
+            f"- El unico patron que puedes presentar como fuente principal es: {primary_pattern}"
+            f"{primary_suffix}"
             "- En la seccion ## Patrones escribe exactamente una linea con el "
             "formato `- Patrón principal: <nombre>`.\n"
         )
@@ -771,6 +921,14 @@ def _build_prompt(
         "referencia, entre 3 y 6 componentes en un proyecto sencillo; no "
         "más de 6) y prefiere tecnologías open source, conocidas por el "
         "equipo y de bajo costo de operación.\n"
+        "- Tecnologías: como máximo 6 en un proyecto sencillo (lenguaje, "
+        "framework, base de datos y solo lo que un requisito exija). NO listes "
+        "como componente ni tecnología CI/CD, backups, servidor ASGI/WSGI, "
+        "librería de hash, contenedores ni herramientas de despliegue salvo que "
+        "un requisito los pida.\n"
+        "- Patrones de complejidad alta (CQRS, event sourcing, orientada a "
+        "eventos, microservicios) no son el patrón principal de un proyecto "
+        "sencillo salvo que el usuario lo pida; usa capas o monolito modular.\n"
         "- No agregues capas que el framework ya trae (por ejemplo "
         "Repository/DAO sobre un ORM, un API Gateway propio dentro de un "
         "monolito, GraphQL además de REST). Para tareas programadas o "

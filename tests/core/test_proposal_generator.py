@@ -400,3 +400,298 @@ def test_prompt_requires_coherence_and_blocks_redundant_layers():
     assert "no más de 6" in prompt
     # la coherencia se lee antes de la regla de decision y del formato
     assert prompt.index("COHERENCIA") < prompt.index("REGLA DE DECISION") < prompt.index("Formato OBLIGATORIO")
+
+
+# --- El feedback del usuario manda sobre el ranking del RAG ----------------
+
+
+def test_feedback_naming_a_pattern_makes_it_primary_even_if_rag_prefers_another():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("CQRS (Command Query Responsibility Segregation)", 1, 0.90, "alta"),
+        _pat("Arquitectura hexagonal (Puertos y Adaptadores)", 2, 0.80, "media"),
+        _pat("Arquitectura en capas (Layered)", 3, 0.85, "baja"),
+    ]
+
+    citations = _select_citations(
+        docs, top_n=3, min_similarity=0.0, feedback="cambia la arquitectura a hexagonal"
+    )
+
+    assert citations[0]["pattern_name"] == "Arquitectura hexagonal (Puertos y Adaptadores)"
+    assert citations[0]["source_role"] == "primary"
+
+
+def test_feedback_rejecting_a_pattern_removes_it_from_the_citations():
+    from app.core.proposal_generator import _select_citations
+
+    cqrs = "CQRS (Command Query Responsibility Segregation)"
+    docs = [
+        _pat(cqrs, 1, 0.95, "alta"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.80, "baja"),
+        _pat("Monolito modular (Modular Monolith)", 3, 0.78, "baja"),
+    ]
+
+    for feedback in (
+        "no quiero CQRS",
+        "sin CQRS, algo mas simple",
+        "quita CQRS",
+        "usa capas en vez de CQRS",
+    ):
+        citations = _select_citations(
+            docs, top_n=3, min_similarity=0.0, feedback=feedback
+        )
+        assert cqrs not in [c["pattern_name"] for c in citations], feedback
+
+
+def test_feedback_change_from_old_to_new_pattern_keeps_only_the_new_one():
+    from app.core.proposal_generator import _select_citations
+
+    cqrs = "CQRS (Command Query Responsibility Segregation)"
+    hexagonal = "Arquitectura hexagonal (Puertos y Adaptadores)"
+    docs = [
+        _pat(cqrs, 1, 0.95, "alta"),
+        _pat(hexagonal, 2, 0.80, "media"),
+        _pat("Arquitectura en capas (Layered)", 3, 0.85, "baja"),
+    ]
+
+    for feedback in (
+        "cambia CQRS por hexagonal",
+        "cambia la arquitectura de CQRS a hexagonal",
+        "quiero hexagonal en vez de CQRS",
+        "no quiero CQRS, mejor hexagonal",
+    ):
+        citations = _select_citations(
+            docs, top_n=3, min_similarity=0.0, feedback=feedback
+        )
+        names = [c["pattern_name"] for c in citations]
+        assert names[0] == hexagonal, feedback
+        assert cqrs not in names, feedback
+
+
+def test_feedback_without_pattern_names_does_not_change_the_ranking():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Arquitectura en capas (Layered)", 1, 0.86, "baja"),
+        _pat("Microservicios", 2, 0.90, "alta"),
+    ]
+    with_feedback = _select_citations(
+        docs, top_n=2, min_similarity=0.0, feedback="agrega cache con Redis"
+    )
+    without = _select_citations(docs, top_n=2, min_similarity=0.0)
+
+    assert [c["pattern_name"] for c in with_feedback] == [
+        c["pattern_name"] for c in without
+    ]
+
+
+def test_requirements_naming_a_pattern_do_not_force_it_only_feedback_does():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Arquitectura en capas (Layered)", 1, 0.86, "baja"),
+        _pat("Microservicios", 2, 0.80, "alta"),
+    ]
+
+    citations = _select_citations(
+        docs, top_n=2, min_similarity=0.0, explicit_text="queremos microservicios"
+    )
+
+    assert citations[0]["pattern_name"] == "Arquitectura en capas (Layered)"
+
+
+def test_default_complexity_penalty_demotes_cqrs_on_a_close_call():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    docs = [
+        _pat("CQRS (Command Query Responsibility Segregation)", 1, 0.90, "alta"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.83, "baja"),
+    ]
+    with patch.object(gen, "PROPOSAL_COMPLEXITY_PENALTY", 0.08):
+        citations = gen._select_citations(docs, top_n=2, min_similarity=0.0)
+
+    assert citations[0]["pattern_name"] == "Arquitectura en capas (Layered)"
+
+
+def test_baseline_ignores_prior_proposal_style_when_user_asks_to_change_it():
+    from app.core.proposal_generator import _build_prompt
+
+    prior = (
+        "## Componentes\n- API Gateway\n- Servicio de pedidos\n"
+        "## Patrones\n- Patrón principal: Microservicios\n"
+    )
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "Arquitectura en capas (Layered)", "source_role": "primary"}],
+        prior_content=prior,
+        feedback="cambia microservicios por arquitectura en capas",
+        project_name="Agenda",
+    )
+
+    assert "ESTRUCTURA BASE SELECCIONADA: arquitectura en capas" in prompt
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in prompt
+
+
+def test_negated_style_in_feedback_does_not_trigger_its_baseline():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "Arquitectura en capas (Layered)", "source_role": "primary"}],
+        prior_content=None,
+        feedback="no quiero microservicios",
+        project_name="Agenda",
+    )
+
+    assert "ESTRUCTURA BASE SELECCIONADA: arquitectura en capas" in prompt
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in prompt
+
+
+def test_feedback_prompt_lets_the_user_change_the_primary_pattern():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "CQRS", "source_role": "primary"}],
+        prior_content="## Patrones\n- Patrón principal: CQRS\n",
+        feedback="cambia a arquitectura en capas",
+        project_name="Biblioteca",
+    )
+
+    assert "salvo que los CAMBIOS SOLICITADOS pidan otro patron" in prompt
+    assert "ELIMINA los componentes que solo existian por el anterior" in prompt
+
+    without_feedback = _build_prompt(
+        citations=[{"pattern_name": "CQRS", "source_role": "primary"}],
+        prior_content=None,
+        feedback=None,
+        project_name="Biblioteca",
+    )
+    assert "salvo que los CAMBIOS SOLICITADOS" not in without_feedback
+
+
+def test_prompt_caps_technologies_and_blocks_heavy_primary_patterns():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+
+    assert "Tecnologías: como máximo 6" in prompt
+    assert "CI/CD, backups" in prompt
+    assert "no son el patrón principal de un proyecto sencillo" in prompt
+
+
+# --- Propuestas cortadas a la mitad no se guardan --------------------------
+
+_FULL_PROPOSAL = """## Componentes
+- API Layer - FastAPI
+- Persistence Layer - PostgreSQL
+
+## Tecnologias
+- Lenguaje: Python
+
+## Patrones
+- Patrón principal: Arquitectura en capas (Layered)
+
+## Justificación del patrón principal
+- Motivo de elección: ...
+- Reflejo en la arquitectura: ...
+- Beneficio esperado: ...
+- Riesgo o costo: ...
+"""
+
+
+def test_missing_sections_accepts_a_complete_proposal():
+    from app.core.proposal_generator import _missing_sections
+
+    assert _missing_sections(_FULL_PROPOSAL) == []
+
+
+def test_missing_sections_detects_a_proposal_cut_after_components():
+    from app.core.proposal_generator import _missing_sections
+
+    cut = "## Componentes\n- API Layer - FastAPI\n- Persistence Layer - "
+
+    assert _missing_sections(cut) == [
+        "Tecnologias",
+        "Patrones",
+        "Justificación del patrón principal",
+    ]
+
+
+def test_missing_sections_detects_a_cut_inside_the_justification():
+    from app.core.proposal_generator import _missing_sections
+
+    cut = _FULL_PROPOSAL.split("- Beneficio esperado")[0]
+
+    assert _missing_sections(cut) == ["Riesgo o costo"]
+
+
+def _drain(gen_iter):
+    import asyncio
+
+    async def _run():
+        return [event async for event in gen_iter]
+
+    return asyncio.run(_run())
+
+
+def _stream_with(monkeypatch_target, markdown, finish_reason=None):
+    """Corre generate_stream con un modelo falso; devuelve (eventos, persist_calls)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(markdown)
+            yield _Chunk("", {"finish_reason": finish_reason} if finish_reason else {})
+
+    persisted = []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    with patch.object(gen, "_load_project_and_session", return_value=(project, 1)), \
+        patch.object(gen, "load_requirements_text", return_value=""), \
+        patch.object(gen, "load_documents_text", return_value=("", [])), \
+        patch.object(gen, "_retrieve_patterns", return_value=[]), \
+        patch.object(gen, "build_langchain_model", return_value=_Model()), \
+        patch.object(gen, "_persist_proposal_and_log",
+                     side_effect=lambda **kw: persisted.append(kw) or (7, 8, 1)), \
+        patch.object(gen, "_engram_mirror", new=_noop_async):
+        events = _drain(
+            gen.ProposalGenerator(user_id=1, project_id=1).generate_stream()
+        )
+    return events, persisted
+
+
+async def _noop_async(**_kwargs):
+    return None
+
+
+def test_truncated_proposal_is_not_persisted_and_yields_error():
+    cut = "## Componentes\n- API Layer - FastAPI\n- Persistence Layer - "
+
+    events, persisted = _stream_with(None, cut)
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+    assert "incompleta" in events[-1][1]
+    assert not any(name == "done" for name, _ in events)
+
+
+def test_finish_reason_length_is_not_persisted_even_if_sections_exist():
+    events, persisted = _stream_with(None, _FULL_PROPOSAL, finish_reason="length")
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+
+
+def test_complete_proposal_is_persisted_and_done_is_emitted():
+    events, persisted = _stream_with(None, _FULL_PROPOSAL, finish_reason="stop")
+
+    assert len(persisted) == 1
+    assert events[-1][0] == "done"
