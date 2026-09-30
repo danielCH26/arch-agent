@@ -11,7 +11,7 @@ function AssistantBubble({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex items-start justify-start gap-2">
       <img src={robotAvatar} alt="" aria-hidden="true" draggable={false} className="mt-1 h-9 w-auto shrink-0 select-none" />
-      <div className="max-w-[70%] whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 px-4 py-2 text-gray-900 shadow-sm">
+      <div className="max-w-[85%] md:max-w-[70%] whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 px-4 py-2 text-gray-900 shadow-sm">
         {children}
       </div>
     </div>
@@ -21,7 +21,7 @@ function AssistantBubble({ children }: { children: React.ReactNode }) {
 function UserBubble({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[70%] whitespace-pre-wrap break-words rounded-lg bg-blue-600 px-4 py-2 text-white">{children}</div>
+      <div className="max-w-[85%] md:max-w-[70%] whitespace-pre-wrap break-words rounded-lg bg-blue-600 px-4 py-2 text-white">{children}</div>
     </div>
   )
 }

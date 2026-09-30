@@ -385,7 +385,7 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
         />
       )}
       <div
-        className={`max-w-[70%] px-4 py-2 break-words ${
+        className={`max-w-[85%] px-4 py-2 break-words md:max-w-[70%] ${
           isUser
             ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white'
             : 'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm'
@@ -535,7 +535,7 @@ function DiagramAttachments({
                       className="w-full rounded-lg border border-sky-200 bg-white p-2 text-sm text-gray-900 outline-none focus:border-sky-500"
                       placeholder="Describe los cambios que necesitas en el diagrama..."
                     />
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button type="button" disabled={isSubmitting} onClick={() => void requestChanges(index)} className="rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50">Enviar ajuste</button>
                       <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
                     </div>

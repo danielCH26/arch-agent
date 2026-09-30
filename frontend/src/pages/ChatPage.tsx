@@ -100,7 +100,7 @@ export function ChatPage() {
   return (
     <div className="h-full flex flex-col">
       <div className="border-b border-gray-200 px-4 py-3 bg-white">
-        <h1 className="font-display text-xl font-semibold text-gray-900">{project?.name}</h1>
+        <h1 className="font-display truncate text-lg font-semibold text-gray-900 md:text-xl">{project?.name}</h1>
         {phase && (
           <div className="mt-2 overflow-x-auto">
             <PhaseStepper phases={phase.available_phases} currentPhase={phase.current_phase} />
@@ -109,11 +109,11 @@ export function ChatPage() {
       </div>
 
       {phase && (
-        <div className="flex items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
           <span className="text-sm text-gray-600">
             {phase.phase_ready ? 'Fase lista para avanzar.' : 'Fase en progreso.'}
           </span>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {!isElicitationPhase && (
               <button
                 type="button"

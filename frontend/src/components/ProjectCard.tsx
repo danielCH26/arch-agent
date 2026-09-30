@@ -114,7 +114,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-sm mx-4">
+          <div className="mx-4 w-full max-w-sm rounded-lg bg-white p-6">
             <h3 className="text-lg font-semibold text-gray-900">Confirmar eliminación</h3>
             <p className="mt-2 text-gray-600">
               ¿Estás seguro de eliminar "{project.name}"? Esta acción no se puede deshacer.

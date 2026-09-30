@@ -17,6 +17,8 @@ export function Layout() {
   const projectsError = projectsStore((state) => state.error)
 
   const [expanded, setExpanded] = useState<number | null>(null)
+  // Menú lateral en pantallas pequeñas (< md): se abre como panel deslizable.
+  const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
     fetchProjects()
@@ -31,6 +33,20 @@ export function Layout() {
     }
   }, [location.pathname])
 
+  // Cerrar el menú móvil al navegar.
+  useEffect(() => {
+    setMenuOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [menuOpen])
+
   const toggleExpand = (projectId: number) => {
     setExpanded((prev) => (prev === projectId ? null : projectId))
   }
@@ -44,9 +60,33 @@ export function Layout() {
   const isOnActiveSession = currentProject !== null && location.pathname.startsWith(`/projects/${currentProject.id}`)
 
   return (
-    <div className="h-screen flex overflow-hidden bg-gray-100">
-      {/* Sidebar */}
-      <aside className="hidden md:flex flex-col w-80 bg-white border-r border-gray-200 shadow-sm">
+    <div className="flex h-dvh overflow-hidden bg-gray-100">
+      {menuOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+          aria-hidden="true"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
+
+      {/* Sidebar: fija en desktop, panel deslizable en móvil */}
+      <aside
+        id="app-sidebar"
+        aria-label="Navegación principal"
+        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] flex-col border-r border-gray-200 bg-white shadow-sm transition-transform duration-200 md:static md:max-w-none md:translate-x-0 ${
+          menuOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => setMenuOpen(false)}
+          className="absolute right-3 top-3 rounded-lg p-2 text-gray-500 hover:bg-gray-100 md:hidden"
+          aria-label="Cerrar menú"
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
         <div className="flex flex-col items-center gap-2 px-4 pb-4 pt-6">
           <Link to="/projects" className="flex flex-col items-center gap-1">
             <Logo size={64} />
@@ -213,10 +253,34 @@ export function Layout() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 min-w-0 overflow-y-auto p-6">
-        <Outlet />
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Barra superior solo en móvil */}
+        <header className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-2 md:hidden">
+          <button
+            type="button"
+            onClick={() => setMenuOpen(true)}
+            className="rounded-lg p-2 text-gray-700 hover:bg-gray-100"
+            aria-label="Abrir menú"
+            aria-controls="app-sidebar"
+            aria-expanded={menuOpen}
+          >
+            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <Link to="/projects" className="flex items-center gap-2">
+            <Logo size={32} />
+            <span className="font-display text-lg text-gray-900">
+              <span className="text-[#0e54ce]">Arch</span>Agent
+            </span>
+          </Link>
+        </header>
+
+        {/* Main content */}
+        <main className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+          <Outlet />
+        </main>
+      </div>
     </div>
   )
 }

@@ -13,9 +13,9 @@ export function ProjectsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-display text-3xl font-semibold text-gray-700">Mis proyectos</h1>
+          <h1 className="font-display text-2xl font-semibold md:text-3xl text-gray-700">Mis proyectos</h1>
           <p className="mt-1 text-gray-600">Gestiona y revisa tus diseños de arquitectura</p>
         </div>
         <button

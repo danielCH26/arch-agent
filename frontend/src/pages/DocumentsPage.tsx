@@ -77,7 +77,7 @@ export function DocumentsPage() {
 
   return (
     <div>
-      <h1 className="font-display text-3xl text-gray-900 mb-6">
+      <h1 className="font-display mb-6 text-2xl text-gray-900 md:text-3xl">
         Subida de archivos {project && <span className="text-gray-500">— {project.name}</span>}
       </h1>
 
