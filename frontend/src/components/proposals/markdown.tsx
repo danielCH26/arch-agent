@@ -20,10 +20,12 @@ type InlineToken =
   | { type: 'text'; value: string }
   | { type: 'code'; value: string }
   | { type: 'strong'; value: string }
+  | { type: 'citation'; indices: number[] }
 
 function parseInline(content: string): InlineToken[] {
   const tokens: InlineToken[] = []
-  const pattern = /(`([^`]+)`)|(\*\*([^*]+)\*\*)/g
+  // HU8: `[1]` / `[1, 3]` are references to the numbered RAG sources.
+  const pattern = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\[(\d+(?:\s*,\s*\d+)*)\])/g
   let cursor = 0
   let match: RegExpExecArray | null
 
@@ -35,6 +37,11 @@ function parseInline(content: string): InlineToken[] {
       tokens.push({ type: 'code', value: match[2] })
     } else if (match[4]) {
       tokens.push({ type: 'strong', value: match[4] })
+    } else if (match[6]) {
+      tokens.push({
+        type: 'citation',
+        indices: match[6].split(',').map((n) => Number(n.trim())),
+      })
     }
     cursor = match.index + match[0].length
   }
@@ -48,6 +55,27 @@ function parseInline(content: string): InlineToken[] {
 
 function renderInline(content: string): React.ReactNode {
   return parseInline(content).map((token, index) => {
+    if (token.type === 'citation') {
+      return (
+        <sup key={index} className="ml-0.5 text-[0.75em]">
+          [
+          {token.indices.map((n, i) => (
+            <span key={n}>
+              {i > 0 && ', '}
+              <a
+                href={`#proposal-cite-${n}`}
+                className="font-semibold text-blue-600 hover:underline"
+                data-testid={`citation-ref-${n}`}
+                title={`Ver fuente [${n}]`}
+              >
+                {n}
+              </a>
+            </span>
+          ))}
+          ]
+        </sup>
+      )
+    }
     if (token.type === 'strong') {
       return <strong key={index}>{token.value}</strong>
     }

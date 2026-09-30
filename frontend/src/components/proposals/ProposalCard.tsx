@@ -98,7 +98,10 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
       )}
 
       {currentProposal?.citations && (
-        <CitationList citations={currentProposal.citations} />
+        <CitationList
+          citations={currentProposal.citations}
+          justification={currentProposal.justification}
+        />
       )}
 
       {currentProposal?.id != null && lifecycle === 'proposed' && (

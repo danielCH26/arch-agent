@@ -53,7 +53,11 @@ def _pattern_chunk_to_document(
         "pattern_name": pattern.pattern_name,
         "category": pattern.category,
         "tradeoffs": pattern.tradeoffs,
+        "chunk_id": chunk.id,
         "chunk_type": chunk.chunk_type,
+        # HU8: los chunks subidos con ingest_pattern_source.py guardan el
+        # archivo original; se expone para que la cita muestre su fuente.
+        "source_filename": (chunk.chunk_metadata or {}).get("filename"),
         "distance": float(distance) if distance is not None else None,
         "similarity": _similarity_from_cosine_distance(distance),
     }

@@ -3,6 +3,7 @@ import {
   type ProposalCitation,
   type ProposalDecision,
   type ProposalDecisionResponse,
+  type ProposalJustification,
   type ProposalOut,
   createProposalStream,
   decideProposal,
@@ -23,6 +24,8 @@ export interface Proposal {
   // Streamed markdown accumulator. Promoted to `content` on `done`.
   content_markdown: string
   citations: ProposalCitation[]
+  // HU8: per-decision citation coverage; null until the stream completes.
+  justification?: ProposalJustification | null
   lifecycle: 'proposed' | 'approved' | 'rejected' | 'idle'
   feedback: string | null
   created_at: string | null
@@ -62,6 +65,7 @@ function emptyProposal(projectId: number): Proposal {
     iteration: 0,
     content_markdown: '',
     citations: [],
+    justification: null,
     lifecycle: 'proposed',
     feedback: null,
     created_at: null,
@@ -75,6 +79,7 @@ function proposalFromOut(out: ProposalOut): Proposal {
     iteration: out.iteration,
     content_markdown: out.content,
     citations: out.citations ?? [],
+    justification: out.justification ?? null,
     lifecycle: out.lifecycle,
     feedback: out.feedback,
     created_at: out.created_at,
@@ -118,13 +123,14 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               : {},
           )
         },
-        onDone: (proposalId, citations) => {
+        onDone: (proposalId, citations, justification) => {
           set((state) => {
             const base = state.currentProposal ?? emptyProposal(projectId)
             const finalized: Proposal = {
               ...base,
               id: proposalId,
               citations,
+              justification,
               // lifecycle stays 'proposed' until the user clicks Aprobar/Rechazar.
             }
             return {
@@ -180,13 +186,14 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               : {},
           )
         },
-        onDone: (newProposalId, citations) => {
+        onDone: (newProposalId, citations, justification) => {
           set((state) => {
             const base = state.currentProposal ?? emptyProposal(0)
             const finalized: Proposal = {
               ...base,
               id: newProposalId,
               citations,
+              justification,
               feedback,
               iteration: (prior?.iteration ?? 0) + 1,
             }

@@ -25,6 +25,7 @@ from langchain_core.documents import Document
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.pattern_justification import analyze_justification, build_citations
 from app.core.rag import similarity_search
 from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
 from app.models.project import Project
@@ -101,10 +102,12 @@ class ProposalGenerator:
           1. ``("sources", list[dict])`` -- RAG pattern metadata filtered by
              ``RAG_MIN_SIMILARITY``. Always emitted, even when empty.
           2. ``("token", str)`` -- one per LLM token. Many events.
-          3. ``("done", {"proposal_id": int, "citations": list[dict]})`` --
-             emitted ONCE after the ``proposals`` row + ``interaction_log``
-             row are committed. Citations here mirror the ``sources`` payload
-             so the frontend can hydrate its store from a single source.
+          3. ``("done", {"proposal_id": int, "citations": list[dict],
+             "justification": dict})`` -- emitted ONCE after the ``proposals``
+             row + ``interaction_log`` row are committed. Citations mirror the
+             ``sources`` payload plus the ``cited`` flag computed from the
+             ``[n]`` references in the markdown (HU8); ``justification`` holds
+             the per-decision coverage from ``analyze_justification``.
 
         On any unrecoverable failure during streaming the generator yields
         ``("error", str)`` exactly once and stops. The DB write is skipped
@@ -205,6 +208,10 @@ class ProposalGenerator:
             yield ("error", "LLM returned no content")
             return
 
+        # HU8: marks ``cited`` on each citation (persisted with the row) and
+        # measures how many decisions reference a RAG pattern.
+        justification = analyze_justification(full_markdown, citations)
+
         # 7. Persist the proposal + interaction log + (if modify) approval.
         try:
             proposal_id, interaction_id = await asyncio.to_thread(
@@ -252,6 +259,7 @@ class ProposalGenerator:
             {
                 "proposal_id": proposal_id,
                 "citations": citations,
+                "justification": justification,
             },
         )
 
@@ -259,35 +267,25 @@ class ProposalGenerator:
 # --- Pure helpers ---------------------------------------------------------
 
 
-def _is_relevant(doc: Document) -> bool:
-    """Pattern must clear the RAG similarity threshold (see RAG_MIN_SIMILARITY)."""
-    similarity = doc.metadata.get("similarity") or 0.0
-    return similarity >= RAG_MIN_SIMILARITY
-
-
 def _filter_citations(docs: list[Document]) -> list[dict]:
-    """Project RAG documents to the citations payload the SSE contract expects."""
-    citations: list[dict] = []
-    for doc in docs:
-        if not _is_relevant(doc):
-            continue
-        citations.append(
-            {
-                "pattern_id": doc.metadata.get("pattern_id"),
-                "pattern_name": doc.metadata.get("pattern_name"),
-                "similarity": doc.metadata.get("similarity"),
-                "snippet": (doc.page_content or "")[:240],
-            }
-        )
-    return citations
+    """Project RAG documents to the numbered citations payload (HU8).
+
+    Keeps only patterns above ``RAG_MIN_SIMILARITY``, one entry per pattern,
+    numbered ``[1..n]`` so the LLM can reference them inline.
+    """
+    return build_citations(docs, min_similarity=RAG_MIN_SIMILARITY, max_patterns=5)
 
 
 def _retrieve_patterns(query: str, user_id: int) -> list[Document]:
-    """Wrap ``similarity_search(scope='patterns')`` so failures don't break the stream."""
+    """Wrap ``similarity_search(scope='patterns')`` so failures don't break the stream.
+
+    ``k`` is larger than the number of citations because each pattern has
+    several chunks; ``build_citations`` deduplicates down to 5 patterns.
+    """
     docs, _metrics = similarity_search(
         query=query,
         user_id=user_id,
-        k=5,
+        k=15,
         scope="patterns",
     )
     return docs
@@ -319,13 +317,31 @@ def _build_prompt(
     """Compose the structured prompt that drives the LLM to produce 3 sections."""
     if citations:
         context_blocks = []
-        for index, cite in enumerate(citations, start=1):
+        for position, cite in enumerate(citations, start=1):
+            index = cite.get("index") or position
+            category = f" ({cite['category']})" if cite.get("category") else ""
             context_blocks.append(
-                f"[{index}] {cite.get('pattern_name')}\n{cite.get('snippet') or ''}"
+                f"[{index}] {cite.get('pattern_name')}{category}\n"
+                f"{cite.get('snippet') or ''}"
             )
         context_section = "\n\n".join(context_blocks)
+        citation_rules = (
+            "Reglas de justificacion (OBLIGATORIAS):\n"
+            "- Cada viñeta de las tres secciones es una decision y debe tener "
+            "el formato: `- **<decision>**: <justificacion breve> [n]`.\n"
+            "- `[n]` es el numero del patron candidato que respalda la decision; "
+            "puedes citar varios como `[1, 3]`.\n"
+            "- Cita SOLO numeros de la lista de patrones candidatos; nunca "
+            "inventes fuentes ni numeros.\n"
+            "- Si ninguna fuente respalda una decision, escribe "
+            "`(sin patron del catalogo)` en lugar de una cita.\n\n"
+        )
     else:
         context_section = "No se recuperaron patrones relevantes."
+        citation_rules = (
+            "No hay patrones candidatos: NO uses referencias `[n]` y agrega "
+            "`(sin patron del catalogo)` al final de cada viñeta.\n\n"
+        )
 
     feedback_section = ""
     if feedback:
@@ -351,8 +367,9 @@ def _build_prompt(
         "## Componentes\n- ...\n\n"
         "## Tecnologias\n- ...\n\n"
         "## Patrones\n- ...\n\n"
-        "Patrones candidatos (usa solo los que apliquen; cita el numero entre "
-        "corchetes donde corresponda):\n"
+        f"{citation_rules}"
+        "Patrones candidatos recuperados de la base de conocimiento (usa solo "
+        "los que apliquen):\n"
         f"{context_section}\n"
     )
 
