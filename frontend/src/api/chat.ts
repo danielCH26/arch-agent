@@ -4,6 +4,9 @@ import { apiFetch } from './client'
 export interface ChatRequest {
   project_id: number | null
   message: string
+  // Texto que escribió el usuario cuando `message` lleva además instrucciones
+  // para el agente; el backend lo guarda para mostrarlo en el historial.
+  display_message?: string
 }
 
 // Metadata de un documento/patron recuperado por el pipeline RAG (PGVector).
@@ -46,6 +49,25 @@ interface StreamCallbacks {
   // retrieval fallo silenciosamente en el backend).
   onSources?: (sources: RagSource[]) => void
   onAttachment?: (attachment: Attachment) => void
+  // Avisos del evento `degraded` que el usuario debe ver (diagrama sin
+  // renderizar o con nodos no respaldados por la documentación).
+  onNotice?: (message: string) => void
+}
+
+interface DegradedPayload {
+  source?: string
+  reason?: string
+  message?: string
+  nodes?: string[]
+}
+
+function degradedNotice(data: DegradedPayload): string | null {
+  const isGroundingWarning = data.reason === 'diagram_grounding_warning'
+  // El resto (p. ej. Context7 caído → solo RAG) no cambia lo que ve el usuario.
+  if (data.source !== 'puppeteer' && !isGroundingWarning) return null
+  let text = data.message || 'No se pudo renderizar el diagrama a imagen.'
+  if (isGroundingWarning && data.nodes?.length) text += ` Nodos: ${data.nodes.join(', ')}.`
+  return text
 }
 
 function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
@@ -94,6 +116,16 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     return false
   }
 
+  if (eventName === 'degraded' && rawData) {
+    try {
+      const notice = degradedNotice(JSON.parse(rawData) as DegradedPayload)
+      if (notice) callbacks.onNotice?.(notice)
+    } catch {
+      // Un aviso malformado no debe interrumpir el stream del chat.
+    }
+    return false
+  }
+
   if (eventName === 'done') {
     callbacks.onDone()
     return true
@@ -114,9 +146,9 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
 export function createChatStream(
   message: string,
   projectId: number | null,
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  displayMessage?: string,
 ): () => void {
-  const { onToken, onDone, onError, onSources, onAttachment } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -134,6 +166,7 @@ export function createChatStream(
         body: JSON.stringify({
           project_id: projectId,
           message,
+          ...(displayMessage && displayMessage !== message ? { display_message: displayMessage } : {}),
         } as ChatRequest),
         signal,
       })
@@ -141,12 +174,12 @@ export function createChatStream(
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
         const errorMessage = (data.detail as string) || 'Chat request failed'
-        onError(errorMessage)
+        callbacks.onError(errorMessage)
         return
       }
 
       if (!response.body) {
-        onError('No response body')
+        callbacks.onError('No response body')
         return
       }
 
@@ -165,24 +198,24 @@ export function createChatStream(
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchSSEEvent(event, { onToken, onDone, onError, onSources, onAttachment })
+          const shouldStop = dispatchSSEEvent(event, callbacks)
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchSSEEvent(buffer, { onToken, onDone, onError, onSources, onAttachment })
+        const shouldStop = dispatchSSEEvent(buffer, callbacks)
         if (shouldStop) return
       }
 
       // Stream ended without explicit done event
-      onDone()
+      callbacks.onDone()
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         // Request was cancelled, no need to report error
         return
       }
-      onError(err instanceof Error ? err.message : 'Unknown error')
+      callbacks.onError(err instanceof Error ? err.message : 'Unknown error')
     }
   })()
 

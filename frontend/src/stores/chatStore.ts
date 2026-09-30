@@ -16,6 +16,8 @@ export interface Message {
   // match relevante.
   sources?: RagSource[]
   attachments?: Attachment[]
+  // Avisos del backend (evento `degraded`) sobre el diagrama de esta respuesta.
+  notices?: string[]
 }
 
 interface ChatState {
@@ -25,7 +27,9 @@ interface ChatState {
   loadingHistory: boolean
   activeProjectId: number | null
 
-  sendMessage: (projectId: number | null, text: string) => Promise<void>
+  // `displayText`: lo que escribió el usuario cuando `text` es un prompt más
+  // largo para el agente. Se muestra en la burbuja y se persiste en el backend.
+  sendMessage: (projectId: number | null, text: string, displayText?: string) => Promise<void>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
@@ -44,12 +48,12 @@ export const chatStore = create<ChatState>((set, get) => ({
   loadingHistory: false,
   activeProjectId: null,
 
-  sendMessage: async (projectId: number | null, text: string) => {
+  sendMessage: async (projectId: number | null, text: string, displayText?: string) => {
     // Add user message
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: text,
+      content: displayText || text,
     }
     set((state) => ({
       messages: [...state.messages, userMessage],
@@ -101,6 +105,16 @@ export const chatStore = create<ChatState>((set, get) => ({
           ),
         }))
       },
+      onNotice: (notice) => {
+        if (get().activeProjectId !== projectId) return
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, notices: [...(msg.notices ?? []), notice] }
+              : msg
+          ),
+        }))
+      },
       onDone: () => {
         if (get().activeProjectId !== projectId) return
         set({ isStreaming: false })
@@ -117,7 +131,7 @@ export const chatStore = create<ChatState>((set, get) => ({
           ),
         }))
       },
-    })
+    }, displayText)
 
     // Store cleanup function for potential cancellation
     // Note: We don't expose cancellation in this implementation

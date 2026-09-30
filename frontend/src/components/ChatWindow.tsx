@@ -33,8 +33,8 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isStreaming])
 
-  const handleSend = async (text: string) => {
-    await chatStore.getState().sendMessage(projectId, text)
+  const handleSend = async (text: string, displayText?: string) => {
+    await chatStore.getState().sendMessage(projectId, text, displayText)
   }
 
   return (

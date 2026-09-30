@@ -7,7 +7,7 @@ import robotAvatar from '../assets/robot-avatar.png'
 interface MessageBubbleProps {
   message: Message
   projectId?: number
-  onSendMessage?: (text: string) => void
+  onSendMessage?: (text: string, displayText?: string) => void
 }
 
 type InlineToken =
@@ -17,6 +17,46 @@ type InlineToken =
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
+
+const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
+const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
+const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
+
+function extractMermaidFromMessage(content: string): string | null {
+  const explicitMatch = content.match(explicitMermaidFencePattern)
+  if (explicitMatch?.[1]?.trim()) return explicitMatch[1].trim()
+
+  for (const match of content.matchAll(anyCodeFencePattern)) {
+    const code = match[1].trim()
+    if (mermaidFirstLinePattern.test(code.split(/\r?\n/)[0] ?? '')) return code
+  }
+  return null
+}
+
+// Prompt que recibe el agente al pedir cambios sobre un diagrama. El usuario
+// solo ve su feedback (se envía como `display_message`).
+function buildDiagramAdjustmentPrompt(feedback: string, previousMermaid: string | null): string {
+  if (!previousMermaid) return `Solicito estos ajustes en el diagrama: ${feedback}`
+
+  return [
+    'Modifica el siguiente diagrama Mermaid usando mi solicitud de cambio.',
+    'Reglas importantes:',
+    '- Responde UNICAMENTE con un bloque ```mermaid``` que contenga el diagrama completo actualizado.',
+    '- No agregues explicaciones, tablas, leyendas, listas, resumen, recomendaciones ni proximos pasos fuera del bloque Mermaid.',
+    '- Conserva todos los nodos, capas, componentes, relaciones, estilos y subgraphs existentes, salvo que mi cambio pida quitarlos explicitamente.',
+    '- No simplifiques ni reescribas el diagrama desde cero.',
+    '- Aplica solo el cambio solicitado.',
+    '- Usa sintaxis Mermaid robusta: IDs sin espacios, labels complejos entre comillas, y evita HTML o caracteres innecesarios en las etiquetas.',
+    '',
+    'Solicitud de cambio:',
+    feedback,
+    '',
+    'Diagrama Mermaid base:',
+    '```mermaid',
+    previousMermaid,
+    '```',
+  ].join('\n')
+}
 
 function splitTableRow(row: string) {
   return row
@@ -355,10 +395,16 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
         {!isUser && (
           <DiagramAttachments
             attachments={message.attachments}
+            assistantContent={message.content}
             projectId={projectId}
             onSendMessage={onSendMessage}
           />
         )}
+        {!isUser && message.notices?.map((notice, index) => (
+          <p key={index} role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            ⚠️ {notice}
+          </p>
+        ))}
         {!isUser && renderSources(message.sources)}
       </div>
     </div>
@@ -373,12 +419,14 @@ const decisionLabels: Record<DiagramDecision, string> = {
 
 function DiagramAttachments({
   attachments,
+  assistantContent,
   projectId,
   onSendMessage,
 }: {
   attachments: Message['attachments']
+  assistantContent: string
   projectId?: number
-  onSendMessage?: (text: string) => void
+  onSendMessage?: (text: string, displayText?: string) => void
 }) {
   const [feedbackIndex, setFeedbackIndex] = useState<number | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -419,7 +467,10 @@ function DiagramAttachments({
     if (await recordDecision(index, 'modify', trimmedFeedback)) {
       setFeedbackIndex(null)
       setFeedback('')
-      onSendMessage?.(`Solicito estos ajustes en el diagrama: ${trimmedFeedback}`)
+      onSendMessage?.(
+        buildDiagramAdjustmentPrompt(trimmedFeedback, extractMermaidFromMessage(assistantContent)),
+        trimmedFeedback,
+      )
     }
   }
 
