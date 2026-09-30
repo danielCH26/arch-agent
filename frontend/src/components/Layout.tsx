@@ -79,14 +79,15 @@ export function Layout() {
               </Link>
             )}
 
-            {/* TODO: conectar cuando se decida abordar "Base de patrones" */}
-            <div
-              className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2.5 text-gray-400"
-              title="Próximamente"
+            <Link
+              to="/patterns"
+              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors ${
+                isActivePath('/patterns') ? 'bg-[#0e54ce]/70 text-white' : 'text-gray-800 hover:bg-gray-100'
+              }`}
             >
               <ArchiveIcon />
               <span>Base de patrones</span>
-            </div>
+            </Link>
           </nav>
 
           {/* Projects */}
