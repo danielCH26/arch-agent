@@ -60,12 +60,15 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
             listo para ayudar
           </h2>
 
-          <div className="relative z-10 mt-14 flex w-full flex-1 items-end justify-center pb-4">
-            <RobotGreeter />
-          </div>
-
-          <div className="absolute right-4 top-60 z-10 max-w-[150px] rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm text-gray-700 shadow-[0px_6px_20px_rgba(0,0,0,0.12)] sm:right-6 sm:top-64">
-            {greeting}
+          {/* La burbuja se posiciona respecto al robot (arriba a su derecha),
+              así ambos quedan juntos sin importar el alto del panel. */}
+          <div className="relative z-10 mt-24 flex w-full flex-1 items-start justify-center">
+            <div className="relative">
+              <div className="absolute bottom-[88%] left-[72%] w-max max-w-[150px] rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm text-gray-700 shadow-[0px_6px_20px_rgba(0,0,0,0.12)]">
+                {greeting}
+              </div>
+              <RobotGreeter />
+            </div>
           </div>
         </div>
       </div>

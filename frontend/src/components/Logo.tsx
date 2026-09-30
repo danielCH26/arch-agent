@@ -1,6 +1,7 @@
-import logoImg from '../assets/arqagent-logo.png'
+import robotImg from '../assets/robot-avatar.png'
 
 interface LogoProps {
+  // Alto en px; el ancho sigue la proporción de la imagen del robot.
   size?: number
   className?: string
 }
@@ -8,12 +9,11 @@ interface LogoProps {
 export function Logo({ size = 64, className = '' }: LogoProps) {
   return (
     <img
-      src={logoImg}
+      src={robotImg}
       alt="ArqAgent"
-      width={size}
-      height={size}
-      className={className}
-      style={{ width: size, height: size }}
+      draggable={false}
+      className={`w-auto select-none ${className}`}
+      style={{ height: size }}
     />
   )
 }

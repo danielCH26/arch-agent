@@ -5,6 +5,26 @@ import {
   sendElicitationMessage,
 } from '../api/elicitation'
 import { ApprovalPanel } from './ApprovalPanel'
+import robotAvatar from '../assets/robot-avatar.png'
+
+function AssistantBubble({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-start gap-2">
+      <img src={robotAvatar} alt="" aria-hidden="true" draggable={false} className="mt-1 h-9 w-auto shrink-0 select-none" />
+      <div className="max-w-[70%] whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 px-4 py-2 text-gray-900 shadow-sm">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function UserBubble({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex justify-end">
+      <div className="max-w-[70%] whitespace-pre-wrap break-words rounded-lg bg-blue-600 px-4 py-2 text-white">{children}</div>
+    </div>
+  )
+}
 
 interface ElicitationPanelProps {
   projectId: number
@@ -116,25 +136,13 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
 
       {state.history.map((item, index) => (
         <div key={index} className="flex flex-col gap-2">
-          <div className="flex justify-start">
-            <div className="max-w-[70%] rounded-lg bg-blue-50 px-4 py-2 text-sm text-gray-900">
-              {item.pregunta}
-            </div>
-          </div>
-          <div className="flex justify-end">
-            <div className="max-w-[70%] rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm text-gray-900">
-              {item.respuesta}
-            </div>
-          </div>
+          <AssistantBubble>{item.pregunta}</AssistantBubble>
+          <UserBubble>{item.respuesta}</UserBubble>
         </div>
       ))}
 
       {state.question && (
-        <div className="flex justify-start">
-          <div className="max-w-[70%] rounded-lg bg-blue-50 px-4 py-2 text-sm text-gray-900">
-            {state.question}
-          </div>
-        </div>
+        <AssistantBubble>{state.question}</AssistantBubble>
       )}
 
       {!hasStarted ? (

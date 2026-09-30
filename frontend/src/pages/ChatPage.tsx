@@ -150,7 +150,7 @@ export function ChatPage() {
 
       <div className="flex-1 min-h-0">
         {isElicitationPhase ? (
-          <div className="mx-auto h-full max-w-2xl overflow-y-auto p-4">
+          <div className="h-full overflow-y-auto p-4">
             <ElicitationPanel
               projectId={projectId}
               phaseReady={phase?.phase_ready ?? false}

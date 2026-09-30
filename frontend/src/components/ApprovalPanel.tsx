@@ -7,11 +7,53 @@ interface ApprovalPanelProps {
   onDecided: (result: ElicitationDecisionResult) => void
 }
 
-function formatResumenValue(value: unknown): string {
-  if (value == null) return '—'
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.join(', ')
-  return JSON.stringify(value)
+// El LLM a veces devuelve saltos de línea escapados ("\\n" literal) dentro
+// de los strings del resumen; los convertimos en saltos reales.
+function toLines(text: string): string[] {
+  return text
+    .replace(/\\n/g, '\n')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-•*]\s+/, '').trim())
+    .filter(Boolean)
+}
+
+function resumenItems(value: unknown): string[] {
+  if (value == null) return []
+  if (Array.isArray(value)) return value.flatMap((item) => resumenItems(item))
+  if (typeof value === 'string') return toLines(value)
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).map(
+      ([key, item]) => `${key}: ${resumenItems(item).join('; ')}`,
+    )
+  }
+  return [String(value)]
+}
+
+function ResumenValue({ value }: { value: unknown }) {
+  const items = resumenItems(value)
+  if (items.length === 0) return <>—</>
+  if (items.length === 1) return <>{items[0]}</>
+  return (
+    <ul className="list-disc space-y-1 pl-5">
+      {items.map((item, index) => (
+        <li key={index}>{item}</li>
+      ))}
+    </ul>
+  )
+}
+
+// Las claves llegan como identificadores ("funcionalidades"); se muestran
+// con tildes y como título.
+const RESUMEN_LABELS: Record<string, string> = {
+  problema: 'Problema',
+  usuarios: 'Usuarios',
+  funcionalidades: 'Funcionalidades',
+  restricciones: 'Restricciones',
+  calidad: 'Atributos de calidad',
+}
+
+function resumenLabel(key: string): string {
+  return RESUMEN_LABELS[key.toLowerCase()] ?? key.replace(/_/g, ' ')
 }
 
 export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelProps) {
@@ -51,11 +93,11 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4">
       <h2 className="font-semibold text-gray-900">Resumen del proyecto</h2>
-      <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+      <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
         {Object.entries(resumen).map(([key, value]) => (
           <div key={key}>
-            <dt className="text-xs uppercase tracking-wide text-gray-500">{key}</dt>
-            <dd className="text-sm text-gray-900">{formatResumenValue(value)}</dd>
+            <dt className="text-base font-bold uppercase tracking-wide text-gray-800">{resumenLabel(key)}</dt>
+            <dd className="mt-1 text-sm leading-relaxed text-gray-700"><ResumenValue value={value} /></dd>
           </div>
         ))}
       </dl>

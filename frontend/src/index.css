@@ -21,3 +21,9 @@
     animation: none;
   }
 }
+
+/* Edge agrega su propio botón para revelar contraseñas; usamos el nuestro. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
