@@ -183,7 +183,7 @@ function stripFullMessageCodeFence(content: string): string {
   return looksLikeStructuredMarkdown ? inner : content
 }
 
-function renderMarkdownBlocks(content: string) {
+export function renderMarkdownBlocks(content: string) {
   const normalizedContent = stripFullMessageCodeFence(content).replace(/<br\s*\/?>/gi, '\n')
   const parts = normalizedContent.split(htmlTablePattern)
   const htmlTables = normalizedContent.match(htmlTablePattern) ?? []

@@ -8,6 +8,7 @@ import { PhaseStepper } from '../components/PhaseStepper'
 import { projectsStore } from '../stores/projectsStore'
 
 const ELICITATION_PHASE = 'requerimientos'
+const PROPOSAL_PHASE = 'propuesta'
 
 export function ChatPage() {
   const { id } = useParams<{ id: string }>()
@@ -93,6 +94,8 @@ export function ChatPage() {
   }
 
   const isElicitationPhase = phase?.current_phase === ELICITATION_PHASE
+  // En la fase propuesta la fase queda lista al aprobar la propuesta.
+  const isProposalPhase = phase?.current_phase === PROPOSAL_PHASE
 
   return (
     <div className="h-full flex flex-col">
@@ -120,7 +123,7 @@ export function ChatPage() {
                 Diagramas
               </button>
             )}
-            {!isElicitationPhase && !phase.phase_ready && (
+            {!isElicitationPhase && !isProposalPhase && !phase.phase_ready && (
               <button
                 type="button"
                 onClick={handleMarkReady}

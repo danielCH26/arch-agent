@@ -22,6 +22,22 @@ export interface ProposalOut {
   created_at: string
 }
 
+export interface ProjectProposalState {
+  approved: boolean
+  approved_at: string | null
+  approval_id: number | null
+  proposal_snapshot_chars: number
+  last_decision: string | null
+}
+
+export interface ProjectProposalDecisionResponse {
+  decision: 'approve' | 'modify' | 'reject'
+  phase_ready: boolean
+  approval_id: number | null
+  proposal_snapshot_chars: number
+  message: string
+}
+
 export interface ProposalDecisionResponse {
   proposal_id: number
   lifecycle: 'approved' | 'rejected'
@@ -92,6 +108,11 @@ export function createProposalStream(
         body: JSON.stringify(body),
         signal: controller.signal,
       })
+      if (response.status === 401) {
+        authStore.getState().logout()
+        window.location.replace('/login')
+        return
+      }
       if (!response.ok) {
         const error = await response.json().catch(() => ({}))
         callbacks.onError((error.detail as string) || 'No se pudo generar la propuesta.')
@@ -130,5 +151,24 @@ export function decideProposal(proposalId: number, decision: ProposalDecision, c
   return apiFetch<ProposalDecisionResponse>(`/api/proposals/${proposalId}/decide`, {
     method: 'POST',
     body: JSON.stringify({ decision, comment }),
+  })
+}
+
+export function getProposal(proposalId: number) {
+  return apiFetch<ProposalOut>(`/api/proposals/${proposalId}`)
+}
+
+export function getProjectProposalState(projectId: number) {
+  return apiFetch<ProjectProposalState>(`/api/projects/${projectId}/proposal`)
+}
+
+export function decideProjectProposal(
+  projectId: number,
+  decision: 'approve' | 'modify' | 'reject',
+  options: { feedback?: string; proposalText?: string } = {},
+) {
+  return apiFetch<ProjectProposalDecisionResponse>(`/api/projects/${projectId}/proposal/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, feedback: options.feedback, proposal_text: options.proposalText }),
   })
 }
