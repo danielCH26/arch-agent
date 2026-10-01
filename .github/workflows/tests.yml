@@ -127,12 +127,3 @@ jobs:
           name: coverage-report
           path: coverage.xml
           retention-days: 30
-
-      - name: Annotate coverage diff on PR
-        # Solo corre en PRs. Comenta con el diff de cobertura vs main.
-        if: github.event_name == 'pull_request' && github.event.action != 'closed'
-        uses: orgs/repospoon-action@v1
-        continue-on-error: true
-        with:
-          coverage-path: coverage.xml
-          threshold: 0.1
