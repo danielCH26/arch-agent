@@ -388,6 +388,76 @@ class ProposalGenerator:
 PROPOSAL_COMPLEXITY_PENALTY = float(os.getenv("PROPOSAL_COMPLEXITY_PENALTY", "0.08"))
 _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 
+# La penalizacion de arriba es un empate SUAVE (ver comentario de arriba: "un
+# patron pesado con muchisima mas similitud... aun puede ganar"). En la
+# practica, para un proyecto chico la similitud de Microservicios suele ganarle
+# a Monolito modular por mas que el margen que cubre 0.16, porque el texto de
+# requerimientos describe varios subsistemas (ingesta, reportes, dashboards,
+# alertas) que embeben parecido a "microservicios" aunque el equipo sea de 3
+# personas. Por eso se suma una descalificacion DURA (no un ajuste de puntaje):
+# si el proyecto declara equipo chico, presupuesto bajo o un MVP/prototipo, un
+# patron de complejidad "alta" no puede ser el principal salvo que el usuario
+# lo pida por nombre (ver _explicitly_requested) -- sin importar cuanta mas
+# similitud tenga.
+PROPOSAL_SMALL_TEAM_MAX = int(os.getenv("PROPOSAL_SMALL_TEAM_MAX", "4"))
+PROPOSAL_SMALL_BUDGET_USD = float(os.getenv("PROPOSAL_SMALL_BUDGET_USD", "20000"))
+
+_TEAM_SIZE_RE = re.compile(
+    r"equipo\s+(?:de\s+)?(\d+)\s*"
+    r"(?:ingenieros?|desarrolladores?|personas|devs?|full-?stack)"
+)
+_BUDGET_RE = re.compile(r"\$\s?(\d[\d.,]*)\s*(?:usd|dolares)?")
+_SMALL_SCALE_PHRASES = (
+    "mvp",
+    "prototipo",
+    "proyecto academico",
+    "proyecto universitario",
+    "equipo pequeno",
+    "equipo reducido",
+    "sin equipo de infraestructura dedicado",
+    "infraestructura dedicado",
+    "infraestructura dedicada",
+    "devops dedicado",
+    "equipo de operaciones dedicado",
+    "presupuesto bajo",
+    "presupuesto limitado",
+    "presupuesto ajustado",
+    "bajo presupuesto",
+)
+
+
+def _parse_min_budget_usd(normalized_text: str) -> float | None:
+    """Menor cifra en dolares mencionada (p. ej. "entre $8,000 y $13,000" -> 8000).
+
+    Es una heuristica: tambien puede capturar un OPEX mensual u otra cifra
+    menor que no sea el presupuesto total. Eso no es un problema aqui porque
+    solo se usa para decidir si el proyecto suena "chico" -- un falso
+    positivo simplemente hace que la propuesta por defecto sea mas simple,
+    que es el sentido seguro de equivocarse para este caso.
+    """
+    amounts = []
+    for match in _BUDGET_RE.finditer(normalized_text):
+        raw = match.group(1).replace(".", "").replace(",", "")
+        if raw.isdigit():
+            amounts.append(float(raw))
+    return min(amounts) if amounts else None
+
+
+def _small_scale_signal(explicit_text: str | None) -> bool:
+    """True si el proyecto declara equipo chico, presupuesto bajo o un MVP/prototipo."""
+    if not explicit_text:
+        return False
+    normalized = _normalize_text(explicit_text)
+    if any(phrase in normalized for phrase in _SMALL_SCALE_PHRASES):
+        return True
+    team_match = _TEAM_SIZE_RE.search(normalized)
+    if team_match and int(team_match.group(1)) <= PROPOSAL_SMALL_TEAM_MAX:
+        return True
+    budget = _parse_min_budget_usd(normalized)
+    if budget is not None and budget <= PROPOSAL_SMALL_BUDGET_USD:
+        return True
+    return False
+
 
 def _normalize_text(text: str | None) -> str:
     """Minusculas y sin acentos, para comparar texto libre."""
@@ -564,11 +634,26 @@ def _select_citations(
         for key, doc in best_fit.items()
     }
 
+    # Descalificacion dura por escala del proyecto (ver comentario junto a
+    # PROPOSAL_SMALL_TEAM_MAX): un patron "alta" complejidad no puede ser
+    # principal en un proyecto chico salvo que el usuario lo pida por nombre
+    # (stance == "want") o lo mencione explicitamente en sus requerimientos.
+    small_scale = _small_scale_signal(explicit_text)
+
+    def _scale_disqualified(key: Any) -> bool:
+        if not small_scale or stance[key] == "want":
+            return False
+        doc = best_fit[key]
+        if _COMPLEXITY_LEVEL.get(doc.metadata.get("complexity"), 0) < 2:
+            return False
+        return not _explicitly_requested(doc.metadata.get("pattern_name"), explicit_text)
+
     ordered = sorted(
         best_fit.items(),
         key=lambda item: (
             stance[item[0]] == "reject",
             stance[item[0]] != "want",
+            _scale_disqualified(item[0]),
             _avoided(item[0]),
             -_score(item[1]),
         ),

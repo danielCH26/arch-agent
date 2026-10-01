@@ -157,6 +157,28 @@ async def send_elicitation_message(
             )
         history = history + [{"pregunta": pending_question, "respuesta": body.answer.strip()}]
         pending_question = None
+        # Se persiste la respuesta YA, antes de llamar al LLM para la
+        # siguiente pregunta. Antes, si esa llamada fallaba (ver los
+        # "except" de más abajo), la función salía sin guardar nada: la
+        # respuesta se perdía y, al recargar, "/elicitation" devolvía otra
+        # vez la pregunta vieja como si no se hubiera contestado. Guardarla
+        # aquí hace que, ante un fallo del LLM, quede sin pregunta pendiente
+        # ni resumen -- el reintento automático del frontend (ChatWindow:
+        # "if (!state.done && !state.question)") hace que la próxima carga
+        # pida la siguiente pregunta usando este historial ya completo, sin
+        # que el usuario tenga que volver a escribir su respuesta.
+        engram_state = _set_phase_data(
+            engram_state,
+            project_id,
+            {
+                "preguntas_respuestas": history,
+                "pending_question": None,
+                "resumen": None,
+            },
+        )
+        save_session_state(
+            user_id, project_id=project.id, active_phase=PHASE, engram_state=engram_state
+        )
     elif pending_question is not None:
         # Ya se había hecho esta pregunta y no llegó una respuesta nueva:
         # se re-devuelve tal cual, sin gastar otra llamada al LLM.

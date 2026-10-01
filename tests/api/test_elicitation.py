@@ -683,6 +683,55 @@ class TestSendElicitationMessage:
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
+    def test_answer_is_persisted_even_if_the_llm_call_then_fails(
+        self, mock_load, mock_require, mock_build_model, mock_next_step
+    ):
+        """Antes, si next_step fallaba, la respuesta recien dada se perdia:
+        la funcion salia por el except sin llamar a save_session_state, asi
+        que la respuesta del usuario (ya aceptada por el endpoint) nunca
+        quedaba en el historial. Al recargar, GET /elicitation devolvia otra
+        vez la pregunta vieja como si no se hubiera contestado."""
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [],
+                "pending_question": "¿cual es el presupuesto?",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.return_value = MagicMock()
+        mock_next_step.side_effect = elicitation_agent.ElicitationAgentError("JSON invalido")
+
+        saved_state = {}
+
+        def fake_save(user_id, project_id, active_phase, engram_state):
+            saved_state.update(engram_state)
+
+        with patch("app.api.elicitation.save_session_state", side_effect=fake_save):
+            with pytest.raises(HTTPException) as exc_info:
+                run(send_elicitation_message(
+                    project_id=1,
+                    body=ElicitationMessageIn(answer="el presupuesto subio a 13000 dolares"),
+                    current_user=CURRENT_USER,
+                ))
+
+        assert exc_info.value.status_code == 502
+        # La respuesta quedo guardada aunque la llamada al LLM haya fallado.
+        phase = saved_state["1"]["requerimientos"]
+        assert phase["preguntas_respuestas"] == [
+            {"pregunta": "¿cual es el presupuesto?", "respuesta": "el presupuesto subio a 13000 dolares"}
+        ]
+        # Sin pregunta pendiente ni resumen: el reintento automatico del
+        # frontend (ChatWindow: "if (!state.done && !state.question)")
+        # dispara otro POST sin "answer" para generar la siguiente pregunta
+        # con este mismo historial, sin que el usuario reescriba nada.
+        assert phase["pending_question"] is None
+        assert phase["resumen"] is None
+
+    @patch("app.api.elicitation.elicitation_agent.next_step")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
     def test_project_isolation_when_saving_new_state(
         self, mock_load, mock_require, mock_build_model, mock_next_step
     ):
