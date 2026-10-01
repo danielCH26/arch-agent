@@ -372,7 +372,10 @@ export function ChatWindow({
             <img
               src={approvedDiagram.url}
               alt="Diagrama de la estructura aprobada"
-              className="h-auto w-full"
+              // Mismo tope que el diagrama del chat (MessageBubble). Con solo
+              // `w-full` el SVG rasterizado se estira al ancho de toda la
+              // pantalla al recargar y queda gigante.
+              className="h-auto max-h-[70vh] w-full max-w-3xl rounded-lg object-contain"
             />
           </figure>
         )}

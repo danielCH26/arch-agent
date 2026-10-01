@@ -61,7 +61,19 @@ function renderInline(content: string): React.ReactNode {
         </code>
       )
     }
-    return <span key={index}>{token.value}</span>
+    // El modelo separa los efectos de una celda con `<br>` (una tabla markdown
+    // no admite saltos de linea). Se convierten a <br/> reales, sin HTML crudo.
+    const parts = token.value.split(/<br\s*\/?>/gi)
+    return (
+      <span key={index}>
+        {parts.map((part, partIndex) => (
+          <span key={partIndex}>
+            {partIndex > 0 && <br />}
+            {part}
+          </span>
+        ))}
+      </span>
+    )
   })
 }
 

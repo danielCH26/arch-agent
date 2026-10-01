@@ -362,7 +362,7 @@ class ProposalGenerator:
         # cerrado por el proveedor) NO se guarda: quedaria como iteracion vigente,
         # gastaria una de las PROPOSAL_MAX_ITER y la siguiente modificacion
         # partiria de un texto al que le faltan secciones.
-        missing_sections = _missing_sections(full_markdown)
+        missing_sections = _missing_sections(full_markdown, source_count=len(citations))
         if finish_reason == "length" or missing_sections:
             logger.warning(
                 "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s",
@@ -822,12 +822,28 @@ _REQUIRED_HEADINGS = (
 )
 
 
-def _missing_sections(markdown: str | None) -> list[str]:
+# Minimo auditable de la decision (criterio de aceptacion F10): 3 opciones por
+# tabla y 3 criterios de comparacion (ventajas, desventajas, complejidad/costo).
+MIN_TRADEOFF_OPTIONS = 3
+NO_RAG_SOURCE_LABEL = "Sin fuente RAG"
+
+_HEADING_LEVEL_RE = re.compile(r"^\s*(#{1,6})\s")
+_TRADEOFF_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+trade-?offs?\s+y\s+decisi")
+# Misma definicion de separador que usa el render del frontend (markdown.tsx):
+# si la tabla no cumple esto, la UI tampoco la dibuja como tabla.
+_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_LIST_ITEM_RE = re.compile(r"^\s*([-*+]|\d+\.)\s")
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+def _missing_sections(markdown: str | None, source_count: int = 0) -> list[str]:
     """Secciones obligatorias que faltan en la propuesta (lista vacia = completa).
 
     Comprueba los cinco encabezados ``##`` del formato y que la justificacion
     llegue hasta su ultimo punto (``Riesgo o costo``), que es lo primero que se
-    pierde cuando la respuesta se corta.
+    pierde cuando la respuesta se corta. ``source_count`` es el numero de
+    patrones RAG que se le dieron al modelo: con fuentes, la tabla de
+    trade-offs debe citarlas como ``[n]``.
     """
     normalized = _normalize_text(markdown)
     missing = [
@@ -839,41 +855,126 @@ def _missing_sections(markdown: str | None) -> list[str]:
         "riesgo o costo" not in normalized
     ):
         missing.append("Riesgo o costo")
-    if "Trade-offs y decisión" not in missing and not _has_tradeoff_comparison(markdown):
-        missing.append("Tabla de trade-offs (3 opciones y 3 criterios)")
+    if "Trade-offs y decisión" not in missing:
+        if not _has_tradeoff_comparison(markdown, source_count):
+            missing.append("Tabla de trade-offs (3 opciones y 3 criterios)")
+        elif not _has_decision_point(markdown):
+            missing.append("Recomendación y punto de decisión")
     return missing
 
 
-def _has_tradeoff_comparison(markdown: str | None) -> bool:
+def _tradeoff_section(markdown: str | None) -> list[str] | None:
+    """Lineas de ``## Trade-offs y decisión`` hasta el siguiente encabezado del mismo nivel o superior."""
+    if not markdown:
+        return None
+    lines = markdown.splitlines()
+    start = level = None
+    for index, line in enumerate(lines):
+        match = _TRADEOFF_HEADING_RE.match(_normalize_text(line))
+        if match:
+            start, level = index, len(match.group(1))
+            break
+    if start is None:
+        return None
+    section: list[str] = []
+    for line in lines[start + 1 :]:
+        heading = _HEADING_LEVEL_RE.match(line)
+        if heading and len(heading.group(1)) <= level:
+            break
+        section.append(line)
+    return section
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _criterion_for_header(header: str) -> str | None:
+    """Criterio de comparacion que representa una cabecera, tolerando formato.
+
+    Acepta ``**Ventajas**``, ``Complejidad / costo``, ``Complejidad y costo``,
+    ``Costo`` etc. Las columnas de apoyo (Opción, Ajuste, Fuente RAG) devuelven None.
+    """
+    text = re.sub(r"[*_`]", "", _normalize_text(header)).strip()
+    if text.startswith("desventaja"):
+        return "desventajas"
+    if text.startswith("ventaja"):
+        return "ventajas"
+    if "complejidad" in text or "costo" in text:
+        return "complejidad_costo"
+    return None
+
+
+def _has_tradeoff_comparison(markdown: str | None, source_count: int = 0) -> bool:
     """Verifica el mínimo auditable: 3 alternativas y 3 criterios comparables.
 
-    Esta comprobación es deliberadamente estructural, no intenta juzgar el
-    contenido escrito por el modelo. Evita persistir una propuesta que muestre
-    el título de trade-offs pero omita la tabla exigida por la decisión.
+    Comprobacion estructural (no juzga la calidad del texto del modelo):
+      * hay una tabla markdown valida (cabecera + separador) dentro de la seccion;
+      * trae las columnas Ventajas, Desventajas y Complejidad/costo;
+      * al menos 3 filas con la opcion y los tres criterios rellenos (las filas
+        vacias o las lineas de texto con ``|`` que siguen a la tabla no cuentan);
+      * si hubo fuentes RAG, al menos ``min(source_count, 3)`` filas citan un
+        ``[n]`` existente (los trade-offs deben salir del RAG).
     """
-    if not markdown:
+    section = _tradeoff_section(markdown)
+    if section is None:
         return False
-    lines = markdown.splitlines()
-    start = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if re.match(r"^\s*#{1,6}\s+trade-?offs?\s+y\s+decisi", _normalize_text(line))
-        ),
-        None,
+
+    table = None
+    for index in range(len(section) - 1):
+        if "|" in section[index] and _TABLE_SEPARATOR_RE.match(section[index + 1]):
+            rows: list[list[str]] = []
+            for line in section[index + 2 :]:
+                if not line.strip() or "|" not in line or _LIST_ITEM_RE.match(line):
+                    break
+                rows.append(_table_cells(line))
+            table = (_table_cells(section[index]), rows)
+            break
+    if table is None:
+        return False
+
+    headers, rows = table
+    columns: dict[str, int] = {}
+    for position, header in enumerate(headers):
+        criterion = _criterion_for_header(header)
+        if criterion and criterion not in columns:
+            columns[criterion] = position
+    if len(columns) < 3:
+        return False
+
+    def _cell(row: list[str], position: int) -> str:
+        value = row[position] if position < len(row) else ""
+        return value.strip(" -–—:")
+
+    complete_rows = [
+        row
+        for row in rows
+        if _cell(row, 0) and all(_cell(row, position) for position in columns.values())
+    ]
+    if len(complete_rows) < MIN_TRADEOFF_OPTIONS:
+        return False
+
+    if source_count > 0:
+        cited_rows = sum(
+            1
+            for row in complete_rows
+            if any(
+                1 <= int(number) <= source_count
+                for number in _CITATION_RE.findall(" ".join(row))
+            )
+        )
+        if cited_rows < min(source_count, MIN_TRADEOFF_OPTIONS):
+            return False
+    return True
+
+
+def _has_decision_point(markdown: str | None) -> bool:
+    """La seccion debe cerrar con ``Recomendación:`` y ``Punto de decisión``."""
+    text = _normalize_text("\n".join(_tradeoff_section(markdown) or []))
+    return bool(
+        re.search(r"^\s*[-*+]?\s*[*_]*recomendacion[*_]*\s*:", text, re.MULTILINE)
+        and "punto de decision" in text
     )
-    if start is None:
-        return False
-    table_lines = [line for line in lines[start + 1 :] if "|" in line]
-    if len(table_lines) < 5:  # header + separator + at least 3 alternatives
-        return False
-    cells = [cell.strip() for cell in table_lines[0].strip().strip("|").split("|")]
-    normalized_headers = {_normalize_text(cell) for cell in cells}
-    required_criteria = ("ventajas", "desventajas", "complejidad/costo")
-    if not all(criterion in normalized_headers for criterion in required_criteria):
-        return False
-    data_rows = [line for line in table_lines[2:] if line.strip().strip("|").strip(" -:")]
-    return len(data_rows) >= 3
 
 
 def _strip_secondary_references(text: str | None) -> str:
@@ -1029,6 +1130,58 @@ def _build_prompt(
         if primary_citation
         else None
     )
+
+    # La tabla de trade-offs exige >=3 opciones. Con menos de 3 patrones
+    # recuperados (p. ej. tras un rechazo por feedback) el modelo completa con
+    # alternativas marcadas "Sin fuente RAG" en vez de inventar un [n]; asi las
+    # reglas de filas nunca se contradicen con el minimo de 3.
+    source_count = len(citations)
+    if source_count >= MIN_TRADEOFF_OPTIONS:
+        table_rows_rule = (
+            "- Usa únicamente los patrones [n] recuperados de la base como filas de "
+            "la tabla; los nombres de ejemplos del usuario no son un catálogo fijo. "
+            "Incluye una fila por cada fuente recuperada, aunque se descarte.\n"
+        )
+        table_rows_instruction = (
+            "Incluye una fila por CADA alternativa [n] recuperada (al menos tres "
+            "filas). Para cada una cita su fuente como [n], desarrolla sus "
+            "ventajas en dos efectos técnicos tangibles y fundamenta ventajas y "
+            "desventajas solo en los trade-offs recibidos de RAG. "
+        )
+        template_source = "[1]"
+    elif source_count > 0:
+        table_rows_rule = (
+            "- Usa como filas de la tabla los patrones [n] recuperados de la base "
+            "(una fila por cada fuente, aunque se descarte) y completa hasta al "
+            f"menos tres filas con alternativas marcadas `{NO_RAG_SOURCE_LABEL}`; "
+            "los nombres de ejemplos del usuario no son un catálogo fijo.\n"
+        )
+        table_rows_instruction = (
+            f"Solo se recuperaron {source_count} patrón(es) de la base. Incluye "
+            "una fila por CADA [n] recuperado, con su fuente como [n] y ventajas "
+            "y desventajas fundamentadas solo en los trade-offs recibidos de RAG, "
+            "y completa hasta al menos tres filas con alternativas razonables "
+            "para este proyecto cuya columna Fuente RAG diga exactamente "
+            f"`{NO_RAG_SOURCE_LABEL}` (nunca un [n] que no exista; sus ventajas y "
+            "desventajas son criterio general del modelo, no evidencia de la "
+            "base, y debes indicarlo). "
+        )
+        template_source = "[1]"
+    else:
+        table_rows_rule = (
+            "- No hay patrones recuperados: las filas de la tabla son alternativas "
+            "razonables para este proyecto, todas marcadas "
+            f"`{NO_RAG_SOURCE_LABEL}`.\n"
+        )
+        table_rows_instruction = (
+            "No hay fuentes recuperadas: incluye al menos tres filas con "
+            "alternativas razonables para este proyecto y escribe exactamente "
+            f"`{NO_RAG_SOURCE_LABEL}` en la columna Fuente RAG de cada una, sin "
+            "números entre corchetes. Sus ventajas y desventajas son criterio "
+            "general del modelo, no evidencia de la base. "
+        )
+        template_source = NO_RAG_SOURCE_LABEL
+
     if citations:
         context_blocks = []
         for index, cite in enumerate(citations, start=1):
@@ -1053,7 +1206,14 @@ def _build_prompt(
             "Patrones recuperados de la base de conocimiento. Cada [n] es una "
             "opción real disponible en la base y una fuente válida SOLO para la "
             "comparación de trade-offs; no agregues opciones de ejemplos genéricos "
-            "que no aparezcan aquí:\n"
+            "que no aparezcan aquí"
+            + (
+                ""
+                if source_count >= MIN_TRADEOFF_OPTIONS
+                else f" (salvo filas de relleno marcadas `{NO_RAG_SOURCE_LABEL}` "
+                "hasta llegar a tres)"
+            )
+            + ":\n"
         )
     else:
         context_section = "No se recuperaron patrones de la base de conocimiento."
@@ -1140,11 +1300,19 @@ def _build_prompt(
             "- En la seccion ## Patrones escribe exactamente una linea con el "
             "formato `- Patrón principal: <nombre>`.\n"
         )
-        source_rules += (
-            "- En `## Trade-offs y decisión` incluye exactamente una fila por "
-            "cada patrón [n] recuperado arriba. No reemplaces esas filas por "
-            "ejemplos fijos ni añadas un patrón que no tenga fuente [n].\n"
-        )
+        if source_count >= MIN_TRADEOFF_OPTIONS:
+            source_rules += (
+                "- En `## Trade-offs y decisión` incluye exactamente una fila por "
+                "cada patrón [n] recuperado arriba. No reemplaces esas filas por "
+                "ejemplos fijos ni añadas un patrón que no tenga fuente [n].\n"
+            )
+        else:
+            source_rules += (
+                "- En `## Trade-offs y decisión` incluye una fila por cada patrón "
+                "[n] recuperado arriba y completa hasta tres filas con "
+                f"alternativas marcadas `{NO_RAG_SOURCE_LABEL}`. No reemplaces las "
+                "filas con fuente por ejemplos fijos.\n"
+            )
 
     architecture_baseline = _architecture_baseline(
         citations=citations,
@@ -1244,9 +1412,7 @@ def _build_prompt(
         "de debugging local, curva de aprendizaje DevOps, riesgo de consistencia "
         "de datos y sobrecarga de mantenimiento. No inventes horas, porcentajes o "
         "SLAs si los requisitos no los proporcionan.\n"
-        "- Usa únicamente los patrones [n] recuperados de la base como filas de "
-        "la tabla; los nombres de ejemplos del usuario no son un catálogo fijo. "
-        "Incluye una fila por cada fuente recuperada, aunque se descarte.\n"
+        f"{table_rows_rule}"
         "- Ventajas NO puede contener adjetivos aislados como 'simple', 'flexible' "
         "o 'escalable'. Para cada patrón, transforma el trade-off de RAG en al "
         "menos dos efectos técnicos concretos: mecanismo (por ejemplo límites de "
@@ -1282,11 +1448,9 @@ def _build_prompt(
         "Añade Ajuste a requisitos y Fuente RAG para que la decisión sea auditable:\n"
         "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
         "| --- | --- | --- | --- | --- | --- |\n"
-        "| ... | ... | ... | ... | ... | [1] |\n"
-        "Incluye una fila por CADA alternativa [n] recuperada (y al menos tres). "
-        "Para cada una cita su fuente como [n], desarrolla sus ventajas en dos "
-        "efectos técnicos tangibles y fundamenta ventajas y desventajas solo en "
-        "los trade-offs recibidos de RAG. Tras la tabla añade exactamente: "
+        f"| ... | ... | ... | ... | ... | {template_source} |\n"
+        f"{table_rows_instruction}"
+        "Tras la tabla añade exactamente: "
         "`- Recomendación: <una opción>` y `- Punto de decisión: ¿Aprueba los "
         "trade-offs?`. No inventes una cita cuando no haya fuente RAG.\n\n"
         "Esta justificación debe hablar exclusivamente del patrón principal, "

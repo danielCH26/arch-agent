@@ -133,6 +133,30 @@ describe('ProposalCard', () => {
     expect(screen.getByTestId('proposal-approve')).toHaveTextContent(/^Aprobar$/)
   })
 
+  it('renders <br> inside trade-off table cells as line breaks, not literal text', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 100,
+        project_id: 1,
+        iteration: 1,
+        content_markdown:
+          '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Hexagonal | 1. Testeable.<br>2. Cambio de proveedor sin tocar el dominio. | 1. Más código.<br />2. Curva de aprendizaje. | Media |\n| Modular | a | b | Baja |\n| Capas | a | b | Baja |',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    const table = screen.getByTestId('proposal-markdown-table')
+    expect(table.textContent).not.toMatch(/<br/i)
+    expect(table.querySelectorAll('br').length).toBe(2)
+    expect(table).toHaveTextContent('2. Cambio de proveedor sin tocar el dominio.')
+  })
+
   it('shows the "Aprobada" chip and hides actions after a successful approve', () => {
     proposalsStore.setState({
       currentProposal: {

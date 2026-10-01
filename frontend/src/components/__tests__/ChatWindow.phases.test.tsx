@@ -206,6 +206,27 @@ describe('ChatWindow — fase refinamiento (diagrama automático)', () => {
     expect(screen.getByAltText('Diagrama de la estructura aprobada')).toHaveAttribute('src', '/x.png')
   })
 
+  it('el diagrama aprobado que se recarga tiene tope de tamano (no se estira a toda la pantalla)', async () => {
+    chatStore.setState({ sendMessage: vi.fn(), loadHistory: vi.fn().mockResolvedValue(undefined) })
+    const diagramsApi = await import('../../api/diagrams')
+    vi.spyOn(diagramsApi, 'fetchDiagramHistory').mockResolvedValue([
+      {
+        message_id: 1,
+        id: 'abc',
+        url: '/x.png',
+        filename: 'x.png',
+        created_at: '2026-09-28T00:00:00',
+        decision: null,
+      },
+    ])
+
+    render(<ChatWindow projectId={1} phase="refinamiento" />)
+
+    const img = await screen.findByAltText('Diagrama de la estructura aprobada')
+    expect(img.className).toContain('max-w-3xl')
+    expect(img.className).toContain('max-h-[70vh]')
+  })
+
   it('en otras fases no genera el diagrama', async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined)
     chatStore.setState({ sendMessage, loadHistory: vi.fn().mockResolvedValue(undefined) })

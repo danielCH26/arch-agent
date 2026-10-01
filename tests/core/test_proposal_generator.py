@@ -58,7 +58,7 @@ def test_build_prompt_without_citations_does_not_ask_for_bracket_numbers():
 
     prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
     assert "cita el numero entre corchetes" not in prompt
-    assert "NO uses numeros entre corchetes" in prompt
+    assert "números entre corchetes" in prompt
 
 
 def test_build_prompt_marks_one_primary_pattern_and_secondary_references():
@@ -76,7 +76,10 @@ def test_build_prompt_marks_one_primary_pattern_and_secondary_references():
     assert citations[0]["source_role"] == "primary"
     assert citations[1]["source_role"] == "consulted_not_cited"
     assert "Patrón principal: <nombre>" in prompt
-    assert "Consultados no citados: Saga" in prompt
+    # F10: los patrones secundarios ya no van en una linea aparte; cada [n]
+    # recuperado es una fila de la tabla de trade-offs.
+    assert "[2] Saga" in prompt
+    assert "una fila por cada patrón [n] recuperado" in prompt
     assert "cita el numero entre corchetes" not in prompt
 
 
@@ -784,3 +787,176 @@ def test_complete_proposal_is_persisted_and_done_is_emitted():
 
     assert len(persisted) == 1
     assert events[-1][0] == "done"
+
+
+# --- F10: validador de la tabla de trade-offs (robustez) --------------------
+
+_TABLE_HEADER = (
+    "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+    "| --- | --- | --- | --- | --- | --- |\n"
+)
+_DECISION_LINES = "- Recomendación: Capas\n- Punto de decisión: ¿Aprueba los trade-offs?\n"
+
+
+def _proposal_with(table: str, tail: str = _DECISION_LINES) -> str:
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    return head + "## Trade-offs y decisión\n" + table + tail
+
+
+_ROWS_WITH_SOURCES = (
+    "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+    "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |\n"
+    "| Microservicios | Escala independiente | Operación compleja | Alta | Bajo | [3] |\n"
+)
+
+
+def test_missing_sections_accepts_header_variants_from_the_llm():
+    from app.core.proposal_generator import _missing_sections
+
+    variants = [
+        "| Opción | **Ventajas** | **Desventajas** | **Complejidad/costo** |\n| --- | --- | --- | --- |\n",
+        "| Opción | Ventajas | Desventajas | Complejidad / costo |\n| --- | --- | --- | --- |\n",
+        "| Opción | Ventajas | Desventajas | Complejidad y costo |\n| --- | --- | --- | --- |\n",
+        "| Opción | Ventajas | Desventajas | Costo |\n|:---|:---:|---:|---|\n",
+    ]
+    rows = (
+        "| Capas | a | b | Baja |\n| Modular | a | b | Media |\n| Micro | a | b | Alta |\n"
+    )
+    for header in variants:
+        assert _missing_sections(_proposal_with(header + rows)) == [], header
+
+
+def test_missing_sections_ignores_empty_rows_and_pipes_in_trailing_text():
+    from app.core.proposal_generator import _missing_sections
+
+    empty_rows = (
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+        "| | | | | | |\n"
+        "| | | | | | |\n"
+    )
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + empty_rows)) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+    # Dos filas reales + una linea de texto con "|" tras la tabla: no es una 3a fila.
+    two_rows = _ROWS_WITH_SOURCES.splitlines(keepends=True)[:2]
+    table = _TABLE_HEADER + "".join(two_rows)
+    tail = "- Recomendación: Capas | Modular\n- Punto de decisión: ¿Aprueba los trade-offs?\n"
+    assert _missing_sections(_proposal_with(table, tail)) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_missing_sections_requires_filled_criteria_cells():
+    from app.core.proposal_generator import _missing_sections
+
+    blank_criteria = (
+        "| Capas | | | | Alto | [1] |\n"
+        "| Modular | | | | Alto | [2] |\n"
+        "| Micro | | | | Bajo | [3] |\n"
+    )
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + blank_criteria)) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_missing_sections_requires_rag_citations_when_sources_were_retrieved():
+    from app.core.proposal_generator import _missing_sections
+
+    uncited = (
+        "| Capas | Simple | Escala conjunta | Baja | Alto | sin fuente |\n"
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | - |\n"
+        "| Micro | Escala independiente | Operación compleja | Alta | Bajo | - |\n"
+    )
+    proposal = _proposal_with(_TABLE_HEADER + uncited)
+
+    # Sin fuentes recuperadas no se exige [n]; con 3 fuentes sí.
+    assert _missing_sections(proposal, source_count=0) == []
+    assert _missing_sections(proposal, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+    # Un [n] fuera de rango (hay 3 fuentes y cita [7]) tampoco vale.
+    out_of_range = uncited.replace("sin fuente", "[7]")
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + out_of_range), 3) != []
+    # Citadas correctamente: ok.
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + _ROWS_WITH_SOURCES), 3) == []
+
+
+def test_missing_sections_accepts_rows_without_source_when_fewer_than_three_sources():
+    from app.core.proposal_generator import _missing_sections
+
+    rows = (
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |\n"
+        "| Hexagonal | Testeable | Más capas | Media | Medio | Sin fuente RAG |\n"
+    )
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + rows), source_count=2) == []
+
+
+def test_missing_sections_requires_recommendation_and_decision_point():
+    from app.core.proposal_generator import _missing_sections
+
+    table = _TABLE_HEADER + _ROWS_WITH_SOURCES
+    assert _missing_sections(_proposal_with(table, tail=""), 3) == [
+        "Recomendación y punto de decisión"
+    ]
+    only_reco = "- Recomendación: Capas\n"
+    assert _missing_sections(_proposal_with(table, tail=only_reco), 3) == [
+        "Recomendación y punto de decisión"
+    ]
+
+
+def test_tradeoff_table_is_not_taken_from_a_later_section():
+    from app.core.proposal_generator import _missing_sections
+
+    # El encabezado existe pero la tabla esta en OTRA seccion posterior.
+    proposal = (
+        _FULL_PROPOSAL.split("| Opción")[0]
+        + "Sin tabla aqui.\n\n## Anexo\n"
+        + _TABLE_HEADER
+        + _ROWS_WITH_SOURCES
+    )
+    assert _missing_sections(proposal) == ["Tabla de trade-offs (3 opciones y 3 criterios)"]
+
+
+# --- F10: reglas de filas del prompt segun el numero de fuentes -------------
+
+
+def _citations(n):
+    return [
+        {
+            "pattern_name": f"Patron {i}",
+            "source_role": "primary" if i == 1 else "consulted_not_cited",
+            "tradeoffs": {},
+        }
+        for i in range(1, n + 1)
+    ]
+
+
+def test_prompt_with_three_sources_demands_one_row_per_source_without_filler():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(_citations(3), None, None, "P")
+    assert "Incluye una fila por CADA alternativa [n] recuperada (al menos tres filas)" in prompt
+    assert "| ... | ... | ... | ... | ... | [1] |" in prompt
+    assert "Sin fuente RAG`" not in prompt
+
+
+def test_prompt_with_fewer_than_three_sources_allows_marked_filler_rows():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(_citations(2), None, None, "P")
+    assert "Solo se recuperaron 2 patrón(es)" in prompt
+    assert "`Sin fuente RAG`" in prompt
+    assert "al menos tres filas" in prompt
+    # Ya no se contradice: no prohibe añadir filas sin [n].
+    assert "ni añadas un patrón que no tenga fuente [n]" not in prompt
+
+
+def test_prompt_without_sources_marks_every_row_as_not_from_rag():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt([], None, None, "P")
+    assert "| ... | ... | ... | ... | ... | Sin fuente RAG |" in prompt
+    assert "[1] |" not in prompt
+    assert "No hay fuentes recuperadas" in prompt
