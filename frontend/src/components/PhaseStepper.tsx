@@ -26,13 +26,18 @@ export function PhaseStepper({ phases, currentPhase }: PhaseStepperProps) {
               <span
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
                   isDone
-                    ? 'bg-green-100 text-green-700'
+                    ? 'bg-blue-100 text-blue-700'
                     : isCurrent
                       ? 'bg-blue-600 text-white'
                       : 'bg-gray-100 text-gray-400'
                 }`}
               >
-                {isDone ? '✓' : index + 1}
+                {isDone ? (
+                  <>
+                    <span aria-hidden="true">✓</span>
+                    <span className="sr-only">Completada:</span>
+                  </>
+                ) : index + 1}
               </span>
               <span
                 className={`text-sm whitespace-nowrap ${
@@ -43,7 +48,7 @@ export function PhaseStepper({ phases, currentPhase }: PhaseStepperProps) {
               </span>
             </div>
             {index < phases.length - 1 && (
-              <div className={`mx-3 h-px w-8 sm:w-12 ${isDone ? 'bg-green-300' : 'bg-gray-200'}`} />
+              <div className={`mx-3 h-px w-8 sm:w-12 ${isDone ? 'bg-blue-300' : 'bg-gray-200'}`} />
             )}
           </div>
         )

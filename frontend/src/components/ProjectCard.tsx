@@ -75,7 +75,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
   const isComplete = project.current_phase === 'revision' && project.phase_ready
 
   return (
-    <div className="group rounded-[10px] border border-gray-300 bg-[#fafafa] p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">
+    <div className="group rounded-[10px] border border-gray-300 bg-gray-50 p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
         <h3 className="min-w-0 break-words text-xl font-semibold text-gray-900">
           <button
@@ -131,7 +131,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
           onClick={() => navigate(`/projects/${project.id}/chat`)}
           className={
             isComplete
-              ? 'rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700'
+              ? 'rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500'
               : 'rounded-lg border border-blue-600 px-4 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50'
           }
         >
@@ -165,7 +165,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
               <button
                 type="button"
                 onClick={handleDelete}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 dark:hover:bg-red-500 disabled:opacity-50"
                 disabled={isDeleting}
               >
                 {isDeleting ? 'Eliminando...' : 'Eliminar'}

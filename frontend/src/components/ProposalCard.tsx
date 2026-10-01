@@ -88,7 +88,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
       )}
 
       {!proposal && !busy && !approvedWithoutContent && (
-        <button type="button" onClick={() => generate(projectId)} data-testid="proposal-generate" className="mt-4 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700">
+        <button type="button" onClick={() => generate(projectId)} data-testid="proposal-generate" className="mt-4 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 dark:hover:bg-sky-500">
           {error ? 'Reintentar' : 'Generar propuesta'}
         </button>
       )}
@@ -109,7 +109,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
       {proposal?.id && proposal.lifecycle === 'proposed' && !streaming && (
         <div className="mt-4 border-t border-gray-100 pt-4">
           <div className="flex flex-wrap gap-2">
-            <button type="button" disabled={busy} onClick={() => void handleDecision('approve')} data-testid="proposal-approve" className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Aprobar</button>
+            <button type="button" disabled={busy} onClick={() => void handleDecision('approve')} data-testid="proposal-approve" className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-500 disabled:opacity-50">Aprobar</button>
             <button
               type="button"
               disabled={busy || iterationLimitReached}
@@ -129,7 +129,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
             <div className="mt-3 space-y-2">
               <label className="block text-sm font-medium text-gray-700" htmlFor="proposal-feedback">¿Qué debería cambiar?</label>
               <textarea id="proposal-feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2000} className="w-full rounded-lg border border-sky-200 p-3 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40" placeholder="Ej.: incluir caché, cambiar tecnología o ajustar una decisión..." />
-              <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
+              <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700 dark:hover:bg-sky-500 disabled:opacity-50">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
             </div>
           )}
           {iterationLimitReached && <p className="mt-2 text-xs text-amber-700">Se alcanzó el máximo de {MAX_ITERATIONS} iteraciones: aprueba o rechaza la propuesta.</p>}

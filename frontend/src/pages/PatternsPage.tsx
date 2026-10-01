@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { PatternListSkeleton } from '../components/Skeleton'
 import { listPatterns, listPatternSourceChunks, Pattern, PatternSourceChunk } from '../api/patterns'
 
 const PAGE_SIZE = 200 // máximo permitido por GET /api/patterns
@@ -76,8 +77,8 @@ export function PatternsPage() {
       </div>
 
       {loading && (
-        <div className="flex justify-center py-12">
-          <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-blue-600" />
+        <div className="lg:w-2/5">
+          <PatternListSkeleton />
         </div>
       )}
 

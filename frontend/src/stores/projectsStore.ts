@@ -15,6 +15,9 @@ interface ProjectsState {
   currentProject: Project | null
   status: 'idle' | 'loading' | 'creating' | 'deleting' | 'error'
   error: string | null
+  // true tras la primera carga (con éxito o error): distingue "cargando por
+  // primera vez" de "no hay proyectos" y de "actualizando la lista".
+  hasLoaded: boolean
 
   fetchProjects: () => Promise<void>
   createProject: (name: string, description?: string) => Promise<Project>
@@ -28,15 +31,16 @@ export const projectsStore = create<ProjectsState>((set) => ({
   currentProject: null,
   status: 'idle',
   error: null,
+  hasLoaded: false,
 
   fetchProjects: async () => {
     set({ status: 'loading', error: null })
     try {
       const projects = await projectsApi.listProjects()
-      set({ projects, status: 'idle' })
+      set({ projects, status: 'idle', hasLoaded: true })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No se pudieron cargar los proyectos.'
-      set({ status: 'error', error: message })
+      set({ status: 'error', error: message, hasLoaded: true })
     }
   },
 

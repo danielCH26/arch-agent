@@ -21,7 +21,7 @@ function AssistantBubble({ children }: { children: React.ReactNode }) {
 function UserBubble({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] md:max-w-[70%] whitespace-pre-wrap break-words rounded-lg bg-blue-600 px-4 py-2 text-white">{children}</div>
+      <div className="max-w-[85%] md:max-w-[70%] whitespace-pre-wrap break-words rounded-lg bg-blue-600 px-4 py-2 text-white dark:bg-blue-100">{children}</div>
     </div>
   )
 }
@@ -156,7 +156,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
             type="button"
             onClick={handleStart}
             disabled={sending}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500 disabled:opacity-50"
           >
             Comenzar elicitación
           </button>
@@ -175,7 +175,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
           <button
             type="submit"
             disabled={sending || !answer.trim()}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500 disabled:opacity-50"
           >
             Enviar
           </button>

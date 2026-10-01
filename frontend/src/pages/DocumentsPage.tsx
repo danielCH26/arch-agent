@@ -4,6 +4,7 @@ import { getProject, Project } from '../api/projects'
 import { Document, listDocuments } from '../api/documents'
 import { DocumentUploader } from '../components/DocumentUploader'
 import { DocumentList } from '../components/DocumentList'
+import { DocumentsPageSkeleton } from '../components/Skeleton'
 import { projectsStore } from '../stores/projectsStore'
 
 export function DocumentsPage() {
@@ -68,11 +69,7 @@ export function DocumentsPage() {
   }, [id])
 
   if (loading) {
-    return (
-      <div className="flex justify-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
+    return <DocumentsPageSkeleton />
   }
 
   return (
@@ -87,7 +84,7 @@ export function DocumentsPage() {
         </div>
       )}
 
-      <div className="rounded-[10px] border border-gray-200 bg-[#fafafa] p-6 space-y-6">
+      <div className="rounded-[10px] border border-gray-200 bg-gray-50 p-6 space-y-6">
         <DocumentUploader
           projectId={projectId}
           onUploadComplete={fetchDocuments}

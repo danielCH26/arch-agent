@@ -3,6 +3,7 @@ import { chatStore } from '../stores/chatStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
+import { ChatHistorySkeleton } from './Skeleton'
 import robotAvatar from '../assets/robot-avatar.png'
 
 // Texto plano para el lector de pantalla: sin bloques de código ni marcas
@@ -58,7 +59,8 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' })
   }, [messages, isStreaming])
 
   const handleSend = async (text: string, displayText?: string) => {
@@ -74,11 +76,7 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         {phase === 'propuesta' && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
         )}
-        {loadingHistory && messages.length === 0 && (
-          <div className="flex justify-center py-8" aria-label="Cargando historial del chat">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-200 border-b-sky-600" />
-          </div>
-        )}
+        {loadingHistory && messages.length === 0 && <ChatHistorySkeleton />}
 
         {messages.length === 0 && !isStreaming && !loadingHistory && (
           <div className="text-center text-gray-500 py-8">

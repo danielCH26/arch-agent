@@ -11,7 +11,7 @@ export function NotFound() {
         </p>
         <Link
           to="/projects"
-          className="mt-6 inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          className="mt-6 inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-blue-500 transition-colors"
         >
           Go to Projects
         </Link>

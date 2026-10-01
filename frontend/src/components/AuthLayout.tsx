@@ -1,5 +1,6 @@
 import { ReactNode } from 'react'
 import { RobotGreeter } from './RobotGreeter'
+import { ThemeToggle } from './ThemeToggle'
 
 interface AuthLayoutProps {
   title: ReactNode
@@ -32,11 +33,12 @@ const CIRCUIT_PATTERN =
 
 export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutProps) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e4f2fa] to-[#f7fbf9] px-4 py-12">
+    <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e4f2fa] to-[#f7fbf9] px-4 py-12 dark:from-gray-100 dark:to-gray-100">
+      <ThemeToggle className="absolute right-4 top-4" />
       <div className="grid w-full max-w-5xl grid-cols-1 gap-6 md:grid-cols-2">
         <div className="flex flex-col justify-center rounded-3xl bg-white p-8 shadow-[0px_10px_40px_rgba(14,84,206,0.12)] sm:p-12">
           <span className="mb-6 font-display text-xl font-semibold text-gray-900">
-            <span className="text-[#0e54ce]">Arch</span>Agent
+            <span className="text-[#0e54ce] dark:text-blue-400">Arch</span>Agent
           </span>
 
           <h1 className="font-display text-3xl font-bold text-gray-900 sm:text-4xl">{title}</h1>
@@ -45,7 +47,7 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
           <div className="mt-8">{children}</div>
         </div>
 
-        <div className="relative hidden flex-col items-center overflow-hidden rounded-3xl bg-gradient-to-br from-[#cdeaf5] to-[#e3f7ef] p-6 pt-10 shadow-[0px_10px_40px_rgba(14,84,206,0.12)] sm:p-8 sm:pt-12 md:flex">
+        <div className="relative hidden flex-col items-center overflow-hidden rounded-3xl bg-gradient-to-br from-[#cdeaf5] to-[#e3f7ef] p-6 dark:from-sky-100 dark:to-emerald-50 pt-10 shadow-[0px_10px_40px_rgba(14,84,206,0.12)] sm:p-8 sm:pt-12 md:flex">
           <div
             className="pointer-events-none absolute inset-0"
             style={{

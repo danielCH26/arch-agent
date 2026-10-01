@@ -130,7 +130,7 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
         onDragLeave={handleDragLeave}
         onClick={() => fileInputRef.current?.click()}
         className={`
-          rounded-[10px] border-2 border-dashed p-10 text-center cursor-pointer transition-colors bg-[#fafafa]
+          rounded-[10px] border-2 border-dashed p-10 text-center cursor-pointer transition-colors bg-gray-50
           ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}
           ${uploading ? 'pointer-events-none opacity-50' : ''}
         `}

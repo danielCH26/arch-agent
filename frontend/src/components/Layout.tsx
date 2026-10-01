@@ -4,6 +4,8 @@ import { authStore } from '../stores/authStore'
 import { projectsStore } from '../stores/projectsStore'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Logo } from './Logo'
+import { SidebarProjectsSkeleton } from './Skeleton'
+import { ThemeToggle } from './ThemeToggle'
 import { ArchiveIcon, ChatIcon, ClockIcon, DocumentIcon } from './NavIcons'
 
 export function Layout() {
@@ -14,7 +16,7 @@ export function Layout() {
   const projects = projectsStore((state) => state.projects)
   const currentProject = projectsStore((state) => state.currentProject)
   const fetchProjects = projectsStore((state) => state.fetchProjects)
-  const projectsStatus = projectsStore((state) => state.status)
+  const projectsLoaded = projectsStore((state) => state.hasLoaded)
   const projectsError = projectsStore((state) => state.error)
 
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -92,7 +94,7 @@ export function Layout() {
           <Link to="/projects" className="flex flex-col items-center gap-1">
             <Logo size={64} />
             <span className="font-display text-2xl text-gray-900">
-              <span className="text-[#0e54ce]">Arch</span>Agent
+              <span className="text-[#0e54ce] dark:text-blue-400">Arch</span>Agent
             </span>
           </Link>
         </div>
@@ -137,9 +139,7 @@ export function Layout() {
               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Proyectos</span>
             </div>
 
-            {projectsStatus === 'loading' && (
-              <div className="py-3 text-sm text-gray-500 italic">Cargando...</div>
-            )}
+            {!projectsLoaded && projects.length === 0 && <SidebarProjectsSkeleton />}
 
             {projectsError && (
               <div role="alert" className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
@@ -147,7 +147,7 @@ export function Layout() {
               </div>
             )}
 
-            {projectsStatus !== 'loading' && !projectsError && (
+            {projects.length > 0 && (
               <div className="space-y-1">
                 {projects.map((p) => {
                   const isOpen = expanded === p.id
@@ -162,7 +162,7 @@ export function Layout() {
                         aria-expanded={isOpen}
                         className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-left transition-all ${
                           isProjectActive
-                            ? 'bg-indigo-50 text-indigo-700 font-medium'
+                            ? 'bg-blue-50 text-blue-700 font-medium'
                             : 'text-gray-700 hover:bg-gray-100'
                         }`}
                       >
@@ -186,7 +186,7 @@ export function Layout() {
                             to={`/projects/${p.id}/chat`}
                             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all ${
                               isChatActive
-                                ? 'bg-indigo-100 text-indigo-700 font-medium'
+                                ? 'bg-blue-100 text-blue-700 font-medium'
                                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                             }`}
                           >
@@ -197,7 +197,7 @@ export function Layout() {
                             to={`/projects/${p.id}/documents`}
                             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all ${
                               isDocsActive
-                                ? 'bg-indigo-100 text-indigo-700 font-medium'
+                                ? 'bg-blue-100 text-blue-700 font-medium'
                                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                             }`}
                           >
@@ -212,7 +212,7 @@ export function Layout() {
               </div>
             )}
 
-            {projectsStatus !== 'loading' && !projectsError && projects.length === 0 && (
+            {projectsLoaded && !projectsError && projects.length === 0 && (
               <div className="py-4 text-sm text-gray-500 text-center">
                 <p className="mb-2">No hay proyectos aún</p>
                 <p className="text-xs">Usa "+ Nueva sesión" para crear el primero</p>
@@ -232,6 +232,7 @@ export function Layout() {
             <span className="truncate text-sm text-gray-800">{user?.username || 'Usuario'}</span>
           </Link>
           <div className="flex shrink-0 items-center gap-1">
+            <ThemeToggle />
             <Link
               to="/settings/llm"
               className="rounded-lg p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
@@ -275,7 +276,7 @@ export function Layout() {
           <Link to="/projects" className="flex items-center gap-2">
             <Logo size={32} />
             <span className="font-display text-lg text-gray-900">
-              <span className="text-[#0e54ce]">Arch</span>Agent
+              <span className="text-[#0e54ce] dark:text-blue-400">Arch</span>Agent
             </span>
           </Link>
         </header>

@@ -102,7 +102,7 @@ function renderInline(content: string) {
 
     if (token.type === 'code') {
       return (
-        <code key={index} className="rounded bg-black/10 px-1 py-0.5 text-[0.9em]">
+        <code key={index} className="rounded bg-black/10 px-1 py-0.5 dark:bg-white/10 text-[0.9em]">
           {token.value}
         </code>
       )
@@ -269,7 +269,7 @@ export function renderMarkdownBlocks(content: string) {
         }
 
         blocks.push(
-          <pre key={`code-${partIndex}-${index}`} className="my-3 overflow-x-auto rounded bg-gray-900 p-3 text-gray-50">
+          <pre key={`code-${partIndex}-${index}`} className="my-3 overflow-x-auto rounded bg-gray-900 p-3 text-gray-50 dark:bg-gray-100 dark:text-gray-900">
             <code>{codeLines.join('\n')}</code>
           </pre>,
         )
@@ -387,7 +387,7 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
       <div
         className={`max-w-[85%] px-4 py-2 break-words md:max-w-[70%] ${
           isUser
-            ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white'
+            ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white dark:bg-blue-100'
             : 'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm'
         }`}
       >
@@ -502,7 +502,7 @@ function DiagramAttachments({
                     onClick={async () => {
                       if (await recordDecision(index, 'approve')) onSendMessage('Apruebo el diagrama, continuemos.')
                     }}
-                    className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                    className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-500 disabled:opacity-50"
                   >
                     Aprobar
                   </button>
@@ -536,7 +536,7 @@ function DiagramAttachments({
                       placeholder="Describe los cambios que necesitas en el diagrama..."
                     />
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isSubmitting} onClick={() => void requestChanges(index)} className="rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50">Enviar ajuste</button>
+                      <button type="button" disabled={isSubmitting} onClick={() => void requestChanges(index)} className="rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-700 dark:hover:bg-sky-500 disabled:opacity-50">Enviar ajuste</button>
                       <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
                     </div>
                   </div>

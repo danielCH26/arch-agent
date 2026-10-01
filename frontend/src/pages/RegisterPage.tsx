@@ -187,7 +187,7 @@ export function RegisterPage() {
 
       <p className="mt-6 text-center text-sm text-gray-600">
         ¿Ya tienes cuenta?{' '}
-        <Link to="/login" className="font-medium text-[#0e54ce] hover:text-blue-700">
+        <Link to="/login" className="font-medium text-[#0e54ce] dark:text-blue-400 hover:text-blue-700">
           Iniciar sesión
         </Link>
       </p>

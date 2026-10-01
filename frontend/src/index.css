@@ -1,4 +1,10 @@
 @tailwind base;
+
+@layer base {
+  body {
+    @apply bg-gray-100 text-gray-900;
+  }
+}
 @tailwind components;
 @tailwind utilities;
 
@@ -16,9 +22,23 @@
   animation: robot-float 3.6s ease-in-out infinite;
 }
 
+/* Movimiento reducido (preferencia del sistema): sin animaciones ni
+   transiciones decorativas (robot, esqueletos, puntos de "escribiendo",
+   menú deslizable). Los indicadores de carga giratorios se mantienen, más
+   lentos, porque informan que algo está pasando. */
 @media (prefers-reduced-motion: reduce) {
-  .animate-robot-float {
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-spin {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 
@@ -35,4 +55,14 @@ input::-ms-clear {
     outline: 2px solid #0e54ce;
     outline-offset: 2px;
   }
+}
+
+/* Modo oscuro: `bg-white` es la superficie de tarjetas y paneles. El resto
+   de colores cambia vía variables (ver tailwind.config.js). `text-white`
+   no cambia: se usa sobre botones de color. */
+.dark .bg-white {
+  background-color: rgb(var(--surface));
+}
+.dark .bg-white\/70 {
+  background-color: rgb(var(--surface) / 0.7);
 }
