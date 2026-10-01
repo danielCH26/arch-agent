@@ -12,11 +12,15 @@ when_not_to_use: >
   el mismo volumen y forma.
 tradeoffs:
   ventajas:
-    - "Permite optimizar y escalar lecturas y escrituras de forma independiente"
-    - "Modelos de lectura simplificados, adaptados exactamente a cada vista"
+    - "Escalado independiente: el modelo de lectura puede crecer horizontalmente (réplicas o un almacén aparte) mientras el de escritura corre en pocas instancias, lo que reduce la contención de bloqueos bajo carga"
+    - "Esquemas optimizados por lado: las lecturas usan vistas materializadas o DTO sin joins costosos y las escrituras usan un esquema pensado para transacciones y reglas de negocio"
+    - "Separación de responsabilidades: el modelo de escritura concentra validaciones y lógica de dominio, y el de lectura queda simple y sin lógica de negocio, más fácil de mantener y probar por separado"
+    - "Seguridad y trabajo en paralelo: solo el lado de comandos puede modificar datos, y dos equipos pueden trabajar escritura y lectura/UI con menos conflictos"
   desventajas:
-    - "Añade complejidad de sincronización entre el modelo de escritura y de lectura"
-    - "Sobredimensionado para sistemas con carga de lectura/escritura simple"
+    - "Consistencia eventual: con almacenes separados la lectura puede mostrar datos viejos tras un comando, y hay que contemplar a usuarios que actúan sobre datos desactualizados"
+    - "Más complejidad: hay dos modelos que mantener y sincronizar, un ORM no genera este código automáticamente y la complejidad crece más si se combina con event sourcing"
+    - "Mensajería para sincronizar: aparecen fallos, duplicados y reintentos, y como broker y base de datos no comparten una transacción, hacen falta patrones como Transactional Outbox y consumidores idempotentes"
+    - "Sobredimensionado para dominios simples: si el dominio o las reglas son sencillas y basta con CRUD, el patrón añade costo sin retorno"
 decision_signals:
   - pregunta: "¿Las consultas tienen mucha más carga o requisitos de forma distintos que las escrituras?"
     señal_patron: "sí -> CQRS (Command Query Responsibility Segregation)"
@@ -24,3 +28,6 @@ decision_signals:
     señal_patron: "sí -> CQRS (Command Query Responsibility Segregation)"
   - pregunta: "¿El equipo acepta consistencia eventual entre el modelo de escritura y lectura?"
     señal_patron: "sí -> CQRS (Command Query Responsibility Segregation)"
+fuentes:
+  - titulo: "CQRS pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"

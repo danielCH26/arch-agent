@@ -11,11 +11,16 @@ when_not_to_use: >
   fuerte de auditoría o reconstrucción histórica.
 tradeoffs:
   ventajas:
-    - "Auditoría completa: cada cambio queda registrado como evento inmutable"
-    - "Permite reconstruir el estado en cualquier punto del tiempo (replay)"
+    - "Auditoría completa por construcción: cada cambio queda como evento inmutable en un almacén append-only, lo que da historial y permite analizar el comportamiento del sistema"
+    - "Reconstrucción del estado: reproducir (replay) la secuencia de eventos restaura el estado a cualquier punto, ayuda a depurar y permite crear proyecciones nuevas sin cambiar el modelo de escritura"
+    - "Mejor escritura y menos conflictos: los eventos solo se agregan, sin update-in-place ni bloqueos por fila, y la concurrencia optimista rechaza escrituras sobre un stream que cambió"
+    - "Captura la intención de negocio (p. ej. ReservaCancelada), con significado para expertos del dominio, y desacopla a quienes reaccionan al evento (pagos, notificaciones, integraciones)"
   desventajas:
-    - "Modelo mental más complejo que CRUD tradicional"
-    - "Las consultas requieren proyecciones separadas del log de eventos"
+    - "Costo de adopción y de salida alto: cambia cómo se guardan los datos, se manejan la concurrencia y los esquemas, y migrar hacia o desde event sourcing es caro y condiciona el diseño posterior"
+    - "Consultas indirectas: no hay SQL sobre eventos, así que se mantienen proyecciones eventualmente consistentes y snapshots para no reproducir streams largos"
+    - "Versionado de eventos: al ser inmutables, los errores se corrigen con eventos compensatorios y los cambios de esquema requieren versionado o upcasting"
+    - "Datos personales: la inmutabilidad choca con el derecho al olvido, y exige guardar esos datos fuera del store o usar crypto-shredding con gestión de claves"
+    - "Sobrecosto en prototipos, MVP o equipos sin experiencia en arquitecturas orientadas a eventos: para la mayoría de sistemas basta la gestión de datos tradicional"
 decision_signals:
   - pregunta: "¿Debes explicar exactamente cada cambio de estado por auditoría o cumplimiento?"
     señal_patron: "sí -> Event sourcing"
@@ -23,3 +28,8 @@ decision_signals:
     señal_patron: "sí -> Event sourcing"
   - pregunta: "¿El dominio puede modelarse claramente como eventos de negocio inmutables?"
     señal_patron: "sí -> Event sourcing"
+fuentes:
+  - titulo: "Event Sourcing pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
+  - titulo: "Event Sourcing (Martin Fowler)"
+    url: "https://martinfowler.com/eaaDev/EventSourcing.html"

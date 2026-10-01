@@ -13,11 +13,16 @@ when_not_to_use: >
   está dividido en servicios que requieran agregación.
 tradeoffs:
   ventajas:
-    - "Simplifica el cliente: una sola llamada agrega varios servicios internos"
-    - "Permite adaptar la respuesta a cada tipo de cliente sin duplicar lógica de negocio"
+    - "Cliente más simple: una sola llamada al gateway enruta y agrega varios servicios internos, evitando múltiples viajes de red y que el cliente conozca cómo está dividido el backend"
+    - "Aspectos transversales centralizados: autenticación, TLS, rate limiting, logging y caché se resuelven una vez en el gateway en vez de repetirse en cada servicio"
+    - "Backend a la medida de cada cliente (BFF): web y móvil reciben respuestas ajustadas a su pantalla, ancho de banda y paginación, sin condicionales por cliente en un backend general"
+    - "Autonomía y menor superficie de ataque: cada equipo de frontend gestiona su BFF (lenguaje y cadencia de releases) y la autorización se adapta a cada cliente, lo que reduce la API expuesta y el movimiento lateral"
   desventajas:
-    - "El gateway puede volverse un cuello de botella o un punto único de fallo"
-    - "Solo tiene sentido si ya existen varios servicios internos que agregar"
+    - "Salto de red adicional: cada petición pasa por el gateway o el BFF, lo que añade latencia y un componente cuya caída afecta a los clientes, por lo que requiere alta disponibilidad"
+    - "Duplicación de código entre BFF: es probable que backends distintos repitan lógica, y hay que ponderar esa duplicación frente a una experiencia a la medida"
+    - "Más servicios que desplegar y operar: cada BFF o gateway tiene su ciclo de vida, seguridad y mantenimiento, y puede generar deuda técnica mientras convive con el backend genérico"
+    - "Riesgo de poner lógica de negocio en el gateway: se convierte en dependencia y acopla servicios; debe limitarse a enrutar y a tareas transversales"
+    - "Solo aporta con varias interfaces que piden cosas distintas: con un solo cliente, peticiones similares, o GraphQL con resolvers por cliente, la capa extra no añade valor"
 decision_signals:
   - pregunta: "¿Web y móvil necesitan respuestas distintas a partir de los mismos servicios internos?"
     señal_patron: "sí -> API Gateway + Backend for Frontend (BFF)"
@@ -25,3 +30,10 @@ decision_signals:
     señal_patron: "sí -> API Gateway + Backend for Frontend (BFF)"
   - pregunta: "¿Necesitas centralizar autenticación, rate limiting o enrutamiento hacia varios backends?"
     señal_patron: "sí -> API Gateway + Backend for Frontend (BFF)"
+fuentes:
+  - titulo: "Backends for Frontends pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/backends-for-frontends"
+  - titulo: "API gateways in microservices (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/gateway"
+  - titulo: "Pattern: Backends For Frontends (Sam Newman)"
+    url: "https://samnewman.io/patterns/architectural/bff/"

@@ -12,11 +12,15 @@ when_not_to_use: >
   cuando varios módulos requieren escalado, despliegue o ownership separado.
 tradeoffs:
   ventajas:
-    - "Curva de aprendizaje baja, fácil de entender para equipos nuevos"
-    - "Despliegue único, sin complejidad de infraestructura distribuida"
+    - "Curva de aprendizaje baja: separar presentación, lógica y datos es un modelo que casi todo desarrollador conoce, así que un equipo nuevo entrega funcionalidades sin formarse antes en patrones avanzados"
+    - "Costo de partida bajo: no exige rearquitectura ni componentes distribuidos, por lo que se llega a un producto funcional con menos infraestructura que en estilos distribuidos"
+    - "Las capas separan responsabilidades y controlan dependencias: una capa superior usa a la inferior pero no al revés, lo que ubica rápido dónde cambiar (UI, reglas o acceso a datos) y evita ciclos"
+    - "Sirve cuando los requisitos todavía evolucionan: es una evolución natural del modelo tradicional de aplicación y deja abierta la migración posterior a otros estilos"
   desventajas:
-    - "Escala como una sola unidad, no permite escalar módulos por separado"
-    - "Tiende a acoplarse y volverse difícil de mantener a medida que crece"
+    - "Diseño monolítico: no permite desplegar ni escalar un módulo por separado, así que cualquier cambio obliga a probar y publicar toda la aplicación"
+    - "Capas de paso: si la capa intermedia solo reenvía operaciones CRUD, agrega latencia y código sin aportar valor, y cada campo nuevo toca varias capas"
+    - "Probar y monitorear cuesta más cuando una petición cruza varias capas o niveles, porque un fallo puede originarse en cualquiera y exige trazas por capa"
+    - "Con capas estrictas (solo adyacentes) crece la latencia y el overhead; con capas relajadas (saltarse capas) aumenta el acoplamiento y los cambios se vuelven más difíciles"
 decision_signals:
   - pregunta: "¿El producto es principalmente CRUD y será mantenido por un equipo pequeño?"
     señal_patron: "sí -> Arquitectura en capas (Layered)"
@@ -24,3 +28,6 @@ decision_signals:
     señal_patron: "sí -> Arquitectura en capas (Layered)"
   - pregunta: "¿El alcance está bien definido y no exige separar dominios con ownership distinto?"
     señal_patron: "sí -> Arquitectura en capas (Layered)"
+fuentes:
+  - titulo: "N-tier architecture style (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/n-tier"

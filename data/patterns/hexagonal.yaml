@@ -13,11 +13,15 @@ when_not_to_use: >
   frente al beneficio de aislar el dominio.
 tradeoffs:
   ventajas:
-    - "Dominio testeable de forma aislada, sin dependencias externas"
-    - "Cambiar de tecnología externa (DB, cola, UI) no afecta la lógica de negocio"
+    - "Núcleo de dominio sin dependencias externas: la lógica de negocio se prueba de forma unitaria inyectando mocks de los puertos, sin levantar base de datos, UI ni servicios"
+    - "Evita el bloqueo tecnológico: cambiar de base de datos, cola o proveedor implica reemplazar un adaptador, sin tocar la lógica de negocio"
+    - "Varias entradas sobre la misma lógica: un puerto puede tener múltiples adaptadores (por ejemplo REST y GraphQL) sin afectar al puerto ni al dominio"
+    - "Diseño por propósito y no por tecnología: encaja bien con DDD, donde cada componente representa un subdominio y se conecta con los demás de forma débilmente acoplada"
   desventajas:
-    - "Más código repetitivo (boilerplate) que una arquitectura en capas simple"
-    - "Curva de aprendizaje más alta para equipos sin experiencia previa"
+    - "Código adicional (puertos, adaptadores, fábricas) que solo se justifica si hay varias entradas o salidas, o si la tecnología va a cambiar; si no, es una capa más que mantener"
+    - "Mayor complejidad inicial y curva de aprendizaje: separar bien lógica e infraestructura requiere cuidado, y si se hace mal los problemas resultantes son difíciles de resolver"
+    - "La capa extra de puertos y adaptadores puede añadir latencia en cada llamada que la cruza"
+    - "Se solapa con Clean Architecture y Onion, que persiguen la misma separación: sin acordar cuál se usa y con qué convenciones, el equipo termina mezclando estilos"
 decision_signals:
   - pregunta: "¿Anticipas cambiar de proveedor de base de datos, mensajería o API externa?"
     señal_patron: "sí -> Arquitectura hexagonal (Puertos y Adaptadores)"
@@ -25,3 +29,8 @@ decision_signals:
     señal_patron: "sí -> Arquitectura hexagonal (Puertos y Adaptadores)"
   - pregunta: "¿El dominio cambia con más frecuencia que la tecnología de entrada o salida?"
     señal_patron: "sí -> Arquitectura hexagonal (Puertos y Adaptadores)"
+fuentes:
+  - titulo: "Hexagonal architecture pattern (AWS Prescriptive Guidance)"
+    url: "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/hexagonal-architecture.html"
+  - titulo: "Hexagonal architecture (Alistair Cockburn)"
+    url: "https://alistair.cockburn.us/hexagonal-architecture/"

@@ -15,11 +15,15 @@ when_not_to_use: >
   separado desde el inicio.
 tradeoffs:
   ventajas:
-    - "Mantiene la simplicidad operativa de un solo despliegue"
-    - "Facilita una futura migración a microservicios si el proyecto crece"
+    - "Una sola base de código, una canalización de pruebas y despliegue y una sola infraestructura: evita el costo de múltiples pipelines y las llamadas entre módulos son directas, sin red ni versionado de APIs"
+    - "Límites explícitos con API pública por módulo: un cambio en un dominio (p. ej. impuestos) no rompe pruebas de otro (p. ej. envíos) y quien se une al equipo solo necesita entender su módulo"
+    - "Aislar dependencias permite sustituir un componente completo detrás de su interfaz; Shopify reemplazó su motor de impuestos sin reescribir el resto del sistema"
+    - "Camino de evolución gradual: se empieza con un monolito y se modulariza cuando el producto crece, posponiendo la decisión de microservicios hasta conocer mejor el dominio"
   desventajas:
-    - "Requiere disciplina del equipo para no romper los límites entre módulos"
-    - "No resuelve el escalado independiente de módulos, solo lo organiza"
+    - "Los límites no se imponen solos: sin verificación (revisión de código, pruebas de arquitectura, análisis de dependencias) los módulos vuelven a acoplarse y el sistema degenera en un monolito enredado"
+    - "Un único despliegue y una única base de datos: no se escala ni se libera un módulo por separado, y un cambio pesado o un fallo afecta a toda la aplicación"
+    - "Modularizar código ya enredado es trabajo grande: Shopify clasificó unas 6000 clases a mano, movió archivos en un solo PR y perdió historial en GitHub; aislar datos exige expertos de cada dominio"
+    - "El aislamiento completo es continuo: quedan dependencias accidentales y circulares que hay que ir eliminando, y los límites mal definidos al inicio cuestan más de corregir después"
 decision_signals:
   - pregunta: "¿Necesitas separar dominios internos sin pagar aún el costo de microservicios?"
     señal_patron: "sí -> Monolito modular (Modular Monolith)"
@@ -27,3 +31,6 @@ decision_signals:
     señal_patron: "sí -> Monolito modular (Modular Monolith)"
   - pregunta: "¿Existe la posibilidad de extraer módulos a servicios si el producto crece?"
     señal_patron: "sí -> Monolito modular (Modular Monolith)"
+fuentes:
+  - titulo: "Deconstructing the Monolith (Shopify Engineering, 2019)"
+    url: "https://shopify.engineering/deconstructing-monolith-designing-software-maximizes-developer-productivity"
