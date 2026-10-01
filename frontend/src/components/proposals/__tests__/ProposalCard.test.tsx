@@ -130,7 +130,7 @@ describe('ProposalCard', () => {
     expect(screen.getAllByText(/Hexagonal/).length).toBeGreaterThan(0)
     // ProposalActions mounted (lifecycle=proposed and id set)
     expect(screen.getByTestId('proposal-approve')).toBeInTheDocument()
-    expect(screen.getByTestId('proposal-approve')).toHaveTextContent('Aprobar trade-offs')
+    expect(screen.getByTestId('proposal-approve')).toHaveTextContent(/^Aprobar$/)
   })
 
   it('shows the "Aprobada" chip and hides actions after a successful approve', () => {

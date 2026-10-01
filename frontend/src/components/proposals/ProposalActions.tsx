@@ -78,7 +78,7 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
           className="rounded bg-green-600 px-3 py-1 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
           data-testid="proposal-approve"
         >
-          Aprobar trade-offs
+          Aprobar
         </button>
         <button
           type="button"
