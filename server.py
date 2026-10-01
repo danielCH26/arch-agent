@@ -1,18 +1,97 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+import logging
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 from dotenv import load_dotenv
 
 from app.auth.register import register_user
 from app.auth.validators import ValidationError
+from app.core.exceptions import (
+    ArchAgentError,
+    DatabaseConnectionError,
+    DatabaseIntegrityError,
+    FileInvalidFormatError,
+    FileTooLargeError,
+    LLMInvalidResponseError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    RAGEmbeddingError,
+)
+# RAGSearchError lives in app.core.rag (not in app.core.exceptions) and is only
+# raised by the RAG endpoints — they handle it locally. The global handler
+# does not need it.
 
 load_dotenv()
 
 templates = Jinja2Templates(directory="templates")
 app = FastAPI(title="Arch Agent API", version="1.0.0")
+
+
+# --- Global exception handlers ---------------------------------------------
+# Soomri (F17 review, item 8) suggested "or better, use a global
+# exception_handler". This is the better path: a single place that maps our
+# typed ArchAgentError hierarchy (and the SQLAlchemy exceptions they wrap) to
+# HTTPException, removing the per-endpoint @handle_*_errors decorators.
+#
+# The decorators still work (they wrap the function before FastAPI sees it).
+# A future PR can drop them once the handlers above are battle-tested in CI.
+_APP_AGENT_ERROR_MAPPING = {
+    # DB
+    DatabaseConnectionError: (503, "No pudimos conectar con la base de datos. Es un problema temporal, intenta de nuevo en unos segundos."),
+    DatabaseIntegrityError:  (409, "Ya existe un recurso con esos datos. Cambia los valores y vuelve a intentar."),
+    # LLM
+    LLMTimeoutError:        (504, "El modelo de IA está tardando más de lo esperado. Por favor, intenta de nuevo en unos segundos."),
+    LLMRateLimitError:      (429, "Estás haciendo muchas solicitudes al modelo. Espera un minuto e intenta de nuevo."),
+    LLMInvalidResponseError: (502, "El modelo de IA devolvió una respuesta inválida. Por favor, intenta de nuevo o cambia de modelo."),
+    # File
+    FileTooLargeError:      (413, None),  # detail filled at runtime from the exception message
+    FileInvalidFormatError: (415, "El formato del archivo no es compatible. Usa PDF, Markdown o texto plano."),
+    # RAG
+    RAGEmbeddingError: (503, "No pudimos procesar tu consulta. Verifica tu conexión e intenta de nuevo."),
+    # RAGSearchError lives in app.core.rag (not in app.core.exceptions) and
+    # is handled locally by the RAG endpoints — the global handler does
+    # not need it.
+    # RAGSearchEmptyError is intentionally NOT mapped: the endpoint
+    # converts it into a 200 with an empty results array (not a real
+    # error).
+}
+
+
+@app.exception_handler(ArchAgentError)
+async def _archagent_handler(_request, exc):
+    """Single mapping from our typed errors to HTTP responses.
+
+    Decorators in app/core/error_handlers.py keep working for the
+    endpoints that still use them; the global handler is a backstop that
+    also covers endpoints that were never decorated (F12 attachments, F13
+    diagrams, etc.). The two layers must agree on status code + message; if
+    they ever diverge, the global handler wins because the exception no longer
+    reaches the per-endpoint decorator.
+
+    Resolution order = MRO order: walk ``type(exc).__mro__`` from most
+    specific to least specific and return the first registered class we
+    find. This matches what users get when they register one handler per
+    concrete class.
+    """
+    logger = logging.getLogger(__name__)
+
+    for klass in type(exc).__mro__:
+        if klass in _APP_AGENT_ERROR_MAPPING:
+            status, generic = _APP_AGENT_ERROR_MAPPING[klass]
+            detail = generic or str(exc)
+            return JSONResponse(status_code=status, content={"detail": detail})
+
+    # Fallback: unknown ArchAgentError
+    logger.exception("Unhandled ArchAgentError: %s", exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Ocurrió un error inesperado. Intenta de nuevo."},
+    )
+
 
 # CORS — allow SPA frontend to call this API
 app.add_middleware(
@@ -24,6 +103,7 @@ app.add_middleware(
 )
 
 # --- Jinja register form (kept for backward compat during migration) ----------
+
 
 @app.get("/register", response_class=HTMLResponse)
 async def register_form(request: Request):

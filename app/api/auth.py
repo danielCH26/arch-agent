@@ -92,7 +92,6 @@ async def register(body: RegisterRequest):
     "/login",
     response_model=TokenResponse,
     responses={
-        409: {"description": "Database integrity error"},
         503: {"description": "Database connection error"},
     },
 )

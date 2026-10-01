@@ -238,7 +238,6 @@ async def get_phase(
     "/{project_id}/advance",
     response_model=PhaseAdvanceOut,
     responses={
-        409: {"description": "Database integrity error"},
         503: {"description": "Database connection error"},
     },
 )
@@ -298,7 +297,6 @@ async def advance_phase(
     "/{project_id}/mark-ready",
     response_model=dict,
     responses={
-        409: {"description": "Database integrity error"},
         503: {"description": "Database connection error"},
     },
 )

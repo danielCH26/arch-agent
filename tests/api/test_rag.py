@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import asyncio
 import pytest
+from fastapi import HTTPException
 from langchain_core.documents import Document
 
 
@@ -76,3 +77,72 @@ class TestRAGCoreHelpers:
         _validate_embedding([0.1] * 384)
         with pytest.raises(RAGSearchError, match="384 dimensiones"):
             _validate_embedding([0.1] * 383)
+
+
+class TestRAGEmptyEmbedding:
+    def test_validate_embedding_provider_raises_when_embedding_is_empty(self):
+        from app.core.exceptions import RAGEmbeddingError
+        from app.core.rag import _validate_embedding_provider
+
+        with pytest.raises(RAGEmbeddingError, match="proveedor de embeddings"):
+            _validate_embedding_provider([])
+
+    def test_similarity_search_empty_results_raise_typed_error(self):
+        from app.core.exceptions import RAGSearchEmptyError
+
+        from app.core.rag import similarity_search
+
+        with (
+            patch("app.core.rag.get_embeddings") as embeddings,
+            patch("app.core.rag.similarity_search_patterns_by_vector") as patterns,
+            patch("app.core.rag.similarity_search_document_chunks_by_vector") as docs,
+        ):
+            embeddings.return_value.embed_query.return_value = [0.1] * 384
+            patterns.return_value = ([], 1.0)
+            docs.return_value = ([], 1.0)
+
+            with pytest.raises(RAGSearchEmptyError, match="No se encontraron resultados"):
+                similarity_search(
+                    query="consulta sin resultados",
+                    user_id=1,
+                    scope="all",
+                )
+
+
+class TestRAGApiEmptyAndProviderFailure:
+    @patch("app.api.rag.similarity_search")
+    def test_search_rag_returns_empty_response_when_no_matches(self, mock_search):
+        from app.core.exceptions import RAGSearchEmptyError
+
+        from app.api.rag import RAGSearchRequest, search_rag
+
+        mock_search.side_effect = RAGSearchEmptyError("No se encontraron resultados")
+
+        response = asyncio.run(
+            search_rag(
+                body=RAGSearchRequest(query="consulta vacia"),
+                current_user={"user_id": 1, "username": "laura", "jti": None},
+            )
+        )
+
+        assert response.results == []
+        assert response.search_ms == 0.0
+
+    @patch("app.api.rag.similarity_search")
+    def test_search_rag_translates_embedding_provider_failure_to_503(self, mock_search):
+        from app.core.exceptions import RAGEmbeddingError
+
+        from app.api.rag import RAGSearchRequest, search_rag
+
+        mock_search.side_effect = RAGEmbeddingError("provider down")
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                search_rag(
+                    body=RAGSearchRequest(query="consulta con provider caido"),
+                    current_user={"user_id": 1, "username": "laura", "jti": None},
+                )
+            )
+
+        assert exc.value.status_code == 503
+        assert "provider down" in str(exc.value.detail)
