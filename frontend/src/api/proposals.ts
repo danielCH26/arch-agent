@@ -8,6 +8,10 @@ export interface ProposalCitation {
   source_role?: 'primary' | 'consulted_not_cited'
   // Backend caps the snippet to 240 chars; useful for tooltips in CitationList.
   snippet?: string | null
+  tradeoffs?: {
+    ventajas?: string[]
+    desventajas?: string[]
+  }
 }
 
 export interface ProposalOut {

@@ -109,6 +109,38 @@ export function renderProposalMarkdown(content: string): React.ReactNode {
       continue
     }
 
+    if (
+      line.includes('|') &&
+      index + 1 < lines.length &&
+      /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1])
+    ) {
+      const cells = (value: string) => value.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim())
+      const headers = cells(line)
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        rows.push(cells(lines[index]))
+        index += 1
+      }
+      blocks.push(
+        <div key={`table-${index}`} className="my-3 overflow-x-auto" data-testid="proposal-markdown-table">
+          <table className="min-w-full border-collapse text-left text-xs">
+            <thead className="bg-gray-50 text-gray-700">
+              <tr>{headers.map((header, cellIndex) => <th key={cellIndex} className="border border-gray-200 px-2 py-1 font-semibold">{renderInline(header)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex} className="align-top">
+                  {headers.map((_, cellIndex) => <td key={cellIndex} className="border border-gray-200 px-2 py-1">{renderInline(row[cellIndex] ?? '')}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      )
+      continue
+    }
+
     if (/^\s*(-|\d+\.)\s+/.test(line)) {
       const items: string[] = []
       const ordered = /^\s*\d+\.\s+/.test(line)

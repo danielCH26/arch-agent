@@ -401,12 +401,14 @@ _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 # similitud tenga.
 PROPOSAL_SMALL_TEAM_MAX = int(os.getenv("PROPOSAL_SMALL_TEAM_MAX", "4"))
 PROPOSAL_SMALL_BUDGET_USD = float(os.getenv("PROPOSAL_SMALL_BUDGET_USD", "20000"))
+PROPOSAL_SHORT_TIMELINE_MONTHS = int(os.getenv("PROPOSAL_SHORT_TIMELINE_MONTHS", "3"))
 
 _TEAM_SIZE_RE = re.compile(
     r"equipo\s+(?:de\s+)?(\d+)\s*"
     r"(?:ingenieros?|desarrolladores?|personas|devs?|full-?stack)"
 )
 _BUDGET_RE = re.compile(r"\$\s?(\d[\d.,]*)\s*(?:usd|dolares)?")
+_TIMELINE_MONTHS_RE = re.compile(r"(\d+)\s*(?:mes|meses|month|months)\b")
 _SMALL_SCALE_PHRASES = (
     "mvp",
     "prototipo",
@@ -457,6 +459,39 @@ def _small_scale_signal(explicit_text: str | None) -> bool:
     if budget is not None and budget <= PROPOSAL_SMALL_BUDGET_USD:
         return True
     return False
+
+
+def _tight_mvp_constraint(explicit_text: str | None) -> bool:
+    """True para equipo pequeño con plazo corto: no admite distribución pesada.
+
+    La señal debe contener ambas restricciones explícitas para no convertir un
+    plazo corto de un equipo grande, o un equipo chico sin fecha, en una regla
+    absoluta. MVP/prototipo no sustituye el plazo: ayuda al ranking general,
+    pero esta prohibición requiere evidencia de equipo y tiempo.
+    """
+    if not explicit_text:
+        return False
+    normalized = _normalize_text(explicit_text)
+    team_match = _TEAM_SIZE_RE.search(normalized)
+    if not team_match or int(team_match.group(1)) > PROPOSAL_SMALL_TEAM_MAX:
+        return False
+    timelines = [int(match.group(1)) for match in _TIMELINE_MONTHS_RE.finditer(normalized)]
+    return bool(timelines and min(timelines) <= PROPOSAL_SHORT_TIMELINE_MONTHS)
+
+
+def _is_complex_distributed_pattern(pattern_name: str | None) -> bool:
+    """Patrones que añaden operación distribuida incompatibles con un MVP ajustado."""
+    name = _normalize_text(pattern_name)
+    return any(
+        marker in name
+        for marker in (
+            "microserv",
+            "orientada a eventos",
+            "event-driven",
+            "service mesh",
+            "saga",
+        )
+    )
 
 
 def _normalize_text(text: str | None) -> str:
@@ -639,8 +674,16 @@ def _select_citations(
     # principal en un proyecto chico salvo que el usuario lo pida por nombre
     # (stance == "want") o lo mencione explicitamente en sus requerimientos.
     small_scale = _small_scale_signal(explicit_text)
+    tight_mvp = _tight_mvp_constraint(explicit_text)
 
     def _scale_disqualified(key: Any) -> bool:
+        # Esta es una prohibición, no una preferencia: con menos de cinco
+        # personas y <= 3 meses, microservicios/eventos distribuidos desvían
+        # capacidad de entrega hacia DevOps, depuración y consistencia.
+        if tight_mvp and _is_complex_distributed_pattern(
+            best_fit[key].metadata.get("pattern_name")
+        ):
+            return True
         if not small_scale or stance[key] == "want":
             return False
         doc = best_fit[key]
@@ -651,9 +694,9 @@ def _select_citations(
     ordered = sorted(
         best_fit.items(),
         key=lambda item: (
+            _scale_disqualified(item[0]),
             stance[item[0]] == "reject",
             stance[item[0]] != "want",
-            _scale_disqualified(item[0]),
             _avoided(item[0]),
             -_score(item[1]),
         ),
@@ -674,6 +717,7 @@ def _select_citations(
                 "pattern_name": doc.metadata.get("pattern_name"),
                 "similarity": doc.metadata.get("similarity"),
                 "snippet": (doc.page_content or "")[:240],
+                "tradeoffs": doc.metadata.get("tradeoffs") or {},
             }
         )
     # La primera coincidencia es la que el motor selecciona como sustento
@@ -692,13 +736,14 @@ _REQUIRED_HEADINGS = (
     ("Tecnologias", r"tecnologias"),
     ("Patrones", r"patrones"),
     ("Justificación del patrón principal", r"justificacion del patron principal"),
+    ("Trade-offs y decisión", r"trade-?offs?\s+y\s+decision"),
 )
 
 
 def _missing_sections(markdown: str | None) -> list[str]:
     """Secciones obligatorias que faltan en la propuesta (lista vacia = completa).
 
-    Comprueba los cuatro encabezados ``##`` del formato y que la justificacion
+    Comprueba los cinco encabezados ``##`` del formato y que la justificacion
     llegue hasta su ultimo punto (``Riesgo o costo``), que es lo primero que se
     pierde cuando la respuesta se corta.
     """
@@ -712,7 +757,41 @@ def _missing_sections(markdown: str | None) -> list[str]:
         "riesgo o costo" not in normalized
     ):
         missing.append("Riesgo o costo")
+    if "Trade-offs y decisión" not in missing and not _has_tradeoff_comparison(markdown):
+        missing.append("Tabla de trade-offs (3 opciones y 3 criterios)")
     return missing
+
+
+def _has_tradeoff_comparison(markdown: str | None) -> bool:
+    """Verifica el mínimo auditable: 3 alternativas y 3 criterios comparables.
+
+    Esta comprobación es deliberadamente estructural, no intenta juzgar el
+    contenido escrito por el modelo. Evita persistir una propuesta que muestre
+    el título de trade-offs pero omita la tabla exigida por la decisión.
+    """
+    if not markdown:
+        return False
+    lines = markdown.splitlines()
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.match(r"^\s*#{1,6}\s+trade-?offs?\s+y\s+decisi", _normalize_text(line))
+        ),
+        None,
+    )
+    if start is None:
+        return False
+    table_lines = [line for line in lines[start + 1 :] if "|" in line]
+    if len(table_lines) < 5:  # header + separator + at least 3 alternatives
+        return False
+    cells = [cell.strip() for cell in table_lines[0].strip().strip("|").split("|")]
+    normalized_headers = {_normalize_text(cell) for cell in cells}
+    required_criteria = ("ventajas", "desventajas", "complejidad/costo")
+    if not all(criterion in normalized_headers for criterion in required_criteria):
+        return False
+    data_rows = [line for line in table_lines[2:] if line.strip().strip("|").strip(" -:")]
+    return len(data_rows) >= 3
 
 
 def _strip_secondary_references(text: str | None) -> str:
@@ -863,36 +942,40 @@ def _build_prompt(
         (citation for citation in citations if citation.get("source_role") == "primary"),
         citations[0] if citations else None,
     )
-    secondary_citations = [citation for citation in citations if citation is not primary_citation]
     primary_pattern = (
         str(primary_citation.get("pattern_name") or "Patrón seleccionado")
         if primary_citation
         else None
     )
-    secondary_patterns = [
-        str(citation.get("pattern_name") or "Patrón sin nombre")
-        for citation in secondary_citations
-    ]
     if citations:
         context_blocks = []
         for index, cite in enumerate(citations, start=1):
+            tradeoffs = cite.get("tradeoffs") or {}
+            tradeoffs_context = (
+                json.dumps(tradeoffs, ensure_ascii=False)
+                if tradeoffs
+                else "Sin trade-offs estructurados para este patrón."
+            )
             context_blocks.append(
-                f"[{index}] {cite.get('pattern_name')}\n{cite.get('snippet') or ''}"
+                f"[{index}] {cite.get('pattern_name')}\n"
+                f"Contexto: {cite.get('snippet') or ''}\n"
+                f"Trade-offs RAG: {tradeoffs_context}"
             )
         context_section = "\n\n".join(context_blocks)
         candidates_intro = (
-            "Patrones recuperados de la base de conocimiento. El primero es el "
-            "patron principal seleccionado; los restantes son solo contexto y no "
-            "deben presentarse como citas:\n"
+            "Patrones recuperados de la base de conocimiento. Cada [n] es una "
+            "opción real disponible en la base y una fuente válida SOLO para la "
+            "comparación de trade-offs; no agregues opciones de ejemplos genéricos "
+            "que no aparezcan aquí:\n"
         )
     else:
         context_section = "No se recuperaron patrones de la base de conocimiento."
         # Sin contexto NO se pide citar con [n]: el modelo se inventaba
         # referencias [1]..[6] que no existian.
         candidates_intro = (
-            "No hay patrones recuperados de la base de conocimiento. Propon los "
-            "patrones que apliquen con tu conocimiento general y NO uses numeros "
-            "entre corchetes ni afirmes que provienen de la base de conocimiento.\n"
+            "No hay patrones recuperados de la base de conocimiento. Declara que "
+            "no se puede elaborar una comparación RAG verificable y NO uses "
+            "números entre corchetes ni inventes opciones atribuidas a la base.\n"
         )
 
     # La propuesta previa va COMPLETA (antes se cortaba a 1500 chars y el LLM
@@ -970,12 +1053,11 @@ def _build_prompt(
             "- En la seccion ## Patrones escribe exactamente una linea con el "
             "formato `- Patrón principal: <nombre>`.\n"
         )
-        if secondary_patterns:
-            source_rules += (
-                "- Las referencias secundarias no son citas. Escribe una unica "
-                "linea con el formato exacto `- Consultados no citados: "
-                f"{', '.join(secondary_patterns)}`.\n"
-            )
+        source_rules += (
+            "- En `## Trade-offs y decisión` incluye exactamente una fila por "
+            "cada patrón [n] recuperado arriba. No reemplaces esas filas por "
+            "ejemplos fijos ni añadas un patrón que no tenga fuente [n].\n"
+        )
 
     architecture_baseline = _architecture_baseline(
         citations=citations,
@@ -1059,15 +1141,41 @@ def _build_prompt(
         f"\n{viability_rules}"
         f"\n{architecture_baseline}"
         f"\n{coherence_rules}"
-        "\nREGLA DE DECISION: tu trabajo es DECIDIR, no dejar la eleccion al "
-        "usuario. Elige UNA sola opcion por aspecto (un estilo arquitectonico "
-        "principal, una base de datos, un broker, un framework, etc.) y "
-        "justificala en una linea con base en los requerimientos. NO ofrezcas "
-        "alternativas ni uses formulas como \"X o Y\", \"X / Y\", \"X/Y\" (por "
-        "ejemplo REST/GraphQL) o \"X (o Z)\"; "
-        "no le pidas al usuario que elija. Si dudas, elige la opcion mas simple y barata que cumpla los requerimientos. "
-        "El usuario podra pedir cambios despues con «Modificar».\n"
-        "\nFormato OBLIGATORIO (responde exactamente con estas cuatro secciones, "
+        "\nREGLAS DE TRADE-OFFS REALES (obligatorias):\n"
+        "- Equipo, plazo y presupuesto son criterios de primera clase en la tabla "
+        "y en la recomendación; no uses escenarios ideales de empresas grandes. "
+        "Explica cómo la opción recomendada reduce el riesgo de entrega en el "
+        "plazo real y conserva seguridad y disponibilidad base.\n"
+        "- Si los requisitos indican equipo de hasta 4 personas Y plazo de hasta "
+        "3 meses, queda PROHIBIDO recomendar microservicios, service mesh, "
+        "múltiples bases por servicio, Saga o arquitectura distribuida orientada "
+        "a eventos. Recomienda monolito modular o una arquitectura limpia/hexagonal "
+        "en un despliegue y una base de datos. Las opciones prohibidas solo pueden "
+        "aparecer como alternativas descartadas, con la razón explícita.\n"
+        "- En cada fila de Trade-offs sustituye la frase genérica 'mayor "
+        "complejidad' por fricciones operativas concretas: tiempo y dificultad "
+        "de debugging local, curva de aprendizaje DevOps, riesgo de consistencia "
+        "de datos y sobrecarga de mantenimiento. No inventes horas, porcentajes o "
+        "SLAs si los requisitos no los proporcionan.\n"
+        "- Usa únicamente los patrones [n] recuperados de la base como filas de "
+        "la tabla; los nombres de ejemplos del usuario no son un catálogo fijo. "
+        "Incluye una fila por cada fuente recuperada, aunque se descarte.\n"
+        "- Ventajas NO puede contener adjetivos aislados como 'simple', 'flexible' "
+        "o 'escalable'. Para cada patrón, transforma el trade-off de RAG en al "
+        "menos dos efectos técnicos concretos: mecanismo (por ejemplo límites de "
+        "módulo, transacción, aislamiento, despliegue o escalado) + impacto en "
+        "el trabajo del equipo o un requisito del proyecto.\n"
+        "- Desventajas debe conservar la evidencia RAG y detallar la fricción "
+        "operativa que causa en ESTE proyecto. Si aplica, vincula debugging local, "
+        "operación/DevOps, consistencia de datos y mantenimiento; no los copies "
+        "indiscriminadamente a patrones donde no correspondan.\n"
+        "\nREGLA DE DECISION: primero compara alternativas de forma explícita y "
+        "después recomienda UNA sola opción. No dejes elecciones implícitas ni "
+        "uses fórmulas ambiguas como \"X o Y\" o \"REST/GraphQL\" fuera de "
+        "la tabla. Si dudas, recomienda la opcion mas simple y barata que cumpla "
+        "los requisitos. "
+        "El usuario podrá pedir alternativas o cambios después.\n"
+        "\nFormato OBLIGATORIO (responde exactamente con estas cinco secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
         "## Tecnologias\n- ...\n\n"
@@ -1081,6 +1189,19 @@ def _build_prompt(
         "- Riesgo o costo: explica una consecuencia o complejidad que debe "
         "gestionarse e indica, en una línea, qué se dejó fuera a propósito por "
         "presupuesto, equipo o plazo.\n\n"
+        "## Trade-offs y decisión\n"
+        "Incluye UNA tabla Markdown con tres o más opciones (una por fila) y, "
+        "como mínimo, las columnas Ventajas, Desventajas y Complejidad/costo. "
+        "Añade Ajuste a requisitos y Fuente RAG para que la decisión sea auditable:\n"
+        "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| ... | ... | ... | ... | ... | [1] |\n"
+        "Incluye una fila por CADA alternativa [n] recuperada (y al menos tres). "
+        "Para cada una cita su fuente como [n], desarrolla sus ventajas en dos "
+        "efectos técnicos tangibles y fundamenta ventajas y desventajas solo en "
+        "los trade-offs recibidos de RAG. Tras la tabla añade exactamente: "
+        "`- Recomendación: <una opción>` y `- Punto de decisión: ¿Aprueba los "
+        "trade-offs?`. No inventes una cita cuando no haya fuente RAG.\n\n"
         "Esta justificación debe hablar exclusivamente del patrón principal, "
         "no de las referencias 'Consultados no citados', y debe ser concreta: "
         "no uses frases genéricas como 'mejora la escalabilidad' sin vincularlas "

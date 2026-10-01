@@ -4,7 +4,7 @@ import { CitationList } from '../CitationList'
 import type { ProposalCitation } from '../../../api/proposals'
 
 describe('CitationList', () => {
-  it('shows one primary pattern and labels secondary references as not cited', () => {
+  it('shows every RAG source used by the trade-off comparison', () => {
     const citations: ProposalCitation[] = [
       { pattern_id: 7, pattern_name: 'Hexagonal', similarity: 0.91 },
       { pattern_id: 11, pattern_name: 'BFF', similarity: 0.88 },
@@ -13,9 +13,9 @@ describe('CitationList', () => {
     render(<CitationList citations={citations} />)
 
     expect(screen.getByText(/Hexagonal/)).toBeInTheDocument()
-    expect(screen.getByText('Patrón principal:')).toBeInTheDocument()
+    expect(screen.getByText('Fuentes RAG para los trade-offs:')).toBeInTheDocument()
     expect(screen.getByText(/BFF/)).toBeInTheDocument()
-    expect(screen.getByText('Consultados no citados:')).toBeInTheDocument()
+    expect(screen.getByText(/\[2\] BFF/)).toBeInTheDocument()
   })
 
   it('omits the similarity percentage when similarity is missing', () => {

@@ -80,7 +80,9 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
           stream is idle and nothing has been produced yet, offer the
           "Generar propuesta" action. It also serves as the retry affordance
           after a failed generation (store error surfaced inline). */}
-      {projectId != null && inFlight === 'idle' && !currentProposal?.content_markdown && (
+      {projectId != null && inFlight === 'idle' && (
+        !currentProposal?.content_markdown || lifecycle === 'rejected'
+      ) && (
         <div className="mt-3 flex flex-col gap-2">
           {error && (
             <p className="text-xs text-red-600" data-testid="proposal-generate-error">

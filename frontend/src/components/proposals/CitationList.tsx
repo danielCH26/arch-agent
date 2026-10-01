@@ -25,27 +25,19 @@ export function CitationList({ citations }: CitationListProps) {
     )
   }
 
-  const primary = citations.find((citation) => citation.source_role === 'primary') ?? citations[0]
-  const secondary = citations.filter((citation) => citation !== primary)
   const labelFor = (citation: ProposalCitation, index: number) =>
     citation.pattern_name ?? `Patrón #${citation.pattern_id ?? index}`
 
   return (
     <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">
-      <p>
-        <span className="font-semibold">Patrón principal:</span>{' '}
-        <span title={primary.snippet ?? undefined}>{labelFor(primary, 0)}</span>
-      </p>
-      {secondary.length > 0 && (
-        <p className="mt-1">
-          <span className="font-semibold">Consultados no citados:</span>{' '}
-          {secondary.map((citation, index) => (
-            <span key={`${citation.pattern_id ?? 'unknown'}-${index}`} title={citation.snippet ?? undefined}>
-              {index > 0 ? ', ' : ''}{labelFor(citation, index + 1)}
-            </span>
-          ))}
-        </p>
-      )}
+      <p className="font-semibold">Fuentes RAG para los trade-offs:</p>
+      <ol className="mt-1 list-decimal pl-4">
+        {citations.map((citation, index) => (
+          <li key={`${citation.pattern_id ?? 'unknown'}-${index}`}>
+            <span title={citation.snippet ?? undefined}>[{index + 1}] {labelFor(citation, index)}</span>
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }
