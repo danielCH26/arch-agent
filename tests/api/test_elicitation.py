@@ -507,6 +507,7 @@ class TestSendElicitationMessage:
 
         mock_flush.assert_called_once()
 
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.flush_langfuse")
     @patch("app.api.elicitation.get_langfuse_handler")
     @patch("app.api.elicitation.build_langchain_model")
@@ -515,7 +516,7 @@ class TestSendElicitationMessage:
     @patch("app.core.elicitation_agent.next_step")
     def test_flushes_langfuse_even_when_the_llm_call_fails(
         self, mock_next_step, mock_load, mock_require, mock_build_model,
-        mock_get_handler, mock_flush,
+        mock_get_handler, mock_flush, mock_save,
     ):
         """La traza de una llamada fallida tambien debe exportarse -- por
         eso el flush vive en un ``finally``, no solo en el camino feliz."""
@@ -602,10 +603,11 @@ class TestSendElicitationMessage:
         assert result.question == "¿Y las restricciones de tiempo?"
         mock_build_model.assert_not_called()
 
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
-    def test_409_when_llm_not_configured(self, mock_load, mock_require, mock_build_model):
+    def test_409_when_llm_not_configured(self, mock_load, mock_require, mock_build_model, mock_save):
         mock_require.return_value = make_project()
         mock_load.return_value = {
             "engram_state": {"1": {"requerimientos": {
@@ -624,11 +626,12 @@ class TestSendElicitationMessage:
 
         assert exc_info.value.status_code == 409
 
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.elicitation_agent.next_step")
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
-    def test_503_when_llm_call_fails(self, mock_load, mock_require, mock_build_model, mock_next_step):
+    def test_503_when_llm_call_fails(self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save):
         mock_require.return_value = make_project()
         mock_load.return_value = {
             "engram_state": {"1": {"requerimientos": {
@@ -648,12 +651,13 @@ class TestSendElicitationMessage:
 
         assert exc_info.value.status_code == 503
 
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.elicitation_agent.next_step")
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
     def test_502_when_model_returns_invalid_json(
-        self, mock_load, mock_require, mock_build_model, mock_next_step
+        self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save
     ):
         mock_require.return_value = make_project()
         mock_load.return_value = {
