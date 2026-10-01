@@ -34,3 +34,9 @@ decision_signals:
 fuentes:
   - titulo: "Deconstructing the Monolith (Shopify Engineering, 2019)"
     url: "https://shopify.engineering/deconstructing-monolith-designing-software-maximizes-developer-productivity"
+quality_attributes: [modificabilidad, simplicidad operativa, evolucionabilidad, cohesión por dominio]
+team_fit: "equipo de 3 a 15 personas que quiere límites claros por dominio sin pagar la operación de microservicios"
+example_scenarios:
+  - "Plataforma de e-commerce con catálogo, pedidos, pagos e inventario que un equipo de 6 personas despliega como una sola aplicación pero con módulos independientes"
+  - "Producto SaaS que hoy tiene un equipo pequeño y podría separar módulos en servicios más adelante si crece"
+  - "ERP para una pyme con facturación, compras y nómina como módulos que comparten una base de datos"

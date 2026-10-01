@@ -31,3 +31,9 @@ decision_signals:
 fuentes:
   - titulo: "CQRS pattern (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
+quality_attributes: [rendimiento de lectura, escalabilidad independiente de lecturas y escrituras, auditabilidad]
+team_fit: "equipo de 8 o más personas con experiencia en consistencia eventual y una carga de lectura muy superior a la de escritura"
+example_scenarios:
+  - "Plataforma con 100 veces más lecturas que escrituras, dashboards pesados y modelos de consulta distintos al modelo de escritura"
+  - "Sistema de trading o de reservas con picos de lectura donde las consultas deben escalar aparte de los comandos"
+  - "Aplicación de reportes en tiempo casi real sobre datos que se escriben con reglas de negocio complejas"

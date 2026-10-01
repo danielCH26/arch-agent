@@ -1,0 +1,45 @@
+pattern_name: "Arquitectura orientada a servicios (SOA)"
+category: "Distribuida"
+complexity: "alta"
+description: >
+  Expone las capacidades de negocio como servicios reutilizables con contratos
+  bien definidos que se integran, normalmente mediante un bus de servicios o una
+  capa de orquestación, para que distintas aplicaciones de la organización los
+  consuman.
+use_cases: >
+  Integración de sistemas empresariales heterogéneos (ERP, CRM, sistemas legados)
+  donde se busca reutilizar servicios corporativos entre varias aplicaciones y
+  estandarizar contratos, gobierno y seguridad a nivel de organización.
+when_not_to_use: >
+  Proyectos pequeños o aplicaciones aisladas sin necesidad de integrar sistemas
+  corporativos, donde un bus de servicios y el gobierno asociado costarían más
+  de lo que aportan.
+tradeoffs:
+  ventajas:
+    - "Los servicios de negocio se reutilizan entre varias aplicaciones de la organización, evitando duplicar la misma lógica en cada sistema"
+    - "Permite integrar sistemas heterogéneos y legados detrás de contratos estándar sin reescribirlos por completo"
+    - "Centraliza el gobierno, la seguridad y la monitorización de las integraciones de la empresa en un solo lugar"
+    - "Los contratos explícitos permiten que equipos distintos evolucionen sus servicios mientras respeten la interfaz publicada"
+  desventajas:
+    - "El bus de servicios o la capa de orquestación puede convertirse en un cuello de botella y en un punto único de falla"
+    - "Requiere gobierno, estándares y coordinación entre equipos, lo que añade burocracia y retrasa los cambios"
+    - "Los servicios grandes y compartidos generan un acoplamiento fuerte entre aplicaciones, parecido al de un monolito distribuido"
+    - "Es excesiva para aplicaciones pequeñas: el costo de infraestructura y gobierno supera el beneficio de reutilizar servicios"
+decision_signals:
+  - pregunta: "¿Debes integrar varios sistemas corporativos heterogéneos o legados?"
+    señal_patron: "sí -> Arquitectura orientada a servicios (SOA)"
+  - pregunta: "¿Varias aplicaciones de la organización necesitan reutilizar los mismos servicios de negocio?"
+    señal_patron: "sí -> Arquitectura orientada a servicios (SOA)"
+  - pregunta: "¿Existe un área de gobierno de TI que estandarice contratos y seguridad?"
+    señal_patron: "sí -> Arquitectura orientada a servicios (SOA)"
+quality_attributes: [interoperabilidad, reutilización de servicios, gobierno de integración, estandarización]
+team_fit: "organización con varios equipos y sistemas corporativos que necesita integrarlos, con gobierno de TI y presupuesto para infraestructura"
+example_scenarios:
+  - "Banco o aseguradora que debe integrar su core legado, su CRM y su portal web mediante servicios corporativos reutilizables"
+  - "Empresa con ERP, sistema de nómina y e-commerce que necesitan compartir clientes y facturación a través de contratos estándar"
+  - "Entidad pública que expone servicios de consulta reutilizables a varias aplicaciones y a otras entidades"
+fuentes:
+  - titulo: "What is service-oriented architecture? (AWS)"
+    url: "https://aws.amazon.com/what-is/service-oriented-architecture/"
+  - titulo: "Service-oriented architecture (Wikipedia)"
+    url: "https://en.wikipedia.org/wiki/Service-oriented_architecture"

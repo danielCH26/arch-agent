@@ -35,3 +35,9 @@ decision_signals:
 fuentes:
   - titulo: "The Clean Architecture (Robert C. Martin, 2012)"
     url: "https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html"
+quality_attributes: [testabilidad, independencia de frameworks, mantenibilidad, claridad del dominio]
+team_fit: "equipo de 3 a 10 personas con producto de larga vida donde el framework y la base de datos pueden cambiar"
+example_scenarios:
+  - "Aplicación móvil y web con la misma lógica de negocio que debe sobrevivir a un cambio de framework en los próximos años"
+  - "Sistema de reservas de larga vida donde casos de uso como 'crear reserva' y 'cancelar reserva' deben ser claros y testeables"
+  - "Backend de una fintech que necesita aislar reglas de negocio del ORM y del framework web"

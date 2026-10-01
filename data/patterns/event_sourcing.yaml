@@ -33,3 +33,9 @@ fuentes:
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
   - titulo: "Event Sourcing (Martin Fowler)"
     url: "https://martinfowler.com/eaaDev/EventSourcing.html"
+quality_attributes: [auditabilidad, trazabilidad, reconstrucción histórica del estado]
+team_fit: "equipo de 8 o más personas con experiencia en eventos y requisito legal o de negocio de historial completo e inmutable"
+example_scenarios:
+  - "Sistema bancario o contable que debe conservar cada cambio de saldo como un evento inmutable para auditoría regulatoria"
+  - "Plataforma de seguros donde hay que reconstruir el estado de una póliza en cualquier fecha pasada"
+  - "Aplicación donde el requisito legal es poder reproducir toda la historia de un expediente y deshacer cambios"

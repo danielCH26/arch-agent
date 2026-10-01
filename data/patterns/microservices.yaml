@@ -31,3 +31,9 @@ decision_signals:
 fuentes:
   - titulo: "Microservices architecture style (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/microservices"
+quality_attributes: [escalabilidad independiente, despliegue independiente, autonomía de equipos, resiliencia]
+team_fit: "varios equipos de 10 o más personas con DevOps maduro, contenedores y presupuesto de operación"
+example_scenarios:
+  - "Plataforma con 5 equipos independientes, millones de usuarios y necesidad de escalar y desplegar cada capacidad por separado"
+  - "Marketplace con módulos de búsqueda, pagos y mensajería con cargas de trabajo muy distintas y equipos dedicados"
+  - "Empresa que ya tiene Kubernetes, CI/CD y observabilidad y necesita despliegues diarios independientes por dominio"

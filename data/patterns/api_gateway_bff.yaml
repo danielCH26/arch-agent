@@ -37,3 +37,9 @@ fuentes:
     url: "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/gateway"
   - titulo: "Pattern: Backends For Frontends (Sam Newman)"
     url: "https://samnewman.io/patterns/architectural/bff/"
+quality_attributes: [adaptación por cliente, seguridad centralizada, reducción de llamadas del cliente]
+team_fit: "equipo de 5 o más personas con varios clientes distintos (web, móvil, terceros) consumiendo varios servicios"
+example_scenarios:
+  - "App móvil y web que necesitan respuestas distintas agregando datos de varios servicios para reducir las llamadas del cliente"
+  - "Plataforma con múltiples servicios backend que expone una sola entrada con autenticación, límites de uso y enrutamiento"
+  - "Producto con una app móvil, un portal web y una API pública para socios, cada uno con necesidades de datos diferentes"

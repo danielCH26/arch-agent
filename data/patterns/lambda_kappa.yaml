@@ -1,0 +1,44 @@
+pattern_name: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
+category: "Flujo de datos"
+complexity: "alta"
+description: >
+  Combina o unifica el procesamiento por lotes y en tiempo real: Lambda mantiene
+  una capa batch para precisión histórica y una capa de velocidad para datos
+  recientes; Kappa simplifica todo en un único flujo de streaming reprocesable.
+use_cases: >
+  Sistemas que necesitan resultados casi en tiempo real sobre grandes volúmenes de
+  eventos y también análisis histórico: telemetría, clickstream, detección de
+  fraude, monitoreo de sensores y analítica de uso de plataformas.
+when_not_to_use: >
+  Proyectos con volúmenes moderados o sin requisito de tiempo real, y equipos
+  pequeños sin experiencia en streaming, donde un pipeline por lotes simple es
+  suficiente y mucho más barato de operar.
+tradeoffs:
+  ventajas:
+    - "Entrega resultados casi en tiempo real sin renunciar a la precisión del procesamiento histórico completo sobre todos los datos"
+    - "Escala horizontalmente para volúmenes muy grandes de eventos usando plataformas de streaming y almacenamiento distribuido"
+    - "Kappa simplifica el sistema a una sola lógica de procesamiento que se puede reprocesar reproduciendo el log de eventos"
+    - "Permite recomputar los resultados cuando cambia la lógica, reprocesando los datos crudos conservados"
+  desventajas:
+    - "Lambda obliga a mantener la misma lógica en dos sistemas (batch y streaming), con riesgo de resultados distintos y doble trabajo"
+    - "Requiere plataformas complejas (Kafka, Spark, Flink) y personal con experiencia en streaming, lo que encarece la operación"
+    - "Depurar, probar y reprocesar flujos de eventos es más difícil que hacerlo con lotes y archivos estáticos"
+    - "Para volúmenes moderados o analítica diaria es sobreingeniería: un ETL por lotes cubre la necesidad con mucho menos costo"
+decision_signals:
+  - pregunta: "¿Necesitas resultados en segundos sobre un flujo continuo de eventos y también análisis histórico?"
+    señal_patron: "sí -> Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
+  - pregunta: "¿El volumen de eventos es muy alto, de miles por segundo o más?"
+    señal_patron: "sí -> Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
+  - pregunta: "¿Tu equipo tiene experiencia operando plataformas de streaming?"
+    señal_patron: "sí -> Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
+quality_attributes: [baja latencia de resultados, escalabilidad, precisión histórica, tolerancia a grandes volúmenes]
+team_fit: "equipo de 6 o más personas con ingeniería de datos y experiencia en streaming (Kafka, Spark, Flink)"
+example_scenarios:
+  - "Plataforma de telemetría de miles de sensores IoT con alertas en segundos y reportes históricos mensuales"
+  - "Sistema de detección de fraude con tarjetas que evalúa transacciones en tiempo real y reentrena con el histórico"
+  - "Analítica de clickstream de un sitio con millones de visitas que alimenta dashboards en vivo y análisis diarios"
+fuentes:
+  - titulo: "Big data architectures (Microsoft Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/databases/guide/big-data-architectures"
+  - titulo: "Lambda architecture (Wikipedia)"
+    url: "https://en.wikipedia.org/wiki/Lambda_architecture"

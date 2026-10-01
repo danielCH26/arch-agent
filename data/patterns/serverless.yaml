@@ -32,3 +32,9 @@ decision_signals:
 fuentes:
   - titulo: "Serverless Architectures (Mike Roberts, martinfowler.com, 2018)"
     url: "https://martinfowler.com/articles/serverless.html"
+quality_attributes: [pago por uso, escalabilidad automática, bajo costo operativo en cargas intermitentes]
+team_fit: "equipo pequeño sin infraestructura dedicada, carga variable o intermitente y tolerancia a arranques en frío"
+example_scenarios:
+  - "API con tráfico esporádico, equipo de 2 personas, sin servidores que administrar y facturación solo por uso"
+  - "Procesamiento de imágenes o archivos subidos por usuarios que se dispara por evento y escala de 0 a miles"
+  - "Backend de un evento o campaña de pocas semanas con picos fuertes de tráfico y presupuesto limitado"

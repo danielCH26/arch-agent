@@ -31,3 +31,9 @@ decision_signals:
 fuentes:
   - titulo: "N-tier architecture style (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/n-tier"
+quality_attributes: [simplicidad, time-to-market, mantenibilidad, bajo costo de operación]
+team_fit: "equipo de 1 a 5 personas, MVP, proyecto académico o CRUD con presupuesto bajo y un solo despliegue"
+example_scenarios:
+  - "Aplicación web de gestión de citas para una clínica pequeña, equipo de 3 desarrolladores, 4 meses de plazo, un solo servidor y una base de datos relacional"
+  - "Sistema de inventario interno para una tienda con formularios, reportes sencillos y menos de 200 usuarios concurrentes"
+  - "Proyecto universitario de un sistema de biblioteca con login, catálogo y préstamos, sin equipo de infraestructura"

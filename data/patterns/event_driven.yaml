@@ -31,3 +31,9 @@ decision_signals:
 fuentes:
   - titulo: "Event-driven architecture style (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/event-driven"
+quality_attributes: [desacoplamiento, escalabilidad, tolerancia a picos, procesamiento asíncrono]
+team_fit: "equipo de 6 o más personas con experiencia en brokers de mensajes y observabilidad distribuida"
+example_scenarios:
+  - "Plataforma de logística donde pedidos, inventario, facturación y notificaciones reaccionan a eventos sin depender unos de otros"
+  - "Sistema que procesa miles de eventos por segundo de sensores IoT y dispara alertas y flujos asíncronos"
+  - "E-commerce con picos de ventas donde el pago, el envío y los correos deben procesarse de forma asíncrona"

@@ -34,3 +34,9 @@ fuentes:
     url: "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/hexagonal-architecture.html"
   - titulo: "Hexagonal architecture (Alistair Cockburn)"
     url: "https://alistair.cockburn.us/hexagonal-architecture/"
+quality_attributes: [testabilidad, portabilidad, modificabilidad, independencia tecnológica]
+team_fit: "equipo de 3 a 10 personas con dominio de negocio complejo que debe probarse sin infraestructura"
+example_scenarios:
+  - "Sistema de pagos que debe poder cambiar de proveedor (Stripe, PayU, Wompi) sin reescribir la lógica de negocio"
+  - "Servicio con reglas de negocio complejas que se expone por REST y por una cola de mensajes y debe tener alta cobertura de pruebas unitarias"
+  - "Aplicación que hoy usa PostgreSQL pero el cliente podría exigir migrar a otra base de datos o a una API externa"

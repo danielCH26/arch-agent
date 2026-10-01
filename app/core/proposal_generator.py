@@ -27,7 +27,13 @@ from langchain_core.documents import Document
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
+from app.core.query_profile import (
+    extract_project_profile,
+    profile_to_constraints_text,
+    profile_to_query,
+)
 from app.core.rag import similarity_search
 from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
 from app.models.project import Project
@@ -182,15 +188,47 @@ class ProposalGenerator:
             document_names,
         )
 
-        # 3. Build summary query for RAG (project name + description + feedback
-        # + requerimientos, para que los patrones se elijan por lo que el
-        # usuario realmente pidió y no solo por el nombre del proyecto).
-        summary_query = _build_summary_query(
+        # 2c. El modelo se adquiere ANTES del RAG: ahora tambien sirve para
+        # resumir el proyecto (perfil) y reordenar los candidatos.
+        try:
+            model = await asyncio.to_thread(build_langchain_model, self.user_id)
+        except LLMConfigError as exc:
+            yield ("error", str(exc))
+            return
+
+        # 3. Build summary query for RAG. Con perfil estructurado (dominio,
+        # equipo, plazo, escala, atributos de calidad) la consulta se parece a
+        # los chunks `scenarios`/`fit` del catalogo; sin perfil (LLM caido o
+        # desactivado con PROPOSAL_QUERY_PROFILE=off) se usa la consulta
+        # clasica: nombre + descripcion + feedback + requerimientos.
+        classic_query = _build_summary_query(
             project.name,
             project.description,
             feedback,
             prior_content,
             requirements_text,
+        )
+        profile = await extract_project_profile(
+            model,
+            "\n".join(
+                part
+                for part in (
+                    project.name,
+                    project.description,
+                    requirements_text,
+                    documents_text,
+                    feedback,
+                )
+                if part
+            ),
+        )
+        summary_query = profile_to_query(profile, classic_query)
+        if profile and feedback and feedback.strip():
+            summary_query += f"\nCambios solicitados: {feedback.strip()}"
+        logger.info(
+            "Proposal RAG query project_id=%s profile=%s",
+            effective_project_id,
+            "ok" if profile else "fallback",
         )
 
         # 4. Retrieve patterns from PGVector.
@@ -226,11 +264,40 @@ class ProposalGenerator:
         )
         explicit_text = "\n".join(
             part
-            for part in (project.name, project.description, requirements_text, feedback)
+            for part in (
+                project.name,
+                project.description,
+                requirements_text,
+                feedback,
+                # Cifras normalizadas (solo numeros y marcas fijas, nunca texto
+                # libre del LLM) para que las reglas de escala tambien
+                # funcionen cuando el usuario no escribio "equipo de 3 personas".
+                profile_to_constraints_text(profile),
+            )
             if part
         )
+        # Dos pasadas: 1) el orden por similitud + reglas duras define un pool
+        # de candidatos; 2) el LLM los reordena y ese orden desempata dentro de
+        # las reglas duras (ver _select_citations).
+        pool = _select_citations(
+            docs,
+            top_n=max(RERANK_POOL_SIZE, PROPOSAL_RAG_TOP_N),
+            explicit_text=explicit_text,
+            feedback=feedback,
+        )
+        ranked = await rank_candidates(model, summary_query, pool)
+        if ranked:
+            logger.info(
+                "Proposal RAG rerank project_id=%s %s",
+                effective_project_id,
+                ranking_log(*ranked),
+            )
         citations = _select_citations(
-            docs, explicit_text=explicit_text, feedback=feedback
+            docs,
+            explicit_text=explicit_text,
+            feedback=feedback,
+            llm_ranking=ranked[0] if ranked else None,
+            llm_reasons=ranked[1] if ranked else None,
         )
         logger.info(
             "Proposal RAG project_id=%s candidates=%s cited=%s top=%s",
@@ -261,12 +328,6 @@ class ProposalGenerator:
             requirements_text=requirements_text,
             documents_text=documents_text,
         )
-
-        try:
-            model = await asyncio.to_thread(build_langchain_model, self.user_id)
-        except LLMConfigError as exc:
-            yield ("error", str(exc))
-            return
 
         # 6. Stream LLM tokens + accumulate the full markdown.
         full_markdown_chunks: list[str] = []
@@ -512,7 +573,7 @@ def _pattern_aliases(pattern_name: str) -> list[str]:
     """
     normalized = _normalize_text(pattern_name)
     aliases = {normalized}
-    for part in re.split(r"[()+]", normalized):
+    for part in re.split(r"[()+/]", normalized):
         part = part.strip()
         if len(part) < 3:
             continue
@@ -602,6 +663,8 @@ def _select_citations(
     min_similarity: float | None = None,
     explicit_text: str | None = None,
     feedback: str | None = None,
+    llm_ranking: list[str] | None = None,
+    llm_reasons: dict[str, str] | None = None,
 ) -> list[dict]:
     """Elige los patrones que mejor encajan y los proyecta al payload de citations.
 
@@ -617,6 +680,12 @@ def _select_citations(
     y devuelve los ``top_n`` primeros.
     Solo descarta por similitud si se configura un piso explicito
     (``PROPOSAL_RAG_MIN_SIMILARITY`` > 0).
+
+    ``llm_ranking`` (nombres de patron, del mejor al peor; ver
+    app/core/pattern_ranker.py) reemplaza a la similitud como DESEMPATE: se
+    aplica despues de las reglas duras (descalificacion por escala, rechazo o
+    pedido del usuario, senal "no usar"), asi que el LLM nunca puede saltarse
+    una prohibicion. Los patrones que no aparecen en la lista quedan detras.
 
     ``feedback`` (los cambios que pide el usuario al modificar) MANDA sobre el
     ranking: el patron que el feedback pide pasa a ser el principal aunque tenga
@@ -691,6 +760,15 @@ def _select_citations(
             return False
         return not _explicitly_requested(doc.metadata.get("pattern_name"), explicit_text)
 
+    llm_position = {_normalize_text(name): i for i, name in enumerate(llm_ranking or [])}
+
+    def _llm_position(doc: Document) -> int:
+        if not llm_position:
+            return 0  # sin ranking del LLM no cambia nada
+        return llm_position.get(
+            _normalize_text(doc.metadata.get("pattern_name")), len(llm_position)
+        )
+
     ordered = sorted(
         best_fit.items(),
         key=lambda item: (
@@ -698,6 +776,7 @@ def _select_citations(
             stance[item[0]] == "reject",
             stance[item[0]] != "want",
             _avoided(item[0]),
+            _llm_position(item[1]),
             -_score(item[1]),
         ),
     )
@@ -720,6 +799,9 @@ def _select_citations(
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
             }
         )
+        reason = (llm_reasons or {}).get(str(doc.metadata.get("pattern_name")))
+        if reason:
+            citations[-1]["llm_reason"] = reason
     # La primera coincidencia es la que el motor selecciona como sustento
     # principal de la propuesta. El resto aporta contexto, pero no se debe
     # presentar como si estuviera citado: esa distinción llega hasta la UI.
@@ -960,6 +1042,11 @@ def _build_prompt(
                 f"[{index}] {cite.get('pattern_name')}\n"
                 f"Contexto: {cite.get('snippet') or ''}\n"
                 f"Trade-offs RAG: {tradeoffs_context}"
+                + (
+                    f"\nAjuste al proyecto (análisis previo): {cite['llm_reason']}"
+                    if cite.get("llm_reason")
+                    else ""
+                )
             )
         context_section = "\n\n".join(context_blocks)
         candidates_intro = (
