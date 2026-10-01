@@ -532,7 +532,7 @@ function DiagramAttachments({
                       value={feedback}
                       onChange={(event) => setFeedback(event.target.value)}
                       rows={3}
-                      className="w-full rounded-lg border border-sky-200 bg-white p-2 text-sm text-gray-900 outline-none focus:border-sky-500"
+                      className="w-full rounded-lg border border-sky-200 bg-white p-2 text-sm text-gray-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40"
                       placeholder="Describe los cambios que necesitas en el diagrama..."
                     />
                     <div className="flex flex-wrap gap-2">
@@ -547,7 +547,7 @@ function DiagramAttachments({
         )
       })}
 
-      {error && <p className="rounded-lg bg-red-50 p-2 text-xs text-red-700">{error}</p>}
+      {error && <p role="alert" className="rounded-lg bg-red-50 p-2 text-xs text-red-700">{error}</p>}
 
       {expandedUrl && (
         <div className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-slate-950/80 p-6" onClick={() => setExpandedUrl(null)} role="button" tabIndex={0} aria-label="Cerrar diagrama ampliado">

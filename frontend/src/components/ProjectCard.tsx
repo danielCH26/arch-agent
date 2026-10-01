@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Project } from '../api/projects'
 import { projectsStore } from '../stores/projectsStore'
@@ -31,6 +31,25 @@ export function ProjectCard({ project }: ProjectCardProps) {
   const navigate = useNavigate()
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const deleteButtonRef = useRef<HTMLButtonElement>(null)
+  const cancelButtonRef = useRef<HTMLButtonElement>(null)
+
+  // Diálogo de confirmación: foco en "Cancelar" (la opción segura), Esc
+  // cierra y el foco vuelve al botón de eliminar.
+  useEffect(() => {
+    if (!showDeleteConfirm) return
+    cancelButtonRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isDeleting) closeDeleteConfirm()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [showDeleteConfirm, isDeleting])
+
+  const closeDeleteConfirm = () => {
+    setShowDeleteConfirm(false)
+    deleteButtonRef.current?.focus()
+  }
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -58,25 +77,33 @@ export function ProjectCard({ project }: ProjectCardProps) {
   return (
     <div className="group rounded-[10px] border border-gray-300 bg-[#fafafa] p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
-        <h3
-          className="cursor-pointer text-xl font-semibold text-gray-900 hover:text-blue-600"
-          onClick={() => navigate(`/projects/${project.id}`)}
-        >
-          {project.name}
+        <h3 className="min-w-0 break-words text-xl font-semibold text-gray-900">
+          <button
+            type="button"
+            onClick={() => navigate(`/projects/${project.id}`)}
+            className="text-left hover:text-blue-600"
+          >
+            {project.name}
+          </button>
         </h3>
         <div className="flex shrink-0 items-center gap-2">
           <span className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium ${badge.className}`}>
             {badge.label}
           </span>
+          {/* Siempre visible en pantallas táctiles; en desktop aparece al
+              pasar el ratón o al recibir el foco con el teclado. */}
           <button
+            ref={deleteButtonRef}
+            type="button"
             onClick={(e) => {
               e.stopPropagation()
               setShowDeleteConfirm(true)
             }}
-            className="p-1 text-gray-300 opacity-0 transition-opacity hover:text-red-600 group-hover:opacity-100"
+            className="rounded p-1 text-gray-500 transition-opacity hover:text-red-600 focus-visible:opacity-100 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100"
             title="Eliminar proyecto"
+            aria-label={`Eliminar proyecto ${project.name}`}
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg aria-hidden="true" className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>
           </button>
@@ -114,20 +141,29 @@ export function ProjectCard({ project }: ProjectCardProps) {
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="mx-4 w-full max-w-sm rounded-lg bg-white p-6">
-            <h3 className="text-lg font-semibold text-gray-900">Confirmar eliminación</h3>
-            <p className="mt-2 text-gray-600">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`delete-title-${project.id}`}
+            aria-describedby={`delete-desc-${project.id}`}
+            className="mx-4 w-full max-w-sm rounded-lg bg-white p-6"
+          >
+            <h3 id={`delete-title-${project.id}`} className="text-lg font-semibold text-gray-900">Confirmar eliminación</h3>
+            <p id={`delete-desc-${project.id}`} className="mt-2 text-gray-600">
               ¿Estás seguro de eliminar "{project.name}"? Esta acción no se puede deshacer.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
-                onClick={() => setShowDeleteConfirm(false)}
+                ref={cancelButtonRef}
+                type="button"
+                onClick={closeDeleteConfirm}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg"
                 disabled={isDeleting}
               >
                 Cancelar
               </button>
               <button
+                type="button"
                 onClick={handleDelete}
                 className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
                 disabled={isDeleting}

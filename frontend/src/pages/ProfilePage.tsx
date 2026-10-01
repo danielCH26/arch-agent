@@ -203,7 +203,7 @@ export function ProfilePage() {
         )}
 
         {profileFormError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {profileFormError}
           </div>
         )}
@@ -243,8 +243,7 @@ export function ProfilePage() {
               <button
                 type="button"
                 onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                tabIndex={-1}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
                 aria-label={showCurrentPassword ? 'Ocultar contraseña actual' : 'Mostrar contraseña actual'}
               >
                 {showCurrentPassword ? (
@@ -277,8 +276,7 @@ export function ProfilePage() {
               <button
                 type="button"
                 onClick={() => setShowNewPassword(!showNewPassword)}
-                tabIndex={-1}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
                 aria-label={showNewPassword ? 'Ocultar nueva contraseña' : 'Mostrar nueva contraseña'}
               >
                 {showNewPassword ? (
@@ -311,7 +309,7 @@ export function ProfilePage() {
         </div>
 
         {passwordFormError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {passwordFormError}
           </div>
         )}

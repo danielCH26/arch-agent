@@ -60,10 +60,16 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   }
 
   return (
-    <section className="mb-4 rounded-2xl border border-sky-200 bg-white p-4 shadow-sm" data-testid="proposal-card">
+    <section className="mb-4 rounded-2xl border border-sky-200 bg-white p-4 shadow-sm" data-testid="proposal-card" aria-labelledby="proposal-title" aria-busy={streaming}>
+      {/* Lector de pantalla: estado de la generación, no cada fragmento del texto. */}
+      <p className="sr-only" aria-live="polite">
+        {streaming
+          ? activity === 'modifying' ? 'Generando nueva iteración de la propuesta…' : 'Generando propuesta…'
+          : proposal?.id ? `Propuesta, iteración ${proposal.iteration}: ${lifecycleLabel[proposal.lifecycle]}.` : ''}
+      </p>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">
+          <h2 id="proposal-title" className="text-base font-semibold text-gray-900">
             Propuesta de arquitectura
             {proposal && <span className="ml-2 text-sm font-normal text-gray-500">· iteración {proposal.iteration}</span>}
           </h2>
@@ -115,14 +121,14 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
               Modificar
             </button>
             <button type="button" disabled={busy} onClick={() => void handleDecision('reject')} data-testid="proposal-reject" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">Rechazar</button>
-            <input value={comment} disabled={busy} onChange={(event) => setComment(event.target.value)} maxLength={2000} className="min-w-40 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="Comentario opcional" />
+            <input value={comment} disabled={busy} onChange={(event) => setComment(event.target.value)} maxLength={2000} className="min-w-40 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="Comentario opcional" aria-label="Comentario opcional sobre la decisión" />
           </div>
           <p className="mt-2 text-xs text-gray-500">Aprobar deja la fase lista para avanzar. Rechazar devuelve el proyecto a requerimientos.</p>
 
           {showFeedback && (
             <div className="mt-3 space-y-2">
               <label className="block text-sm font-medium text-gray-700" htmlFor="proposal-feedback">¿Qué debería cambiar?</label>
-              <textarea id="proposal-feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2000} className="w-full rounded-lg border border-sky-200 p-3 text-sm outline-none focus:border-sky-500" placeholder="Ej.: incluir caché, cambiar tecnología o ajustar una decisión..." />
+              <textarea id="proposal-feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2000} className="w-full rounded-lg border border-sky-200 p-3 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40" placeholder="Ej.: incluir caché, cambiar tecnología o ajustar una decisión..." />
               <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
             </div>
           )}

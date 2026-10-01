@@ -172,7 +172,7 @@ export function DocumentUploader({ projectId, onUploadComplete }: DocumentUpload
       </div>
 
       {error && (
-        <div className="mt-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+        <div role="alert" className="mt-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
           {error}
         </div>
       )}

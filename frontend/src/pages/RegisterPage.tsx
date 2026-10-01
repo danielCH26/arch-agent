@@ -118,7 +118,6 @@ export function RegisterPage() {
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              tabIndex={-1}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
               aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
             >
@@ -156,7 +155,6 @@ export function RegisterPage() {
             <button
               type="button"
               onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-              tabIndex={-1}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
               aria-label={showConfirmPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
             >
@@ -175,7 +173,7 @@ export function RegisterPage() {
         </div>
 
         {error && (
-          <div className="text-red-600 text-sm text-center">{error}</div>
+          <div role="alert" className="text-red-600 text-sm text-center">{error}</div>
         )}
 
         <button

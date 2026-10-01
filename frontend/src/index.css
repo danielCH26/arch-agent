@@ -27,3 +27,12 @@ input::-ms-reveal,
 input::-ms-clear {
   display: none;
 }
+
+/* Contorno visible al navegar con teclado (no aparece al hacer clic). Los
+   campos con `focus:outline-none` usan su propio anillo de foco. */
+@layer base {
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid #0e54ce;
+    outline-offset: 2px;
+  }
+}

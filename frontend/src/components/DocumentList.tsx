@@ -96,7 +96,7 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
   return (
     <div>
       {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+        <div role="alert" className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
           {error}
         </div>
       )}

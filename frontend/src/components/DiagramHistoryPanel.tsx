@@ -48,7 +48,7 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
         </div>
 
         {loading && <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-200 border-b-sky-600" /></div>}
-        {!loading && error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+        {!loading && error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         {!loading && !error && diagrams.length === 0 && <p className="py-8 text-center text-sm text-gray-500">Todavía no hay diagramas generados.</p>}
 
         <div className="space-y-4">

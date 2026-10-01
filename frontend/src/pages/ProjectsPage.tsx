@@ -30,7 +30,7 @@ export function ProjectsPage() {
       </div>
 
       {error && (
-        <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
+        <div role="alert" className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
           {error}
         </div>
       )}

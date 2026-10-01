@@ -87,7 +87,7 @@ export function ChatPage() {
 
   if (error) {
     return (
-      <div className="p-4 bg-red-50 text-red-700 rounded-lg">
+      <div role="alert" className="p-4 bg-red-50 text-red-700 rounded-lg">
         {error}
       </div>
     )
@@ -145,7 +145,7 @@ export function ChatPage() {
         </div>
       )}
       {phaseActionError && (
-        <div className="px-4 py-2 text-sm text-red-700 bg-red-50">{phaseActionError}</div>
+        <div role="alert" className="px-4 py-2 text-sm text-red-700 bg-red-50">{phaseActionError}</div>
       )}
 
       <div className="flex-1 min-h-0">

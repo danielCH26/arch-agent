@@ -1,9 +1,21 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { chatStore } from '../stores/chatStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
 import robotAvatar from '../assets/robot-avatar.png'
+
+// Texto plano para el lector de pantalla: sin bloques de código ni marcas
+// de markdown.
+function toSpokenText(markdown: string): string {
+  return markdown
+    .replace(/```mermaid[\s\S]*?```/gi, ' (diagrama) ')
+    .replace(/```[\s\S]*?```/g, ' (bloque de código) ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[#*_`>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 interface ChatWindowProps {
   projectId: number
@@ -14,6 +26,22 @@ interface ChatWindowProps {
 export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory } = chatStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  // Anuncios para lectores de pantalla: la respuesta llega por fragmentos,
+  // así que se anuncia una sola vez al terminar en vez de marcar la lista
+  // de mensajes como región viva.
+  const [announcement, setAnnouncement] = useState('')
+  const wasStreaming = useRef(false)
+
+  useEffect(() => {
+    if (isStreaming && !wasStreaming.current) {
+      setAnnouncement('ArchAgent está escribiendo…')
+    } else if (!isStreaming && wasStreaming.current) {
+      const last = [...messages].reverse().find((message) => message.role === 'assistant')
+      const spoken = last ? toSpokenText(last.content) : ''
+      setAnnouncement(spoken ? `ArchAgent respondió: ${spoken}` : '')
+    }
+    wasStreaming.current = isStreaming
+  }, [isStreaming, messages])
 
   // Cada proyecto tiene una conversación propia en el backend. El guard evita
   // el doble GET que React StrictMode puede disparar durante el montaje.
@@ -39,6 +67,9 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
 
   return (
     <div className="flex flex-col h-full">
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {phase === 'propuesta' && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
@@ -76,7 +107,7 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         )}
 
         {error && (
-          <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+          <div role="alert" className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">
             {error}
           </div>
         )}

@@ -95,7 +95,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
   }
 
   if (!state) {
-    return error ? <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div> : null
+    return error ? <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div> : null
   }
 
   if (state.done && state.resumen) {
@@ -129,8 +129,13 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Lector de pantalla: anuncia solo la pregunta nueva. */}
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {state.question ? `Pregunta de ArchAgent: ${state.question}` : ''}
+      </div>
+
       <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
-        <span>ℹ️</span>
+        <span aria-hidden="true">ℹ️</span>
         <span>Voy a hacerte preguntas para entender tu proyecto</span>
       </div>
 
@@ -163,6 +168,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
             placeholder="Escribe tu respuesta..."
+            aria-label="Tu respuesta"
             disabled={sending}
             className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
           />
@@ -176,7 +182,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
         </form>
       )}
 
-      {error && <p className="text-sm text-red-700">{error}</p>}
+      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
     </div>
   )
 }

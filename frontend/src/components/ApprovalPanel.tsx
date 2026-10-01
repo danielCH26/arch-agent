@@ -140,6 +140,7 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
               placeholder="Describe qué te gustaría cambiar..."
+              aria-label="Cambios que quieres en el resumen"
               rows={3}
               disabled={loading}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
@@ -167,7 +168,7 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
           </form>
         )}
 
-        {error && <p className="mt-2 text-center text-sm text-red-700">{error}</p>}
+        {error && <p role="alert" className="mt-2 text-center text-sm text-red-700">{error}</p>}
       </div>
     </div>
   )

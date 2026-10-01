@@ -44,7 +44,7 @@ export function ProjectPage() {
 
   if (error) {
     return (
-      <div className="p-4 bg-red-50 text-red-700 rounded-lg">
+      <div role="alert" className="p-4 bg-red-50 text-red-700 rounded-lg">
         {error}
       </div>
     )

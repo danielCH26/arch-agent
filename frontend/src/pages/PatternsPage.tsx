@@ -61,7 +61,8 @@ export function PatternsPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Buscar por nombre, descripción o caso de uso..."
-          className="min-w-60 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-500"
+          aria-label="Buscar patrones"
+          className="min-w-60 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40"
         />
         <select
           value={category}
@@ -80,7 +81,7 @@ export function PatternsPage() {
         </div>
       )}
 
-      {error && <div className="rounded-lg bg-red-50 p-4 text-red-700">{error}</div>}
+      {error && <div role="alert" className="rounded-lg bg-red-50 p-4 text-red-700">{error}</div>}
 
       {!loading && !error && (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
@@ -210,7 +211,7 @@ function SourceChunks({ patternId }: { patternId: number }) {
       {open && (
         <div className="mt-3 space-y-3">
           {loading && <p className="text-sm text-gray-500">Cargando fuentes...</p>}
-          {error && <p className="text-sm text-red-700">{error}</p>}
+          {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
           {chunks?.length === 0 && <p className="text-sm italic text-gray-400">No hay fuentes cargadas para este patrón.</p>}
           {chunks?.map((chunk) => (
             <div key={chunk.id} className="rounded-lg bg-slate-50 p-3">
