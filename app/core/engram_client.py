@@ -1,22 +1,32 @@
 """Cliente mínimo para la API HTTP local de Engram."""
 
 import json
+import logging
 import os
+import time
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-
+logger = logging.getLogger(__name__)
 class EngramError(RuntimeError):
     """Engram no está disponible o devolvió una respuesta inválida."""
+
+
+# HTTP methods that are safe to retry on transient network errors. POST/PUT/
+# DELETE are NOT safe — retrying them after a write may duplicate the
+# operation on the server. PR #85 round 4 (danielCH26): restrict retry to
+# safe methods only.
+SAFE_RETRY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class EngramClient:
     def __init__(self, base_url: str | None = None, timeout: float = 3.0):
         self.base_url = (base_url or os.getenv("ENGRAM_URL", "http://localhost:7437")).rstrip("/")
         self.timeout = timeout
-
+        self.max_retries = 3
+        self.backoff_base = 0.5
     def create_session(self, session_id: str, project: str, directory: str) -> None:
         self._request("POST", "/sessions", {"id": session_id, "project": project, "directory": directory})
 
@@ -140,11 +150,66 @@ class EngramClient:
             method=method,
             headers={"Content-Type": "application/json"} if data else {},
         )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                payload = response.read().decode("utf-8")
-        except (URLError, OSError) as exc:
-            raise EngramError(f"No fue posible conectar con Engram: {exc}") from exc
+
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    payload = response.read().decode("utf-8")
+                    break
+            except HTTPError as exc:
+                # 4xx/5xx responses are not retried — re-sending won't change
+                # the result (e.g., a 400 from an FK violation will still be 400).
+                # Surface the error immediately so the caller can react.
+                # Log only the HTTP code + reason, never the full exception
+                # object (it can include the request URL with query string).
+                logger.error(
+                    "Engram request %s %s returned HTTP %s: %s",
+                    method, path, exc.code, exc.reason,
+                )
+                raise EngramError(
+                    f"Engram devolvió HTTP {exc.code}: {exc.reason}"
+                ) from exc
+            except (URLError, TimeoutError, OSError) as exc:
+                # Transient network errors: connection refused, DNS, timeout.
+                # Retry with exponential backoff. We only retry on errors
+                # that signal "didn't reach the server" — once the server
+                # has processed the request, retrying could duplicate the
+                # operation (POSTs in particular). For unsafe methods
+                # (POST, DELETE) we surface the error after the first failure.
+                # PR #85 round 4 (danielCH26): restrict retry to safe methods
+                # to avoid duplicating side effects on Engram.
+                last_exc = exc
+                if method.upper() in SAFE_RETRY_METHODS and attempt < self.max_retries - 1:
+                    wait = self.backoff_base * (2 ** attempt)
+                    # Sanitize the log: never include the exception object
+                    # (it can carry the full URL with query string — PII).
+                    # Log only the class name, the method, and the path.
+                    logger.warning(
+                        "Engram request %s %s failed (attempt %s/%s, %s). Retrying in %.1fs",
+                        method,
+                        path,
+                        attempt + 1,
+                        self.max_retries,
+                        exc.__class__.__name__,
+                        wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    # First attempt on an unsafe method, or last attempt on
+                    # a safe method: surface the error.
+                    if method.upper() not in SAFE_RETRY_METHODS and attempt == 0:
+                        logger.error(
+                            "Engram %s %s failed (no retry: method %s is not idempotent): %s",
+                            method, path, method, exc.__class__.__name__,
+                        )
+                    raise EngramError(
+                        f"Engram {method} {path} failed: {exc.__class__.__name__}"
+                    ) from exc
+        else:
+            raise EngramError(
+                f"No fue posible conectar con Engram tras {self.max_retries} intentos: {last_exc.__class__.__name__ if last_exc else 'unknown'}"
+            ) from last_exc
 
         try:
             return json.loads(payload) if payload else {}
