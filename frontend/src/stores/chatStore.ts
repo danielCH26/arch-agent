@@ -26,10 +26,14 @@ interface ChatState {
   error: string | null
   loadingHistory: boolean
   activeProjectId: number | null
+  // true si el historial cargado llegó al límite de la API (50 mensajes):
+  // puede haber mensajes anteriores que no se muestran.
+  historyTruncated: boolean
 
   // `displayText`: lo que escribió el usuario cuando `text` es un prompt más
   // largo para el agente. Se muestra en la burbuja y se persiste en el backend.
-  sendMessage: (projectId: number | null, text: string, displayText?: string) => Promise<void>
+  // Devuelve false si no se envió (ya hay una respuesta en curso).
+  sendMessage: (projectId: number | null, text: string, displayText?: string) => Promise<boolean>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
@@ -40,6 +44,14 @@ interface ChatState {
 }
 
 let latestHistoryRequest = 0
+// Límite de mensajes por consulta de GET /api/chat/history.
+export const HISTORY_LIMIT = 50
+
+// Proyectos con una respuesta en curso. Si la persona cambia de proyecto, el
+// stream sigue en segundo plano (el backend guarda el turno al terminar): al
+// volver a ese proyecto se muestra "escribiendo…" y, cuando termina, se
+// recarga el historial.
+const runningStreams = new Set<number | null>()
 
 export const chatStore = create<ChatState>((set, get) => ({
   messages: [],
@@ -47,8 +59,14 @@ export const chatStore = create<ChatState>((set, get) => ({
   error: null,
   loadingHistory: false,
   activeProjectId: null,
+  historyTruncated: false,
 
   sendMessage: async (projectId: number | null, text: string, displayText?: string) => {
+    // Una respuesta a la vez: evita dos streams simultáneos (p. ej. al
+    // decidir sobre un diagrama mientras el agente aún responde).
+    if (get().isStreaming || runningStreams.has(projectId)) return false
+    runningStreams.add(projectId)
+
     // Add user message
     const userMessage: Message = {
       id: `user-${Date.now()}`,
@@ -73,6 +91,20 @@ export const chatStore = create<ChatState>((set, get) => ({
 
     // Start streaming
     let fullResponse = ''
+
+    // Fin del stream: si mientras tanto se recargó el historial de este
+    // proyecto (se salió y se volvió), el mensaje provisional ya no está y se
+    // vuelve a pedir el historial, que ya incluye la respuesta guardada.
+    const finish = () => {
+      runningStreams.delete(projectId)
+      if (get().activeProjectId !== projectId) return false
+      if (!get().messages.some((msg) => msg.id === assistantMessageId)) {
+        set({ isStreaming: false })
+        if (projectId !== null) void get().loadHistory(projectId)
+        return false
+      }
+      return true
+    }
 
     // Start the stream - cleanup is handled internally
     createChatStream(text, projectId, {
@@ -116,11 +148,11 @@ export const chatStore = create<ChatState>((set, get) => ({
         }))
       },
       onDone: () => {
-        if (get().activeProjectId !== projectId) return
+        if (!finish()) return
         set({ isStreaming: false })
       },
       onError: (errorMessage: string) => {
-        if (get().activeProjectId !== projectId) return
+        if (!finish()) return
         set((state) => ({
           isStreaming: false,
           error: errorMessage,
@@ -133,9 +165,7 @@ export const chatStore = create<ChatState>((set, get) => ({
       },
     }, displayText)
 
-    // Store cleanup function for potential cancellation
-    // Note: We don't expose cancellation in this implementation
-    // but the stream can be aborted by component unmount
+    return true
   },
 
   addUserMessage: (content: string) => {
@@ -193,7 +223,7 @@ export const chatStore = create<ChatState>((set, get) => ({
     set({ error })
   },
 
-  loadHistory: async (projectId: number, limit: number = 50) => {
+  loadHistory: async (projectId: number, limit: number = HISTORY_LIMIT) => {
     const requestId = ++latestHistoryRequest
 
     // Nunca mostramos la conversación de otro proyecto mientras llega esta
@@ -202,11 +232,12 @@ export const chatStore = create<ChatState>((set, get) => ({
       messages: [],
       error: null,
       loadingHistory: true,
-      // Si la persona cambia de proyecto durante un stream, los callbacks del
-      // stream anterior se ignoran por activeProjectId. Liberamos el input
-      // para que el proyecto recién abierto no quede bloqueado.
-      isStreaming: false,
+      // Los callbacks de un stream de otro proyecto se ignoran por
+      // activeProjectId. Si este proyecto tiene uno en curso, el input queda
+      // bloqueado hasta que termine (ver runningStreams).
+      isStreaming: runningStreams.has(projectId),
       activeProjectId: projectId,
+      historyTruncated: false,
     })
 
     try {
@@ -222,7 +253,7 @@ export const chatStore = create<ChatState>((set, get) => ({
         sources: row.citations,
         attachments: row.attachments,
       }))
-      set({ messages, loadingHistory: false })
+      set({ messages, loadingHistory: false, historyTruncated: rows.length >= HISTORY_LIMIT })
     } catch (err) {
       if (requestId !== latestHistoryRequest) return
       set({

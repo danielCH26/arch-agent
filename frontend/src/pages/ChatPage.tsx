@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { advancePhase, getProject, getProjectPhase, markReady, PhaseInfo, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
@@ -10,7 +10,16 @@ import { projectsStore } from '../stores/projectsStore'
 const ELICITATION_PHASE = 'requerimientos'
 const PROPOSAL_PHASE = 'propuesta'
 
+/**
+ * Se vuelve a montar al cambiar de proyecto (`key`), para que ningún render
+ * combine el `projectId` nuevo con la fase o el proyecto anteriores.
+ */
 export function ChatPage() {
+  const { id } = useParams<{ id: string }>()
+  return <ChatPageContent key={id} />
+}
+
+function ChatPageContent() {
   const { id } = useParams<{ id: string }>()
   const projectId = Number(id)
   const [project, setProject] = useState<Project | null>(null)
@@ -20,8 +29,15 @@ export function ChatPage() {
   const [phaseActionError, setPhaseActionError] = useState('')
   const [phaseActionLoading, setPhaseActionLoading] = useState(false)
   const [diagramHistoryOpen, setDiagramHistoryOpen] = useState(false)
+  // Las respuestas que llegan después de salir de este proyecto se descartan.
+  const unmounted = useRef(false)
+  useEffect(() => () => {
+    unmounted.current = true
+  }, [])
 
   useEffect(() => {
+    let cancelled = false
+
     if (!projectId || isNaN(projectId)) {
       setError('ID de proyecto inválido')
       setLoading(false)
@@ -30,6 +46,7 @@ export function ChatPage() {
 
     Promise.all([getProject(projectId), getProjectPhase(projectId)])
       .then(([projectData, phaseData]) => {
+        if (cancelled) return
         setProject(projectData)
         setPhase(phaseData)
         // Setear el proyecto activo en el store global para que el sidebar
@@ -37,15 +54,20 @@ export function ChatPage() {
         projectsStore.getState().setCurrentProject(projectData)
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')
       })
       .finally(() => {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       })
+
+    return () => {
+      cancelled = true
+    }
   }, [projectId])
 
   const refreshAfterPhaseChange = useCallback(async () => {
     const [projectData, phaseData] = await Promise.all([getProject(projectId), getProjectPhase(projectId)])
+    if (unmounted.current) return
     setProject(projectData)
     setPhase(phaseData)
     projectsStore.getState().setCurrentProject(projectData)
@@ -137,7 +159,7 @@ export function ChatPage() {
               type="button"
               onClick={handleAdvance}
               disabled={phaseActionLoading || !phase.phase_ready}
-              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500 disabled:opacity-50"
+              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
             >
               Avanzar fase →
             </button>
@@ -150,7 +172,7 @@ export function ChatPage() {
 
       <div className="flex-1 min-h-0">
         {isElicitationPhase ? (
-          <div className="h-full overflow-y-auto p-4">
+          <div className="h-full">
             <ElicitationPanel
               projectId={projectId}
               phaseReady={phase?.phase_ready ?? false}

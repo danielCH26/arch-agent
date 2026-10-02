@@ -72,7 +72,7 @@ export function RegisterPage() {
             type="text"
             autoComplete="username"
             required
-            className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-gray-900 focus:border-[#0e54ce] focus:outline-none focus:ring-1 focus:ring-[#0e54ce]"
+            className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-gray-900 focus:border-[#0e54ce] dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-[#0e54ce] dark:focus:ring-blue-400"
             placeholder="Usuario"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -90,7 +90,7 @@ export function RegisterPage() {
             type="email"
             autoComplete="email"
             required
-            className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-gray-900 focus:border-[#0e54ce] focus:outline-none focus:ring-1 focus:ring-[#0e54ce]"
+            className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-gray-900 focus:border-[#0e54ce] dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-[#0e54ce] dark:focus:ring-blue-400"
             placeholder="email@ejemplo.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -109,7 +109,7 @@ export function RegisterPage() {
               type={showPassword ? 'text' : 'password'}
               autoComplete="new-password"
               required
-              className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 pr-10 text-gray-900 focus:border-[#0e54ce] focus:outline-none focus:ring-1 focus:ring-[#0e54ce]"
+              className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 pr-10 text-gray-900 focus:border-[#0e54ce] dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-[#0e54ce] dark:focus:ring-blue-400"
               placeholder="Mínimo 6 caracteres"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -118,7 +118,7 @@ export function RegisterPage() {
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
               aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
             >
               {showPassword ? (
@@ -146,7 +146,7 @@ export function RegisterPage() {
               type={showConfirmPassword ? 'text' : 'password'}
               autoComplete="new-password"
               required
-              className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 pr-10 text-gray-900 focus:border-[#0e54ce] focus:outline-none focus:ring-1 focus:ring-[#0e54ce]"
+              className="block w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 pr-10 text-gray-900 focus:border-[#0e54ce] dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-[#0e54ce] dark:focus:ring-blue-400"
               placeholder="Repite tu contraseña"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -155,7 +155,7 @@ export function RegisterPage() {
             <button
               type="button"
               onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
               aria-label={showConfirmPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
             >
               {showConfirmPassword ? (

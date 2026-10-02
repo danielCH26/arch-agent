@@ -5,7 +5,8 @@ export type ThemePreference = 'system' | 'light' | 'dark'
 // Debe coincidir con el script inline de index.html, que aplica el tema
 // antes del primer pintado para evitar un destello claro.
 const STORAGE_KEY = 'archagent-theme'
-const darkQuery = () => window.matchMedia('(prefers-color-scheme: dark)')
+// matchMedia puede no existir (p. ej. en jsdom): sin él se usa el tema claro.
+const darkQuery = () => window.matchMedia?.('(prefers-color-scheme: dark)')
 
 export function getThemePreference(): ThemePreference {
   try {
@@ -18,7 +19,7 @@ export function getThemePreference(): ThemePreference {
 }
 
 function applyTheme(preference: ThemePreference) {
-  const dark = preference === 'dark' || (preference === 'system' && darkQuery().matches)
+  const dark = preference === 'dark' || (preference === 'system' && darkQuery()?.matches === true)
   document.documentElement.classList.toggle('dark', dark)
 }
 
@@ -45,10 +46,10 @@ export function useThemePreference(): [ThemePreference, (preference: ThemePrefer
     const onSystemChange = () => {
       if (getThemePreference() === 'system') applyTheme('system')
     }
-    query.addEventListener('change', onSystemChange)
+    query?.addEventListener?.('change', onSystemChange)
     return () => {
       listeners.delete(setPreference)
-      query.removeEventListener('change', onSystemChange)
+      query?.removeEventListener?.('change', onSystemChange)
     }
   }, [])
 

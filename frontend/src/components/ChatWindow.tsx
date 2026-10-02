@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { chatStore } from '../stores/chatStore'
+import { chatStore, HISTORY_LIMIT } from '../stores/chatStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
 import { ChatHistorySkeleton } from './Skeleton'
-import robotAvatar from '../assets/robot-avatar.png'
+import robotAvatar from '../assets/robot-avatar.webp'
 
 // Texto plano para el lector de pantalla: sin bloques de código ni marcas
 // de markdown.
@@ -25,7 +25,7 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWindowProps) {
-  const { messages, isStreaming, error, loadingHistory } = chatStore()
+  const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   // Anuncios para lectores de pantalla: la respuesta llega por fragmentos,
   // así que se anuncia una sola vez al terminar en vez de marcar la lista
@@ -59,13 +59,12 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' })
   }, [messages, isStreaming])
 
-  const handleSend = async (text: string, displayText?: string) => {
-    await chatStore.getState().sendMessage(projectId, text, displayText)
-  }
+  const handleSend = (text: string, displayText?: string) =>
+    chatStore.getState().sendMessage(projectId, text, displayText)
 
   return (
     <div className="flex flex-col h-full">
@@ -78,6 +77,12 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         )}
         {loadingHistory && messages.length === 0 && <ChatHistorySkeleton />}
 
+        {historyTruncated && (
+          <p className="text-center text-xs text-gray-500">
+            Se muestran los últimos {HISTORY_LIMIT} mensajes de esta conversación.
+          </p>
+        )}
+
         {messages.length === 0 && !isStreaming && !loadingHistory && (
           <div className="text-center text-gray-500 py-8">
             <svg className="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -88,7 +93,7 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         )}
 
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} />
+          <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} busy={isStreaming} />
         ))}
 
         {isStreaming && (

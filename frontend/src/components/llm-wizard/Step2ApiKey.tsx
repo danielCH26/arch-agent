@@ -38,7 +38,7 @@ export function Step2ApiKey({ apiKey, onChange, onBack, onNext, loading, error }
             <button
               type="button"
               onClick={() => setShowKey(!showKey)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
               aria-label={showKey ? 'Ocultar API key' : 'Mostrar API key'}
             >
               {showKey ? (
@@ -72,7 +72,7 @@ export function Step2ApiKey({ apiKey, onChange, onBack, onNext, loading, error }
           type="button"
           onClick={onNext}
           disabled={!isValid || loading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'Validando...' : 'Continuar'}
         </button>

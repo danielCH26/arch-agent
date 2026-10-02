@@ -50,7 +50,7 @@ export function LoginPage() {
             Nombre de usuario
           </label>
           <div className="relative">
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
               </svg>
@@ -61,7 +61,7 @@ export function LoginPage() {
               type="text"
               autoComplete="username"
               required
-              className="block w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-3 text-gray-900 focus:border-[#0e54ce] focus:outline-none focus:ring-1 focus:ring-[#0e54ce]"
+              className="block w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-3 text-gray-900 focus:border-[#0e54ce] dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-[#0e54ce] dark:focus:ring-blue-400"
               placeholder="Nombre de usuario"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -75,7 +75,7 @@ export function LoginPage() {
             Contraseña
           </label>
           <div className="relative">
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
               </svg>
@@ -86,7 +86,7 @@ export function LoginPage() {
               type={showPassword ? 'text' : 'password'}
               autoComplete="current-password"
               required
-              className="block w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-10 text-gray-900 focus:border-[#0e54ce] focus:outline-none focus:ring-1 focus:ring-[#0e54ce]"
+              className="block w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-10 text-gray-900 focus:border-[#0e54ce] dark:focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-[#0e54ce] dark:focus:ring-blue-400"
               placeholder="Contraseña"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -95,7 +95,7 @@ export function LoginPage() {
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
               aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
             >
               {showPassword ? (

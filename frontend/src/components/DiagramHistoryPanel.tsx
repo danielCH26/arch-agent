@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchDiagramHistory, type DiagramDecision, type DiagramVersion } from '../api/diagrams'
+import { useDialog } from '../hooks/useDialog'
+import { formatDateTime } from '../lib/format'
 
 interface DiagramHistoryPanelProps {
   projectId: number
@@ -24,24 +26,49 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const dialogRef = useDialog<HTMLElement>({ open, onClose })
+
   useEffect(() => {
     if (!open) return
+    // Se descartan los datos y las respuestas de un proyecto anterior.
+    let cancelled = false
+    setDiagrams([])
     setLoading(true)
     setError('')
     fetchDiagramHistory(projectId)
-      .then(setDiagrams)
-      .catch((err) => setError(err instanceof Error ? err.message : 'No se pudo cargar el historial.'))
-      .finally(() => setLoading(false))
+      .then((data) => {
+        if (!cancelled) setDiagrams(data)
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'No se pudo cargar el historial.')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open, projectId])
 
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30" role="dialog" aria-modal="true" aria-label="Historial de diagramas">
-      <section className="h-full w-full max-w-md overflow-y-auto bg-white p-5 shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-slate-900/30"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="diagram-history-title"
+        className="h-full w-full max-w-md overflow-y-auto bg-white p-5 shadow-2xl"
+      >
         <div className="mb-5 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Historial de diagramas</h2>
+            <h2 id="diagram-history-title" className="text-lg font-semibold text-gray-900">Historial de diagramas</h2>
             <p className="mt-1 text-sm text-gray-500">Versiones generadas para este proyecto.</p>
           </div>
           <button type="button" onClick={onClose} className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800" aria-label="Cerrar historial">✕</button>
@@ -56,7 +83,7 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
             <article key={diagram.id} className="rounded-xl border border-gray-200 p-3">
               <img src={diagram.url} alt={diagram.filename ?? `Diagrama ${diagram.message_id}`} className="w-full rounded-lg bg-gray-50" loading="lazy" />
               <div className="mt-3 flex items-center justify-between gap-2">
-                <span className="text-xs text-gray-500">{new Date(diagram.created_at).toLocaleString()}</span>
+                <span className="text-xs text-gray-500">{formatDateTime(diagram.created_at)}</span>
                 <span className={`rounded-full px-2 py-1 text-xs font-medium ${diagram.decision ? styles[diagram.decision] : 'bg-gray-100 text-gray-600'}`}>
                   {diagram.decision ? labels[diagram.decision] : 'Sin decisión'}
                 </span>

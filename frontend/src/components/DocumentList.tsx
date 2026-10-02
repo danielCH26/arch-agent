@@ -158,7 +158,7 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
                   <button
                     onClick={() => handleDelete(doc.id)}
                     disabled={deletingId === doc.id}
-                    className="p-1 text-gray-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                    className="p-1 text-gray-500 hover:text-red-600 transition-colors disabled:opacity-50"
                     title="Eliminar documento"
                   >
                     {deletingId === doc.id ? (

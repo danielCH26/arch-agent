@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { PatternListSkeleton } from '../components/Skeleton'
 import { listPatterns, listPatternSourceChunks, Pattern, PatternSourceChunk } from '../api/patterns'
 
@@ -23,6 +23,25 @@ export function PatternsPage() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const listRef = useRef<HTMLUListElement>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
+
+  // En una sola columna (< lg) el detalle queda debajo de la lista: al elegir
+  // un patrón se lleva la vista y el foco al detalle.
+  const selectPattern = (id: number) => {
+    setSelectedId(id)
+    if (window.matchMedia?.('(min-width: 1024px)').matches) return
+    requestAnimationFrame(() => {
+      detailRef.current?.scrollIntoView({ block: 'start' })
+      detailRef.current?.querySelector<HTMLElement>('h2')?.focus()
+    })
+  }
+
+  const backToList = () => {
+    const button = listRef.current?.querySelector<HTMLElement>(`[data-pattern-id="${selectedId}"]`)
+    button?.scrollIntoView({ block: 'center' })
+    button?.focus()
+  }
 
   useEffect(() => {
     fetchAllPatterns()
@@ -86,12 +105,13 @@ export function PatternsPage() {
 
       {!loading && !error && (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <ul className="space-y-2">
+          <ul ref={listRef} className="space-y-2">
             {filtered.map((p) => (
               <li key={p.id}>
                 <button
                   type="button"
-                  onClick={() => setSelectedId(p.id)}
+                  data-pattern-id={p.id}
+                  onClick={() => selectPattern(p.id)}
                   className={`w-full rounded-xl border p-4 text-left transition-colors ${
                     selectedId === p.id ? 'border-sky-400 bg-sky-50' : 'border-gray-200 bg-white hover:border-sky-200'
                   }`}
@@ -111,9 +131,18 @@ export function PatternsPage() {
             )}
           </ul>
 
-          <div className="lg:sticky lg:top-0 lg:self-start">
+          <div ref={detailRef} className="scroll-mt-4 lg:sticky lg:top-0 lg:self-start">
             {selected ? (
-              <PatternDetail pattern={selected} />
+              <>
+                <button
+                  type="button"
+                  onClick={backToList}
+                  className="mb-2 text-sm font-medium text-blue-700 hover:underline lg:hidden"
+                >
+                  ↑ Volver a la lista
+                </button>
+                <PatternDetail pattern={selected} />
+              </>
             ) : (
               <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center text-sm text-gray-500">
                 Selecciona un patrón para ver su detalle.
@@ -130,7 +159,7 @@ function PatternDetail({ pattern }: { pattern: Pattern }) {
   return (
     <article className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <header>
-        <h2 className="text-lg font-semibold text-gray-900">{pattern.pattern_name}</h2>
+        <h2 tabIndex={-1} className="text-lg font-semibold text-gray-900 focus:outline-none">{pattern.pattern_name}</h2>
         {pattern.category && <p className="text-sm text-gray-500">{pattern.category}</p>}
       </header>
       <Section title="Descripción" text={pattern.description} />
@@ -213,7 +242,7 @@ function SourceChunks({ patternId }: { patternId: number }) {
         <div className="mt-3 space-y-3">
           {loading && <p className="text-sm text-gray-500">Cargando fuentes...</p>}
           {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-          {chunks?.length === 0 && <p className="text-sm italic text-gray-400">No hay fuentes cargadas para este patrón.</p>}
+          {chunks?.length === 0 && <p className="text-sm italic text-gray-500">No hay fuentes cargadas para este patrón.</p>}
           {chunks?.map((chunk) => (
             <div key={chunk.id} className="rounded-lg bg-slate-50 p-3">
               {chunk.chunk_metadata?.filename && (

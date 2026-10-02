@@ -1,6 +1,20 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { errorMessageFromResponse, safeFetch } from '../api/client'
+import { apiUrl, errorMessageFromResponse, safeFetch } from '../api/client'
+
+// Datos por usuario guardados en el navegador (p. ej. la última propuesta de
+// cada proyecto, ver proposalsStore): se borran al cerrar sesión.
+const USER_SCOPED_STORAGE_PREFIX = 'archagent:user:'
+
+function clearUserScopedStorage() {
+  try {
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith(USER_SCOPED_STORAGE_PREFIX))
+      .forEach((key) => localStorage.removeItem(key))
+  } catch {
+    // Sin acceso a localStorage: no hay nada que limpiar.
+  }
+}
 
 interface User {
   id: number
@@ -33,7 +47,7 @@ export const authStore = create<AuthState>()(
       login: async (username: string, password: string) => {
         set({ status: 'loading', error: null })
         try {
-          const response = await safeFetch('/api/auth/login', {
+          const response = await safeFetch(apiUrl('/api/auth/login'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password }),
@@ -64,7 +78,7 @@ export const authStore = create<AuthState>()(
       register: async (username: string, email: string, password: string) => {
         set({ status: 'loading', error: null })
         try {
-          const response = await safeFetch('/api/auth/register', {
+          const response = await safeFetch(apiUrl('/api/auth/register'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, email, password }),
@@ -92,7 +106,7 @@ export const authStore = create<AuthState>()(
         const token = get().token
         if (token) {
           try {
-            await fetch('/api/auth/logout', {
+            await fetch(apiUrl('/api/auth/logout'), {
               method: 'POST',
               headers: { Authorization: `Bearer ${token}` },
             })
@@ -100,6 +114,7 @@ export const authStore = create<AuthState>()(
             // Ignore logout errors
           }
         }
+        clearUserScopedStorage()
         set({ token: null, user: null, status: 'idle', error: null })
       },
 
@@ -109,7 +124,7 @@ export const authStore = create<AuthState>()(
 
         set({ status: 'loading' })
         try {
-          const response = await fetch('/api/auth/me', {
+          const response = await fetch(apiUrl('/api/auth/me'), {
             headers: { Authorization: `Bearer ${token}` },
           })
 

@@ -1,19 +1,34 @@
 import { useState } from 'react'
 import type React from 'react'
 import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
+import { useDialog } from '../hooks/useDialog'
 import type { Message } from '../stores/chatStore'
-import robotAvatar from '../assets/robot-avatar.png'
+import robotAvatar from '../assets/robot-avatar.webp'
+
+// Devuelve false (o una promesa que resuelve false) si no se pudo enviar.
+type SendMessage = (text: string, displayText?: string) => unknown
 
 interface MessageBubbleProps {
   message: Message
   projectId?: number
-  onSendMessage?: (text: string, displayText?: string) => void
+  onSendMessage?: SendMessage
+  // Hay una respuesta del agente en curso: no se envían mensajes nuevos.
+  busy?: boolean
 }
 
 type InlineToken =
   | { type: 'text'; value: string }
   | { type: 'code'; value: string }
   | { type: 'strong'; value: string }
+  | { type: 'em'; value: string }
+  | { type: 'link'; value: string; href: string }
+
+// Viñetas (-, *, +) y numeradas (1. o 1)). El marcador debe ir seguido de un
+// espacio, así "**negrita**" al inicio de línea no se toma como lista.
+const listItemPattern = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
+const horizontalRulePattern = /^\s*([-*_])(\s*\1){2,}\s*$/
+// Solo se enlazan URLs seguras; el resto se muestra como texto.
+const safeLinkPattern = /^(https?:\/\/|mailto:)/i
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
@@ -22,15 +37,25 @@ const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
 const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
 const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
 
-function extractMermaidFromMessage(content: string): string | null {
-  const explicitMatch = content.match(explicitMermaidFencePattern)
-  if (explicitMatch?.[1]?.trim()) return explicitMatch[1].trim()
+function extractMermaidBlocks(content: string): string[] {
+  const explicit = [...content.matchAll(new RegExp(explicitMermaidFencePattern.source, 'gi'))]
+    .map((match) => match[1].trim())
+    .filter(Boolean)
+  if (explicit.length > 0) return explicit
 
-  for (const match of content.matchAll(anyCodeFencePattern)) {
-    const code = match[1].trim()
-    if (mermaidFirstLinePattern.test(code.split(/\r?\n/)[0] ?? '')) return code
-  }
-  return null
+  return [...content.matchAll(anyCodeFencePattern)]
+    .map((match) => match[1].trim())
+    .filter((code) => mermaidFirstLinePattern.test(code.split(/\r?\n/)[0] ?? ''))
+}
+
+/**
+ * Bloque Mermaid del diagrama `index` de la respuesta. Si la cantidad de
+ * bloques no coincide con la de adjuntos, se usa el último (el más reciente).
+ */
+function mermaidForAttachment(content: string, index: number, attachmentCount: number): string | null {
+  const blocks = extractMermaidBlocks(content)
+  if (blocks.length === 0) return null
+  return blocks.length === attachmentCount ? blocks[index] : blocks[blocks.length - 1]
 }
 
 // Prompt que recibe el agente al pedir cambios sobre un diagrama. El usuario
@@ -67,9 +92,12 @@ function splitTableRow(row: string) {
     .map((cell) => cell.trim())
 }
 
-function parseInline(content: string): InlineToken[] {
+export function parseInline(content: string): InlineToken[] {
   const tokens: InlineToken[] = []
-  const pattern = /(`([^`]+)`)|(\*\*([^*]+)\*\*)/g
+  // Orden: código, negrita (** o __), enlace, cursiva (* o _). La cursiva con
+  // _ exige bordes de palabra para no partir identificadores como mi_variable.
+  const pattern =
+    /(`([^`]+)`)|(\*\*([^*]+)\*\*|__([^_]+)__)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w]))/g
   let cursor = 0
   let match: RegExpExecArray | null
 
@@ -80,8 +108,16 @@ function parseInline(content: string): InlineToken[] {
 
     if (match[2]) {
       tokens.push({ type: 'code', value: match[2] })
-    } else if (match[4]) {
-      tokens.push({ type: 'strong', value: match[4] })
+    } else if (match[3]) {
+      tokens.push({ type: 'strong', value: match[4] ?? match[5] })
+    } else if (match[6]) {
+      tokens.push(
+        safeLinkPattern.test(match[8])
+          ? { type: 'link', value: match[7], href: match[8] }
+          : { type: 'text', value: match[7] },
+      )
+    } else if (match[9]) {
+      tokens.push({ type: 'em', value: match[10] ?? match[11] })
     }
 
     cursor = match.index + match[0].length
@@ -94,10 +130,22 @@ function parseInline(content: string): InlineToken[] {
   return tokens
 }
 
-function renderInline(content: string) {
+function renderInline(content: string): React.ReactNode[] {
   return parseInline(content).map((token, index) => {
     if (token.type === 'strong') {
-      return <strong key={index}>{token.value}</strong>
+      return <strong key={index}>{renderInline(token.value)}</strong>
+    }
+
+    if (token.type === 'em') {
+      return <em key={index}>{renderInline(token.value)}</em>
+    }
+
+    if (token.type === 'link') {
+      return (
+        <a key={index} href={token.href} target="_blank" rel="noopener noreferrer" className="text-blue-700 underline">
+          {renderInline(token.value)}
+        </a>
+      )
     }
 
     if (token.type === 'code') {
@@ -108,8 +156,90 @@ function renderInline(content: string) {
       )
     }
 
-    return <span key={index}>{token.value}</span>
+    // Texto plano como string: <strong>texto</strong> en vez de <strong><span>…
+    return token.value
   })
+}
+
+interface ListNode {
+  text: string
+  ordered: boolean
+  number: number
+  children: ListNode[]
+}
+
+/**
+ * Lee una lista desde `start` (anidada por sangría) y devuelve los ítems de
+ * primer nivel y la línea siguiente a la lista. Las líneas sangradas que no
+ * son ítems continúan el ítem anterior.
+ */
+function parseList(lines: string[], start: number): { items: ListNode[]; next: number } {
+  const root: ListNode[] = []
+  // Niveles abiertos, del más externo al más interno, con su sangría.
+  const stack: { indent: number; items: ListNode[] }[] = []
+  let index = start
+  let lastItem: ListNode | null = null
+
+  const indentOf = (raw: string) => raw.replace(/\t/g, '    ').length
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const item = line.match(listItemPattern)
+
+    if (item && !horizontalRulePattern.test(line)) {
+      const indent = indentOf(item[1])
+      if (stack.length === 0) stack.push({ indent, items: root })
+      // Menos sangría: se cierran las sublistas más internas.
+      while (stack.length > 1 && indent < stack[stack.length - 1].indent) stack.pop()
+      const top = stack[stack.length - 1]
+      // Más sangría que su nivel: sublista del ítem anterior.
+      if (indent > top.indent && top.items.length > 0) {
+        stack.push({ indent, items: top.items[top.items.length - 1].children })
+      }
+      const level = stack[stack.length - 1]
+      const marker = item[2]
+      const node: ListNode = {
+        text: item[3],
+        ordered: /\d/.test(marker),
+        number: /\d/.test(marker) ? parseInt(marker, 10) : 1,
+        children: [],
+      }
+      level.items.push(node)
+      lastItem = node
+      index += 1
+      continue
+    }
+
+    // Continuación sangrada del ítem anterior.
+    if (lastItem && line.trim() && /^\s{2,}/.test(line)) {
+      lastItem.text += ` ${line.trim()}`
+      index += 1
+      continue
+    }
+
+    break
+  }
+
+  return { items: root, next: index }
+}
+
+function renderList(items: ListNode[], key: string): React.ReactNode {
+  const ordered = items[0]?.ordered ?? false
+  const List = ordered ? 'ol' : 'ul'
+  return (
+    <List
+      key={key}
+      start={ordered && items[0].number !== 1 ? items[0].number : undefined}
+      className={`my-2 space-y-1 pl-5 ${ordered ? 'list-decimal' : 'list-disc'}`}
+    >
+      {items.map((item, itemIndex) => (
+        <li key={itemIndex}>
+          {renderInline(item.text)}
+          {item.children.length > 0 && renderList(item.children, `${key}-${itemIndex}`)}
+        </li>
+      ))}
+    </List>
+  )
 }
 
 function parseHtmlTable(tableMarkup: string) {
@@ -253,7 +383,7 @@ export function renderMarkdownBlocks(content: string) {
         continue
       }
 
-      if (/^\s*---+\s*$/.test(line)) {
+      if (horizontalRulePattern.test(line)) {
         blocks.push(<hr key={`hr-${partIndex}-${index}`} className="my-4 border-gray-300" />)
         index += 1
         continue
@@ -290,26 +420,10 @@ export function renderMarkdownBlocks(content: string) {
         continue
       }
 
-      if (/^\s*(-|\d+\.)\s+/.test(line)) {
-        const items: string[] = []
-        const ordered = /^\s*\d+\.\s+/.test(line)
-
-        while (index < lines.length && /^\s*(-|\d+\.)\s+/.test(lines[index])) {
-          items.push(lines[index].replace(/^\s*(-|\d+\.)\s+/, ''))
-          index += 1
-        }
-
-        const List = ordered ? 'ol' : 'ul'
-        blocks.push(
-          <List
-            key={`list-${partIndex}-${index}`}
-            className={`my-2 pl-5 ${ordered ? 'list-decimal' : 'list-disc'}`}
-          >
-            {items.map((item, itemIndex) => (
-              <li key={itemIndex}>{renderInline(item)}</li>
-            ))}
-          </List>,
-        )
+      if (listItemPattern.test(line)) {
+        const { items, next } = parseList(lines, index)
+        blocks.push(renderList(items, `list-${partIndex}-${index}`))
+        index = next
         continue
       }
 
@@ -320,7 +434,8 @@ export function renderMarkdownBlocks(content: string) {
         index < lines.length &&
         lines[index].trim() &&
         !/^(#{1,6})\s+/.test(lines[index]) &&
-        !/^\s*(-|\d+\.)\s+/.test(lines[index]) &&
+        !listItemPattern.test(lines[index]) &&
+        !horizontalRulePattern.test(lines[index]) &&
         !markdownTableSeparatorPattern.test(lines[index])
       ) {
         paragraphLines.push(lines[index].trim())
@@ -349,7 +464,7 @@ function renderSources(sources: Message['sources']) {
 
   if (sources.length === 0) {
     return (
-      <p className="mt-2 text-xs italic text-gray-400">
+      <p className="mt-2 text-xs italic text-gray-500">
         Sin contexto recuperado de la base vectorial — respuesta basada en conocimiento general del modelo.
       </p>
     )
@@ -357,7 +472,7 @@ function renderSources(sources: Message['sources']) {
 
   return (
     <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">
-      <span className="font-semibold">Fuentes (PGVector):</span>
+      <span className="font-semibold">Fuentes consultadas:</span>
       <ul className="mt-1 space-y-0.5">
         {sources.map((source, index) => (
           <li key={index}>
@@ -370,7 +485,7 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message, projectId, onSendMessage }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage, busy = false }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
@@ -398,6 +513,7 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
             assistantContent={message.content}
             projectId={projectId}
             onSendMessage={onSendMessage}
+            busy={busy}
           />
         )}
         {!isUser && message.notices?.map((notice, index) => (
@@ -422,11 +538,13 @@ function DiagramAttachments({
   assistantContent,
   projectId,
   onSendMessage,
+  busy,
 }: {
   attachments: Message['attachments']
   assistantContent: string
   projectId?: number
-  onSendMessage?: (text: string, displayText?: string) => void
+  onSendMessage?: SendMessage
+  busy: boolean
 }) {
   const [feedbackIndex, setFeedbackIndex] = useState<number | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -434,8 +552,22 @@ function DiagramAttachments({
   const [submitting, setSubmitting] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
+  // Ajustes ya registrados en esta sesión, para reenviarlos si la respuesta
+  // del agente falló.
+  const [sentAdjustments, setSentAdjustments] = useState<Record<number, { prompt: string; display: string }>>({})
+  const lightboxRef = useDialog({ open: expandedUrl !== null, onClose: () => setExpandedUrl(null) })
 
   if (!attachments?.length) return null
+
+  // Envía el mensaje al chat; false si no se pudo (hay otra respuesta en curso).
+  const send = async (text: string, displayText?: string) => {
+    if (!onSendMessage) return false
+    if ((await onSendMessage(text, displayText)) === false) {
+      setError('Hay una respuesta en curso. Inténtalo de nuevo cuando termine.')
+      return false
+    }
+    return true
+  }
 
   const recordDecision = async (index: number, decision: DiagramDecision, comment?: string) => {
     const attachment = attachments[index]
@@ -467,10 +599,12 @@ function DiagramAttachments({
     if (await recordDecision(index, 'modify', trimmedFeedback)) {
       setFeedbackIndex(null)
       setFeedback('')
-      onSendMessage?.(
-        buildDiagramAdjustmentPrompt(trimmedFeedback, extractMermaidFromMessage(assistantContent)),
+      const prompt = buildDiagramAdjustmentPrompt(
         trimmedFeedback,
+        mermaidForAttachment(assistantContent, index, attachments.length),
       )
+      setSentAdjustments((current) => ({ ...current, [index]: { prompt, display: trimmedFeedback } }))
+      await send(prompt, trimmedFeedback)
     }
   }
 
@@ -482,27 +616,45 @@ function DiagramAttachments({
 
         return (
           <div key={`${attachment.id ?? attachment.url}-${index}`} className="rounded-xl border border-sky-200 bg-white/70 p-2">
-            <img
-              src={attachment.url}
-              alt={attachment.filename || 'Diagrama generado'}
-              className="max-h-[420px] w-full cursor-zoom-in rounded-lg bg-white object-contain"
-              loading="lazy"
+            <button
+              type="button"
               onClick={() => setExpandedUrl(attachment.url)}
+              className="block w-full cursor-zoom-in rounded-lg"
+              aria-label={`Ampliar ${attachment.filename || 'diagrama'}`}
               title="Haz clic para ampliar"
-            />
+            >
+              <img
+                src={attachment.url}
+                alt={attachment.filename || 'Diagrama generado'}
+                className="max-h-[420px] w-full rounded-lg bg-white object-contain"
+                loading="lazy"
+              />
+            </button>
 
             {decided ? (
-              <p className="mt-2 text-xs font-medium text-gray-600">{decided}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium text-gray-600">{decided}</p>
+                {sentAdjustments[index] && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void send(sentAdjustments[index].prompt, sentAdjustments[index].display)}
+                    className="text-xs font-medium text-blue-700 underline disabled:opacity-50"
+                  >
+                    Volver a enviar el ajuste
+                  </button>
+                )}
+              </div>
             ) : onSendMessage ? (
               <div className="mt-2">
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || busy}
                     onClick={async () => {
-                      if (await recordDecision(index, 'approve')) onSendMessage('Apruebo el diagrama, continuemos.')
+                      if (await recordDecision(index, 'approve')) await send('Apruebo el diagrama, continuemos.')
                     }}
-                    className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-500 disabled:opacity-50"
+                    className="rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
                   >
                     Aprobar
                   </button>
@@ -516,7 +668,7 @@ function DiagramAttachments({
                   </button>
                   <button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || busy}
                     onClick={() => { setFeedbackIndex(index); setFeedback(''); setError('') }}
                     className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
                   >
@@ -536,7 +688,7 @@ function DiagramAttachments({
                       placeholder="Describe los cambios que necesitas en el diagrama..."
                     />
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isSubmitting} onClick={() => void requestChanges(index)} className="rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-700 dark:hover:bg-sky-500 disabled:opacity-50">Enviar ajuste</button>
+                      <button type="button" disabled={isSubmitting || busy} onClick={() => void requestChanges(index)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Enviar ajuste</button>
                       <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
                     </div>
                   </div>
@@ -550,7 +702,21 @@ function DiagramAttachments({
       {error && <p role="alert" className="rounded-lg bg-red-50 p-2 text-xs text-red-700">{error}</p>}
 
       {expandedUrl && (
-        <div className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-slate-950/80 p-6" onClick={() => setExpandedUrl(null)} role="button" tabIndex={0} aria-label="Cerrar diagrama ampliado">
+        <div
+          ref={lightboxRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Diagrama ampliado"
+          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-slate-950/80 p-6"
+          onClick={() => setExpandedUrl(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setExpandedUrl(null)}
+            className="absolute right-4 top-4 rounded-lg bg-black/60 px-3 py-1.5 text-sm font-medium text-white hover:bg-black/80"
+          >
+            Cerrar
+          </button>
           <img src={expandedUrl} alt="Diagrama ampliado" className="max-h-full max-w-full rounded-xl bg-white shadow-2xl" />
         </div>
       )}

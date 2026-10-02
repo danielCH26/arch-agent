@@ -35,6 +35,15 @@ const DARK_SLATE = { 50: '#1f2937', 100: '#273244' }
 // Superficie de tarjetas y paneles (`bg-white` en modo claro).
 const DARK_SURFACE = '#1a2230'
 
+// Tonos que NO se invierten en modo oscuro, para fondos de botones con texto
+// blanco (contraste >= 4.5:1 en ambos temas). Ej.: `bg-solid-emerald-700`,
+// `dark:hover:bg-solid-blue-700`.
+const SOLID = Object.fromEntries(
+  ['blue', 'red', 'emerald'].flatMap((name) =>
+    [700, 800].map((shade) => [`${name}-${shade}`, colors[name][shade]]),
+  ),
+)
+
 const PALETTES = ['gray', 'slate', ...SWAPPED_PALETTES]
 
 const rgb = (hex) => {
@@ -67,7 +76,10 @@ export default {
   ],
   theme: {
     extend: {
-      colors: Object.fromEntries(PALETTES.map((name) => [name, varPalette(name)])),
+      colors: {
+        ...Object.fromEntries(PALETTES.map((name) => [name, varPalette(name)])),
+        solid: SOLID,
+      },
       fontFamily: {
         // Títulos principales y marca (diseño de Figma "UI-ArchAgent").
         display: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],

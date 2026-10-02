@@ -1,5 +1,5 @@
 import { authStore } from '../stores/authStore'
-import { apiFetch, errorMessageFromResponse, safeFetch } from './client'
+import { apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, safeFetch, streamErrorMessage } from './client'
 
 export interface ChatRequest {
   project_id: number | null
@@ -132,11 +132,13 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
   }
 
   if (eventName === 'error' && rawData) {
+    let payload: unknown = rawData
     try {
-      callbacks.onError(JSON.parse(rawData))
+      payload = JSON.parse(rawData)
     } catch {
-      callbacks.onError(rawData)
+      // Texto plano: se usa tal cual.
     }
+    callbacks.onError(streamErrorMessage(payload))
     return true
   }
 
@@ -157,7 +159,7 @@ export function createChatStream(
   // Start the stream immediately
   ;(async () => {
     try {
-      const response = await safeFetch('/api/chat', {
+      const response = await safeFetch(apiUrl('/api/chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -170,6 +172,11 @@ export function createChatStream(
         } as ChatRequest),
         signal,
       })
+
+      if (response.status === 401) {
+        callbacks.onError(handleUnauthorized().message)
+        return
+      }
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
@@ -207,8 +214,9 @@ export function createChatStream(
         if (shouldStop) return
       }
 
-      // Stream ended without explicit done event
-      callbacks.onDone()
+      // El stream se cortó sin evento `done` (conexión caída, proxy, etc.):
+      // se informa para no dar por completa una respuesta parcial.
+      callbacks.onError('La respuesta se interrumpió antes de terminar. Inténtalo de nuevo.')
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         // Request was cancelled, no need to report error

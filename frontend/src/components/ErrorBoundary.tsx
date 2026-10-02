@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import robotAvatar from '../assets/robot-avatar.png'
+import robotAvatar from '../assets/robot-avatar.webp'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -57,7 +57,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <button
             type="button"
             onClick={() => this.setState({ error: null })}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700"
           >
             Intentar de nuevo
           </button>

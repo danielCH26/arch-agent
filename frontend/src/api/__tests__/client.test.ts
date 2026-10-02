@@ -12,9 +12,9 @@ vi.mock('../../stores/authStore', () => ({
 describe('apiFetch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset location
+    // Reset location (client.ts redirige con location.replace)
     delete (window as any).location
-    window.location = { href: '' } as Location
+    window.location = { href: '', replace: vi.fn() } as unknown as Location
   })
 
   afterEach(() => {
@@ -84,10 +84,10 @@ describe('apiFetch', () => {
     })
     global.fetch = mockFetch
 
-    await expect(apiFetch('/api/test')).rejects.toThrow()
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ name: 'ApiError', status: 401 })
 
     expect(mockLogout).toHaveBeenCalled()
-    expect(window.location.href).toBe('/login')
+    expect(window.location.replace).toHaveBeenCalledWith('/login')
   })
 
   it('throws ApiError with status on non-ok response', async () => {
@@ -96,10 +96,10 @@ describe('apiFetch', () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 400,
-      json: () => Promise.resolve({ detail: 'Bad request' }),
+      json: () => Promise.resolve({ detail: 'El nombre es obligatorio' }),
     })
     global.fetch = mockFetch
 
-    await expect(apiFetch('/api/test')).rejects.toThrow()
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ name: 'ApiError', status: 400, message: 'El nombre es obligatorio' })
   })
 })

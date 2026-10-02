@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { ApiError } from '../api/client'
+import { authStore } from './authStore'
 import {
   createProposalStream,
   decideProposal,
@@ -39,9 +40,15 @@ interface ProposalsState {
   reset: () => void
 }
 
-// El backend no expone un listado de propuestas por proyecto, así que
-// recordamos la última propuesta generada para rehidratarla al recargar.
-const lastProposalKey = (projectId: number) => `arqagent:last-proposal:${projectId}`
+// El backend no expone un listado de propuestas por proyecto, así que se
+// recuerda en el navegador la última propuesta generada para rehidratarla al
+// recargar. La clave incluye el usuario y se borra al cerrar sesión (prefijo
+// `archagent:user:`, ver authStore). En otro navegador no hay forma de
+// recuperarla hasta que el backend ofrezca ese listado.
+const lastProposalKey = (projectId: number) =>
+  `archagent:user:${authStore.getState().user?.id ?? 'anon'}:last-proposal:${projectId}`
+// Clave usada antes del cambio de marca; se migra al leerla.
+const legacyProposalKey = (projectId: number) => `arqagent:last-proposal:${projectId}`
 
 function rememberProposal(projectId: number, proposalId: number) {
   try { localStorage.setItem(lastProposalKey(projectId), String(proposalId)) } catch { /* sin storage */ }
@@ -49,6 +56,13 @@ function rememberProposal(projectId: number, proposalId: number) {
 
 function recalledProposal(projectId: number): number | null {
   try {
+    const legacy = localStorage.getItem(legacyProposalKey(projectId))
+    if (legacy !== null) {
+      localStorage.removeItem(legacyProposalKey(projectId))
+      if (localStorage.getItem(lastProposalKey(projectId)) === null) {
+        localStorage.setItem(lastProposalKey(projectId), legacy)
+      }
+    }
     const value = Number(localStorage.getItem(lastProposalKey(projectId)))
     return Number.isInteger(value) && value > 0 ? value : null
   } catch {
@@ -83,7 +97,7 @@ const fromOut = (out: ProposalOut): Proposal => ({
 let activeStream = 0
 
 export const proposalsStore = create<ProposalsState>((set, get) => {
-  const streamHandlers = (streamId: number, onFailure: (error: string) => void) => ({
+  const streamHandlers = (streamId: number, onFailure: (error: string, status?: number) => void) => ({
     onSources: (citations: ProposalCitation[]) => {
       if (streamId !== activeStream) return
       set((state) => state.current ? { current: { ...state.current, citations } } : {})
@@ -103,8 +117,8 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       // El backend guarda la iteración definitiva; sincronizamos número y contenido.
       void get().refresh(id)
     },
-    onError: (error: string) => {
-      if (streamId === activeStream) onFailure(error)
+    onError: (error: string, status?: number) => {
+      if (streamId === activeStream) onFailure(error, status)
     },
   })
 
@@ -139,8 +153,13 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     generate: (projectId) => {
       const streamId = ++activeStream
       set({ current: newProposal(projectId), iterations: [], activity: 'generating', error: null })
-      createProposalStream('generate', { projectId }, streamHandlers(streamId, (error) => {
+      createProposalStream('generate', { projectId }, streamHandlers(streamId, (error, status) => {
         set({ current: null, activity: 'idle', error })
+        // 409: el estado cambió en el backend (p. ej. la propuesta ya se aprobó
+        // en otra pestaña); se vuelve a cargar sin perder el mensaje de error.
+        if (status === 409) {
+          void get().load(projectId).then(() => set({ error }))
+        }
       }))
     },
 

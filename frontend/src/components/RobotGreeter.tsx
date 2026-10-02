@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import bodyImg from '../assets/robot-body.png'
-import restArm from '../assets/rest-arm.png'
-import waveAArm from '../assets/wave-a-arm.png'
-import waveBArm from '../assets/wave-b-arm.png'
+import bodyImg from '../assets/robot-body.webp'
+import restArm from '../assets/rest-arm.webp'
+import waveAArm from '../assets/wave-a-arm.webp'
+import waveBArm from '../assets/wave-b-arm.webp'
 
 // Posición del recorte del brazo/mano sobre el cuerpo (robot-body.png, 1129x970).
 // El cuerpo tiene ese hueco siempre transparente: la capa de brazo (una de las tres)
@@ -17,19 +17,25 @@ const ARM_STYLE = {
 const SEQUENCE = [restArm, waveAArm, waveBArm, waveAArm, restArm]
 const FRAME_MS = 260
 
+// Con "reducir movimiento" el robot se muestra quieto, en la pose de reposo.
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+
 export function RobotGreeter() {
-  const [step, setStep] = useState(0)
+  const [reduceMotion] = useState(prefersReducedMotion)
+  const [step, setStep] = useState(() => (reduceMotion ? SEQUENCE.length - 1 : 0))
   const [floating, setFloating] = useState(false)
   const current = SEQUENCE[step]
 
   useEffect(() => {
+    if (reduceMotion) return
     if (step >= SEQUENCE.length - 1) {
       setFloating(true)
       return
     }
     const timer = setTimeout(() => setStep((s) => s + 1), FRAME_MS)
     return () => clearTimeout(timer)
-  }, [step])
+  }, [step, reduceMotion])
 
   return (
     <div
@@ -38,13 +44,14 @@ export function RobotGreeter() {
       }`}
       style={{ aspectRatio: '1129 / 970' }}
     >
-      <img src={bodyImg} alt="Asistente robot de ArchAgent" draggable={false} className="absolute inset-0 h-full w-full" />
+      <img src={bodyImg} alt="Asistente robot de ArchAgent" draggable={false} loading="lazy" className="absolute inset-0 h-full w-full" />
       {[restArm, waveAArm, waveBArm].map((src) => (
         <img
           key={src}
           src={src}
           alt=""
           draggable={false}
+          loading="lazy"
           className="absolute transition-opacity duration-150 ease-in-out"
           style={{ ...ARM_STYLE, opacity: current === src ? 1 : 0 }}
         />

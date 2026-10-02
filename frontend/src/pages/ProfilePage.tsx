@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { changeUserPassword, getUserProfile, updateUserProfile, UserProfile } from '../api/users'
+import { formatDate } from '../lib/format'
 import { authStore } from '../stores/authStore'
 
 const usernamePattern = /^[a-zA-Z0-9_]{3,100}$/
@@ -194,11 +195,7 @@ export function ProfilePage() {
         {profile.created_at && (
           <p className="text-sm text-gray-500">
             Miembro desde{' '}
-            {new Date(profile.created_at).toLocaleDateString('es-ES', {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
+            {formatDate(profile.created_at)}
           </p>
         )}
 
@@ -217,7 +214,7 @@ export function ProfilePage() {
         <button
           type="submit"
           disabled={!hasProfileChanges || savingProfile}
-          className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 dark:hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-gray-300"
+          className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
         >
           {savingProfile ? 'Guardando...' : 'Guardar cambios'}
         </button>
@@ -243,7 +240,7 @@ export function ProfilePage() {
               <button
                 type="button"
                 onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
                 aria-label={showCurrentPassword ? 'Ocultar contraseña actual' : 'Mostrar contraseña actual'}
               >
                 {showCurrentPassword ? (
@@ -276,7 +273,7 @@ export function ProfilePage() {
               <button
                 type="button"
                 onClick={() => setShowNewPassword(!showNewPassword)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
                 aria-label={showNewPassword ? 'Ocultar nueva contraseña' : 'Mostrar nueva contraseña'}
               >
                 {showNewPassword ? (
@@ -324,7 +321,7 @@ export function ProfilePage() {
           <button
             type="submit"
             disabled={savingPassword}
-            className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 dark:hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-gray-300"
+            className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
             {savingPassword ? 'Guardando...' : 'Guardar cambios'}
           </button>

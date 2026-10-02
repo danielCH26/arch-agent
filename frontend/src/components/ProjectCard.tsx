@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Project } from '../api/projects'
+import { useDialog } from '../hooks/useDialog'
+import { formatDate } from '../lib/format'
 import { projectsStore } from '../stores/projectsStore'
 
 interface ProjectCardProps {
@@ -31,25 +33,18 @@ export function ProjectCard({ project }: ProjectCardProps) {
   const navigate = useNavigate()
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const deleteButtonRef = useRef<HTMLButtonElement>(null)
   const cancelButtonRef = useRef<HTMLButtonElement>(null)
+
+  const closeDeleteConfirm = () => setShowDeleteConfirm(false)
 
   // Diálogo de confirmación: foco en "Cancelar" (la opción segura), Esc
   // cierra y el foco vuelve al botón de eliminar.
-  useEffect(() => {
-    if (!showDeleteConfirm) return
-    cancelButtonRef.current?.focus()
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !isDeleting) closeDeleteConfirm()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [showDeleteConfirm, isDeleting])
-
-  const closeDeleteConfirm = () => {
-    setShowDeleteConfirm(false)
-    deleteButtonRef.current?.focus()
-  }
+  const dialogRef = useDialog({
+    open: showDeleteConfirm,
+    onClose: closeDeleteConfirm,
+    initialFocusRef: cancelButtonRef,
+    preventClose: isDeleting,
+  })
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -61,14 +56,6 @@ export function ProjectCard({ project }: ProjectCardProps) {
       setIsDeleting(false)
       setShowDeleteConfirm(false)
     }
-  }
-
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('es-AR', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    })
   }
 
   const badge = statusBadge(project)
@@ -90,16 +77,16 @@ export function ProjectCard({ project }: ProjectCardProps) {
           <span className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium ${badge.className}`}>
             {badge.label}
           </span>
-          {/* Siempre visible en pantallas táctiles; en desktop aparece al
-              pasar el ratón o al recibir el foco con el teclado. */}
+          {/* Siempre visible en pantallas táctiles (celular y tablet); con
+              ratón aparece al pasar el cursor o al recibir el foco
+              (clase .reveal-on-hover en index.css). */}
           <button
-            ref={deleteButtonRef}
             type="button"
             onClick={(e) => {
               e.stopPropagation()
               setShowDeleteConfirm(true)
             }}
-            className="rounded p-1 text-gray-500 transition-opacity hover:text-red-600 focus-visible:opacity-100 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100"
+            className="reveal-on-hover rounded p-1 text-gray-500 transition-opacity hover:text-red-600"
             title="Eliminar proyecto"
             aria-label={`Eliminar proyecto ${project.name}`}
           >
@@ -126,22 +113,23 @@ export function ProjectCard({ project }: ProjectCardProps) {
       </div>
 
       <div className="mt-4 flex items-center justify-between">
-        <span className="text-xs text-gray-400">Creado: {formatDate(project.created_at)}</span>
+        <span className="text-xs text-gray-500">Creado: {formatDate(project.created_at)}</span>
         <button
           onClick={() => navigate(`/projects/${project.id}/chat`)}
           className={
             isComplete
-              ? 'rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500'
+              ? 'rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700'
               : 'rounded-lg border border-blue-600 px-4 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50'
           }
         >
-          {isComplete ? 'Ver arquitectura' : 'Continuar sesión'}
+          {isComplete ? 'Ver arquitectura' : 'Continuar'}
         </button>
       </div>
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div
+            ref={dialogRef}
             role="alertdialog"
             aria-modal="true"
             aria-labelledby={`delete-title-${project.id}`}
@@ -165,7 +153,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
               <button
                 type="button"
                 onClick={handleDelete}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 dark:hover:bg-red-500 disabled:opacity-50"
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 dark:hover:bg-solid-red-700 disabled:opacity-50"
                 disabled={isDeleting}
               >
                 {isDeleting ? 'Eliminando...' : 'Eliminar'}

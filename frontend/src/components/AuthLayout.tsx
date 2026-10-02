@@ -1,4 +1,5 @@
 import { ReactNode } from 'react'
+import { useMediaQuery } from '../hooks/useMediaQuery'
 import { RobotGreeter } from './RobotGreeter'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -32,6 +33,10 @@ const CIRCUIT_PATTERN =
   `)
 
 export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutProps) {
+  // El panel del robot solo existe desde md: en móvil no se montan sus
+  // imágenes (con `hidden` el navegador igual las descargaría).
+  const showRobotPanel = useMediaQuery('(min-width: 768px)')
+
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e4f2fa] to-[#f7fbf9] px-4 py-12 dark:from-gray-100 dark:to-gray-100">
       <ThemeToggle className="absolute right-4 top-4" />
@@ -69,7 +74,7 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
               <div className="absolute bottom-[88%] left-[72%] w-max max-w-[150px] rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm text-gray-700 shadow-[0px_6px_20px_rgba(0,0,0,0.12)]">
                 {greeting}
               </div>
-              <RobotGreeter />
+              {showRobotPanel && <RobotGreeter />}
             </div>
           </div>
         </div>

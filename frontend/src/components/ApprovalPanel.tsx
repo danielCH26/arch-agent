@@ -57,7 +57,7 @@ function resumenLabel(key: string): string {
 }
 
 export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelProps) {
-  const [mode, setMode] = useState<'idle' | 'modify'>('idle')
+  const [mode, setMode] = useState<'idle' | 'modify' | 'confirmReject'>('idle')
   const [feedback, setFeedback] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -77,12 +77,8 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
     }
   }
 
-  const handleReject = () => {
-    if (!window.confirm('¿Seguro que quieres rechazar y reiniciar esta fase? Se perderá el progreso actual.')) {
-      return
-    }
-    runDecision('reject')
-  }
+  // Rechazar borra el progreso de la fase: se pide confirmación en línea.
+  const handleReject = () => setMode('confirmReject')
 
   const handleModifySubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -134,6 +130,33 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
           </div>
         )}
 
+        {mode === 'confirmReject' && (
+          <div role="alertdialog" aria-labelledby="reject-confirm-text" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3">
+            <p id="reject-confirm-text" className="text-center text-sm text-red-700">
+              ¿Seguro que quieres rechazar y reiniciar esta fase? Se perderá el progreso actual.
+            </p>
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                autoFocus
+                disabled={loading}
+                onClick={() => setMode('idle')}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => runDecision('reject')}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 dark:hover:bg-solid-red-700 disabled:opacity-50"
+              >
+                Sí, rechazar y reiniciar
+              </button>
+            </div>
+          </div>
+        )}
+
         {mode === 'modify' && (
           <form onSubmit={handleModifySubmit} className="mt-3 space-y-2">
             <textarea
@@ -160,7 +183,7 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
               <button
                 type="submit"
                 disabled={loading || !feedback.trim()}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-blue-500 disabled:opacity-50"
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
               >
                 Enviar cambios
               </button>

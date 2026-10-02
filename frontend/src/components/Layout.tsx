@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { authStore } from '../stores/authStore'
 import { projectsStore } from '../stores/projectsStore'
+import { CreateProjectDialog } from './CreateProjectDialog'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Logo } from './Logo'
 import { SidebarProjectsSkeleton } from './Skeleton'
@@ -22,6 +23,9 @@ export function Layout() {
   const [expanded, setExpanded] = useState<number | null>(null)
   // Menú lateral en pantallas pequeñas (< md): se abre como panel deslizable.
   const [menuOpen, setMenuOpen] = useState(false)
+  const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const closeMenuRef = useRef<HTMLButtonElement>(null)
+  const openMenuRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     fetchProjects()
@@ -43,11 +47,19 @@ export function Layout() {
 
   useEffect(() => {
     if (!menuOpen) return
+    // Al abrir, el foco entra al menú; al cerrar vuelve al botón ☰.
+    closeMenuRef.current?.focus()
+    const opener = openMenuRef.current
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setMenuOpen(false)
     }
     document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      // Si el foco quedó dentro del menú (ahora oculto), vuelve al botón ☰
+      // (offsetParent es null en desktop, donde ese botón no se muestra).
+      if (document.activeElement?.closest('#app-sidebar') && opener?.offsetParent) opener.focus()
+    }
   }, [menuOpen])
 
   const toggleExpand = (projectId: number) => {
@@ -76,14 +88,15 @@ export function Layout() {
       <aside
         id="app-sidebar"
         aria-label="Navegación principal"
-        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] flex-col border-r border-gray-200 bg-white shadow-sm transition-transform duration-200 md:static md:max-w-none md:translate-x-0 ${
-          menuOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] flex-col border-r border-gray-200 bg-white shadow-sm transition-[transform,visibility] duration-200 md:visible md:static md:max-w-none md:translate-x-0 ${
+          menuOpen ? 'visible translate-x-0' : 'invisible -translate-x-full'
         }`}
       >
         <button
           type="button"
           onClick={() => setMenuOpen(false)}
           className="absolute right-3 top-3 rounded-lg p-2 text-gray-500 hover:bg-gray-100 md:hidden"
+          ref={closeMenuRef}
           aria-label="Cerrar menú"
         >
           <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -92,7 +105,7 @@ export function Layout() {
         </button>
         <div className="flex flex-col items-center gap-2 px-4 pb-4 pt-6">
           <Link to="/projects" className="flex flex-col items-center gap-1">
-            <Logo size={64} />
+            <Logo size={64} alt="" />
             <span className="font-display text-2xl text-gray-900">
               <span className="text-[#0e54ce] dark:text-blue-400">Arch</span>Agent
             </span>
@@ -102,30 +115,31 @@ export function Layout() {
         <div className="flex-1 overflow-y-auto px-4">
           {/* Primary nav */}
           <nav className="space-y-1 border-b border-gray-200 pb-3">
-            <Link
-              to="/projects"
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-gray-800 hover:bg-gray-100"
+            <button
+              type="button"
+              onClick={() => setShowCreateDialog(true)}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-gray-800 hover:bg-gray-100"
             >
-              <span className="text-lg">+</span>
-              <span>Nueva sesión</span>
-            </Link>
+              <span className="text-lg" aria-hidden="true">+</span>
+              <span>Nuevo proyecto</span>
+            </button>
 
             {currentProject && (
               <Link
                 to={`/projects/${currentProject.id}/chat`}
                 className={`flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors ${
-                  isOnActiveSession ? 'bg-[#0e54ce]/70 text-white' : 'text-gray-800 hover:bg-gray-100'
+                  isOnActiveSession ? 'bg-[#0e54ce] text-white' : 'text-gray-800 hover:bg-gray-100'
                 }`}
               >
                 <ChatIcon />
-                <span className="truncate">Sesión activa</span>
+                <span className="truncate">Proyecto actual</span>
               </Link>
             )}
 
             <Link
               to="/patterns"
               className={`flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors ${
-                isActivePath('/patterns') ? 'bg-[#0e54ce]/70 text-white' : 'text-gray-800 hover:bg-gray-100'
+                isActivePath('/patterns') ? 'bg-[#0e54ce] text-white' : 'text-gray-800 hover:bg-gray-100'
               }`}
             >
               <ArchiveIcon />
@@ -136,7 +150,7 @@ export function Layout() {
           {/* Projects */}
           <div className="pt-3">
             <div className="mb-2 px-3">
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Proyectos</span>
+              <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Proyectos</span>
             </div>
 
             {!projectsLoaded && projects.length === 0 && <SidebarProjectsSkeleton />}
@@ -169,7 +183,7 @@ export function Layout() {
                         <ClockIcon />
                         <span className="truncate flex-1">{p.name}</span>
                         <svg
-                          className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${
+                          className={`w-4 h-4 text-gray-500 transition-transform flex-shrink-0 ${
                             isOpen ? 'rotate-90' : ''
                           }`}
                           fill="none"
@@ -215,7 +229,7 @@ export function Layout() {
             {projectsLoaded && !projectsError && projects.length === 0 && (
               <div className="py-4 text-sm text-gray-500 text-center">
                 <p className="mb-2">No hay proyectos aún</p>
-                <p className="text-xs">Usa "+ Nueva sesión" para crear el primero</p>
+                <p className="text-xs">Usa "+ Nuevo proyecto" para crear el primero</p>
               </div>
             )}
           </div>
@@ -265,6 +279,7 @@ export function Layout() {
             type="button"
             onClick={() => setMenuOpen(true)}
             className="rounded-lg p-2 text-gray-700 hover:bg-gray-100"
+            ref={openMenuRef}
             aria-label="Abrir menú"
             aria-controls="app-sidebar"
             aria-expanded={menuOpen}
@@ -274,7 +289,7 @@ export function Layout() {
             </svg>
           </button>
           <Link to="/projects" className="flex items-center gap-2">
-            <Logo size={32} />
+            <Logo size={32} alt="" />
             <span className="font-display text-lg text-gray-900">
               <span className="text-[#0e54ce] dark:text-blue-400">Arch</span>Agent
             </span>
@@ -288,6 +303,7 @@ export function Layout() {
           </ErrorBoundary>
         </main>
       </div>
+      <CreateProjectDialog isOpen={showCreateDialog} onClose={() => setShowCreateDialog(false)} />
     </div>
   )
 }

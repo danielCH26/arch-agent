@@ -29,7 +29,7 @@ export function PhaseStepper({ phases, currentPhase }: PhaseStepperProps) {
                     ? 'bg-blue-100 text-blue-700'
                     : isCurrent
                       ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-400'
+                      : 'bg-gray-100 text-gray-500'
                 }`}
               >
                 {isDone ? (
@@ -41,7 +41,7 @@ export function PhaseStepper({ phases, currentPhase }: PhaseStepperProps) {
               </span>
               <span
                 className={`text-sm whitespace-nowrap ${
-                  isCurrent ? 'font-semibold text-gray-900' : isDone ? 'text-gray-700' : 'text-gray-400'
+                  isCurrent ? 'font-semibold text-gray-900' : isDone ? 'text-gray-700' : 'text-gray-500'
                 }`}
               >
                 {label}

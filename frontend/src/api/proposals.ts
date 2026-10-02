@@ -1,5 +1,5 @@
 import { authStore } from '../stores/authStore'
-import { apiFetch, errorMessageFromResponse, safeFetch } from './client'
+import { ApiError, apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, safeFetch, streamErrorMessage } from './client'
 
 export interface ProposalCitation {
   pattern_id: number | null
@@ -49,7 +49,8 @@ interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
   onDone: (proposalId: number, citations: ProposalCitation[]) => void
-  onError: (message: string) => void
+  // `status`: código HTTP cuando el error viene de la respuesta (p. ej. 409).
+  onError: (message: string, status?: number) => void
 }
 
 function parseEvent(rawEvent: string, callbacks: ProposalStreamCallbacks): boolean {
@@ -80,7 +81,9 @@ function parseEvent(rawEvent: string, callbacks: ProposalStreamCallbacks): boole
     return true
   }
   if (name === 'error') {
-    try { callbacks.onError(JSON.parse(payload)) } catch { callbacks.onError(payload || 'No se pudo generar la propuesta.') }
+    let parsed: unknown = payload
+    try { parsed = JSON.parse(payload) } catch { /* texto plano */ }
+    callbacks.onError(streamErrorMessage(parsed, 'No se pudo generar la propuesta.'))
     return true
   }
   return false
@@ -93,9 +96,9 @@ export function createProposalStream(
 ): () => void {
   const controller = new AbortController()
   const token = authStore.getState().token
-  const url = mode === 'generate'
+  const url = apiUrl(mode === 'generate'
     ? '/api/proposals/generate'
-    : `/api/proposals/${payload.proposalId}/modify`
+    : `/api/proposals/${payload.proposalId}/modify`)
   const body = mode === 'generate'
     ? { project_id: payload.projectId }
     : { feedback: payload.feedback }
@@ -109,13 +112,12 @@ export function createProposalStream(
         signal: controller.signal,
       })
       if (response.status === 401) {
-        authStore.getState().logout()
-        window.location.replace('/login')
+        callbacks.onError(handleUnauthorized().message, 401)
         return
       }
       if (!response.ok) {
         const error = await response.json().catch(() => ({}))
-        callbacks.onError(errorMessageFromResponse(response.status, error))
+        callbacks.onError(errorMessageFromResponse(response.status, error), response.status)
         return
       }
       if (!response.body) {
@@ -140,7 +142,10 @@ export function createProposalStream(
       callbacks.onError('La generación terminó antes de completarse.')
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return
-      callbacks.onError(error instanceof Error ? error.message : 'No se pudo conectar con el servidor.')
+      callbacks.onError(
+        error instanceof Error ? error.message : 'No se pudo conectar con el servidor.',
+        error instanceof ApiError ? error.status : undefined,
+      )
     }
   })()
 

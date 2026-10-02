@@ -1,4 +1,4 @@
-import { apiFetch, errorMessageFromResponse, NETWORK_ERROR_MESSAGE } from './client'
+import { apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, NETWORK_ERROR_MESSAGE } from './client'
 import { authStore } from '../stores/authStore'
 
 export interface Document {
@@ -63,7 +63,7 @@ export async function uploadDocument(
       url += '&suffix=true'
     }
 
-    xhr.open('POST', url)
+    xhr.open('POST', apiUrl(url))
 
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`)
@@ -79,6 +79,11 @@ export async function uploadDocument(
       // 2xx: OK
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText))
+        return
+      }
+
+      if (xhr.status === 401) {
+        reject(handleUnauthorized())
         return
       }
 
