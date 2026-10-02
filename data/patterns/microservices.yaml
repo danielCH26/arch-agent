@@ -1,5 +1,6 @@
 pattern_name: "Microservicios"
 category: "Distribuida"
+complexity: "alta"
 description: >
   Divide el sistema en servicios pequeños e independientes, cada uno con su
   propia base de datos y ciclo de despliegue, comunicados por red.
@@ -11,11 +12,15 @@ when_not_to_use: >
   dominios que todavía no tienen límites claros.
 tradeoffs:
   ventajas:
-    - "Escalado y despliegue independiente por servicio"
-    - "Equipos pueden trabajar y liberar en paralelo sin bloquearse entre sí"
+    - "Despliegue independiente: cada servicio se publica y se revierte sin rehacer toda la aplicación, así que un bug en una parte no bloquea el release del resto"
+    - "Escalado independiente: solo se escalan los servicios que necesitan más recursos, y un orquestador como Kubernetes permite aprovechar mejor el hardware"
+    - "Equipos pequeños y autónomos: cada servicio tiene su propia base de código y puede mantenerlo un equipo, lo que acelera los cambios y reduce la coordinación entre equipos"
+    - "Aislamiento de fallos y de datos: si un servicio cae, el resto sigue si maneja el fallo (circuit breaker, mensajería asíncrona), y cambiar un esquema solo afecta al servicio dueño de esos datos"
   desventajas:
-    - "Alta complejidad operativa: red, observabilidad, consistencia de datos"
-    - "Requiere más infraestructura y experiencia DevOps desde el día uno"
+    - "Complejidad distribuida: más piezas móviles (descubrimiento de servicios, transacciones, comunicación entre servicios); cada servicio es simple, pero el sistema completo es más difícil de razonar"
+    - "Consistencia de datos: cada servicio persiste lo suyo, así que no hay transacción ACID entre servicios; hay que aceptar consistencia eventual y diseñar compensaciones"
+    - "Exige madurez DevOps desde el primer día: CI/CD por servicio, logs correlacionados, trazas distribuidas y orquestación; sin eso, depurar una operación que cruza servicios es muy costoso"
+    - "Latencia y acoplamiento por red: cadenas de llamadas A→B→C suman latencia y los cambios de contrato obligan a versionar para no romper consumidores; refactorizar entre servicios es difícil"
 decision_signals:
   - pregunta: "¿Hay varios equipos que necesitan desplegar dominios distintos sin coordinar cada release?"
     señal_patron: "sí -> Microservicios"
@@ -23,3 +28,12 @@ decision_signals:
     señal_patron: "sí -> Microservicios"
   - pregunta: "¿El equipo ya cuenta con observabilidad, CI/CD y operación distribuida maduras?"
     señal_patron: "sí -> Microservicios"
+fuentes:
+  - titulo: "Microservices architecture style (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/microservices"
+quality_attributes: [escalabilidad independiente, despliegue independiente, autonomía de equipos, resiliencia]
+team_fit: "varios equipos de 10 o más personas con DevOps maduro, contenedores y presupuesto de operación"
+example_scenarios:
+  - "Plataforma con 5 equipos independientes, millones de usuarios y necesidad de escalar y desplegar cada capacidad por separado"
+  - "Marketplace con módulos de búsqueda, pagos y mensajería con cargas de trabajo muy distintas y equipos dedicados"
+  - "Empresa que ya tiene Kubernetes, CI/CD y observabilidad y necesita despliegues diarios independientes por dominio"

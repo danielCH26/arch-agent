@@ -1,0 +1,44 @@
+pattern_name: "Microkernel (arquitectura de plugins)"
+category: "Monolítica"
+complexity: "media"
+description: >
+  Mantiene un núcleo mínimo con las funciones esenciales y delega las
+  capacidades variables o específicas en plugins que se conectan al núcleo
+  mediante una interfaz estable, de modo que se extiende sin modificar el núcleo.
+use_cases: >
+  Productos que deben ampliarse con módulos opcionales o de terceros: editores e
+  IDEs, navegadores, sistemas con reglas configurables por cliente, motores de
+  flujos de trabajo y plataformas donde cada cliente activa funciones distintas.
+when_not_to_use: >
+  Sistemas cuyo conjunto de funciones es fijo y bien conocido, o equipos
+  pequeños con plazos cortos, donde diseñar el núcleo y la interfaz de plugins
+  añade esfuerzo que no se recupera.
+tradeoffs:
+  ventajas:
+    - "Se agregan funcionalidades nuevas como plugins sin modificar ni volver a desplegar el núcleo, lo que reduce el riesgo de regresiones"
+    - "Permite personalizar el producto por cliente activando solo los módulos que necesita cada uno"
+    - "Abre la puerta a que terceros o equipos distintos desarrollen extensiones de forma independiente sobre una interfaz estable"
+    - "Aísla la parte estable del sistema de la parte que cambia con frecuencia, lo que mejora la modificabilidad"
+  desventajas:
+    - "Diseñar un núcleo y una interfaz de plugins estables exige mucho análisis previo y un error de diseño es costoso de corregir después"
+    - "Los plugins mal aislados pueden afectar el rendimiento o la estabilidad del núcleo, y depurar interacciones entre plugins es difícil"
+    - "Versionar el contrato entre núcleo y plugins es un compromiso permanente que limita cambios futuros en el núcleo"
+    - "Si el sistema no necesita extensibilidad real, la indirección de plugins es complejidad innecesaria frente a un monolito modular"
+decision_signals:
+  - pregunta: "¿Necesitas que cada cliente active funciones distintas sin tocar el código base?"
+    señal_patron: "sí -> Microkernel (arquitectura de plugins)"
+  - pregunta: "¿Terceros o equipos externos van a crear extensiones del producto?"
+    señal_patron: "sí -> Microkernel (arquitectura de plugins)"
+  - pregunta: "¿El producto tiene un núcleo estable y funciones periféricas que cambian con frecuencia?"
+    señal_patron: "sí -> Microkernel (arquitectura de plugins)"
+quality_attributes: [extensibilidad, personalización por cliente, aislamiento del núcleo, modificabilidad]
+team_fit: "equipo de 3 a 12 personas que construye un producto extensible o configurable por cliente"
+example_scenarios:
+  - "Editor de código o herramienta de análisis donde la comunidad puede agregar lenguajes y funciones mediante plugins"
+  - "Plataforma de facturación donde cada país o cliente activa reglas de impuestos distintas como módulos conectables"
+  - "Motor de reglas o de reportes que debe permitir agregar nuevos tipos de reporte sin modificar el núcleo"
+fuentes:
+  - titulo: "Software Architecture Patterns - Microkernel (O'Reilly, Mark Richards)"
+    url: "https://www.oreilly.com/library/view/software-architecture-patterns/9781491971437/ch03.html"
+  - titulo: "Plug-in (computing) (Wikipedia)"
+    url: "https://en.wikipedia.org/wiki/Plug-in_(computing)"

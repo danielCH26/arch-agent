@@ -6,6 +6,8 @@ import {
   type ProposalOut,
   createProposalStream,
   decideProposal,
+  getProposalHistory,
+  getLatestProposal,
   getProposal as fetchProposal,
 } from '../api/proposals'
 
@@ -32,6 +34,8 @@ export type InFlightStatus = 'idle' | 'generating' | 'modifying' | 'deciding'
 
 interface ProposalsState {
   currentProposal: Proposal | null
+  /** Draft for the next iteration. The approved/current version stays intact. */
+  pendingProposal: Proposal | null
   iterations: Proposal[]
   inFlight: InFlightStatus
   error: string | null
@@ -49,6 +53,10 @@ interface ProposalsState {
 
   // Read helper (used to re-sync after a 409, see design §10)
   refresh: (proposalId: number) => Promise<void>
+
+  // Rehidrata la propuesta viva del proyecto desde el backend (al recargar o
+  // volver a entrar a la fase). No toca nada si hay un stream en curso.
+  loadLatest: (projectId: number) => Promise<void>
 
   // Cleanup
   reset: () => void
@@ -83,6 +91,7 @@ function proposalFromOut(out: ProposalOut): Proposal {
 
 export const proposalsStore = create<ProposalsState>((set, get) => ({
   currentProposal: null,
+  pendingProposal: null,
   iterations: [],
   inFlight: 'idle',
   error: null,
@@ -92,6 +101,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       inFlight: 'generating',
       error: null,
       currentProposal: emptyProposal(projectId),
+      pendingProposal: null,
     })
 
     createProposalStream(
@@ -118,42 +128,45 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               : {},
           )
         },
-        onDone: (proposalId, citations) => {
+        onDone: (proposalId, citations, iteration) => {
           set((state) => {
             const base = state.currentProposal ?? emptyProposal(projectId)
             const finalized: Proposal = {
               ...base,
               id: proposalId,
               citations,
+              // Iteración real guardada en la DB (antes quedaba en 0 y la
+              // siguiente modificación se mostraba como "iteración 1").
+              iteration: iteration ?? (base.iteration || 1),
               // lifecycle stays 'proposed' until the user clicks Aprobar/Rechazar.
             }
             return {
               currentProposal: finalized,
+              pendingProposal: null,
               iterations: [finalized, ...state.iterations],
               inFlight: 'idle',
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message })
+          set({ inFlight: 'idle', error: message, pendingProposal: null })
         },
       },
     )
   },
 
   modify: async (proposalId: number, feedback: string) => {
-    // Snapshot the prior iteration so we can hydrate UI instantly while the
-    // new stream starts. The new iteration replaces currentProposal on done.
-    const prior = get().iterations.find((p) => p.id === proposalId)
+    // Keep the current iteration visible and immutable while the next one is
+    // streamed. Replacing it with an empty draft made feedback appear to erase
+    // the proposal until the request finished.
+    const current = get().currentProposal
+    const prior =
+      get().iterations.find((p) => p.id === proposalId) ??
+      (current?.id === proposalId ? current : undefined)
     set({
       inFlight: 'modifying',
       error: null,
-      currentProposal: prior
-        ? {
-            ...emptyProposal(prior.project_id),
-            iteration: prior.iteration, // updated on done
-          }
-        : emptyProposal(0),
+      pendingProposal: emptyProposal(prior?.project_id ?? 0),
     })
 
     createProposalStream(
@@ -162,43 +175,47 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       {
         onSources: (citations) => {
           set((state) =>
-            state.currentProposal
-              ? { currentProposal: { ...state.currentProposal, citations } }
+            state.pendingProposal
+              ? { pendingProposal: { ...state.pendingProposal, citations } }
               : {},
           )
         },
         onToken: (token) => {
           set((state) =>
-            state.currentProposal
+            state.pendingProposal
               ? {
-                  currentProposal: {
-                    ...state.currentProposal,
+                  pendingProposal: {
+                    ...state.pendingProposal,
                     content_markdown:
-                      state.currentProposal.content_markdown + token,
+                      state.pendingProposal.content_markdown + token,
                   },
                 }
               : {},
           )
         },
-        onDone: (newProposalId, citations) => {
+        onDone: (newProposalId, citations, iteration) => {
           set((state) => {
-            const base = state.currentProposal ?? emptyProposal(0)
+            const base = state.pendingProposal ?? emptyProposal(0)
             const finalized: Proposal = {
               ...base,
               id: newProposalId,
               citations,
               feedback,
-              iteration: (prior?.iteration ?? 0) + 1,
+              iteration: iteration ?? (prior?.iteration ?? 0) + 1,
             }
             return {
               currentProposal: finalized,
-              iterations: [finalized, ...state.iterations],
+              pendingProposal: null,
+              iterations: [
+                finalized,
+                ...state.iterations.filter((proposal) => proposal.id !== finalized.id),
+              ],
               inFlight: 'idle',
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message })
+          set({ inFlight: 'idle', error: message, pendingProposal: null })
         },
       },
     )
@@ -255,9 +272,47 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     }
   },
 
+  loadLatest: async (projectId) => {
+    if (get().inFlight !== 'idle') return
+    const current = get().currentProposal
+    // Ya hay una propuesta cargada de ESTE proyecto (y no rechazada): no
+    // pisarla. Una de otro proyecto o una rechazada sí se reemplaza.
+    if (
+      current &&
+      current.id != null &&
+      current.project_id === projectId &&
+      current.lifecycle !== 'rejected'
+    ) {
+      return
+    }
+    try {
+      const [out, history] = await Promise.all([
+        getLatestProposal(projectId),
+        getProposalHistory(projectId).catch(() => []),
+      ])
+      if (get().inFlight !== 'idle') return
+      const hydratedHistory = history.map(proposalFromOut)
+      // El historial también contiene propuestas rechazadas. No puede ocupar
+      // `currentProposal`: al regresar de requerimientos el endpoint latest
+      // devuelve null justamente para abrir una nueva generación, mientras
+      // que tomar history[0] dejaba visible el texto rechazado y ocultaba el
+      // botón "Generar propuesta".
+      const hydrated = out ? proposalFromOut(out) : null
+      set({
+        currentProposal: hydrated,
+        pendingProposal: null,
+        iterations: hydratedHistory.length > 0 ? hydratedHistory : (hydrated ? [hydrated] : []),
+        error: null,
+      })
+    } catch {
+      // Silencioso: si falla, la tarjeta queda con el botón "Generar propuesta".
+    }
+  },
+
   reset: () => {
     set({
       currentProposal: null,
+      pendingProposal: null,
       iterations: [],
       inFlight: 'idle',
       error: null,

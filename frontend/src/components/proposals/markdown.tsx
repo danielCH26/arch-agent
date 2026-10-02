@@ -2,16 +2,17 @@
  * Proposal-specific markdown renderer.
  *
  * Proposals (per REQ-1 + the generator's prompt) are produced with a fixed
- * shape: three `## <Section>` headings followed by bullet lists, plus a
- * possible paragraph or two of context. We deliberately keep this renderer
- * narrower than `MessageBubble`'s full markdown so we don't have to lift
- * 150+ LoC of table-parsing logic out of MessageBubble (which is slice-1
- * territory and OUT of scope here).
+ * shape: five `## <Section>` headings (Componentes, Tecnologias, Patrones,
+ * Justificación del patrón principal, Trade-offs y decisión) followed by
+ * bullet lists, plus a possible paragraph or two of context. F10 added the
+ * trade-offs table, so this renderer handles pipe tables (header + separator
+ * + rows) and turns the `<br>` the model uses inside cells into real line
+ * breaks. We deliberately keep it narrower than `MessageBubble`'s full
+ * markdown: no HTML blocks or nested ordered lists.
  *
- * If a future proposal stream starts producing tables / HTML blocks /
- * nested ordered lists, we'll migrate to importing MessageBubble's
- * `renderMarkdownBlocks` (extract it into `frontend/src/lib/markdown.ts`
- * first, then update both call sites).
+ * If a future proposal stream needs more, we'll migrate to importing
+ * MessageBubble's `renderMarkdownBlocks` (extract it into
+ * `frontend/src/lib/markdown.ts` first, then update both call sites).
  */
 
 import type React from 'react'
@@ -61,7 +62,19 @@ function renderInline(content: string): React.ReactNode {
         </code>
       )
     }
-    return <span key={index}>{token.value}</span>
+    // El modelo separa los efectos de una celda con `<br>` (una tabla markdown
+    // no admite saltos de linea). Se convierten a <br/> reales, sin HTML crudo.
+    const parts = token.value.split(/<br\s*\/?>/gi)
+    return (
+      <span key={index}>
+        {parts.map((part, partIndex) => (
+          <span key={partIndex}>
+            {partIndex > 0 && <br />}
+            {part}
+          </span>
+        ))}
+      </span>
+    )
   })
 }
 
@@ -106,6 +119,38 @@ export function renderProposalMarkdown(content: string): React.ReactNode {
         <hr key={`hr-${index}`} className="my-4 border-gray-300" />,
       )
       index += 1
+      continue
+    }
+
+    if (
+      line.includes('|') &&
+      index + 1 < lines.length &&
+      /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1])
+    ) {
+      const cells = (value: string) => value.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim())
+      const headers = cells(line)
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        rows.push(cells(lines[index]))
+        index += 1
+      }
+      blocks.push(
+        <div key={`table-${index}`} className="my-3 overflow-x-auto" data-testid="proposal-markdown-table">
+          <table className="min-w-full border-collapse text-left text-xs">
+            <thead className="bg-gray-50 text-gray-700">
+              <tr>{headers.map((header, cellIndex) => <th key={cellIndex} className="border border-gray-200 px-2 py-1 font-semibold">{renderInline(header)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex} className="align-top">
+                  {headers.map((_, cellIndex) => <td key={cellIndex} className="border border-gray-200 px-2 py-1">{renderInline(row[cellIndex] ?? '')}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      )
       continue
     }
 

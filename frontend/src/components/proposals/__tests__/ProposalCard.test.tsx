@@ -46,14 +46,45 @@ describe('ProposalCard', () => {
     expect(screen.getByTestId('lifecycle-chip-proposed')).toBeInTheDocument()
   })
 
-  it('renders three section headings (Componentes, Tecnologías, Patrones) and shows the proposal id once done', () => {
+  it('keeps the previous content visible while feedback streams a new iteration', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 8,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Gateway existente',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      pendingProposal: {
+        id: null,
+        project_id: 1,
+        iteration: 0,
+        content_markdown: '## Componentes\n- Gateway actualizado',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'modifying',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    expect(screen.getByText(/Gateway existente/)).toBeInTheDocument()
+    expect(screen.getByTestId('proposal-preserved-during-feedback')).toBeInTheDocument()
+  })
+
+  it('renders proposal sections, the trade-off table, and approval once done', () => {
     proposalsStore.setState({
       currentProposal: {
         id: 99,
         project_id: 1,
         iteration: 1,
         content_markdown:
-          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal',
+          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal\n\n## Justificación del patrón principal\n- Separa el dominio de los adaptadores para facilitar las pruebas.\n\n## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Capas | Simple | Escala conjunta | Baja |\n| Hexagonal | Testeable | Más capas | Media |\n| Microservicios | Escala independiente | Operación compleja | Alta |\n\n- Recomendación: Capas\n- Punto de decisión: ¿Aprueba los trade-offs?',
         citations: [
           { pattern_id: 1, pattern_name: 'Hexagonal', similarity: 0.91 },
         ],
@@ -87,6 +118,11 @@ describe('ProposalCard', () => {
     expect(
       screen.getByRole('heading', { name: 'Patrones' }),
     ).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: 'Justificación del patrón principal' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Trade-offs y decisión' })).toBeInTheDocument()
+    expect(screen.getByTestId('proposal-markdown-table')).toBeInTheDocument()
     expect(screen.getByText(/Servicio de autenticación/)).toBeInTheDocument()
     // CitationList mounted -- the pattern name appears twice (once in the
     // markdown body under ## Patrones, once in the citation row), so we
@@ -94,6 +130,31 @@ describe('ProposalCard', () => {
     expect(screen.getAllByText(/Hexagonal/).length).toBeGreaterThan(0)
     // ProposalActions mounted (lifecycle=proposed and id set)
     expect(screen.getByTestId('proposal-approve')).toBeInTheDocument()
+    expect(screen.getByTestId('proposal-approve')).toHaveTextContent(/^Aprobar$/)
+  })
+
+  it('renders <br> inside trade-off table cells as line breaks, not literal text', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 100,
+        project_id: 1,
+        iteration: 1,
+        content_markdown:
+          '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Hexagonal | 1. Testeable.<br>2. Cambio de proveedor sin tocar el dominio. | 1. Más código.<br />2. Curva de aprendizaje. | Media |\n| Modular | a | b | Baja |\n| Capas | a | b | Baja |',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    const table = screen.getByTestId('proposal-markdown-table')
+    expect(table.textContent).not.toMatch(/<br/i)
+    expect(table.querySelectorAll('br').length).toBe(2)
+    expect(table).toHaveTextContent('2. Cambio de proveedor sin tocar el dominio.')
   })
 
   it('shows the "Aprobada" chip and hides actions after a successful approve', () => {
@@ -137,6 +198,26 @@ describe('ProposalCard', () => {
     render(<ProposalCard forceMount />)
 
     expect(screen.getByTestId('lifecycle-chip-rejected')).toBeInTheDocument()
+  })
+
+  it('offers a new generation for a rejected proposal after returning to propuesta', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 99,
+        project_id: 7,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Propuesta rechazada',
+        citations: [],
+        lifecycle: 'rejected',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+    })
+
+    render(<ProposalCard forceMount projectId={7} />)
+
+    expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
   })
 
   it('SCN-8: chatStore/proposalsStore-driven mount: ChatWindow is the gate (component returns null when nothing is in flight and no proposal exists)', () => {

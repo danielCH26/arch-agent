@@ -1,0 +1,45 @@
+pattern_name: "Saga (transacciones distribuidas)"
+category: "Patrón de datos"
+complexity: "alta"
+description: >
+  Coordina una operación de negocio que abarca varios servicios o bases de datos
+  como una secuencia de transacciones locales; si un paso falla, ejecuta
+  transacciones de compensación que deshacen los pasos anteriores, ya sea por
+  coreografía de eventos o por un orquestador.
+use_cases: >
+  Operaciones que cruzan varios servicios con base de datos propia, como crear un
+  pedido que reserva inventario, cobra el pago y programa el envío, donde no es
+  posible una transacción ACID única.
+when_not_to_use: >
+  Sistemas con una sola base de datos o un monolito, donde una transacción local
+  resuelve el problema, y equipos pequeños sin experiencia en consistencia
+  eventual ni en diseño de compensaciones.
+tradeoffs:
+  ventajas:
+    - "Mantiene la consistencia de una operación que cruza varios servicios sin bloquear recursos con transacciones distribuidas de dos fases"
+    - "Cada servicio conserva su propia base de datos y autonomía, que es lo que justifica separar los servicios"
+    - "Las compensaciones explícitas dejan claro qué ocurre cuando falla un paso y permiten recuperar el negocio de forma controlada"
+    - "La variante orquestada centraliza el flujo en un coordinador, lo que facilita seguirlo, monitorizarlo y depurarlo"
+  desventajas:
+    - "Diseñar, probar y mantener las transacciones de compensación de cada paso es complejo y fuente frecuente de errores"
+    - "Ofrece solo consistencia eventual: durante la ejecución otros procesos pueden ver estados intermedios del negocio"
+    - "Exige idempotencia en cada paso y manejo cuidadoso de reintentos y mensajes duplicados para no cobrar o reservar dos veces"
+    - "Añade mucha complejidad operativa y de observabilidad; en un monolito con una sola base de datos es innecesaria"
+decision_signals:
+  - pregunta: "¿Una misma operación de negocio modifica datos en varios servicios con bases de datos separadas?"
+    señal_patron: "sí -> Saga (transacciones distribuidas)"
+  - pregunta: "¿Necesitas deshacer pasos previos cuando falla uno intermedio, por ejemplo un pago rechazado?"
+    señal_patron: "sí -> Saga (transacciones distribuidas)"
+  - pregunta: "¿Puedes aceptar consistencia eventual en lugar de una transacción ACID única?"
+    señal_patron: "sí -> Saga (transacciones distribuidas)"
+quality_attributes: [consistencia entre servicios, autonomía de servicios, recuperación ante fallos parciales]
+team_fit: "equipo de 8 o más personas con microservicios ya en operación, mensajería y experiencia en consistencia eventual"
+example_scenarios:
+  - "Flujo de compra en un e-commerce con microservicios de pedidos, pagos, inventario y envíos que debe revertirse si falla el pago"
+  - "Reserva de viaje que combina vuelo, hotel y auto en servicios distintos y debe cancelar los demás si uno falla"
+  - "Proceso de onboarding bancario que crea cuenta, tarjeta y notificación en servicios independientes con compensación en caso de error"
+fuentes:
+  - titulo: "Pattern: Saga (microservices.io, Chris Richardson)"
+    url: "https://microservices.io/patterns/data/saga.html"
+  - titulo: "Saga distributed transactions pattern (Microsoft Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/saga"

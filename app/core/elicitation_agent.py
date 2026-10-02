@@ -25,6 +25,27 @@ from langchain_core.messages import HumanMessage, SystemMessage
 MIN_QUESTIONS = 5
 MAX_QUESTIONS = 10
 
+# Estos tres datos no son una restricción genérica más: determinan si una
+# propuesta es viable. Se buscan tanto en la conversación como en la
+# descripción y en los documentos para no volver a preguntar lo ya conocido.
+_VIABILITY_FACTORS = (
+    (
+        "presupuesto",
+        ("presupuesto", "costo", "coste", "cop", "usd", "dolar", "dinero", "financi", "inversion"),
+        "¿Con qué presupuesto cuentan para construir y operar el sistema? Si aún no está definido, indícame el rango o la restricción de gasto.",
+    ),
+    (
+        "equipo",
+        ("equipo", "desarrollador", "ingeniero", "persona", "miembro", "senior", "junior", "devops"),
+        "¿Cuántas personas integran el equipo y qué experiencia o roles técnicos tienen disponibles?",
+    ),
+    (
+        "plazo",
+        ("plazo", "tiempo", "mes", "semana", "fecha", "deadline", "entrega", "calendario", "mvp"),
+        "¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?",
+    ),
+)
+
 # HU5: "El sistema inicia con pregunta abierta" -- se fuerza determinísticamente
 # (no se le pide al LLM que decida la primera pregunta) para que este criterio
 # de aceptación no dependa de que el modelo se porte bien.
@@ -41,12 +62,22 @@ Eres un product manager levantando requerimientos para un nuevo proyecto \
 de software mediante preguntas progresivas. Cada pregunta debe construir \
 sobre las respuestas anteriores, no repetir lo ya preguntado.
 
+Cuando recibas documentos del proyecto, evalúa primero si cada dato es
+relevante para la descripción del proyecto y las respuestas del usuario.
+Usa únicamente los datos que describan el problema, usuarios, alcance,
+funcionalidades, restricciones o calidad del proyecto. Ignora contenido
+ajeno al proyecto. Los hechos relevantes de los documentos ya son contexto
+conocido: no los vuelvas a preguntar; formula preguntas solo sobre vacíos,
+ambigüedades o contradicciones que impidan definir la arquitectura.
+
 Antes de decidir que el contexto es suficiente, cubre estas 4 categorías \
 a lo largo de la conversación (no todo en una sola pregunta):
 1. Usuarios: quiénes son, cuántos, qué tan seguido usarían el sistema.
 2. Funcionalidades: qué debe poder hacer el sistema, en orden de prioridad.
 3. Restricciones: tiempo, equipo, presupuesto, tecnologías obligatorias u \
-   obligatoriamente evitadas.
+   obligatoriamente evitadas. Presupuesto, tamaño/capacidad del equipo y \
+   plazo son factores de viabilidad obligatorios: confirma los tres con \
+   datos concretos o con la indicación explícita de que aún no se definieron.
 4. Calidad: rendimiento, seguridad, disponibilidad, y cualquier otro \
    requerimiento no funcional relevante.
 
@@ -55,7 +86,8 @@ forma exacta:
 {"done": bool, "question": str o null, "reason": str}
 
 - "done": true solo si ya cubriste las 4 categorías con suficiente detalle \
-para proponer una arquitectura razonable.
+para proponer una arquitectura razonable y conoces presupuesto, equipo y \
+plazo (desde respuestas o documentos relevantes).
 - "question": la siguiente pregunta a hacer (null si done=true).
 - "reason": una frase corta explicando la decisión (para logs, no se \
 muestra al usuario).
@@ -68,7 +100,11 @@ muestra al usuario).
 SUMMARY_SYSTEM_PROMPT = """\
 Eres un product manager resumiendo los requerimientos levantados durante \
 una sesión de elicitación. Basado ÚNICAMENTE en las preguntas y \
-respuestas proporcionadas -- no inventes información que no esté ahí.
+respuestas proporcionadas y, si existen, en los documentos aportados por el \
+usuario -- no inventes información que no esté ahí. Antes de usar un dato de \
+un documento, verifica que sea relevante para el problema y alcance del \
+proyecto; ignora contenido ajeno. Si un documento relevante contradice una \
+respuesta anterior, prioriza el documento (es más reciente).
 
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
@@ -174,11 +210,43 @@ def _invoke_json(
         ) from e
 
 
+def _documents_section(documents_context: Optional[str]) -> str:
+    if not documents_context or not documents_context.strip():
+        return ""
+    return (
+        "\n\nDocumentos aportados por el usuario (actas, notas, "
+        "especificaciones). Evalúa su relevancia para este proyecto antes de "
+        "usarlos; los datos relevantes ya son información conocida y no debes "
+        f"volver a preguntarlos:\n{documents_context.strip()}"
+    )
+
+
+def _missing_viability_factors(
+    history: list[dict],
+    project_description: str,
+    documents_context: Optional[str],
+) -> list[tuple[str, str]]:
+    """Return feasibility inputs absent from all available project context."""
+    history_text = "\n".join(
+        f"{item.get('pregunta', '')}\n{item.get('respuesta', '')}"
+        for item in history
+    )
+    context = " ".join(
+        part for part in (project_description, documents_context or "", history_text) if part
+    ).casefold()
+    return [
+        (name, question)
+        for name, keywords, question in _VIABILITY_FACTORS
+        if not any(keyword in context for keyword in keywords)
+    ]
+
+
 def next_step(
     model: BaseChatModel,
     history: list[dict],
     project_description: str = "",
     callbacks: Optional[list[Any]] = None,
+    documents_context: Optional[str] = None,
 ) -> ElicitationDecision:
     """
     Decide la siguiente pregunta progresiva, o si el contexto ya es
@@ -193,19 +261,29 @@ def next_step(
     Returns:
         ElicitationDecision(done, question, reason)
     """
-    if not history:
+    if not history and not documents_context:
         # HU5: primera pregunta siempre abierta y determinística, sin
-        # depender de que el LLM la formule bien.
+        # depender de que el LLM la formule bien. Si hay documentos, se usa
+        # el modelo para que la primera pregunta cubra únicamente vacíos
+        # reales del contexto disponible.
         return ElicitationDecision(
             done=False,
             question=FIRST_QUESTION,
             reason="Primera pregunta: forzada a ser abierta (HU5), sin llamar al LLM.",
         )
 
+    initial_context = (
+        "No hay respuestas todavía. Formula una primera pregunta abierta que "
+        "parta de los documentos relevantes y pida solo la información que "
+        "falte para entender el problema y sus usuarios."
+        if not history
+        else f"Preguntas y respuestas hasta ahora:\n{_history_to_text(history)}"
+    )
     context = (
         f"Descripción inicial del proyecto: "
         f"{project_description or '(no proporcionada)'}\n\n"
-        f"Preguntas y respuestas hasta ahora:\n{_history_to_text(history)}"
+        f"{initial_context}"
+        f"{_documents_section(documents_context)}"
     )
 
     data = _invoke_json(
@@ -223,6 +301,19 @@ def next_step(
         question=data.get("question"),
         reason=data.get("reason", ""),
     )
+
+    missing_viability = _missing_viability_factors(
+        history, project_description, documents_context
+    )
+    if missing_viability:
+        factor, question = missing_viability[0]
+        # Regla dura complementaria al prompt: el LLM no puede cerrar ni
+        # saltarse los límites que condicionan coste, complejidad y entrega.
+        return ElicitationDecision(
+            done=False,
+            question=question,
+            reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
+        )
 
     if len(history) < MIN_QUESTIONS and decision.done:
         # Regla dura: no se puede terminar antes del mínimo, sin importar
@@ -251,6 +342,7 @@ def generate_summary(
     history: list[dict],
     project_description: str = "",
     callbacks: Optional[list[Any]] = None,
+    documents_context: Optional[str] = None,
 ) -> dict:
     """
     Genera el resumen estructurado del contexto capturado (criterio de
@@ -260,6 +352,7 @@ def generate_summary(
         f"Descripción inicial del proyecto: "
         f"{project_description or '(no proporcionada)'}\n\n"
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
+        f"{_documents_section(documents_context)}"
     )
     return _invoke_json(
         model,

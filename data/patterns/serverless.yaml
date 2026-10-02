@@ -1,5 +1,6 @@
 pattern_name: "Serverless (Function-as-a-Service)"
 category: "Distribuida"
+complexity: "media"
 description: >
   La lógica se despliega como funciones individuales que ejecuta el proveedor
   cloud bajo demanda, sin gestionar servidores directamente.
@@ -11,11 +12,16 @@ when_not_to_use: >
   requisitos estrictos de portabilidad entre proveedores.
 tradeoffs:
   ventajas:
-    - "Sin gestión de servidores; se paga solo por ejecución real"
-    - "Escala automáticamente ante picos de tráfico sin intervención manual"
+    - "Menos operación de infraestructura: el proveedor aprovisiona, escala y mantiene los servidores, así que no hay administración de sistema, aunque sigan existiendo monitoreo, seguridad y despliegue"
+    - "Pago por uso real: se cobra por el cómputo consumido en cada ejecución, lo que conviene con tráfico ocasional o con picos fuertes"
+    - "Escalado automático y fino por petición: sin configurar autoscaling ni estimar capacidad, y los picos se absorben sin sobreaprovisionar servidores"
+    - "Menor tiempo de salida al mercado: desplegar una función es empaquetar y subir el código, lo que facilita experimentar con bajo costo"
   desventajas:
-    - "Cold starts pueden afectar la latencia en funciones poco usadas"
-    - "Dependencia fuerte del proveedor cloud (vendor lock-in)"
+    - "Cold starts: la primera invocación tras un periodo de inactividad tarda más (de milisegundos a varios segundos según lenguaje, librerías y acceso a red privada), lo que no sirve para latencias muy predecibles"
+    - "Dependencia del proveedor: los disparadores, el gateway y la mensajería son específicos de cada nube, y migrar implica cambiar código, herramientas de despliegue y parte de la infraestructura"
+    - "Sin estado local y con límites de ejecución: el estado persistente debe ir a una base de datos o caché externa, y las tareas largas exigen dividirse en varias funciones coordinadas"
+    - "Pruebas de integración, depuración y observabilidad más difíciles: hay muchas funciones pequeñas que dependen de servicios en la nube que no se simulan con fidelidad en local"
+    - "Costos y límites de concurrencia: con carga constante y uniforme puede salir más caro que un servidor dedicado, y los límites de concurrencia compartidos por cuenta pueden afectar a producción"
 decision_signals:
   - pregunta: "¿La carga es intermitente y quieres pagar principalmente por ejecuciones reales?"
     señal_patron: "sí -> Serverless (Function-as-a-Service)"
@@ -23,3 +29,12 @@ decision_signals:
     señal_patron: "sí -> Serverless (Function-as-a-Service)"
   - pregunta: "¿Las funciones son cortas y toleran cierta variabilidad de arranque?"
     señal_patron: "sí -> Serverless (Function-as-a-Service)"
+fuentes:
+  - titulo: "Serverless Architectures (Mike Roberts, martinfowler.com, 2018)"
+    url: "https://martinfowler.com/articles/serverless.html"
+quality_attributes: [pago por uso, escalabilidad automática, bajo costo operativo en cargas intermitentes]
+team_fit: "equipo pequeño sin infraestructura dedicada, carga variable o intermitente y tolerancia a arranques en frío"
+example_scenarios:
+  - "API con tráfico esporádico, equipo de 2 personas, sin servidores que administrar y facturación solo por uso"
+  - "Procesamiento de imágenes o archivos subidos por usuarios que se dispara por evento y escala de 0 a miles"
+  - "Backend de un evento o campaña de pocas semanas con picos fuertes de tráfico y presupuesto limitado"

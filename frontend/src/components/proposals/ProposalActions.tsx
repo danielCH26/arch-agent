@@ -87,7 +87,7 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
           className="rounded bg-blue-600 px-3 py-1 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           data-testid="proposal-modify"
         >
-          Modificar
+          Solicitar alternativas o cambios
         </button>
         <button
           type="button"
@@ -119,7 +119,7 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             disabled={isBusy}
-            placeholder="Describe el cambio que quieres (ej. agregar cache, usar Postgres en vez de Mongo, etc.)"
+            placeholder="Pide alternativas o cambios (ej. comparar monolito modular frente a microservicios, agregar caché, etc.)"
             className="min-h-[60px] w-full rounded border border-gray-300 px-2 py-1 text-sm"
             data-testid="proposal-feedback"
           />
