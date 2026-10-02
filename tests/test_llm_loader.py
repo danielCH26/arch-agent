@@ -8,6 +8,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.core.llm_loader import (
+    DEFAULT_LLM_TEMPERATURE,
+    _acepta_temperature,
     load_user_llm_config,
     save_user_llm_config,
     build_langchain_model,
@@ -185,8 +187,54 @@ class TestBuildLangchainModel:
             model_provider="openai",
             base_url="https://api.openai.com/v1",
             api_key="sk-test",
+            temperature=DEFAULT_LLM_TEMPERATURE,
         )
         assert result == mock_model
+
+    @patch("app.core.llm_loader.init_chat_model")
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_builds_model_with_zero_temperature(self, mock_load, mock_init):
+        """La app debe fijar temperature=0.0 explicito.
+
+        Groq y OpenAI usan 1.0 por defecto (maximo de aleatoriedad). Si
+        ``_init_model`` deja de pasar el parametro, produccion vuelve a
+        muestrear al maximo en silencio.
+        """
+        from app.core.llm_loader import UserLLMConfig
+
+        mock_load.return_value = UserLLMConfig(
+            user_id=1,
+            base_url="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key="gsk-test",
+        )
+        mock_init.return_value = MagicMock()
+
+        build_langchain_model(1)
+
+        assert mock_init.call_args.kwargs["temperature"] == 0.0
+        assert DEFAULT_LLM_TEMPERATURE == 0.0
+
+    @patch("app.core.llm_loader.init_chat_model")
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_temperatura_se_manda_siempre_incluso_con_cache(self, mock_load, mock_init):
+        """Tambien en la ruta cacheada: la temperatura no puede quedar de lado."""
+        from app.core.llm_loader import UserLLMConfig
+
+        mock_load.return_value = UserLLMConfig(
+            user_id=1,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+        )
+        mock_init.return_value = MagicMock()
+
+        build_langchain_model(1)
+        build_langchain_model(1)  # segunda vez sale del cache de config
+
+        assert mock_init.call_count == 2
+        for llamada in mock_init.call_args_list:
+            assert llamada.kwargs["temperature"] == 0.0
 
     @patch("app.core.llm_loader.init_chat_model")
     @patch("app.core.llm_loader.load_user_llm_config")
@@ -248,6 +296,131 @@ class TestBuildLangchainModel:
 
         with pytest.raises(LLMConfigError, match="paso 3"):
             build_langchain_model(1)
+
+
+class TestAceptaTemperature:
+    """`_acepta_temperature` decide si se manda el kwarg `temperature`.
+
+    Funcion pura: se testea como tabla de entradas/salidas, sin mocks.
+    """
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-4.1",
+            "gpt-5",
+            "gpt-5-chat-latest",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "openai/gpt-4o-mini",
+            "mixtral-8x7b",
+            "",
+            "   ",
+        ],
+    )
+    def test_familias_comunes_si_aceptan(self, model):
+        assert _acepta_temperature(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # Serie o completa: prefijo `o` + digito de generacion.
+            "o1",
+            "o1-mini",
+            "o1-preview",
+            "o1-pro",
+            "o3",
+            "o3-mini",
+            "o3-pro",
+            "o4-mini",
+            # Bordes: snapshots con fecha, mayusculas y espacios.
+            "o1-2024-12-17",
+            "o3-mini-2025-01-31",
+            "o4-mini-2025-04-16",
+            "O1",
+            "O1-MINI",
+            "  o1-mini  ",
+            # Generaciones futuras: la regex no es una lista cerrada.
+            "o2",
+            "o5",
+        ],
+    )
+    def test_serie_o_no_acepta(self, model):
+        assert _acepta_temperature(model) is False
+
+    def test_ningun_modelo_completo_empieza_con_o_mas_digito(self):
+        """Evita que el prefijo se coma familias que contienen 'o' o un digito.
+
+        `gpt-4o` tiene una `o`, `llama-3.3` tiene un `3`: ninguno puede
+        devolver False por accidente.
+        """
+        for model in ("gpt-4o", "gpt-4o-mini", "llama-3.3-70b", "qwen2.5"):
+            assert _acepta_temperature(model) is True
+
+
+class TestInitModelTemperature:
+    """`_init_model` solo manda `temperature` si el modelo lo acepta."""
+
+    @staticmethod
+    def _config(model: str):
+        from app.core.llm_loader import UserLLMConfig
+
+        return UserLLMConfig(
+            user_id=1,
+            base_url="https://api.openai.com/v1",
+            model=model,
+            api_key="sk-test",
+        )
+
+    @pytest.mark.parametrize("model", ["gpt-4o-mini", "llama-3.3-70b"])
+    def test_modelo_comun_recibe_temperature_cero(self, model):
+        from app.core.llm_loader import _init_model
+
+        with patch("app.core.llm_loader.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            _init_model(self._config(model))
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["temperature"] == 0.0
+        assert DEFAULT_LLM_TEMPERATURE == 0.0
+
+    @pytest.mark.parametrize("model", ["o1", "o1-mini", "o3-mini", "o4-mini"])
+    def test_modelo_serie_o_no_recibe_temperature(self, model):
+        """Sin el kwarg, langchain aplica su default de 1, que es lo valido.
+
+        Mandar 0.0 explicito hace que la guarda interna de langchain (que solo
+        dispara si `temperature` NO viene en `values`) no se aplique, el 0.0
+        viaja al request y OpenAI responde 400 en request time.
+        """
+        from app.core.llm_loader import _init_model
+
+        with patch("app.core.llm_loader.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            _init_model(self._config(model))
+
+        kwargs = mock_init.call_args.kwargs
+        assert "temperature" not in kwargs
+        # El resto de los kwargs no se tocan.
+        assert kwargs["model"] == model
+        assert kwargs["model_provider"] == "openai"
+        assert kwargs["base_url"] == "https://api.openai.com/v1"
+        assert kwargs["api_key"] == "sk-test"
+
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_build_langchain_model_tambien_lo_omite_para_serie_o(self, mock_load):
+        """La regla aplica en la ruta cacheada y en la fresca, por igual."""
+        mock_load.return_value = self._config("o1-mini")
+
+        with patch("app.core.llm_loader.init_chat_model") as mock_init:
+            mock_init.return_value = MagicMock()
+            build_langchain_model(1)
+            build_langchain_model(1)
+
+        assert mock_init.call_count == 2
+        for llamada in mock_init.call_args_list:
+            assert "temperature" not in llamada.kwargs
 
 
 class TestClearSessionCache:
