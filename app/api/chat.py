@@ -638,9 +638,26 @@ async def chat(
                 code = "llm_invalid_response"
 
             logger.exception("event_generator failed: %s", e)
+            # Map the typed code to a Spanish user-facing message. The
+            # internal exception text (``str(e)``) can include the provider
+            # URL, response body, or stack details — never expose that to
+            # the client. PR #85 round 3 (Soomri): replace ``str(e)`` with
+            # a fixed message keyed by ``code``.
+            user_messages = {
+                "llm_timeout": "El modelo de IA está tardando más de lo esperado. "
+                                "Por favor, intenta de nuevo en unos segundos.",
+                "llm_rate_limit": "Estás haciendo muchas solicitudes al modelo. "
+                                  "Espera un minuto e intenta de nuevo.",
+                "llm_invalid_response": "El modelo de IA devolvió una respuesta inválida. "
+                                        "Por favor, intenta de nuevo o cambia de modelo.",
+            }
+            detail = user_messages.get(
+                code,
+                "Ocurrió un error inesperado. Intenta de nuevo.",
+            )
             payload = {
                 "code": code,
-                "detail": str(translated) if translated is e else str(e),
+                "detail": detail,
             }
             yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         finally:

@@ -94,6 +94,18 @@ def handle_db_errors(func):
     async def wrapper(*args, **kwargs):
         try:
             return await func(*args, **kwargs)
+        except IntegrityError as e:
+            # IMPORTANT: IntegrityError is a subclass of DBAPIError, so it
+            # must be caught BEFORE the broader (OperationalError, DBAPIError)
+            # except clause. Otherwise an IntegrityError (a 409 conflict) gets
+            # misclassified as a DB connection error and surfaces as 503.
+            # PR #85 round 3 (Soomri): reorder to fix the bug.
+            _logger.warning("DB integrity error in %s: %s", func.__name__, e)
+            raise HTTPException(
+                status_code=409,
+                detail="Ya existe un recurso con esos datos. "
+                       "Cambia los valores y vuelve a intentar.",
+            ) from e
         except (OperationalError, DBAPIError) as e:
             # Translate SQLAlchemy low-level errors to our typed hierarchy
             # so the rest of the mapping is consistent with the global
@@ -104,13 +116,6 @@ def handle_db_errors(func):
                 status_code=503,
                 detail="No pudimos conectar con la base de datos. "
                        "Es un problema temporal, intenta de nuevo en unos segundos.",
-            ) from e
-        except IntegrityError as e:
-            _logger.warning("DB integrity error in %s: %s", func.__name__, e)
-            raise HTTPException(
-                status_code=409,
-                detail="Ya existe un recurso con esos datos. "
-                       "Cambia los valores y vuelve a intentar.",
             ) from e
         except DatabaseConnectionError as e:
             _logger.error("DB connection error in %s: %s", func.__name__, e)

@@ -132,7 +132,6 @@ async def delete_doc(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
 
-@handle_db_errors
 @router.post(
     "/upload",
     status_code=status.HTTP_201_CREATED,
@@ -142,6 +141,7 @@ async def delete_doc(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 @handle_file_errors
 async def upload_document(
     project_id: int,
