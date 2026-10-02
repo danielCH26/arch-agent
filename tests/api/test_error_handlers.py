@@ -113,6 +113,58 @@ class HandleDbErrorsTests(unittest.IsolatedAsyncioTestCase):
         result = await func()
         self.assertEqual(result, {"ok": True})
 
+    async def test_sqlalchemy_operational_error_maps_to_503(self):
+        """PR #85 round 4 (danielCH26): add coverage for SQLAlchemy
+        OperationalError, not just our typed DatabaseConnectionError."""
+        from sqlalchemy.exc import OperationalError
+
+        @handle_db_errors
+        async def func():
+            raise OperationalError("SELECT 1", {}, Exception("db down"))
+
+        with self.assertRaises(HTTPException) as ctx:
+            await func()
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertIn("No pudimos conectar", ctx.exception.detail)
+
+    async def test_sqlalchemy_integrity_error_maps_to_409(self):
+        """PR #85 round 4 (danielCH26): add coverage for SQLAlchemy
+        IntegrityError (unique/FK violations). Regression guard for the
+        round-3 bug where IntegrityError was caught by the broader
+        DBAPIError clause and returned 503 instead of 409."""
+        from sqlalchemy.exc import IntegrityError
+
+        @handle_db_errors
+        async def func():
+            raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+        with self.assertRaises(HTTPException) as ctx:
+            await func()
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("Ya existe un recurso", ctx.exception.detail)
+
+    async def test_integrity_error_takes_precedence_over_dbapi(self):
+        """Specifically guard against the round-3 bug: IntegrityError
+        is a subclass of DBAPIError. If the except clauses get reordered,
+        the broader DBAPIError clause would catch IntegrityError first and
+        map it to 503. The order in the decorator source must be:
+        IntegrityError BEFORE (OperationalError, DBAPIError)."""
+        from sqlalchemy.exc import IntegrityError
+
+        @handle_db_errors
+        async def func():
+            # 409 is IntegrityError (FK or unique violation)
+            raise IntegrityError("INSERT", {}, Exception("FK violation"))
+
+        with self.assertRaises(HTTPException) as ctx:
+            await func()
+        # If this test ever returns 503, the except order has been
+        # regressed and the bug from round 3 is back.
+        self.assertEqual(
+            ctx.exception.status_code, 409,
+            "IntegrityError must map to 409, not 503 (round-3 regression)",
+        )
+
 
 # ---------------------------------------------------------------------------
 # handle_file_errors

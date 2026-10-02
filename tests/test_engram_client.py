@@ -39,7 +39,11 @@ class EngramClientTests(unittest.TestCase):
 
     @patch("app.core.engram_client.urlopen", side_effect=OSError("servicio apagado"))
     def test_client_wraps_connection_errors(self, _mock_urlopen):
-        with self.assertRaisesRegex(EngramError, "No fue posible conectar"):
+        # After round 4 (danielCH26): unsafe methods (POST) don't retry. The
+        # GET endpoint ``get_context`` is safe, so it retries 3 times before
+        # surfacing the error. The final message now includes the class name
+        # instead of the full exception (which could carry the request URL).
+        with self.assertRaisesRegex(EngramError, "Engram GET"):
             EngramClient(base_url="http://engram.test").get_context("arch-agent-user-1")
 
 
