@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -150,7 +150,20 @@ class EngramClient:
                 with urlopen(request, timeout=self.timeout) as response:
                     payload = response.read().decode("utf-8")
                     break
+            except HTTPError as exc:
+                # 4xx/5xx responses are not retried — re-sending won't change
+                # the result (e.g., a 400 from an FK violation will still be 400).
+                # Surface the error immediately so the caller can react.
+                logger.error(
+                    "Engram request %s %s returned HTTP %s: %s",
+                    method, path, exc.code, exc.reason,
+                )
+                raise EngramError(
+                    f"Engram devolvió HTTP {exc.code}: {exc.reason}"
+                ) from exc
             except (URLError, TimeoutError, OSError) as exc:
+                # Transient network errors: connection refused, DNS, timeout.
+                # Retry with exponential backoff.
                 last_exc = exc
                 if attempt < self.max_retries - 1:
                     wait = self.backoff_base * (2 ** attempt)

@@ -58,7 +58,7 @@ class HandleLlmErrorsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await func()
         self.assertEqual(ctx.exception.status_code, 429)
-        self.assertIn("Esperá un minuto", ctx.exception.detail)
+        self.assertIn("Espera un minuto", ctx.exception.detail)
 
     async def test_invalid_response_maps_to_502(self):
         @handle_llm_errors
@@ -103,7 +103,7 @@ class HandleDbErrorsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await func()
         self.assertEqual(ctx.exception.status_code, 409)
-        self.assertIn("Cambiá los valores", ctx.exception.detail)
+        self.assertIn("Cambia los valores", ctx.exception.detail)
 
     async def test_passes_through_when_no_error(self):
         @handle_db_errors
@@ -163,7 +163,7 @@ class HandleRagErrorsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await func()
         self.assertEqual(ctx.exception.status_code, 503)
-        self.assertIn("Verificá tu conexión", ctx.exception.detail)
+        self.assertIn("Verifica tu conexión", ctx.exception.detail)
 
     async def test_search_empty_propagates_unwrapped(self):
         """RAGSearchEmptyError is NOT an HTTP error - the endpoint is

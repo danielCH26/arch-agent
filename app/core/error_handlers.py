@@ -56,22 +56,22 @@ def handle_llm_errors(func):
             raise HTTPException(
                 status_code=504,
                 detail="El modelo de IA está tardando más de lo esperado. "
-                       "Por favor, intentá de nuevo en unos segundos.",
-            )
+                       "Por favor, intenta de nuevo en unos segundos.",
+            ) from e
         except LLMRateLimitError as e:
             _logger.warning("LLM rate limit in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=429,
                 detail="Estás haciendo muchas solicitudes al modelo. "
-                       "Esperá un minuto e intentá de nuevo.",
-            )
+                       "Espera un minuto e intenta de nuevo.",
+            ) from e
         except LLMInvalidResponseError as e:
             _logger.warning("LLM invalid response in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=502,
                 detail="El modelo de IA devolvió una respuesta inválida. "
-                       "Por favor, intentá de nuevo o cambiá de modelo.",
-            )
+                       "Por favor, intenta de nuevo o cambia de modelo.",
+            ) from e
 
     return wrapper
 
@@ -79,28 +79,53 @@ def handle_llm_errors(func):
 def handle_db_errors(func):
     """Catch database errors and translate them to HTTP responses.
 
-    For DatabaseConnectionError we map to 503 (transient: retry later).
-    For DatabaseIntegrityError we map to 409 (client fixed the input and
-    should retry with a different value).
+    Maps:
+    - DatabaseConnectionError -> 503 (transient: retry later).
+    - DatabaseIntegrityError -> 409 (client fixed the input and should
+      retry with a different value).
+    - SQLAlchemy OperationalError / DBAPIError (network down, server gone)
+      -> DatabaseConnectionError -> 503.
+    - SQLAlchemy IntegrityError (unique/FK violations) -> DatabaseIntegrityError
+      -> 409.
     """
+    from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
+
     @wraps(func)
     async def wrapper(*args, **kwargs):
         try:
             return await func(*args, **kwargs)
+        except (OperationalError, DBAPIError) as e:
+            # Translate SQLAlchemy low-level errors to our typed hierarchy
+            # so the rest of the mapping is consistent with the global
+            # handler. Wrapping in DatabaseConnectionError preserves the
+            # original traceback via `from e`.
+            _logger.error("DB connection error in %s: %s", func.__name__, e)
+            raise HTTPException(
+                status_code=503,
+                detail="No pudimos conectar con la base de datos. "
+                       "Es un problema temporal, intenta de nuevo en unos segundos.",
+            ) from e
+        except IntegrityError as e:
+            _logger.warning("DB integrity error in %s: %s", func.__name__, e)
+            raise HTTPException(
+                status_code=409,
+                detail="Ya existe un recurso con esos datos. "
+                       "Cambia los valores y vuelve a intentar.",
+            ) from e
         except DatabaseConnectionError as e:
             _logger.error("DB connection error in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=503,
                 detail="No pudimos conectar con la base de datos. "
-                       "Es un problema temporal, intentá de nuevo en unos segundos.",
-            )
+                       "Es un problema temporal, intenta de nuevo en unos segundos.",
+            ) from e
         except DatabaseIntegrityError as e:
             _logger.warning("DB integrity error in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=409,
                 detail="Ya existe un recurso con esos datos. "
-                       "Cambiá los valores y volvé a intentar.",
-            )
+                       "Cambia los valores y vuelve a intentar.",
+            ) from e
 
     return wrapper
 
@@ -121,14 +146,14 @@ def handle_file_errors(func):
                 status_code=413,
                 detail="El archivo es demasiado grande. "
                        "El tamaño máximo permitido es 10 MB.",
-            )
+            ) from e
         except FileInvalidFormatError as e:
             _logger.warning("Invalid file format in %s: %s", func.__name__, e)
             raise HTTPException(
                 status_code=415,
                 detail="El formato del archivo no es compatible. "
-                       "Usá PDF, Markdown o texto plano.",
-            )
+                       "Usa PDF, Markdown o texto plano.",
+            ) from e
 
     return wrapper
 
@@ -136,10 +161,11 @@ def handle_file_errors(func):
 def handle_rag_errors(func):
     """Catch RAG errors and translate them to HTTP responses.
 
-    For RAGEmbeddingError we map to 503 (the embedding service is down).
-    RAGSearchEmptyError is NOT an HTTP error -- it just means "no results",
-    which is a 200 with empty array. The wrapper just lets that exception
-    pass through to the caller, which is expected to handle it.
+    For ``RAGEmbeddingError`` we map to 503 (the embedding service is
+    down). "No results" is no longer raised — ``similarity_search``
+    returns ``([], metrics)`` directly when nothing matched (PR #85
+    round 2 feedback), so callers don't need a dedicated empty-results
+    branch.
     """
     @wraps(func)
     async def wrapper(*args, **kwargs):
@@ -150,8 +176,7 @@ def handle_rag_errors(func):
             raise HTTPException(
                 status_code=503,
                 detail="No pudimos procesar tu consulta. "
-                       "Verificá tu conexión e intentá de nuevo.",
-            )
-        # RAGSearchEmptyError is NOT an error to the user; let it propagate.
+                       "Verifica tu conexión e intenta de nuevo.",
+            ) from e
 
     return wrapper

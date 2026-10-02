@@ -64,7 +64,6 @@ def _get_user_by_login(login: str) -> User | None:
 
 # --- Routes ------------------------------------------------------------------
 
-@handle_db_errors
 @router.post(
     "/register",
     response_model=TokenResponse,
@@ -74,6 +73,7 @@ def _get_user_by_login(login: str) -> User | None:
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def register(body: RegisterRequest):
     """
     Register a new user account.
@@ -87,7 +87,6 @@ async def register(body: RegisterRequest):
     token = create_access_token(user.id, user.username)
     return TokenResponse(user_id=user.id, username=user.username, token=token)
 
-@handle_db_errors
 @router.post(
     "/login",
     response_model=TokenResponse,
@@ -95,6 +94,7 @@ async def register(body: RegisterRequest):
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def login(body: LoginRequest):
     """
     Authenticate with username or email + password.
@@ -116,7 +116,6 @@ async def login(body: LoginRequest):
     token = create_access_token(user.id, user.username)
     return TokenResponse(user_id=user.id, username=user.username, token=token)
 
-@handle_db_errors
 @router.post(
     "/logout",
     response_model=LogoutResponse,
@@ -124,6 +123,7 @@ async def login(body: LoginRequest):
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def logout(current_user: dict = Depends(get_current_user)):
     """
     Revoke the current JWT by adding its jti to the revocation list.
@@ -134,7 +134,6 @@ async def logout(current_user: dict = Depends(get_current_user)):
         JWT_REVOKED.add(jti)
     return LogoutResponse(message="Logged out successfully")
 
-@handle_db_errors
 @router.get(
     "/me",
     response_model=UserResponse,
@@ -142,6 +141,7 @@ async def logout(current_user: dict = Depends(get_current_user)):
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def me(current_user: dict = Depends(get_current_user)):
     """Return the authenticated user's profile."""
     db = SessionLocal()

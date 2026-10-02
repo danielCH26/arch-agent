@@ -74,7 +74,6 @@ def _require_project(user_id: int, project_id: int) -> Project:
 
 
 # --- Routes -------------------------------------------------------------------
-@handle_db_errors
 @router.get(
     "",
     response_model=list[ProjectOut],
@@ -82,6 +81,7 @@ def _require_project(user_id: int, project_id: int) -> Project:
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def list_projects(current_user: dict = Depends(get_current_user)):
     """List all projects for the authenticated user."""
     from app.core.database import SessionLocal
@@ -106,7 +106,6 @@ async def list_projects(current_user: dict = Depends(get_current_user)):
     finally:
         db.close()
 
-@handle_db_errors
 @router.post(
     "",
     response_model=ProjectOut,
@@ -116,6 +115,7 @@ async def list_projects(current_user: dict = Depends(get_current_user)):
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def create_project(
     body: ProjectCreate,
     current_user: dict = Depends(get_current_user),
@@ -167,7 +167,6 @@ async def create_project(
         db.close()
 
 
-@handle_db_errors
 @router.get(
     "/{project_id}",
     response_model=ProjectOut,
@@ -175,6 +174,7 @@ async def create_project(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def get_project(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -190,7 +190,6 @@ async def get_project(
         created_at=project.created_at.isoformat() if project.created_at else "",
     )
 
-@handle_db_errors
 @router.delete(
     "/{project_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -198,6 +197,7 @@ async def get_project(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def delete_project(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -213,7 +213,6 @@ async def delete_project(
     finally:
         db.close()
 
-@handle_db_errors
 @router.get(
     "/{project_id}/phase",
     response_model=PhaseOut,
@@ -221,6 +220,7 @@ async def delete_project(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def get_phase(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -233,7 +233,6 @@ async def get_phase(
         available_phases=AVAILABLE_PHASES,
     )
 
-@handle_db_errors
 @router.post(
     "/{project_id}/advance",
     response_model=PhaseAdvanceOut,
@@ -241,6 +240,7 @@ async def get_phase(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def advance_phase(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -292,7 +292,6 @@ async def advance_phase(
     finally:
         db.close()
 
-@handle_db_errors
 @router.post(
     "/{project_id}/mark-ready",
     response_model=dict,
@@ -300,6 +299,7 @@ async def advance_phase(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def mark_ready(
     project_id: int,
     current_user: dict = Depends(get_current_user),

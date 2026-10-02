@@ -83,7 +83,6 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
 
 
 # --- Routes -----------------------------------------------------------------
-@handle_db_errors
 @router.get(
     "/{project_id}",
     response_model=list[DocumentOut],
@@ -91,6 +90,7 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def list_documents(
     project_id: int,
     current_user: dict = Depends(get_current_user),
@@ -114,7 +114,6 @@ async def list_documents(
         for d in docs
     ]
 
-@handle_db_errors
 @router.delete(
     "/{doc_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -122,6 +121,7 @@ async def list_documents(
         503: {"description": "Database connection error"},
     },
 )
+@handle_db_errors
 async def delete_doc(
     doc_id: int,
     current_user: dict = Depends(get_current_user),
@@ -133,7 +133,6 @@ async def delete_doc(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
 
 @handle_db_errors
-@handle_file_errors
 @router.post(
     "/upload",
     status_code=status.HTTP_201_CREATED,
@@ -143,6 +142,7 @@ async def delete_doc(
         503: {"description": "Database connection error"},
     },
 )
+@handle_file_errors
 async def upload_document(
     project_id: int,
     file: UploadFile,

@@ -81,9 +81,9 @@ async def _archagent_handler(_request, exc):
 
     for klass in type(exc).__mro__:
         if klass in _APP_AGENT_ERROR_MAPPING:
-            status, generic = _APP_AGENT_ERROR_MAPPING[klass]
+            http_code, generic = _APP_AGENT_ERROR_MAPPING[klass]
             detail = generic or str(exc)
-            return JSONResponse(status_code=status, content={"detail": detail})
+            return JSONResponse(status_code=http_code, content={"detail": detail})
 
     # Fallback: unknown ArchAgentError
     logger.exception("Unhandled ArchAgentError: %s", exc)

@@ -123,19 +123,46 @@ class TestGlobalHandlerCoexistsWithDecorators(unittest.TestCase):
     the global handler.
     """
     def test_decorated_endpoint_still_returns_decorator_code(self):
+        """Verify the FIX for F17 review feedback item 1.
+
+        Production endpoints have ``@router.post(...)`` ABOVE
+        ``@handle_db_errors`` (router wraps the inner function). If the
+        order is inverted, the decorator never runs and the global
+        handler must catch the original ``ArchAgentError`` instead.
+        """
         from server import app
         from app.core.error_handlers import handle_db_errors
 
-        @app.get("/_test_route_decorated_db")
+        # Correct order: @router first, then @handle_db_errors
+        @app.get("/_test_route_decorated_db_correct")
         @handle_db_errors
-        async def _decorated_route():
+        async def _decorated_route_correct():
             from app.core.exceptions import DatabaseIntegrityError
             raise DatabaseIntegrityError("foo")
 
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/_test_route_decorated_db")
-        # Both the decorator and the global handler produce 409; we just
-        # assert the code path is alive (the test from TestDecoratorReachedByFastAPI
-        # in test_error_handling_integration already covers the actual mapping).
+        resp = client.get("/_test_route_decorated_db_correct")
+        # Decorator runs first, translates to HTTPException(409)
         self.assertEqual(resp.status_code, 409)
         client.close()
+
+        # Inverted order: @handle_db_errors ABOVE @router (the F17 review bug).
+        # The decorator's wrapper never runs because @router binds the
+        # original function to the route. The global exception handler
+        # catches the original ArchAgentError and maps it.
+        @app.get("/_test_route_decorated_db_inverted")
+        async def _decorated_route_inverted():
+            from app.core.error_handlers import handle_db_errors
+
+            @handle_db_errors
+            async def _inner():
+                from app.core.exceptions import DatabaseIntegrityError
+                raise DatabaseIntegrityError("foo")
+
+            return await _inner()
+
+        client2 = TestClient(app, raise_server_exceptions=False)
+        resp2 = client2.get("/_test_route_decorated_db_inverted")
+        # Global handler maps DatabaseIntegrityError -> 409
+        self.assertEqual(resp2.status_code, 409)
+        client2.close()

@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.embeddings import get_embeddings
-from app.core.exceptions import RAGEmbeddingError, RAGSearchEmptyError
+from app.core.exceptions import RAGEmbeddingError
 from app.models.architect_pattern import ArchitectPattern
 from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
@@ -226,12 +226,15 @@ def similarity_search(
         search_ms mide solo consultas PGVector; es el numero relevante para
         validar el criterio <100ms con 10k vectores.
 
-    Raises:
-        RAGSearchEmptyError: when both result groups are empty AND the
-        embedding is valid (provider returned a real vector). The caller
-        (api/rag.py) catches this and returns a 200 with an empty array;
-        the global handler does NOT see this exception because we want the
-        "no results" UX, not an HTTP error.
+    Empty results are returned as ``([], metrics)`` — NOT raised as an
+    exception. "No docs matched" is a soft signal that the caller (chat
+    route, ``api/rag.py``, proposal generator) is expected to handle by
+    continuing with empty context. Raising an exception for this case was
+    reviewed out (PR #85 round 2): callers were logging empty-result
+    branches as warnings anyway, so the typed exception added noise
+    without adding signal. Real failures (provider down, invalid scope,
+    missing user_id) still raise ``RAGSearchError`` /
+    ``RAGEmbeddingError`` as before.
     """
     if scope not in {"all", "patterns", "documents"}:
         raise RAGSearchError("scope debe ser 'all', 'patterns' o 'documents'")
@@ -258,14 +261,16 @@ def similarity_search(
 
     merged = _merge_by_distance(groups)[:k]
     if not merged:
-        # The embedding is valid (provider check passed) but no docs matched.
-        # This is a soft "no results" signal — the caller turns it into 200
-        # with an empty array. We surface a typed error so the endpoint
-        # knows the difference from a real failure (which propagates as a
-        # 5xx through the global handler).
-        raise RAGSearchEmptyError(
-            f"No se encontraron resultados para la búsqueda (scope={scope!r})."
-        )
+        # Empty results are a soft signal (no docs matched). Return empty
+        # list + metrics so callers can continue with no context instead of
+        # catching a typed exception. Real errors above (provider down,
+        # invalid scope, etc.) still raise; see module-level docstring.
+        search_ms = sum(group_ms for _, group_ms in groups)
+        return [], {
+            "embedding_ms": embedding_ms,
+            "search_ms": search_ms,
+            "total_ms": embedding_ms + search_ms,
+        }
     search_ms = sum(group_ms for _, group_ms in groups)
     return merged, {
         "embedding_ms": embedding_ms,
