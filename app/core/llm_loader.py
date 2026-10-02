@@ -5,6 +5,7 @@ Issue: #7 - HU12 Configuración de LLM
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -14,6 +15,62 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.core.encryption import decrypt, EncryptionError
+
+
+# Temperatura de muestreo para TODO modelo que construye la app.
+#
+# Groq y OpenAI usan 1.0 por defecto, que es el maximo de aleatoriedad: dos
+# turnos identicos con el mismo prompt devuelven respuestas distintas. Nadie lo
+# eligio -- simplemente nadie lo escribio, asi que produccion venia muestreando
+# al maximo. El cliente necesita salida estable: la misma proposal tiene que ser
+# comparable entre iteraciones y entre ejecuciones del golden set, y una
+# temperatura alta convierte cada regeneracion en un producto distinto. Se fija
+# 0.0 de forma explicita en vez de heredar el default del proveedor.
+#
+# No todos los modelos aceptan el parametro. La serie de razonamiento `o*` de
+# OpenAI solo admite temperature=1 y responde 400 ante cualquier otro valor, asi
+# que aca NO se manda: se omite el kwarg y langchain aplica su default de 1, que
+# es el unico valor esos modelos soportan. Ver `_acepta_temperature`.
+DEFAULT_LLM_TEMPERATURE: float = 0.0
+
+
+# Series de modelos que rechazan `temperature` distinto de 1 (400 de OpenAI).
+#
+# El criterio es el prefijo ``o`` seguido de un digito, NO una lista de nombres.
+# Es la convencion de nomenclatura de toda la familia de razonamiento de OpenAI
+# (letra + generacion): o1, o1-mini, o1-pro, o1-2024-12-17, o3, o3-mini, o3-pro,
+# o4-mini, ... asi una generacion futura (o2, o5) queda cubierta sin tocar el
+# codigo. Ningun modelo ajeno a esa familia entra por accidente: `gpt-4o`,
+# `gpt-4o-mini` y `llama-3.3-70b` no arrancan con `o` + digito.
+#
+# Sobre langchain: `langchain_openai.chat_models.base.ChatOpenAI` tiene su propia
+# guarda (base.py ~1118) que fuerza temperature=1 para `o1*`, pero SOLO cuando el
+# parametro NO viene en `values` -- y la app lo manda explicito, con lo cual la
+# guarda nunca dispara y el 0.0 viaja al request. Para `gpt-5*` no-chat langchain
+# hace `values.pop("temperature")` y descarta el valor en silencio, asi que ese
+# caso lo cubre la libreria y no se replica acá. Ademas la guarda de langchain
+# solo llega a `o1`: no cubre `o3*` ni `o4*`, que fallan igual.
+#
+# Punto de extension: si manana otro proveedor -- u otra familia de OpenAI --
+# tiene la misma restriccion, su patron se agrega ACa. Este es el unico lugar
+# que decide si se manda la temperatura.
+_RECHAZA_TEMPERATURE_RE = re.compile(r"^o\d")
+
+
+def _acepta_temperature(model: str) -> bool:
+    """¿Este modelo acepta un valor de `temperature` distinto de 1?
+
+    Funcion pura, sin dependencias: facil de testear y de extender.
+
+    Args:
+        model: nombre del modelo tal como lo eligio el usuario en el wizard.
+
+    Returns:
+        True si se le puede pasar `temperature` (ej. `gpt-4o-mini`,
+        `llama-3.3-70b`). False si hay que omitir el kwarg para que la libreria
+        aplique su default (ej. `o1`, `o1-mini`, `o3-mini`, `o4-mini`).
+    """
+    return not _RECHAZA_TEMPERATURE_RE.match((model or "").strip().lower())
 
 
 class LLMConfigError(Exception):
@@ -148,13 +205,21 @@ def _init_model(config: UserLLMConfig) -> BaseChatModel:
             reason="missing",
         )
 
+    kwargs: dict = {
+        "model": config.model,
+        "model_provider": "openai",  # Cualquier API OpenAI-compatible
+        "base_url": config.base_url,
+        "api_key": config.api_key,
+    }
+    # Solo se manda `temperature` si el modelo lo admite. Omitirlo no es un
+    # descuido: es lo unico que hace que la serie `o*` funcione, porque su unico
+    # valor valido es 1 y mandarle 0.0 produce un 400 en request time (que
+    # aflora como SSE `event: error` sin explicar la causa).
+    if _acepta_temperature(config.model):
+        kwargs["temperature"] = DEFAULT_LLM_TEMPERATURE
+
     try:
-        model = init_chat_model(
-            model=config.model,
-            model_provider="openai",  # Cualquier API OpenAI-compatible
-            base_url=config.base_url,
-            api_key=config.api_key,
-        )
+        model = init_chat_model(**kwargs)
         return model
     except Exception as e:
         raise LLMConfigError(
