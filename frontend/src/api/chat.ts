@@ -79,6 +79,11 @@ interface StreamCallbacks {
   onSources?: (sources: RagSource[]) => void
   onAttachment?: (attachment: Attachment) => void
   onDiagramIssue?: (message: string) => void
+  // HU10 v2 (REQ-SA-11 / REQ-SA-26.1): fired when the backend emits
+  // `event: phase_locked` — the SSE channel that signals a phase is ready
+  // for the user's Aprobar / Modificar / Rechazar decision. Independent of
+  // the `/phases` fetch path so the surface never silently fails to mount.
+  onPhaseLocked?: (data: { phase: string; phase_ready: boolean }) => void
 }
 
 function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean {
@@ -166,6 +171,22 @@ function dispatchSSEEvent(rawEvent: string, callbacks: StreamCallbacks): boolean
     return true
   }
 
+  // HU10 v2 (REQ-SA-11 / REQ-SA-26.1): SSE consumer for `phase_locked`.
+  // The frontend mount path also re-derives `pendingDecision` from
+  // `GET /phases` (defense-in-depth), so missing this callback does NOT
+  // break the user-facing surface — it just makes the mount slightly
+  // slower until the next refresh tick.
+  if (eventName === 'phase_locked' && rawData && callbacks.onPhaseLocked) {
+    try {
+      callbacks.onPhaseLocked(
+        JSON.parse(rawData) as { phase: string; phase_ready: boolean },
+      )
+    } catch {
+      // Ignore malformed payloads; the next `/phases` fetch will reconcile.
+    }
+    return false
+  }
+
   if (eventName === 'error' && rawData) {
     try {
       callbacks.onError(JSON.parse(rawData))
@@ -184,7 +205,7 @@ export function createChatStream(
   callbacks: StreamCallbacks,
   displayMessage?: string,
 ): () => void {
-  const { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue } = callbacks
+  const { onToken, onDone, onError, onSources, onAttachment, onDiagramIssue, onPhaseLocked } = callbacks
   const token = authStore.getState().token
 
   const controller = new AbortController()
@@ -238,6 +259,7 @@ export function createChatStream(
             onSources,
             onAttachment,
             onDiagramIssue,
+            onPhaseLocked,
           })
           if (shouldStop) return
         }
@@ -251,6 +273,7 @@ export function createChatStream(
           onSources,
           onAttachment,
           onDiagramIssue,
+          onPhaseLocked,
         })
         if (shouldStop) return
       }
