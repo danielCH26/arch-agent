@@ -960,3 +960,192 @@ def test_prompt_without_sources_marks_every_row_as_not_from_rag():
     assert "| ... | ... | ... | ... | ... | Sin fuente RAG |" in prompt
     assert "[1] |" not in prompt
     assert "No hay fuentes recuperadas" in prompt
+
+
+# --- F10: feedback/requerimientos vs. regla dura de escala ------------------
+
+_TIGHT = "MVP en 3 meses, equipo de 4 personas, presupuesto bajo"
+
+
+def _tight_pool():
+    # Microservicios y Event-Driven ganan por similitud; hay mas de 3 candidatos
+    # validos, como con los 19 patrones de la base.
+    return [
+        _pat("Microservicios", 1, 0.98, "alta"),
+        _pat("Arquitectura orientada a eventos (Event-Driven)", 2, 0.95, "alta"),
+        _pat("Monolito modular (Modular Monolith)", 3, 0.80, "baja"),
+        _pat("Arquitectura en capas (Layered)", 4, 0.79, "baja"),
+        _pat("Arquitectura hexagonal (Puertos y Adaptadores)", 5, 0.78, "media"),
+    ]
+
+
+def _names(citations):
+    return [c["pattern_name"] for c in citations]
+
+
+def test_team_size_regex_accepts_a_bare_number_but_not_durations():
+    from app.core.proposal_generator import _TEAM_SIZE_RE, _normalize_text
+
+    def team(text):
+        match = _TEAM_SIZE_RE.search(_normalize_text(text))
+        return int(match.group(1)) if match else None
+
+    assert team("MVP en 3 meses, equipo de 4, presupuesto bajo") == 4
+    assert team("equipo de 12 personas") == 12
+    assert team("equipo de 4 desarrolladores") == 4
+    assert team("equipo de 12 meses") is None
+    assert team("equipo de 4,5 personas") is None
+
+
+def test_tight_mvp_with_a_bare_team_number_blocks_distributed_primary():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text="MVP en 3 meses, equipo de 4, presupuesto bajo; queremos microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+
+
+def test_requirement_asking_for_microservices_still_gets_a_discarded_row():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text=_TIGHT + "; queremos microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+    assert _names(citations)[-1] == "Microservicios"
+    assert citations[-1]["scale_disqualified"] is True
+    assert "scale_disqualified" not in citations[0]
+    # Event-Driven no se pidio: no se cuela como fila fija.
+    assert "Arquitectura orientada a eventos (Event-Driven)" not in _names(citations)
+
+
+def test_feedback_that_changes_to_microservices_beats_the_tight_mvp_rule():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text=_TIGHT,
+        feedback="cambia a microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Microservicios"
+    assert "scale_disqualified" not in citations[0]
+
+
+def test_feedback_that_compares_keeps_the_light_primary_and_cites_the_other():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text=_TIGHT,
+        feedback="comparar monolito modular frente a microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+    assert "Microservicios" in _names(citations)
+    assert citations[-1]["pattern_name"] == "Microservicios"
+    assert citations[-1]["scale_disqualified"] is True
+
+
+def test_feedback_without_cqrs_drops_it_even_when_pinning_rows():
+    from app.core.proposal_generator import _select_citations
+
+    pool = _tight_pool() + [_pat("CQRS (Command Query Responsibility Segregation)", 6, 0.97, "alta")]
+    citations = _select_citations(
+        pool, top_n=3, min_similarity=0.0, explicit_text=_TIGHT, feedback="sin CQRS"
+    )
+
+    assert not any("CQRS" in name for name in _names(citations))
+
+
+def test_prompt_marks_scale_discarded_rows_and_documents_the_feedback_exception():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Monolito modular", "source_role": "primary", "tradeoffs": {}},
+            {"pattern_name": "Capas", "source_role": "consulted_not_cited", "tradeoffs": {}},
+            {
+                "pattern_name": "Microservicios",
+                "source_role": "consulted_not_cited",
+                "tradeoffs": {},
+                "scale_disqualified": True,
+            },
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+        requirements_text="MVP en 3 meses con equipo de 4 personas",
+    )
+
+    block = prompt.split("[3] Microservicios")[1].split("\n\n")[0]
+    assert "Descartado por la escala del proyecto" in block
+    assert "Descartado por la escala" not in prompt.split("[3] Microservicios")[0]
+    assert "si el feedback del usuario pide expresamente cambiar" in prompt
+    assert "Consultados no citados" not in prompt
+
+
+def test_baseline_ignores_microservices_in_requirements_when_primary_is_light():
+    from app.core.proposal_generator import _build_prompt
+
+    light_primary = [{"pattern_name": "Monolito modular (Modular Monolith)", "source_role": "primary"}]
+    prompt = _build_prompt(
+        citations=light_primary,
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+        requirements_text="MVP en 3 meses, equipo de 4 personas; queremos microservicios",
+    )
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in prompt
+
+    compared = _build_prompt(
+        citations=light_primary,
+        prior_content=None,
+        feedback="comparar monolito modular frente a microservicios",
+        project_name="P",
+    )
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in compared
+
+    changed = _build_prompt(
+        citations=[{"pattern_name": "Microservicios", "source_role": "primary"}],
+        prior_content=None,
+        feedback="cambia a microservicios",
+        project_name="P",
+    )
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" in changed
+
+
+def test_missing_sections_requires_distinct_rag_citations_per_row():
+    from app.core.proposal_generator import _missing_sections
+
+    same_source = _FULL_PROPOSAL.replace("| [2] |", "| [1] |").replace("| [3] |", "| [1] |")
+
+    assert _missing_sections(same_source, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+    assert _missing_sections(_FULL_PROPOSAL, source_count=3) == []
+
+
+def test_missing_sections_reads_the_rag_column_before_other_cells():
+    from app.core.proposal_generator import _missing_sections
+
+    # El [1] en Ventajas no cuenta como cita de la fila si su columna Fuente trae otro.
+    proposal = _FULL_PROPOSAL.replace(
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |",
+        "| Modular | Mejor que [1] | Requiere disciplina | Media | Alto | [2] |",
+    )
+
+    assert _missing_sections(proposal, source_count=3) == []

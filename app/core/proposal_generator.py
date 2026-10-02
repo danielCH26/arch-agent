@@ -464,9 +464,15 @@ PROPOSAL_SMALL_TEAM_MAX = int(os.getenv("PROPOSAL_SMALL_TEAM_MAX", "4"))
 PROPOSAL_SMALL_BUDGET_USD = float(os.getenv("PROPOSAL_SMALL_BUDGET_USD", "20000"))
 PROPOSAL_SHORT_TIMELINE_MONTHS = int(os.getenv("PROPOSAL_SHORT_TIMELINE_MONTHS", "3"))
 
+# "equipo de 4 personas" y tambien "equipo de 4" a secas ("MVP en 3 meses,
+# equipo de 4, presupuesto bajo"). Sin sustantivo, la cifra no debe ir seguida
+# de una unidad de tiempo/dinero ("equipo de 4 meses") ni de otro digito.
 _TEAM_SIZE_RE = re.compile(
-    r"equipo\s+(?:de\s+)?(\d+)\s*"
-    r"(?:ingenieros?|desarrolladores?|personas|devs?|full-?stack)"
+    r"equipo\s+(?:de\s+)?(\d+)(?!\d)"
+    r"(?:\s*(?:ingenieros?|desarrolladores?|programadores?|personas|integrantes|"
+    r"miembros|estudiantes|devs?|full-?stack)"
+    r"|(?!\s*(?:mes|meses|semanas?|sprints?|dias?|horas?|anos?|usd|dolar|dolares|k\b|%)"
+    r"|[.,]\d))"
 )
 _BUDGET_RE = re.compile(r"\$\s?(\d[\d.,]*)\s*(?:usd|dolares)?")
 _TIMELINE_MONTHS_RE = re.compile(r"(\d+)\s*(?:mes|meses|month|months)\b")
@@ -617,6 +623,15 @@ _REJECT_CUE = re.compile(
 )
 _CLAUSE_BREAK = re.compile(r"[.,;:!?\n]")
 
+# "comparar monolito modular frente a microservicios": el usuario quiere VER la
+# alternativa en la tabla, no cambiar el patron principal.
+_COMPARE_CUE = re.compile(r"\b(?:compar\w*|frente\s+a|versus|vs)\b")
+
+
+def _is_comparison_request(feedback: str | None) -> bool:
+    """True si el feedback pide comparar patrones en vez de cambiar de patron."""
+    return bool(feedback and _COMPARE_CUE.search(_normalize_text(feedback)))
+
 
 def _is_rejected_mention(normalized_text: str, start: int) -> bool:
     """True si la mencion que empieza en ``start`` va precedida de un rechazo."""
@@ -689,9 +704,15 @@ def _select_citations(
 
     ``feedback`` (los cambios que pide el usuario al modificar) MANDA sobre el
     ranking: el patron que el feedback pide pasa a ser el principal aunque tenga
-    menos similitud o mas complejidad, y el que el feedback quita ("sin CQRS",
-    "cambia CQRS por X") no se cita. ``explicit_text`` (requerimientos) solo
-    evita la penalizacion por complejidad.
+    menos similitud, mas complejidad o la regla dura de escala (equipo<=4 y
+    plazo<=3 meses) lo descartaria, y el que el feedback quita ("sin CQRS",
+    "cambia CQRS por X") no se cita. Si el feedback solo pide COMPARAR ("comparar
+    monolito modular frente a microservicios") el patron nombrado se cita siempre
+    (tiene fila en la tabla) pero no pasa a principal. ``explicit_text``
+    (requerimientos) solo evita la penalizacion por complejidad; un patron de
+    escala descartada que el usuario pidio ahi tambien se cita, marcado
+    ``scale_disqualified``, para que la tabla lo muestre como alternativa
+    descartada con su razon.
     """
     limit = PROPOSAL_RAG_TOP_N if top_n is None else top_n
     floor = PROPOSAL_RAG_MIN_SIMILARITY if min_similarity is None else min_similarity
@@ -737,6 +758,12 @@ def _select_citations(
         key: _feedback_stance(doc.metadata.get("pattern_name"), feedback)
         for key, doc in best_fit.items()
     }
+    if _is_comparison_request(feedback):
+        # Pedir una comparacion no es pedir el cambio de patron principal.
+        stance = {
+            key: "compare" if value == "want" else value
+            for key, value in stance.items()
+        }
 
     # Descalificacion dura por escala del proyecto (ver comentario junto a
     # PROPOSAL_SMALL_TEAM_MAX): un patron "alta" complejidad no puede ser
@@ -749,11 +776,16 @@ def _select_citations(
         # Esta es una prohibición, no una preferencia: con menos de cinco
         # personas y <= 3 meses, microservicios/eventos distribuidos desvían
         # capacidad de entrega hacia DevOps, depuración y consistencia.
+        # Solo la cambia un feedback que PIDE el patron ("cambia a
+        # microservicios"): el feedback manda sobre los requerimientos y el
+        # prompt obliga a declarar su costo en "Riesgo o costo".
+        if stance[key] == "want":
+            return False
         if tight_mvp and _is_complex_distributed_pattern(
             best_fit[key].metadata.get("pattern_name")
         ):
             return True
-        if not small_scale or stance[key] == "want":
+        if not small_scale:
             return False
         doc = best_fit[key]
         if _COMPLEXITY_LEVEL.get(doc.metadata.get("complexity"), 0) < 2:
@@ -781,15 +813,41 @@ def _select_citations(
         ),
     )
 
-    citations: list[dict] = []
-    for _key, doc in ordered:
-        if len(citations) >= limit:
-            break
-        if stance[_key] == "reject":
-            continue
+    def _eligible(key: Any, doc: Document) -> bool:
+        if stance[key] == "reject":
+            return False
         # Lo que el usuario pidio por nombre se cita aunque no llegue al piso.
-        if stance[_key] != "want" and _sim(doc) < floor:
+        return stance[key] in ("want", "compare") or _sim(doc) >= floor
+
+    def _pinned(key: Any, doc: Document) -> bool:
+        # Se citan siempre (tienen fila en la tabla de trade-offs): lo que el
+        # feedback pide o compara, y lo que el usuario pidio en sus
+        # requerimientos pero la regla de escala descarta (alternativa
+        # descartada con su razon). Sin esto, con 19 patrones en la base nunca
+        # llegarian al top_n y la tabla no podria mostrarlos.
+        if stance[key] in ("want", "compare"):
+            return True
+        return _scale_disqualified(key) and _explicitly_requested(
+            doc.metadata.get("pattern_name"), explicit_text
+        )
+
+    order_index = {key: position for position, (key, _doc) in enumerate(ordered)}
+    eligible = [(key, doc) for key, doc in ordered if _eligible(key, doc)]
+    chosen = eligible[:limit]
+    for key, doc in eligible[limit:]:
+        if not _pinned(key, doc):
             continue
+        slot = next(
+            (i for i in range(len(chosen) - 1, -1, -1) if not _pinned(*chosen[i])),
+            None,
+        )
+        if slot is None:
+            continue
+        chosen[slot] = (key, doc)
+    chosen.sort(key=lambda item: order_index[item[0]])
+
+    citations: list[dict] = []
+    for _key, doc in chosen:
         citations.append(
             {
                 "pattern_id": doc.metadata.get("pattern_id"),
@@ -799,6 +857,10 @@ def _select_citations(
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
             }
         )
+        # Solo si NO es el principal: un patron descartado por escala que aun
+        # asi queda primero (unico candidato) no puede presentarse "descartado".
+        if len(citations) > 1 and _scale_disqualified(_key):
+            citations[-1]["scale_disqualified"] = True
         reason = (llm_reasons or {}).get(str(doc.metadata.get("pattern_name")))
         if reason:
             citations[-1]["llm_reason"] = reason
@@ -913,8 +975,10 @@ def _has_tradeoff_comparison(markdown: str | None, source_count: int = 0) -> boo
       * trae las columnas Ventajas, Desventajas y Complejidad/costo;
       * al menos 3 filas con la opcion y los tres criterios rellenos (las filas
         vacias o las lineas de texto con ``|`` que siguen a la tabla no cuentan);
-      * si hubo fuentes RAG, al menos ``min(source_count, 3)`` filas citan un
-        ``[n]`` existente (los trade-offs deben salir del RAG).
+      * si hubo fuentes RAG, las filas citan al menos ``min(source_count, 3)``
+        ``[n]`` existentes y DISTINTOS (una fila por patron recuperado; tres
+        filas que citen todas ``[1]`` no cuentan). Se lee primero la columna
+        Fuente RAG y, si no trae un ``[n]`` valido, el resto de la fila.
     """
     section = _tradeoff_section(markdown)
     if section is None:
@@ -955,15 +1019,32 @@ def _has_tradeoff_comparison(markdown: str | None, source_count: int = 0) -> boo
         return False
 
     if source_count > 0:
-        cited_rows = sum(
-            1
-            for row in complete_rows
-            if any(
-                1 <= int(number) <= source_count
-                for number in _CITATION_RE.findall(" ".join(row))
-            )
+        source_position = next(
+            (
+                position
+                for position, header in enumerate(headers)
+                if re.sub(r"[*_`]", "", _normalize_text(header)).strip().startswith("fuente")
+            ),
+            None,
         )
-        if cited_rows < min(source_count, MIN_TRADEOFF_OPTIONS):
+
+        def _first_valid_citation(row: list[str]) -> int | None:
+            candidates = []
+            if source_position is not None and source_position < len(row):
+                candidates.append(row[source_position])
+            candidates.append(" ".join(row))
+            for text in candidates:
+                for number in _CITATION_RE.findall(text):
+                    if 1 <= int(number) <= source_count:
+                        return int(number)
+            return None
+
+        cited = {
+            number
+            for number in map(_first_valid_citation, complete_rows)
+            if number is not None
+        }
+        if len(cited) < min(source_count, MIN_TRADEOFF_OPTIONS):
             return False
     return True
 
@@ -1034,7 +1115,25 @@ def _architecture_baseline(
     )
     normalized = _normalize_text(context)
 
-    if _keyword_wanted(("microserv",), normalized):
+    # Coherencia con el patron principal: si es uno ligero (capas, monolito
+    # modular...), que los requerimientos o un feedback de COMPARACION nombren
+    # microservicios o eventos no debe imponer su estructura base; seria
+    # contradecir el principal y la prohibicion de escala (equipo<=4, plazo<=3).
+    # Un feedback que PIDE el cambio ya hizo principal al patron distribuido.
+    if primary_name and not _is_complex_distributed_pattern(primary_name):
+        distributed_context = _normalize_text(
+            "\n".join(
+                [
+                    "" if _is_comparison_request(feedback) else (feedback or ""),
+                    prior_context,
+                    primary_name,
+                ]
+            )
+        )
+    else:
+        distributed_context = normalized
+
+    if _keyword_wanted(("microserv",), distributed_context):
         return (
             "ESTRUCTURA BASE SELECCIONADA: microservicios (sujeta a las "
             "RESTRICCIONES DE VIABILIDAD).\n"
@@ -1055,7 +1154,9 @@ def _architecture_baseline(
             "si se incluye) -> Servicios y las dependencias de cada servicio "
             "con su propia base de datos usando esos mismos nombres.\n"
         )
-    if _keyword_wanted(("event driven", "event-driven", "orientada a eventos"), normalized):
+    if _keyword_wanted(
+        ("event driven", "event-driven", "orientada a eventos"), distributed_context
+    ):
         return (
             "ESTRUCTURA BASE SELECCIONADA: orientada a eventos (sujeta a las "
             "RESTRICCIONES DE VIABILIDAD).\n"
@@ -1120,7 +1221,7 @@ def _build_prompt(
     requirements_text: str | None = None,
     documents_text: str | None = None,
 ) -> str:
-    """Compose the structured prompt that drives the LLM to produce 4 sections."""
+    """Compose the structured prompt that drives the LLM to produce the 5 sections."""
     primary_citation = next(
         (citation for citation in citations if citation.get("source_role") == "primary"),
         citations[0] if citations else None,
@@ -1195,6 +1296,13 @@ def _build_prompt(
                 f"[{index}] {cite.get('pattern_name')}\n"
                 f"Contexto: {cite.get('snippet') or ''}\n"
                 f"Trade-offs RAG: {tradeoffs_context}"
+                + (
+                    "\nDescartado por la escala del proyecto (equipo, plazo o "
+                    "presupuesto): preséntalo en la tabla solo como alternativa "
+                    "descartada y explica la razón; no lo recomiendes."
+                    if cite.get("scale_disqualified")
+                    else ""
+                )
                 + (
                     f"\nAjuste al proyecto (análisis previo): {cite['llm_reason']}"
                     if cite.get("llm_reason")
@@ -1406,7 +1514,11 @@ def _build_prompt(
         "múltiples bases por servicio, Saga o arquitectura distribuida orientada "
         "a eventos. Recomienda monolito modular o una arquitectura limpia/hexagonal "
         "en un despliegue y una base de datos. Las opciones prohibidas solo pueden "
-        "aparecer como alternativas descartadas, con la razón explícita.\n"
+        "aparecer como alternativas descartadas, con la razón explícita. "
+        "Excepción: si el feedback del usuario pide expresamente cambiar a uno de "
+        "esos patrones, respétalo, preséntalo como principal y declara su costo en "
+        "'Riesgo o costo'; si solo piden compararlo, mantén tu recomendación y deja "
+        "ese patrón como alternativa descartada con su razón.\n"
         "- En cada fila de Trade-offs sustituye la frase genérica 'mayor "
         "complejidad' por fricciones operativas concretas: tiempo y dificultad "
         "de debugging local, curva de aprendizaje DevOps, riesgo de consistencia "
@@ -1454,7 +1566,7 @@ def _build_prompt(
         "`- Recomendación: <una opción>` y `- Punto de decisión: ¿Aprueba los "
         "trade-offs?`. No inventes una cita cuando no haya fuente RAG.\n\n"
         "Esta justificación debe hablar exclusivamente del patrón principal, "
-        "no de las referencias 'Consultados no citados', y debe ser concreta: "
+        "no de las demás alternativas de la tabla de trade-offs, y debe ser concreta: "
         "no uses frases genéricas como 'mejora la escalabilidad' sin vincularlas "
         "a componentes o requisitos de esta propuesta.\n\n"
         f"{candidates_intro}"

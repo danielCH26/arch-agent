@@ -31,13 +31,14 @@ export function CitationList({ citations }: CitationListProps) {
   return (
     <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">
       <p className="font-semibold">Fuentes RAG para los trade-offs:</p>
-      <ol className="mt-1 list-decimal pl-4">
+      {/* Sin numeracion propia: el [n] ya es el numero que cita la tabla. */}
+      <ul className="mt-1 list-none space-y-0.5 pl-0">
         {citations.map((citation, index) => (
           <li key={`${citation.pattern_id ?? 'unknown'}-${index}`}>
             <span title={citation.snippet ?? undefined}>[{index + 1}] {labelFor(citation, index)}</span>
           </li>
         ))}
-      </ol>
+      </ul>
     </div>
   )
 }

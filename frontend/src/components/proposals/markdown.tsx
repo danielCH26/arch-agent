@@ -2,16 +2,17 @@
  * Proposal-specific markdown renderer.
  *
  * Proposals (per REQ-1 + the generator's prompt) are produced with a fixed
- * shape: four `## <Section>` headings followed by bullet lists, plus a
- * possible paragraph or two of context. We deliberately keep this renderer
- * narrower than `MessageBubble`'s full markdown so we don't have to lift
- * 150+ LoC of table-parsing logic out of MessageBubble (which is slice-1
- * territory and OUT of scope here).
+ * shape: five `## <Section>` headings (Componentes, Tecnologias, Patrones,
+ * Justificación del patrón principal, Trade-offs y decisión) followed by
+ * bullet lists, plus a possible paragraph or two of context. F10 added the
+ * trade-offs table, so this renderer handles pipe tables (header + separator
+ * + rows) and turns the `<br>` the model uses inside cells into real line
+ * breaks. We deliberately keep it narrower than `MessageBubble`'s full
+ * markdown: no HTML blocks or nested ordered lists.
  *
- * If a future proposal stream starts producing tables / HTML blocks /
- * nested ordered lists, we'll migrate to importing MessageBubble's
- * `renderMarkdownBlocks` (extract it into `frontend/src/lib/markdown.ts`
- * first, then update both call sites).
+ * If a future proposal stream needs more, we'll migrate to importing
+ * MessageBubble's `renderMarkdownBlocks` (extract it into
+ * `frontend/src/lib/markdown.ts` first, then update both call sites).
  */
 
 import type React from 'react'

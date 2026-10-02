@@ -18,6 +18,18 @@ describe('CitationList', () => {
     expect(screen.getByText(/\[2\] BFF/)).toBeInTheDocument()
   })
 
+  it('does not add its own numbering next to the [n] that the table cites', () => {
+    const citations: ProposalCitation[] = [
+      { pattern_id: 7, pattern_name: 'Hexagonal', similarity: 0.91 },
+      { pattern_id: 11, pattern_name: 'BFF', similarity: 0.88 },
+    ]
+
+    const { container } = render(<CitationList citations={citations} />)
+
+    expect(container.querySelector('ol')).toBeNull()
+    expect(container.querySelectorAll('li')).toHaveLength(2)
+  })
+
   it('omits the similarity percentage when similarity is missing', () => {
     const citations: ProposalCitation[] = [
       { pattern_id: 3, pattern_name: 'Event Sourcing', similarity: null },
