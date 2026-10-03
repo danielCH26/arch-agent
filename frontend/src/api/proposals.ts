@@ -5,7 +5,8 @@ export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
   similarity: number | null
-  source_role?: 'primary' | 'consulted_not_cited'
+  // 'consulted_not_cited' solo existe en propuestas guardadas antes de renombrarlo.
+  source_role?: 'primary' | 'tradeoff_option' | 'consulted_not_cited'
   // Backend caps the snippet to 240 chars; useful for tooltips in CitationList.
   snippet?: string | null
   tradeoffs?: {

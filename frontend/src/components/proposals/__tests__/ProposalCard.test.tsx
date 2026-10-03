@@ -157,6 +157,56 @@ describe('ProposalCard', () => {
     expect(table).toHaveTextContent('2. Cambio de proveedor sin tocar el dominio.')
   })
 
+  it('keeps an escaped \\| inside a single table cell', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 101,
+        project_id: 1,
+        iteration: 1,
+        content_markdown:
+          '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Capas | Simple \\| rápida | Escala junto | Baja |\n| Modular | a | b | Media |\n| Hexagonal | a | b | Media |',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    const table = screen.getByTestId('proposal-markdown-table')
+    // Sigue siendo una tabla de 4 columnas: la fila de Capas no se desplaza.
+    expect(table.querySelectorAll('thead th').length).toBe(4)
+    expect(table.querySelectorAll('tbody tr')[0].querySelectorAll('td').length).toBe(4)
+    expect(table).toHaveTextContent('Simple | rápida')
+    expect(table.textContent).not.toMatch(/\\\|/)
+  })
+
+  it('renders <br> inside bold and code tokens as line breaks too', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 102,
+        project_id: 1,
+        iteration: 1,
+        content_markdown:
+          '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Capas | **Simple<br>y claro** | `sin<br>broker` | Baja |\n| Modular | a | b | Media |\n| Hexagonal | a | b | Media |',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    const table = screen.getByTestId('proposal-markdown-table')
+    expect(table.textContent).not.toMatch(/<br/i)
+    expect(table.querySelectorAll('strong br').length).toBe(1)
+    expect(table.querySelectorAll('code br').length).toBe(1)
+  })
+
   it('shows the "Aprobada" chip and hides actions after a successful approve', () => {
     proposalsStore.setState({
       currentProposal: {

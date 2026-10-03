@@ -47,10 +47,24 @@ function parseInline(content: string): InlineToken[] {
   return tokens
 }
 
+/**
+ * El modelo separa los efectos de una celda con `<br>` (una tabla markdown no
+ * admite saltos de linea). Se convierten a <br/> reales, sin HTML crudo, tambien
+ * cuando el `<br>` queda dentro de un token en negrita o de codigo.
+ */
+function renderWithBreaks(value: string): React.ReactNode {
+  return value.split(/<br\s*\/?>/gi).map((part, partIndex) => (
+    <span key={partIndex}>
+      {partIndex > 0 && <br />}
+      {part}
+    </span>
+  ))
+}
+
 function renderInline(content: string): React.ReactNode {
   return parseInline(content).map((token, index) => {
     if (token.type === 'strong') {
-      return <strong key={index}>{token.value}</strong>
+      return <strong key={index}>{renderWithBreaks(token.value)}</strong>
     }
     if (token.type === 'code') {
       return (
@@ -58,24 +72,38 @@ function renderInline(content: string): React.ReactNode {
           key={index}
           className="rounded bg-black/10 px-1 py-0.5 text-[0.9em]"
         >
-          {token.value}
+          {renderWithBreaks(token.value)}
         </code>
       )
     }
-    // El modelo separa los efectos de una celda con `<br>` (una tabla markdown
-    // no admite saltos de linea). Se convierten a <br/> reales, sin HTML crudo.
-    const parts = token.value.split(/<br\s*\/?>/gi)
-    return (
-      <span key={index}>
-        {parts.map((part, partIndex) => (
-          <span key={partIndex}>
-            {partIndex > 0 && <br />}
-            {part}
-          </span>
-        ))}
-      </span>
-    )
+    return <span key={index}>{renderWithBreaks(token.value)}</span>
   })
+}
+
+/**
+ * Celdas de una fila de tabla. Un `\|` escapado es texto de la celda, no un
+ * separador de columna (misma regla que `_table_cells` en el backend).
+ */
+function splitTableRow(line: string): string[] {
+  let text = line.trim()
+  if (text.startsWith('|')) text = text.slice(1)
+  if (text.endsWith('|') && !text.endsWith('\\|')) text = text.slice(0, -1)
+
+  const cells: string[] = []
+  let current = ''
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\\' && text[i + 1] === '|') {
+      current += '|'
+      i += 1
+    } else if (text[i] === '|') {
+      cells.push(current.trim())
+      current = ''
+    } else {
+      current += text[i]
+    }
+  }
+  cells.push(current.trim())
+  return cells
 }
 
 /**
@@ -127,12 +155,11 @@ export function renderProposalMarkdown(content: string): React.ReactNode {
       index + 1 < lines.length &&
       /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1])
     ) {
-      const cells = (value: string) => value.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim())
-      const headers = cells(line)
+      const headers = splitTableRow(line)
       index += 2
       const rows: string[][] = []
       while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
-        rows.push(cells(lines[index]))
+        rows.push(splitTableRow(lines[index]))
         index += 1
       }
       blocks.push(
