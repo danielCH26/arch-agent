@@ -4,6 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import logging
+import os
+import threading
 from dotenv import load_dotenv
 
 from app.auth.register import register_user
@@ -100,3 +103,30 @@ async def vendor_mermaid_js():
 SPA_DIST = Path(__file__).parent / "frontend" / "dist"
 if SPA_DIST.exists():
     app.mount("/", StaticFiles(directory=str(SPA_DIST), html=True), name="spa")
+
+
+# --- Warm-up ---------------------------------------------------------------
+# F19 (primera propuesta < 5 min): el modelo de embeddings se carga perezosamente
+# en la primera busqueda RAG (5-15 s, mas si hay que bajarlo). Se precarga en un
+# hilo al arrancar para que ese costo no caiga sobre la primera propuesta de un
+# usuario. EMBEDDINGS_WARMUP=off lo desactiva.
+_warmup_logger = logging.getLogger("app.warmup")
+
+
+def _warm_embeddings() -> None:
+    try:
+        from app.core.embeddings import get_embeddings
+
+        get_embeddings()
+        _warmup_logger.info("Modelo de embeddings precargado")
+    except Exception:  # best-effort: nunca debe tumbar el arranque
+        _warmup_logger.exception("No se pudo precargar el modelo de embeddings")
+
+
+@app.on_event("startup")
+async def _warmup_on_startup() -> None:
+    if os.getenv("EMBEDDINGS_WARMUP", "on").lower() in {"off", "0", "false"}:
+        return
+    if os.getenv("PYTEST_CURRENT_TEST"):  # TestClient(app) con lifespan en tests
+        return
+    threading.Thread(target=_warm_embeddings, name="embeddings-warmup", daemon=True).start()

@@ -6,9 +6,11 @@ snapshot contract used by diagram generation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+from contextlib import aclosing
 from typing import AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -96,8 +98,21 @@ def _emit_sse(event: str, data) -> str:
 async def _sse_stream(
     events: AsyncIterator[tuple[str, object]],
 ) -> AsyncIterator[str]:
-    async for event, payload in events:
-        yield _emit_sse(event, payload)
+    """Serializa los eventos a SSE y propaga la cancelacion hacia el generador.
+
+    F19: cuando el usuario pulsa "Cancelar" el front aborta el fetch, el
+    servidor deja de escribir y este generador recibe ``CancelledError`` /
+    ``GeneratorExit``. ``aclosing`` cierra de inmediato el generador interno (y
+    con el, el stream del LLM) en lugar de esperar al recolector de basura, asi
+    no se siguen gastando tokens de una propuesta que nadie va a ver.
+    """
+    try:
+        async with aclosing(events) as inner:
+            async for event, payload in inner:
+                yield _emit_sse(event, payload)
+    except (asyncio.CancelledError, GeneratorExit):
+        logger.info("Proposal stream cancelled by client")
+        raise
 
 
 def _project_key(project_id: int) -> str:
@@ -254,8 +269,11 @@ async def generate_proposal(
     generator = ProposalGenerator(user_id=user_id, project_id=body.project_id)
 
     async def event_iterator():
-        async for event, payload in generator.generate_stream(project_id=body.project_id):
-            yield event, payload
+        async with aclosing(
+            generator.generate_stream(project_id=body.project_id)
+        ) as events:
+            async for event, payload in events:
+                yield event, payload
 
     return StreamingResponse(
         _sse_stream(event_iterator()),
@@ -301,12 +319,15 @@ async def modify_proposal(
     generator = ProposalGenerator(user_id=user_id, project_id=project_id)
 
     async def event_iterator():
-        async for event, payload in generator.generate_stream(
-            project_id=project_id,
-            feedback=body.feedback,
-            prior_proposal_id=proposal_id,
-        ):
-            yield event, payload
+        async with aclosing(
+            generator.generate_stream(
+                project_id=project_id,
+                feedback=body.feedback,
+                prior_proposal_id=proposal_id,
+            )
+        ) as events:
+            async for event, payload in events:
+                yield event, payload
 
     return StreamingResponse(
         _sse_stream(event_iterator()),

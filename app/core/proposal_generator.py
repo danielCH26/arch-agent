@@ -62,6 +62,28 @@ PROPOSAL_RAG_MIN_SIMILARITY = float(os.getenv("PROPOSAL_RAG_MIN_SIMILARITY", "0.
 # veia la parte donde estaba lo que el usuario queria cambiar.
 PRIOR_PROPOSAL_MAX_CHARS = int(os.getenv("PROPOSAL_PRIOR_MAX_CHARS", "12000"))
 
+# F19 (HU: primera propuesta en < 5 min). Presupuesto total desde que el
+# usuario pide la propuesta hasta que se guarda: si se agota, la generacion se
+# corta con un error claro y NO se persiste (el usuario puede reintentar). Es
+# el mismo tope que se le muestra al usuario como objetivo; PROPOSAL_MAX_SECONDS=0
+# lo desactiva.
+PROPOSAL_MAX_SECONDS = float(os.getenv("PROPOSAL_MAX_SECONDS", "300"))
+# Longitud tipica (caracteres) de una propuesta completa: solo se usa para
+# estimar el porcentaje del evento ``progress`` mientras llegan tokens.
+PROPOSAL_EXPECTED_CHARS = int(os.getenv("PROPOSAL_EXPECTED_CHARS", "6000"))
+# Separacion minima entre eventos ``progress`` durante el streaming de tokens.
+PROPOSAL_PROGRESS_INTERVAL_S = float(os.getenv("PROPOSAL_PROGRESS_INTERVAL_S", "1.0"))
+
+# Porcentaje al inicio de cada etapa. La etapa "generating" avanza de
+# _GEN_START a _GEN_END segun los caracteres recibidos.
+_PROGRESS_STAGES = {
+    "context": (3, "Cargando el contexto del proyecto"),
+    "retrieval": (12, "Buscando patrones de arquitectura relevantes"),
+    "generating": (20, "Redactando la propuesta"),
+    "saving": (95, "Guardando la propuesta"),
+}
+_GEN_START, _GEN_END = 20, 92
+
 # Default maximum number of iterations per project. Mirrors the design
 # (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
 # at request time so ops can tune it without code changes.
@@ -70,6 +92,39 @@ PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
 # Engram port per ADR-008: the memory mirror is best-effort, never blocking
 # (REQ-9 / SCN-10). Override for tests/dev with ENGRAM_URL.
 _ENGRAM_URL = os.getenv("ENGRAM_URL", "http://localhost:7437")
+
+
+class _GenerationTimeout(Exception):
+    """Se agoto PROPOSAL_MAX_SECONDS; distinto de un timeout interno del cliente LLM."""
+
+
+def _progress_event(
+    stage: str,
+    started_at: float,
+    *,
+    percent: int | None = None,
+    chars: int | None = None,
+) -> tuple[str, dict]:
+    """Evento SSE ``progress`` (aditivo: el front viejo lo ignora)."""
+    default_percent, message = _PROGRESS_STAGES[stage]
+    payload: dict[str, Any] = {
+        "stage": stage,
+        "percent": default_percent if percent is None else percent,
+        "message": message,
+        "elapsed_ms": int((perf_counter() - started_at) * 1000),
+        "budget_s": PROPOSAL_MAX_SECONDS or None,
+    }
+    if chars is not None:
+        payload["chars"] = chars
+    return ("progress", payload)
+
+
+def _generation_percent(chars: int) -> int:
+    """Porcentaje estimado (20-92) segun lo escrito; nunca llega a 100 antes de ``done``."""
+    if PROPOSAL_EXPECTED_CHARS <= 0:
+        return _GEN_START
+    ratio = min(1.0, chars / PROPOSAL_EXPECTED_CHARS)
+    return int(_GEN_START + ratio * (_GEN_END - _GEN_START))
 
 
 class ProposalGenerator:
@@ -120,6 +175,10 @@ class ProposalGenerator:
         """Yield SSE-ready events for one proposal generation.
 
         Event order:
+          0. ``("progress", {stage, percent, message, elapsed_ms, budget_s})`` --
+             F19: aparece al iniciar cada etapa (context, retrieval,
+             generating, saving) y, durante la generacion, como maximo cada
+             ``PROPOSAL_PROGRESS_INTERVAL_S``. Se intercala con los demas.
           1. ``("sources", list[dict])`` -- metadata de los ``PROPOSAL_RAG_TOP_N``
              patrones mas relevantes (uno por patron, sin umbral de
              similitud). Always emitted, even when empty.
@@ -143,6 +202,8 @@ class ProposalGenerator:
             return
 
         started_at = perf_counter()
+        deadline = started_at + PROPOSAL_MAX_SECONDS if PROPOSAL_MAX_SECONDS > 0 else None
+        yield _progress_event("context", started_at)
 
         # 1. Load project + session (ownership + FK).
         try:
@@ -169,11 +230,10 @@ class ProposalGenerator:
 
         # 2b. Contexto del proyecto que antes NO llegaba al prompt: el resumen
         # de requerimientos aprobado y el texto de los PDF/MD subidos.
-        requirements_text = await asyncio.to_thread(
-            load_requirements_text, self.user_id, effective_project_id
-        )
-        documents_text, document_names = await asyncio.to_thread(
-            load_documents_text, self.user_id, effective_project_id
+        # Las dos lecturas son independientes: se hacen a la vez.
+        requirements_text, (documents_text, document_names) = await asyncio.gather(
+            asyncio.to_thread(load_requirements_text, self.user_id, effective_project_id),
+            asyncio.to_thread(load_documents_text, self.user_id, effective_project_id),
         )
         logger.info(
             "Proposal context project_id=%s requirements_chars=%s documents=%s",
@@ -194,6 +254,7 @@ class ProposalGenerator:
         )
 
         # 4. Retrieve patterns from PGVector.
+        yield _progress_event("retrieval", started_at)
         try:
             docs = await asyncio.to_thread(
                 _retrieve_patterns, summary_query, self.user_id
@@ -271,14 +332,60 @@ class ProposalGenerator:
         # 6. Stream LLM tokens + accumulate the full markdown.
         full_markdown_chunks: list[str] = []
         finish_reason: str | None = None
+        chars_received = 0
+        last_progress_at = perf_counter()
+        yield _progress_event("generating", started_at)
+        stream = model.astream(prompt).__aiter__()
         try:
-            async for event in model.astream(prompt):
+            while True:
+                try:
+                    if deadline is None:
+                        event = await stream.__anext__()
+                    else:
+                        event = await asyncio.wait_for(
+                            stream.__anext__(),
+                            timeout=max(deadline - perf_counter(), 0.001),
+                        )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    # Solo es nuestro tope si de verdad se agoto el presupuesto;
+                    # un timeout del cliente HTTP del LLM sigue siendo un fallo
+                    # normal del stream (rama ``except Exception`` de abajo).
+                    if deadline is not None and perf_counter() >= deadline:
+                        raise _GenerationTimeout() from None
+                    raise
                 metadata = getattr(event, "response_metadata", None) or {}
                 finish_reason = metadata.get("finish_reason") or finish_reason
                 chunk = getattr(event, "content", None)
                 if chunk:
                     full_markdown_chunks.append(chunk)
+                    chars_received += len(chunk)
                     yield ("token", chunk)
+                    now = perf_counter()
+                    if now - last_progress_at >= PROPOSAL_PROGRESS_INTERVAL_S:
+                        last_progress_at = now
+                        yield _progress_event(
+                            "generating",
+                            started_at,
+                            percent=_generation_percent(chars_received),
+                            chars=chars_received,
+                        )
+        except _GenerationTimeout:
+            logger.warning(
+                "Proposal timed out project_id=%s user_id=%s after %ss chars=%s",
+                effective_project_id,
+                self.user_id,
+                PROPOSAL_MAX_SECONDS,
+                chars_received,
+            )
+            yield (
+                "error",
+                f"La generación superó el tiempo máximo ({int(PROPOSAL_MAX_SECONDS // 60)} min "
+                f"{int(PROPOSAL_MAX_SECONDS % 60)} s) y se canceló. No se guardó nada; "
+                "intenta de nuevo o prueba con un modelo más rápido.",
+            )
+            return
         except Exception as exc:
             logger.warning(
                 "LLM stream failed for project_id=%s user_id=%s: %s",
@@ -288,6 +395,15 @@ class ProposalGenerator:
             )
             yield ("error", f"LLM stream failed: {exc}")
             return
+        finally:
+            # Cancelacion del usuario (cliente desconectado), timeout o error:
+            # cerrar el stream del proveedor para dejar de consumir tokens.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:  # best-effort
+                    pass
 
         full_markdown = "".join(full_markdown_chunks)
         if not full_markdown.strip():
@@ -314,6 +430,7 @@ class ProposalGenerator:
             return
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
+        yield _progress_event("saving", started_at, chars=chars_received)
         try:
             proposal_id, interaction_id, saved_iteration = await asyncio.to_thread(
                 _persist_proposal_and_log,
@@ -353,6 +470,15 @@ class ProposalGenerator:
             saved_iteration,
             latency_ms,
         )
+        if PROPOSAL_MAX_SECONDS > 0 and latency_ms > PROPOSAL_MAX_SECONDS * 1000:
+            # Pasa si la persistencia o el espejo en Engram se llevaron el
+            # margen que dejo el stream: la propuesta se guarda igual.
+            logger.warning(
+                "Proposal over time budget project_id=%s latency_ms=%s budget_s=%s",
+                effective_project_id,
+                latency_ms,
+                PROPOSAL_MAX_SECONDS,
+            )
 
         # 9. Final done event with the canonical citations payload.
         yield (
@@ -361,6 +487,7 @@ class ProposalGenerator:
                 "proposal_id": proposal_id,
                 "citations": citations,
                 "iteration": saved_iteration,
+                "elapsed_ms": latency_ms,
             },
         )
 

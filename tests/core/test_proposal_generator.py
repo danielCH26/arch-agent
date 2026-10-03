@@ -966,3 +966,196 @@ def test_section_error_does_not_blame_the_token_limit():
     assert persisted == []
     assert events[-1][0] == "error"
     assert "límite de tokens" not in events[-1][1]
+
+
+# --- F19: progreso, tope de tiempo y cancelacion (HU primera propuesta < 5 min) ---
+
+
+def _patched_generator(model, persisted=None):
+    """ProposalGenerator con todo lo externo parcheado (devuelve el stream y el contexto)."""
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    persisted = persisted if persisted is not None else []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    stack = ExitStack()
+    stack.enter_context(patch.object(gen, "_load_project_and_session", return_value=(project, 1)))
+    stack.enter_context(patch.object(gen, "load_requirements_text", return_value=""))
+    stack.enter_context(patch.object(gen, "load_documents_text", return_value=("", [])))
+    stack.enter_context(patch.object(gen, "_retrieve_patterns", return_value=[]))
+    stack.enter_context(patch.object(gen, "build_langchain_model", return_value=model))
+    stack.enter_context(
+        patch.object(
+            gen,
+            "_persist_proposal_and_log",
+            side_effect=lambda **kw: persisted.append(kw) or (7, 8, 1),
+        )
+    )
+    stack.enter_context(patch.object(gen, "_engram_mirror", new=_noop_async))
+    return stack, gen.ProposalGenerator(user_id=1, project_id=1), persisted
+
+
+class _Chunk:
+    def __init__(self, content, metadata=None):
+        self.content = content
+        self.response_metadata = metadata or {}
+
+
+def test_progress_events_cover_every_stage_in_order_and_never_regress():
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, _persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    progress = [payload for name, payload in events if name == "progress"]
+    stages = [p["stage"] for p in progress]
+    assert stages[0] == "context"
+    assert stages[1] == "retrieval"
+    assert "generating" in stages
+    assert stages[-1] == "saving"
+    # El orden de etapas respeta el pipeline y el porcentaje solo sube.
+    order = ["context", "retrieval", "generating", "saving"]
+    assert [order.index(s) for s in stages] == sorted(order.index(s) for s in stages)
+    percents = [p["percent"] for p in progress]
+    assert percents == sorted(percents)
+    assert percents[-1] < 100  # el 100 % lo marca ``done``, no ``progress``
+    assert all(p["elapsed_ms"] >= 0 for p in progress)
+    # ``progress`` llega antes que ``done`` y done reporta el tiempo total.
+    names = [name for name, _ in events]
+    assert names.index("done") > max(i for i, n in enumerate(names) if n == "progress")
+    assert events[-1][1]["elapsed_ms"] >= 0
+
+
+def test_generation_progress_is_throttled_and_tracks_received_chars(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_PROGRESS_INTERVAL_S", 0.0)
+    monkeypatch.setattr(gen, "PROPOSAL_EXPECTED_CHARS", 100)
+
+    class _Model:
+        async def astream(self, _prompt):
+            for _ in range(4):
+                yield _Chunk("x" * 20)
+            yield _Chunk(_FULL_PROPOSAL, {"finish_reason": "stop"})
+
+    stack, generator, _ = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    gen_progress = [p for n, p in events if n == "progress" and p["stage"] == "generating" and "chars" in p]
+    assert [p["chars"] for p in gen_progress][:4] == [20, 40, 60, 80]
+    assert all(20 <= p["percent"] <= 92 for p in gen_progress)
+
+
+def test_generation_percent_is_bounded():
+    from app.core import proposal_generator as gen
+
+    assert gen._generation_percent(0) == 20
+    assert gen._generation_percent(10**9) == 92
+
+
+def test_generation_over_budget_yields_error_and_does_not_persist(monkeypatch):
+    import asyncio
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.2)
+    closed = []
+
+    class _SlowModel:
+        async def astream(self, _prompt):
+            try:
+                yield _Chunk("## Componentes\n")
+                await asyncio.sleep(5)  # el proveedor se cuelga
+                yield _Chunk("nunca llega")
+            finally:
+                closed.append(True)
+
+    stack, generator, persisted = _patched_generator(_SlowModel())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+    assert "tiempo máximo" in events[-1][1]
+    assert not any(name == "done" for name, _ in events)
+    assert closed == [True]  # el stream del LLM se cerro
+
+
+def test_timeout_of_the_llm_client_is_not_reported_as_our_budget():
+    class _Model:
+        async def astream(self, _prompt):
+            raise TimeoutError("read timeout")
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+    assert "LLM stream failed" in events[-1][1]
+    assert "tiempo máximo" not in events[-1][1]
+
+
+def test_budget_zero_disables_the_deadline(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0)
+
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert len(persisted) == 1
+    progress = [p for n, p in events if n == "progress"]
+    assert all(p["budget_s"] is None for p in progress)
+
+
+def test_closing_the_generator_midstream_stops_the_llm_and_persists_nothing():
+    """El usuario pulsa Cancelar: el cliente se desconecta y se cierra el generador."""
+    import asyncio
+
+    closed = []
+
+    class _Model:
+        async def astream(self, _prompt):
+            try:
+                for _ in range(1000):
+                    yield _Chunk("palabra ")
+                    await asyncio.sleep(0)
+            finally:
+                closed.append(True)
+
+    stack, generator, persisted = _patched_generator(_Model())
+
+    async def _run():
+        stream = generator.generate_stream()
+        seen = 0
+        async for name, _payload in stream:
+            if name == "token":
+                seen += 1
+                if seen == 3:
+                    break
+        await stream.aclose()  # lo que hace Starlette al desconectarse el cliente
+        return seen
+
+    with stack:
+        seen = asyncio.run(_run())
+
+    assert seen == 3
+    assert closed == [True]
+    assert persisted == []

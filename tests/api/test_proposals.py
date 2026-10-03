@@ -331,3 +331,52 @@ class TestLifecycleSideEffects:
         assert "phase_ready = False" in source
         # Reject branch must revert current_phase
         assert "PROPOSAL_REJECT_REVERTS_TO" in source
+
+# --- F19: cancelacion desde el cliente ------------------------------------
+
+
+class TestSSEStreamCancellation:
+    def test_progress_event_is_serialized_like_any_other(self):
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse("progress", {"stage": "retrieval", "percent": 12})
+        assert frame.startswith("event: progress\ndata: ")
+        assert json.loads(frame.split("data: ", 1)[1]) == {"stage": "retrieval", "percent": 12}
+
+    def test_closing_the_response_closes_the_inner_generator_immediately(self):
+        """Si el cliente se desconecta, el generador interno (y el LLM) se cierra ya."""
+        from app.api.proposals import _sse_stream
+
+        closed = []
+
+        async def inner():
+            try:
+                for i in range(1000):
+                    yield "token", f"t{i}"
+                    await asyncio.sleep(0)
+            finally:
+                closed.append(True)
+
+        async def run():
+            stream = _sse_stream(inner())
+            first = await stream.__anext__()
+            await stream.aclose()  # lo que hace Starlette al cortar la conexion
+            return first
+
+        first = asyncio.run(run())
+
+        assert first.startswith("event: token")
+        assert closed == [True]
+
+    def test_cancelled_error_is_propagated_not_swallowed(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            yield "token", "a"
+            raise asyncio.CancelledError()
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(run())
