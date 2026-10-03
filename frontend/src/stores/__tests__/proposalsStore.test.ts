@@ -130,6 +130,19 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(state.startedAt).toBeNull()
   })
 
+  it('un error a mitad de la redacción descarta el borrador parcial para poder reintentar', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().generate(1)
+    cb().onToken('## Componentes\n- API ')
+
+    cb().onError('La generación superó el tiempo máximo (5 min)')
+
+    const state = proposalsStore.getState()
+    expect(state.currentProposal).toBeNull()
+    expect(state.error).toContain('tiempo máximo')
+    expect(state.inFlight).toBe('idle')
+  })
+
   it('un error limpia el progreso pero conserva el mensaje', async () => {
     const { cb } = captureStream()
     await proposalsStore.getState().generate(1)
@@ -229,5 +242,89 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
 
     expect(abort).toHaveBeenCalledTimes(1)
     expect(proposalsStore.getState().inFlight).toBe('idle')
+  })
+})
+
+describe('proposalsStore reintento de una modificación (F19)', () => {
+  const CURRENT = {
+    id: 8,
+    project_id: 1,
+    iteration: 1,
+    content_markdown: '## Componentes\n- Gateway',
+    citations: [],
+    lifecycle: 'proposed' as const,
+    feedback: null,
+    created_at: null,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    proposalsStore.getState().reset()
+    proposalsStore.setState({ currentProposal: CURRENT })
+  })
+
+  it('guarda el feedback mientras modifica y lo conserva si falla (tope de tiempo)', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 8, feedback: 'agrega caché' })
+
+    cb().onError('La generación superó el tiempo máximo (5 min)')
+
+    const state = proposalsStore.getState()
+    expect(state.lastModify).toEqual({ proposalId: 8, feedback: 'agrega caché' })
+    expect(state.currentProposal?.id).toBe(8) // la versión vigente no se toca
+    expect(state.error).toContain('tiempo máximo')
+  })
+
+  it('retry() vuelve a lanzar la modificación con el mismo feedback', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onError('boom')
+    vi.mocked(api.createProposalStream).mockClear()
+
+    await proposalsStore.getState().retry()
+
+    expect(api.createProposalStream).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.createProposalStream).mock.calls[0][0]).toBe('modify')
+    expect(vi.mocked(api.createProposalStream).mock.calls[0][1]).toMatchObject({
+      proposal_id: 8,
+      feedback: 'agrega caché',
+    })
+    const state = proposalsStore.getState()
+    expect(state.inFlight).toBe('modifying')
+    expect(state.error).toBeNull()
+  })
+
+  it('cancelar una modificación también permite reintentarla', async () => {
+    captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 8, feedback: 'agrega caché' })
+  })
+
+  it('al terminar bien, generar o decidir se olvida el feedback pendiente', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onDone(9, [], 2)
+    expect(proposalsStore.getState().lastModify).toBeNull()
+
+    await proposalsStore.getState().modify(9, 'otro cambio')
+    cb().onError('boom')
+    expect(proposalsStore.getState().lastModify).not.toBeNull()
+    await proposalsStore.getState().generate(1)
+    expect(proposalsStore.getState().lastModify).toBeNull()
+  })
+
+  it('retry() sin nada que reintentar, o con una generación en curso, no hace nada', async () => {
+    captureStream()
+    await proposalsStore.getState().retry()
+    expect(api.createProposalStream).not.toHaveBeenCalled()
+
+    await proposalsStore.getState().modify(8, 'x')
+    vi.mocked(api.createProposalStream).mockClear()
+    await proposalsStore.getState().retry() // sigue en curso
+    expect(api.createProposalStream).not.toHaveBeenCalled()
   })
 })

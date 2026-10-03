@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react'
 import { proposalsStore } from '../../stores/proposalsStore'
 
-/** Objetivo de producto (F19): primera propuesta en menos de 5 minutos. */
-const DEFAULT_BUDGET_S = 300
 /** A partir de aquí se avisa que está tardando más de lo habitual. */
 const SLOW_AFTER_S = 120
 
@@ -15,9 +13,11 @@ export function formatElapsed(totalSeconds: number): string {
 
 /**
  * Indicador de progreso + botón "Cancelar" mientras se genera (o modifica) una
- * propuesta. Lee todo de `proposalsStore`: la etapa y el porcentaje vienen de
- * los eventos SSE `progress`; el cronómetro corre en el cliente para avanzar
- * cada segundo aunque el servidor tarde en emitir el siguiente evento.
+ * propuesta. Lee todo de `proposalsStore`: la etapa y el porcentaje de la barra
+ * vienen de los eventos SSE `progress`; el tiempo transcurrido corre en el
+ * cliente para avanzar cada segundo aunque el servidor tarde en emitir el
+ * siguiente evento. Solo se muestra el tiempo transcurrido: el tope del
+ * servidor (`budget_s`) no se enseña para no presentarlo como una cuenta atrás.
  */
 export function ProposalProgress() {
   const inFlight = proposalsStore((s) => s.inFlight)
@@ -39,7 +39,6 @@ export function ProposalProgress() {
   if (!active) return null
 
   const elapsedS = startedAt ? Math.max(0, (now - startedAt) / 1000) : 0
-  const budgetS = progress?.budget_s ?? DEFAULT_BUDGET_S
   const percent = Math.min(100, Math.max(0, Math.round(progress?.percent ?? 0)))
   const label =
     progress?.message ??
@@ -82,7 +81,7 @@ export function ProposalProgress() {
       </div>
 
       <p className="mt-1 text-xs text-blue-800" data-testid="proposal-progress-time">
-        {percent}% · {formatElapsed(elapsedS)} de ~{formatElapsed(budgetS)}
+        Tiempo transcurrido: {formatElapsed(elapsedS)}
       </p>
 
       {slow && (

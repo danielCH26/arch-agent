@@ -19,10 +19,12 @@ import logging
 import os
 import re
 import unicodedata
+from contextlib import aclosing
 from time import perf_counter
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, TypeVar
 
 from langchain_core.documents import Document
+from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
@@ -63,11 +65,16 @@ PROPOSAL_RAG_MIN_SIMILARITY = float(os.getenv("PROPOSAL_RAG_MIN_SIMILARITY", "0.
 PRIOR_PROPOSAL_MAX_CHARS = int(os.getenv("PROPOSAL_PRIOR_MAX_CHARS", "12000"))
 
 # F19 (HU: primera propuesta en < 5 min). Presupuesto total desde que el
-# usuario pide la propuesta hasta que se guarda: si se agota, la generacion se
-# corta con un error claro y NO se persiste (el usuario puede reintentar). Es
-# el mismo tope que se le muestra al usuario como objetivo; PROPOSAL_MAX_SECONDS=0
-# lo desactiva.
+# usuario pide la propuesta hasta que se guarda. Aplica a TODAS las etapas
+# (contexto, retrieval, LLM y guardado): si se agota, la generacion se corta con
+# un error claro y NO se persiste (el usuario puede reintentar).
+# PROPOSAL_MAX_SECONDS=0 lo desactiva.
 PROPOSAL_MAX_SECONDS = float(os.getenv("PROPOSAL_MAX_SECONDS", "300"))
+# Parte del final del presupuesto reservada para guardar. Las etapas de trabajo
+# (contexto, retrieval, LLM) deben terminar antes de ``MAX - reserva``: asi una
+# propuesta ya completa no se pierde por unos segundos de guardado y el total
+# sigue sin pasar del tope. Nunca supera el 20 % del tope.
+PROPOSAL_SAVE_RESERVE_S = float(os.getenv("PROPOSAL_SAVE_RESERVE_S", "10"))
 # Longitud tipica (caracteres) de una propuesta completa: solo se usa para
 # estimar el porcentaje del evento ``progress`` mientras llegan tokens.
 PROPOSAL_EXPECTED_CHARS = int(os.getenv("PROPOSAL_EXPECTED_CHARS", "6000"))
@@ -96,6 +103,64 @@ _ENGRAM_URL = os.getenv("ENGRAM_URL", "http://localhost:7437")
 
 class _GenerationTimeout(Exception):
     """Se agoto PROPOSAL_MAX_SECONDS; distinto de un timeout interno del cliente LLM."""
+
+    def __init__(self, stage: str = "") -> None:
+        super().__init__(stage)
+        self.stage = stage
+
+
+_T = TypeVar("_T")
+
+# Tolerancia al comparar relojes: el timer de asyncio puede disparar unos ms
+# antes de que ``perf_counter`` llegue al deadline (en Windows la resolucion del
+# reloj es ~15 ms) y eso se vería como un TimeoutError "ajeno".
+_DEADLINE_TOLERANCE_S = 0.05
+
+
+async def _within_budget(
+    awaitable: Awaitable[_T], deadline: float | None, stage: str = ""
+) -> _T:
+    """Espera ``awaitable`` sin pasarse de ``deadline`` (reloj ``perf_counter``).
+
+    ``deadline=None`` = sin tope. Si el tiempo se agota lanza
+    ``_GenerationTimeout``; un ``TimeoutError`` que ocurra ANTES del deadline
+    (p. ej. el de un cliente HTTP) se propaga tal cual para que lo trate la
+    etapa que corresponda.
+
+    Con ``asyncio.to_thread`` el hilo no se puede matar: se deja de esperar y
+    termina solo. Es seguro para las lecturas (contexto, retrieval); el guardado
+    se acota ademas en la base de datos (ver ``_persist_proposal_and_log``).
+    """
+    if deadline is None:
+        return await awaitable
+    remaining = deadline - perf_counter()
+    if remaining <= 0:
+        close = getattr(awaitable, "close", None)
+        if close is not None:  # evita "coroutine was never awaited"
+            close()
+        raise _GenerationTimeout(stage)
+    try:
+        return await asyncio.wait_for(awaitable, timeout=remaining)
+    except asyncio.TimeoutError:
+        if perf_counter() >= deadline - _DEADLINE_TOLERANCE_S:
+            raise _GenerationTimeout(stage) from None
+        raise
+
+
+def _save_reserve_s() -> float:
+    """Segundos del final del presupuesto reservados para guardar (0 = sin tope)."""
+    if PROPOSAL_MAX_SECONDS <= 0:
+        return 0.0
+    return min(PROPOSAL_SAVE_RESERVE_S, PROPOSAL_MAX_SECONDS * 0.2)
+
+
+def _format_duration(seconds: float) -> str:
+    """``300 -> "5 min"``, ``330 -> "5 min 30 s"``, ``15 -> "15 s"``."""
+    total = int(seconds)
+    minutes, secs = divmod(total, 60)
+    if minutes == 0:
+        return f"{secs} s"
+    return f"{minutes} min" if secs == 0 else f"{minutes} min {secs} s"
 
 
 def _progress_event(
@@ -184,14 +249,23 @@ class ProposalGenerator:
              similitud). Always emitted, even when empty.
           2. ``("token", str)`` -- one per LLM token. Many events.
           3. ``("done", {"proposal_id": int, "citations": list[dict],
-             "iteration": int})`` --
+             "iteration": int, "elapsed_ms": int})`` --
              emitted ONCE after the ``proposals`` row + ``interaction_log``
              row are committed. Citations here mirror the ``sources`` payload
              so the frontend can hydrate its store from a single source.
+             ``elapsed_ms`` es el tiempo total (F19).
 
         On any unrecoverable failure during streaming the generator yields
         ``("error", str)`` exactly once and stops. The DB write is skipped
         so the user can retry without leaving orphan ``proposed`` rows.
+
+        F19 -- tiempo maximo: ``PROPOSAL_MAX_SECONDS`` es un presupuesto unico
+        para todas las etapas (contexto, retrieval, LLM, guardado). Las etapas
+        de trabajo deben terminar antes de ``MAX - PROPOSAL_SAVE_RESERVE_S``;
+        el guardado usa ese margen final. Al agotarse se emite un unico
+        ``error`` y no se persiste nada. Si el cliente se desconecta
+        ("Cancelar") el generador se cierra y se cierra tambien el stream del
+        LLM.
         """
         effective_project_id = project_id if project_id is not None else self.project_id
         if effective_project_id is None:
@@ -203,12 +277,61 @@ class ProposalGenerator:
 
         started_at = perf_counter()
         deadline = started_at + PROPOSAL_MAX_SECONDS if PROPOSAL_MAX_SECONDS > 0 else None
+        events = self._run_pipeline(
+            effective_project_id, feedback, prior_proposal_id, started_at, deadline
+        )
+        try:
+            # aclosing: si el consumidor cierra este generador (cliente
+            # desconectado) se cierra de inmediato el pipeline y con el el LLM.
+            async with aclosing(events):
+                async for event in events:
+                    yield event
+        except _GenerationTimeout as exc:
+            logger.warning(
+                "Proposal timed out project_id=%s user_id=%s stage=%s after %ss",
+                effective_project_id,
+                self.user_id,
+                exc.stage or "?",
+                PROPOSAL_MAX_SECONDS,
+            )
+            limit = _format_duration(PROPOSAL_MAX_SECONDS)
+            if exc.stage == "saving":
+                # El hilo de la BD no se puede abortar a la fuerza: en un caso
+                # extremo la fila podria llegar a guardarse despues del corte.
+                yield (
+                    "error",
+                    f"El guardado superó el tiempo máximo ({limit}). Recarga para ver si la "
+                    "propuesta quedó guardada; si no aparece, intenta de nuevo.",
+                )
+            else:
+                yield (
+                    "error",
+                    f"La generación superó el tiempo máximo ({limit}) y se canceló. No se "
+                    "guardó nada; intenta de nuevo o prueba con un modelo más rápido.",
+                )
+
+    async def _run_pipeline(
+        self,
+        effective_project_id: int,
+        feedback: str | None,
+        prior_proposal_id: int | None,
+        started_at: float,
+        deadline: float | None,
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Etapas de ``generate_stream``; lanza ``_GenerationTimeout`` al agotar el tope."""
+        # Las etapas de trabajo terminan antes que el tope total; el guardado
+        # usa el margen reservado (``_save_reserve_s``).
+        work_deadline = deadline - _save_reserve_s() if deadline is not None else None
         yield _progress_event("context", started_at)
 
         # 1. Load project + session (ownership + FK).
         try:
-            project, session_id = await asyncio.to_thread(
-                _load_project_and_session, self.user_id, effective_project_id
+            project, session_id = await _within_budget(
+                asyncio.to_thread(
+                    _load_project_and_session, self.user_id, effective_project_id
+                ),
+                work_deadline,
+                "context",
             )
         except _ProposalDomainError as exc:
             yield ("error", str(exc))
@@ -219,8 +342,12 @@ class ProposalGenerator:
         prior_iteration = 0
         if prior_proposal_id is not None:
             try:
-                prior_content, prior_iteration = await asyncio.to_thread(
-                    _load_prior_proposal, self.user_id, prior_proposal_id
+                prior_content, prior_iteration = await _within_budget(
+                    asyncio.to_thread(
+                        _load_prior_proposal, self.user_id, prior_proposal_id
+                    ),
+                    work_deadline,
+                    "context",
                 )
             except _ProposalDomainError as exc:
                 yield ("error", str(exc))
@@ -231,9 +358,14 @@ class ProposalGenerator:
         # 2b. Contexto del proyecto que antes NO llegaba al prompt: el resumen
         # de requerimientos aprobado y el texto de los PDF/MD subidos.
         # Las dos lecturas son independientes: se hacen a la vez.
-        requirements_text, (documents_text, document_names) = await asyncio.gather(
-            asyncio.to_thread(load_requirements_text, self.user_id, effective_project_id),
-            asyncio.to_thread(load_documents_text, self.user_id, effective_project_id),
+        async def _load_context() -> tuple[str, tuple[str, list[str]]]:
+            return await asyncio.gather(
+                asyncio.to_thread(load_requirements_text, self.user_id, effective_project_id),
+                asyncio.to_thread(load_documents_text, self.user_id, effective_project_id),
+            )
+
+        requirements_text, (documents_text, document_names) = await _within_budget(
+            _load_context(), work_deadline, "context"
         )
         logger.info(
             "Proposal context project_id=%s requirements_chars=%s documents=%s",
@@ -256,9 +388,13 @@ class ProposalGenerator:
         # 4. Retrieve patterns from PGVector.
         yield _progress_event("retrieval", started_at)
         try:
-            docs = await asyncio.to_thread(
-                _retrieve_patterns, summary_query, self.user_id
+            docs = await _within_budget(
+                asyncio.to_thread(_retrieve_patterns, summary_query, self.user_id),
+                work_deadline,
+                "retrieval",
             )
+        except _GenerationTimeout:
+            raise  # el tope total manda: no se sigue sin contexto
         except Exception as exc:  # RAG should never block generation
             # logger.exception (con traceback): antes era un warning de una
             # linea y un fallo de PGVector/embeddings quedaba disfrazado de
@@ -324,7 +460,11 @@ class ProposalGenerator:
         )
 
         try:
-            model = await asyncio.to_thread(build_langchain_model, self.user_id)
+            model = await _within_budget(
+                asyncio.to_thread(build_langchain_model, self.user_id),
+                work_deadline,
+                "generating",
+            )
         except LLMConfigError as exc:
             yield ("error", str(exc))
             return
@@ -339,22 +479,14 @@ class ProposalGenerator:
         try:
             while True:
                 try:
-                    if deadline is None:
-                        event = await stream.__anext__()
-                    else:
-                        event = await asyncio.wait_for(
-                            stream.__anext__(),
-                            timeout=max(deadline - perf_counter(), 0.001),
-                        )
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
                     # Solo es nuestro tope si de verdad se agoto el presupuesto;
                     # un timeout del cliente HTTP del LLM sigue siendo un fallo
                     # normal del stream (rama ``except Exception`` de abajo).
-                    if deadline is not None and perf_counter() >= deadline:
-                        raise _GenerationTimeout() from None
-                    raise
+                    event = await _within_budget(
+                        stream.__anext__(), work_deadline, "generating"
+                    )
+                except StopAsyncIteration:
+                    break
                 metadata = getattr(event, "response_metadata", None) or {}
                 finish_reason = metadata.get("finish_reason") or finish_reason
                 chunk = getattr(event, "content", None)
@@ -372,20 +504,8 @@ class ProposalGenerator:
                             chars=chars_received,
                         )
         except _GenerationTimeout:
-            logger.warning(
-                "Proposal timed out project_id=%s user_id=%s after %ss chars=%s",
-                effective_project_id,
-                self.user_id,
-                PROPOSAL_MAX_SECONDS,
-                chars_received,
-            )
-            yield (
-                "error",
-                f"La generación superó el tiempo máximo ({int(PROPOSAL_MAX_SECONDS // 60)} min "
-                f"{int(PROPOSAL_MAX_SECONDS % 60)} s) y se canceló. No se guardó nada; "
-                "intenta de nuevo o prueba con un modelo más rápido.",
-            )
-            return
+            logger.warning("Proposal LLM stream cut by time budget chars=%s", chars_received)
+            raise  # lo convierte en el evento ``error`` generate_stream
         except Exception as exc:
             logger.warning(
                 "LLM stream failed for project_id=%s user_id=%s: %s",
@@ -431,19 +551,33 @@ class ProposalGenerator:
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
         yield _progress_event("saving", started_at, chars=chars_received)
+        # El hilo de la BD no se puede matar: ademas del tope de espera, cada
+        # sentencia lleva un statement_timeout con el tiempo que queda, asi una
+        # sentencia colgada se aborta en la base (rollback) en vez de guardar
+        # despues de que el usuario ya vio el error.
+        statement_timeout_ms = (
+            max(int((deadline - perf_counter()) * 1000), 500) if deadline is not None else None
+        )
         try:
-            proposal_id, interaction_id, saved_iteration = await asyncio.to_thread(
-                _persist_proposal_and_log,
-                session_id=session_id,
-                project_id=effective_project_id,
-                iteration=next_iteration,
-                prior_iteration=prior_iteration,
-                prior_proposal_id=prior_proposal_id,
-                prior_content=prior_content,
-                markdown=full_markdown,
-                citations=citations,
-                feedback=feedback,
+            proposal_id, interaction_id, saved_iteration = await _within_budget(
+                asyncio.to_thread(
+                    _persist_proposal_and_log,
+                    session_id=session_id,
+                    project_id=effective_project_id,
+                    iteration=next_iteration,
+                    prior_iteration=prior_iteration,
+                    prior_proposal_id=prior_proposal_id,
+                    prior_content=prior_content,
+                    markdown=full_markdown,
+                    citations=citations,
+                    feedback=feedback,
+                    statement_timeout_ms=statement_timeout_ms,
+                ),
+                deadline,
+                "saving",
             )
+        except _GenerationTimeout:
+            raise
         except Exception as exc:
             logger.exception(
                 "Failed to persist proposal for project_id=%s user_id=%s: %s",
@@ -1532,8 +1666,12 @@ def _persist_proposal_and_log(
     markdown: str,
     citations: list[dict],
     feedback: str | None,
+    statement_timeout_ms: int | None = None,
 ) -> tuple[int, int, int]:
     """Insert proposal + interaction_log (+ approval for modify) atomically.
+
+    ``statement_timeout_ms`` (F19): tope por sentencia solo para esta
+    transaccion (``set_config(..., is_local=true)``); ``None`` = el de la BD.
 
     Returns ``(proposal_id, interaction_id, iteration)`` for the SSE done
     payload and the Engram mirror. Idempotency on (project_id, iteration) is delegated
@@ -1542,6 +1680,11 @@ def _persist_proposal_and_log(
     """
     db = SessionLocal()
     try:
+        if statement_timeout_ms is not None:
+            db.execute(
+                text("SELECT set_config('statement_timeout', :ms, true)"),
+                {"ms": str(int(statement_timeout_ms))},
+            )
         if iteration is None:
             max_iter = (
                 db.query(Proposal)

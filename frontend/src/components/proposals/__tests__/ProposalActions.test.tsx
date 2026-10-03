@@ -10,6 +10,8 @@ function resetStore() {
     iterations: [],
     inFlight: 'idle',
     error: null,
+    cancelled: false,
+    lastModify: null,
   })
 }
 
@@ -115,5 +117,41 @@ describe('ProposalActions', () => {
     expect(screen.getByTestId('proposal-approve')).toBeDisabled()
     expect(screen.getByTestId('proposal-modify')).toBeDisabled()
     expect(screen.getByTestId('proposal-reject')).toBeDisabled()
+  })
+
+  it('tras un fallo de la modificación ofrece reintentar con el mismo feedback', () => {
+    const retry = vi.fn()
+    proposalsStore.setState({
+      error: 'La generación superó el tiempo máximo (5 min)',
+      lastModify: { proposalId: 101, feedback: 'agrega caché' },
+      retry,
+    })
+    render(<ProposalActions proposalId={101} />)
+
+    expect(screen.getByTestId('proposal-retry-feedback')).toHaveTextContent('agrega caché')
+    fireEvent.click(screen.getByTestId('proposal-retry'))
+
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
+
+  it('no ofrece reintentar si no hay error ni cancelación, o mientras se genera', () => {
+    proposalsStore.setState({ error: null, cancelled: false, lastModify: { proposalId: 101, feedback: 'x' } })
+    const { rerender } = render(<ProposalActions proposalId={101} />)
+    expect(screen.queryByTestId('proposal-retry')).toBeNull()
+
+    proposalsStore.setState({ error: 'boom', inFlight: 'modifying' })
+    rerender(<ProposalActions proposalId={101} />)
+    expect(screen.queryByTestId('proposal-retry')).toBeNull()
+  })
+
+  it('tras cancelar una modificación también se puede reintentar', () => {
+    proposalsStore.setState({
+      error: null,
+      cancelled: true,
+      lastModify: { proposalId: 101, feedback: 'agrega caché' },
+    })
+    render(<ProposalActions proposalId={101} />)
+
+    expect(screen.getByTestId('proposal-retry')).toBeInTheDocument()
   })
 })

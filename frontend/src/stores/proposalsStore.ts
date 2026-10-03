@@ -46,12 +46,20 @@ interface ProposalsState {
   startedAt: number | null
   /** true si el usuario canceló la última generación (mensaje neutro, no error). */
   cancelled: boolean
+  /**
+   * Última modificación pedida que NO terminó (error, tope de tiempo o cancelada).
+   * El composer ya se cerró y su texto se borró: se guarda aquí para poder
+   * reintentarla sin que el usuario reescriba el feedback.
+   */
+  lastModify: { proposalId: number; feedback: string } | null
 
   // Streaming actions
   generate: (projectId: number) => Promise<void>
   modify: (proposalId: number, feedback: string) => Promise<void>
   /** Aborta la generación/modificación en curso sin guardar nada (F19). */
   cancel: () => void
+  /** Reintenta la última modificación que no terminó, con el mismo feedback. */
+  retry: () => Promise<void>
 
   // Decision action
   decide: (
@@ -127,6 +135,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   progress: null,
   startedAt: null,
   cancelled: false,
+  lastModify: null,
 
   generate: async (projectId: number) => {
     const run = startRun()
@@ -134,6 +143,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       inFlight: 'generating',
       error: null,
       cancelled: false,
+      lastModify: null,
       progress: null,
       startedAt: Date.now(),
       currentProposal: emptyProposal(projectId),
@@ -200,6 +210,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             inFlight: 'idle',
             error: message,
             pendingProposal: null,
+            // El borrador a medias (p. ej. cortado por el tope de tiempo) no es
+            // una propuesta válida: se descarta para que la tarjeta muestre el
+            // error y vuelva a ofrecer "Generar propuesta".
+            currentProposal: null,
             ...IDLE_PROGRESS,
           })
         },
@@ -221,6 +235,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       inFlight: 'modifying',
       error: null,
       cancelled: false,
+      lastModify: { proposalId, feedback },
       progress: null,
       startedAt: Date.now(),
       pendingProposal: emptyProposal(prior?.project_id ?? 0),
@@ -276,6 +291,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
                 ...state.iterations.filter((proposal) => proposal.id !== finalized.id),
               ],
               inFlight: 'idle',
+              lastModify: null,
               ...IDLE_PROGRESS,
             }
           })
@@ -293,6 +309,12 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       },
     )
     trackAbort(run, abort, get().inFlight !== 'idle')
+  },
+
+  retry: async () => {
+    const { lastModify, inFlight } = get()
+    if (!lastModify || inFlight !== 'idle') return
+    await get().modify(lastModify.proposalId, lastModify.feedback)
   },
 
   cancel: () => {
@@ -318,7 +340,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   },
 
   decide: async (proposalId, decision, comment) => {
-    set({ inFlight: 'deciding', error: null })
+    set({ inFlight: 'deciding', error: null, lastModify: null })
     try {
       const response = await decideProposal(proposalId, decision, comment)
       set((state) => {
@@ -417,6 +439,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       inFlight: 'idle',
       error: null,
       cancelled: false,
+      lastModify: null,
       ...IDLE_PROGRESS,
     })
   },

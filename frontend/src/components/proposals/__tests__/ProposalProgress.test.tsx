@@ -36,7 +36,7 @@ describe('ProposalProgress (F19)', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('muestra etapa, barra accesible con el porcentaje y el tope de tiempo', () => {
+  it('muestra etapa, barra accesible con el porcentaje y el tiempo transcurrido', () => {
     setBusy()
     render(<ProposalProgress />)
 
@@ -47,7 +47,7 @@ describe('ProposalProgress (F19)', () => {
     expect(bar).toHaveAttribute('aria-valuenow', '12')
     expect(bar).toHaveAttribute('aria-valuemin', '0')
     expect(bar).toHaveAttribute('aria-valuemax', '100')
-    expect(screen.getByTestId('proposal-progress-time')).toHaveTextContent('12% · 0:00 de ~5:00')
+    expect(screen.getByTestId('proposal-progress-time')).toHaveTextContent('Tiempo transcurrido: 0:00')
   })
 
   it('antes del primer evento muestra un estado inicial en 0 %', () => {
@@ -66,7 +66,7 @@ describe('ProposalProgress (F19)', () => {
       vi.advanceTimersByTime(65_000)
     })
 
-    expect(screen.getByTestId('proposal-progress-time')).toHaveTextContent('1:05')
+    expect(screen.getByTestId('proposal-progress-time')).toHaveTextContent('Tiempo transcurrido: 1:05')
     expect(screen.queryByTestId('proposal-progress-slow')).toBeNull()
   })
 
@@ -92,7 +92,7 @@ describe('ProposalProgress (F19)', () => {
     expect(cancel).toHaveBeenCalledTimes(1)
   })
 
-  it('también se muestra al modificar y respeta un tope distinto del servidor', () => {
+  it('también se muestra al modificar y nunca enseña el tope del servidor', () => {
     setBusy({
       inFlight: 'modifying',
       progress: {
@@ -105,7 +105,11 @@ describe('ProposalProgress (F19)', () => {
     })
     render(<ProposalProgress />)
 
-    expect(screen.getByTestId('proposal-progress-time')).toHaveTextContent('55% · 0:00 de ~2:00')
+    const time = screen.getByTestId('proposal-progress-time')
+    expect(time).toHaveTextContent('Tiempo transcurrido: 0:00')
+    expect(time).not.toHaveTextContent('2:00')
+    expect(time).not.toHaveTextContent(' de ')
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '55')
   })
 })
 

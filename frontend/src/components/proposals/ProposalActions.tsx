@@ -17,13 +17,17 @@ interface ProposalActionsProps {
  *
  * The composer collapses back to a button after submit so the user can keep
  * iterating without the panel eating the screen. Errors from the store are
- * surfaced inline.
+ * surfaced inline. Si una modificación falla, se corta por el tope de tiempo o
+ * se cancela, el feedback ya no está en el composer: "Reintentar" lo reenvía.
  */
 export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) {
   const inFlight = proposalsStore((s) => s.inFlight)
   const decide = proposalsStore((s) => s.decide)
   const modify = proposalsStore((s) => s.modify)
   const error = proposalsStore((s) => s.error)
+  const cancelled = proposalsStore((s) => s.cancelled)
+  const lastModify = proposalsStore((s) => s.lastModify)
+  const retry = proposalsStore((s) => s.retry)
 
   const [composerOpen, setComposerOpen] = useState(false)
   const [feedback, setFeedback] = useState('')
@@ -31,6 +35,7 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
   const [localError, setLocalError] = useState<string | null>(null)
 
   const isBusy = inFlight !== 'idle'
+  const canRetry = lastModify !== null && !isBusy && (Boolean(error) || cancelled)
 
   async function onApprove() {
     setLocalError(null)
@@ -153,6 +158,23 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
         >
           {localError ?? error}
         </p>
+      )}
+
+      {canRetry && (
+        <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="proposal-retry-panel">
+          <button
+            type="button"
+            onClick={() => void retry()}
+            disabled={disabled}
+            className="rounded border border-blue-300 bg-white px-3 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-50 disabled:opacity-50"
+            data-testid="proposal-retry"
+          >
+            Reintentar con el mismo feedback
+          </button>
+          <span className="text-xs italic text-gray-500" data-testid="proposal-retry-feedback">
+            “{lastModify?.feedback}”
+          </span>
+        </div>
       )}
     </div>
   )

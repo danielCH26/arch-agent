@@ -47,7 +47,10 @@ export interface ProposalProgress {
   message: string
   /** Tiempo transcurrido en el servidor desde que arrancó la generación. */
   elapsed_ms: number
-  /** Tope de tiempo del servidor en segundos, o null si está desactivado. */
+  /**
+   * Tope de tiempo del servidor en segundos, o null si está desactivado.
+   * Informativo: la UI no lo muestra (solo el tiempo transcurrido).
+   */
   budget_s: number | null
   chars?: number
 }

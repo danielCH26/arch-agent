@@ -1159,3 +1159,241 @@ def test_closing_the_generator_midstream_stops_the_llm_and_persists_nothing():
     assert seen == 3
     assert closed == [True]
     assert persisted == []
+
+
+# --- F19: el tope de tiempo aplica a TODAS las etapas ----------------------
+
+
+class _FullModel:
+    """Modelo simulado que responde enseguida con una propuesta completa."""
+
+    def __init__(self, calls=None):
+        self.calls = calls if calls is not None else []
+
+    async def astream(self, _prompt):
+        self.calls.append(1)
+        yield _Chunk(_FULL_PROPOSAL)
+        yield _Chunk("", {"finish_reason": "stop"})
+
+
+def _slow(seconds):
+    import time
+
+    def _inner(*_args, **_kwargs):
+        time.sleep(seconds)
+        return []
+
+    return _inner
+
+
+def test_within_budget_returns_the_result_with_and_without_deadline():
+    import asyncio
+    from time import perf_counter
+
+    from app.core import proposal_generator as gen
+
+    async def work():
+        return 5
+
+    assert asyncio.run(gen._within_budget(work(), None)) == 5
+    assert asyncio.run(gen._within_budget(work(), perf_counter() + 5)) == 5
+
+
+def test_within_budget_cuts_a_slow_awaitable_and_reports_the_stage():
+    import asyncio
+    from time import perf_counter
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    async def work():
+        await asyncio.sleep(5)
+
+    with pytest.raises(gen._GenerationTimeout) as exc:
+        asyncio.run(gen._within_budget(work(), perf_counter() + 0.1, "retrieval"))
+    assert exc.value.stage == "retrieval"
+
+
+def test_within_budget_with_expired_deadline_does_not_start_the_work():
+    import asyncio
+    from time import perf_counter
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    ran = []
+
+    async def work():
+        ran.append(1)
+
+    with pytest.raises(gen._GenerationTimeout):
+        asyncio.run(gen._within_budget(work(), perf_counter() - 1, "context"))
+    assert ran == []
+
+
+def test_within_budget_does_not_mask_a_timeout_raised_by_the_work_itself():
+    import asyncio
+    from time import perf_counter
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    async def work():
+        raise TimeoutError("read timeout del cliente")
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(gen._within_budget(work(), perf_counter() + 60))
+
+
+def test_save_reserve_is_a_slice_of_the_budget_never_more_than_20_percent(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_SAVE_RESERVE_S", 10.0)
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 300.0)
+    assert gen._save_reserve_s() == 10.0
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 15.0)
+    assert gen._save_reserve_s() == 3.0
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0)
+    assert gen._save_reserve_s() == 0.0
+
+
+def test_format_duration_reads_naturally():
+    from app.core import proposal_generator as gen
+
+    assert gen._format_duration(300) == "5 min"
+    assert gen._format_duration(330) == "5 min 30 s"
+    assert gen._format_duration(15) == "15 s"
+
+
+def test_context_loading_over_budget_yields_error_and_never_calls_the_llm(monkeypatch):
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    calls = []
+    stack, generator, persisted = _patched_generator(_FullModel(calls))
+    with stack, patch.object(gen, "load_requirements_text", side_effect=_slow(0.9)):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert "tiempo máximo" in events[-1][1]
+    assert calls == [] and persisted == []
+    assert not any(name in {"token", "done"} for name, _ in events)
+
+
+def test_retrieval_over_budget_yields_error_instead_of_continuing_without_context(monkeypatch):
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    calls = []
+    stack, generator, persisted = _patched_generator(_FullModel(calls))
+    with stack, patch.object(gen, "_retrieve_patterns", side_effect=_slow(0.9)):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert "tiempo máximo" in events[-1][1]
+    assert calls == [] and persisted == []
+    # Se avisó que se estaba buscando, pero nunca se llegó a redactar.
+    stages = [p["stage"] for n, p in events if n == "progress"]
+    assert stages[-1] == "retrieval"
+
+
+def test_saving_over_budget_yields_a_specific_error_and_no_done(monkeypatch):
+    import time
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    stack, generator, _ = _patched_generator(_FullModel())
+
+    def _slow_persist(**_kwargs):
+        time.sleep(0.9)
+        return (7, 8, 1)
+
+    with stack, patch.object(gen, "_persist_proposal_and_log", side_effect=_slow_persist):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert "guardado" in events[-1][1]
+    assert not any(name == "done" for name, _ in events)
+
+
+def test_timeout_message_shows_the_configured_limit_in_readable_form(monkeypatch):
+    import asyncio
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+
+    class _Hangs:
+        async def astream(self, _prompt):
+            await asyncio.sleep(60)
+            yield _Chunk("nunca")
+
+    stack, generator, _ = _patched_generator(_Hangs())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert f"({gen._format_duration(0.5)})" in events[-1][1]
+    assert "0 min" not in events[-1][1]
+
+
+def test_persist_gets_a_statement_timeout_that_fits_in_the_budget():
+    stack, generator, persisted = _patched_generator(_FullModel())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert 0 < persisted[0]["statement_timeout_ms"] <= 300_000
+
+
+def test_persist_has_no_statement_timeout_when_the_budget_is_disabled(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0)
+    stack, generator, persisted = _patched_generator(_FullModel())
+    with stack:
+        _drain(generator.generate_stream())
+
+    assert persisted[0]["statement_timeout_ms"] is None
+
+
+def test_persist_sets_the_statement_timeout_before_writing_anything():
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    db.add.side_effect = lambda obj: setattr(obj, "id", 1)
+    kwargs = dict(
+        session_id=1,
+        project_id=1,
+        iteration=1,
+        prior_iteration=0,
+        prior_proposal_id=None,
+        prior_content=None,
+        markdown="m",
+        citations=[],
+        feedback=None,
+    )
+    with patch.object(gen, "SessionLocal", return_value=db):
+        result = gen._persist_proposal_and_log(statement_timeout_ms=1234, **kwargs)
+
+    assert result == (1, 1, 1)
+    first_call = db.execute.call_args_list[0]
+    assert "statement_timeout" in str(first_call.args[0])
+    assert first_call.args[1] == {"ms": "1234"}
+    db.commit.assert_called_once()
+
+    db.reset_mock()
+    with patch.object(gen, "SessionLocal", return_value=db):
+        gen._persist_proposal_and_log(**kwargs)
+    db.execute.assert_not_called()
