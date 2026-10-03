@@ -223,6 +223,12 @@ arch-agent/
 | `GET` | `/api/documents` | Sí | Lista documentos del proyecto |
 | `POST` | `/api/documents` | Sí | Upload PDF/MD |
 | `POST` | `/api/chat` (SSE) | Sí | Chat con el agente (streaming) |
+| `POST` | `/api/proposals/generate` (SSE) | Sí | Genera la propuesta de arquitectura. Eventos: `progress`, `sources`, `token`, `done`, `error`. Tope de tiempo `PROPOSAL_MAX_SECONDS`; cerrar la conexión cancela y no guarda nada |
+| `POST` | `/api/proposals/{id}/modify` (SSE) | Sí | Nueva iteración con feedback (mismos eventos y tope que `generate`) |
+| `POST` | `/api/proposals/{id}/decide` | Sí | Aprobar / rechazar una propuesta |
+| `GET` | `/api/proposals/{id}` | Sí | Una propuesta |
+| `GET` | `/api/projects/{id}/proposals` | Sí | Historial de propuestas del proyecto |
+| `GET` | `/api/projects/{id}/proposals/latest` | Sí | Propuesta vigente (o `null`) |
 | `GET` | `/api/llm/config` | Sí | Config LLM actual (api_key oculta) |
 | `POST` | `/api/llm/wizard/step1` | Sí | Wizard paso 1: valida URL |
 | `POST` | `/api/llm/wizard/step2` | Sí | Wizard paso 2: valida API key |

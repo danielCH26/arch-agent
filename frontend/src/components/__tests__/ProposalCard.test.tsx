@@ -205,6 +205,53 @@ describe('ProposalCard', () => {
     })
   })
 
+  describe('progreso, cancelar y reintentar (F19)', () => {
+    it('muestra el progreso mientras genera y "Cancelar" vuelve a ofrecer generar', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      expect(screen.getByTestId('proposal-progress')).toBeInTheDocument()
+      await user.click(screen.getByTestId('proposal-cancel-generation'))
+
+      expect(screen.queryByTestId('proposal-progress')).not.toBeInTheDocument()
+      expect(screen.getByTestId('proposal-cancelled')).toBeInTheDocument()
+      expect(screen.getByTestId('proposal-generate')).toHaveTextContent('Generar propuesta')
+    })
+
+    it('tras un fallo de la modificación ofrece reintentar con el mismo feedback', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)'))
+
+      expect(await screen.findByTestId('proposal-retry-feedback')).toHaveTextContent('agrega caché')
+      await user.click(screen.getByTestId('proposal-retry'))
+
+      expect(createProposalStream).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(createProposalStream).mock.calls[1][1]).toMatchObject({ proposalId: 41, feedback: 'agrega caché' })
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+      act(() => streams[1].onError('Reintento cancelado en el test.'))
+    })
+
+    it('tras cancelar una modificación conserva la versión actual y permite reintentar', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      await user.click(screen.getByTestId('proposal-cancel-generation'))
+
+      expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas')
+      expect(screen.getByTestId('proposal-modify-cancelled')).toBeInTheDocument()
+      expect(screen.getByTestId('proposal-retry')).toBeInTheDocument()
+    })
+  })
+
   it('numera las fuentes RAG como [n] para que coincidan con las citas de la tabla', async () => {
     await renderWithProposal(proposalOut({
       citations: [

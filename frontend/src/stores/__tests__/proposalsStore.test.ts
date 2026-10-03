@@ -61,6 +61,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Cierra los streams que quedaron abiertos: el store los rastrea por proyecto
+  // a nivel de módulo y uno abierto haría esperar al load() del test siguiente.
+  for (const callbacks of streams) callbacks.onError('cierre del test')
   proposalsStore.getState().reset()
 })
 
@@ -167,5 +170,84 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(aborts[0]).not.toHaveBeenCalled()
     streams[0].onDone(11, [])
     expect(localStorage.getItem(`archagent:user:anon:last-proposal:${PROJECT_ID}`)).toBe('11')
+  })
+})
+
+describe('proposalsStore reintento de una modificación (F19)', () => {
+  it('un error a mitad de la redacción descarta el borrador parcial para poder reintentar', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onToken('## Componentes\n- API ')
+
+    streams[0].onError('La generación superó el tiempo máximo (5 min)')
+
+    const state = proposalsStore.getState()
+    expect(state.current).toBeNull()
+    expect(state.error).toContain('tiempo máximo')
+    expect(state.activity).toBe('idle')
+  })
+
+  it('guarda el feedback mientras modifica y lo conserva si falla (tope de tiempo)', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+
+    const state = proposalsStore.getState()
+    expect(state.lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+    expect(state.current?.id).toBe(5) // la versión vigente no se toca
+    expect(state.error).toContain('tiempo máximo')
+  })
+
+  it('retry() vuelve a lanzar la modificación con el mismo feedback', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('boom')
+    vi.mocked(api.createProposalStream).mockClear()
+
+    proposalsStore.getState().retry()
+
+    expect(api.createProposalStream).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.createProposalStream).mock.calls[0][0]).toBe('modify')
+    expect(vi.mocked(api.createProposalStream).mock.calls[0][1]).toMatchObject({
+      proposalId: 5,
+      feedback: 'agrega caché',
+    })
+    const state = proposalsStore.getState()
+    expect(state.activity).toBe('modifying')
+    expect(state.error).toBeNull()
+  })
+
+  it('cancelar una modificación también permite reintentarla', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+  })
+
+  it('al terminar bien o al generar de nuevo se olvida el feedback pendiente', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onDone(6, [])
+    expect(proposalsStore.getState().lastModify).toBeNull()
+
+    proposalsStore.getState().modify(6, 'otro cambio')
+    streams[2].onError('boom')
+    expect(proposalsStore.getState().lastModify).not.toBeNull()
+    proposalsStore.getState().generate(PROJECT_ID)
+    expect(proposalsStore.getState().lastModify).toBeNull()
+  })
+
+  it('retry() sin nada que reintentar, o con una generación en curso, no hace nada', () => {
+    proposalsStore.getState().retry()
+    expect(api.createProposalStream).not.toHaveBeenCalled()
+
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'x')
+    vi.mocked(api.createProposalStream).mockClear()
+    proposalsStore.getState().retry() // sigue en curso
+    expect(api.createProposalStream).not.toHaveBeenCalled()
   })
 })

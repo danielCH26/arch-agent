@@ -39,11 +39,19 @@ interface ProposalsState {
   startedAt: number | null
   /** true si el usuario canceló la última generación (mensaje neutro, no error). */
   cancelled: boolean
+  /**
+   * Última modificación pedida que NO terminó (error, tope de tiempo o cancelada).
+   * El formulario ya se cerró y su texto se borró: se guarda aquí para poder
+   * reintentarla sin que el usuario reescriba el feedback.
+   */
+  lastModify: { proposalId: number; feedback: string } | null
   load: (projectId: number) => Promise<void>
   generate: (projectId: number) => void
   modify: (proposalId: number, feedback: string) => void
   /** Aborta la generación/modificación en curso sin guardar nada (F19). */
   cancel: () => void
+  /** Reintenta la última modificación que no terminó, con el mismo feedback. */
+  retry: () => void
   decide: (proposalId: number, decision: ProposalDecision, comment?: string) => Promise<ProposalDecisionResponse>
   refresh: (proposalId: number) => Promise<void>
   reset: () => void
@@ -168,9 +176,9 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         release()
         if (streamId !== activeStream) return
         set((state) => {
-          if (!state.current) return { activity: 'idle', ...IDLE_PROGRESS }
+          if (!state.current) return { activity: 'idle', lastModify: null, ...IDLE_PROGRESS }
           const proposal = { ...state.current, id, citations }
-          return { current: proposal, iterations: [proposal, ...state.iterations], activity: 'idle', ...IDLE_PROGRESS }
+          return { current: proposal, iterations: [proposal, ...state.iterations], activity: 'idle', lastModify: null, ...IDLE_PROGRESS }
         })
         // El backend guarda la iteración definitiva; sincronizamos número y contenido.
         void get().refresh(id)
@@ -204,6 +212,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     progress: null,
     startedAt: null,
     cancelled: false,
+    lastModify: null,
 
     load: async (projectId) => {
       const streamId = ++activeStream
@@ -245,6 +254,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         activity: 'generating',
         error: null,
         cancelled: false,
+        lastModify: null,
         progress: null,
         startedAt: Date.now(),
       })
@@ -271,6 +281,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         activity: 'modifying',
         error: null,
         cancelled: false,
+        lastModify: { proposalId, feedback },
         progress: null,
         startedAt: Date.now(),
       })
@@ -300,8 +311,14 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       })
     },
 
+    retry: () => {
+      const { lastModify, activity } = get()
+      if (!lastModify || activity !== 'idle') return
+      get().modify(lastModify.proposalId, lastModify.feedback)
+    },
+
     decide: async (proposalId, decision, comment) => {
-      set({ activity: 'deciding', error: null })
+      set({ activity: 'deciding', error: null, lastModify: null })
       try {
         const result = await decideProposal(proposalId, decision, comment)
         set((state) => ({
@@ -344,7 +361,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       activeAbort = null
       modifyBase = null
       activeStream += 1
-      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null, cancelled: false, ...IDLE_PROGRESS })
+      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null, cancelled: false, lastModify: null, ...IDLE_PROGRESS })
     },
   }
 })

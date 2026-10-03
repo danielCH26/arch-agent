@@ -23,7 +23,7 @@ const lifecycleLabel = {
 }
 
 export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
-  const { current, iterations, projectState, activity, error, cancelled, load, generate, modify, decide, reset } = proposalsStore()
+  const { current, iterations, projectState, activity, error, cancelled, lastModify, load, generate, modify, retry, decide, reset } = proposalsStore()
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [comment, setComment] = useState('')
@@ -46,6 +46,9 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   // bloquea en el cliente: el servidor rechaza la iteración de más con su mensaje.
   const maxIterations = projectState?.max_iterations ?? null
   const iterationLimitReached = maxIterations !== null && (proposal?.iteration ?? 0) >= maxIterations
+  // Si una modificación falla, se corta por el tope de tiempo o se cancela, el
+  // feedback ya no está en el formulario: "Reintentar" lo reenvía.
+  const canRetry = lastModify !== null && !busy && (Boolean(error) || cancelled)
 
   const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!proposal?.id) return
@@ -174,6 +177,14 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
 
       {iterations.length > 1 && <p className="mt-3 text-xs text-gray-500">{iterations.length} iteraciones generadas en esta sesión. Se muestra la más reciente.</p>}
       {error && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
+      {canRetry && (
+        <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="proposal-retry-panel">
+          <button type="button" onClick={retry} className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-50" data-testid="proposal-retry">
+            Reintentar con el mismo feedback
+          </button>
+          <span className="text-xs italic text-gray-500" data-testid="proposal-retry-feedback">“{lastModify?.feedback}”</span>
+        </div>
+      )}
     </section>
   )
 }

@@ -61,12 +61,12 @@ Each decision MUST cite `architect_patterns.id` via `proposals.citations[*]`. Th
 - THEN the script MUST NOT raise and table counts MUST be unchanged.
 
 ### REQ-6
-`POST /api/proposals/generate` MUST stream events `sources | token | done | error` (same as `app/api/chat.py`), set header `X-Accel-Buffering: no`; `done` MUST include `proposal_id`.
+`POST /api/proposals/generate` MUST stream events `progress | sources | token | done | error` (`sources | token | done | error` as in `app/api/chat.py`; `progress` is additive, see REQ-12), set header `X-Accel-Buffering: no`; `done` MUST include `proposal_id`.
 
 #### SCN-7: SSE done event payload includes proposal_id
 - GIVEN stream for `project_id=42`
 - WHEN server emits `event: done`
-- THEN payload MUST equal `{"proposal_id": <int>, "citations": [...]}`.
+- THEN payload MUST equal `{"proposal_id": <int>, "citations": [...], "iteration": <int>, "elapsed_ms": <int>}` (`iteration` and `elapsed_ms` were added later; consumers MUST ignore unknown fields).
 
 ### REQ-7
 `ChatWindow` MUST render `ProposalCard` only in `propuesta`; otherwise only `MessageBubble` rows.
@@ -122,6 +122,22 @@ Every persisted proposal MUST include, inside `## Trade-offs y decisión`, a mar
 - GIVEN user feedback "sin CQRS"
 - WHEN a new iteration is generated
 - THEN CQRS MUST NOT be cited nor appear as a table row.
+
+### REQ-12 (F19 · HU9)
+The proposal stream MUST emit SSE `progress` `{stage, percent, message, elapsed_ms, budget_s}` at the start of each stage (`context` → `retrieval` → `generating` → `saving`) and, while generating, at most once per `PROPOSAL_PROGRESS_INTERVAL_S`. The UI MUST show a progress bar and the elapsed time only (not the server limit) and a "Cancelar" action.
+
+#### SCN-17: Cancel stops the LLM and persists nothing
+- GIVEN a generation in progress
+- WHEN the client aborts the request ("Cancelar")
+- THEN the LLM stream MUST be closed and no `proposals` row MUST be written.
+
+### REQ-13 (F19 · HU9)
+`PROPOSAL_MAX_SECONDS` (default 300, `0` disables) MUST bound ALL stages (context, retrieval, LLM, saving). Work stages MUST finish before `PROPOSAL_MAX_SECONDS - PROPOSAL_SAVE_RESERVE_S` (reserve capped at 20 % of the limit); saving uses the reserve and its statements carry a DB `statement_timeout`. On expiry the stream MUST emit a single `error`, MUST NOT emit `done` and MUST NOT persist.
+
+#### SCN-18: A hung stage is cut and the user can retry
+- GIVEN `PROPOSAL_MAX_SECONDS=0.5` and a retrieval that takes longer
+- WHEN the stream runs
+- THEN the last event MUST be `error`, the LLM MUST NOT be called and nothing MUST be persisted; for a modification, the UI MUST offer "Reintentar" with the same feedback.
 
 ## Data model
 
