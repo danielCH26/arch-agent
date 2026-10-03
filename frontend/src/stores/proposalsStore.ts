@@ -112,8 +112,13 @@ let activeRun = 0
 let abortActive: (() => void) | null = null
 
 function startRun(): number {
+  // Si todavía había un stream vivo se ABORTA (no solo se invalida): sin esto el
+  // fetch anterior seguía abierto y el backend siguiendo gastando tokens de una
+  // propuesta que nadie va a ver.
+  const previous = abortActive
   abortActive = null
   activeRun += 1
+  previous?.()
   return activeRun
 }
 
@@ -322,9 +327,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     if (inFlight !== 'generating' && inFlight !== 'modifying') return
 
     // Aborta el fetch (el backend cierra el LLM) e invalida callbacks tardíos.
-    const abort = abortActive
     startRun()
-    abort?.()
 
     set({
       inFlight: 'idle',
@@ -340,7 +343,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   },
 
   decide: async (proposalId, decision, comment) => {
-    set({ inFlight: 'deciding', error: null, lastModify: null })
+    set({ inFlight: 'deciding', error: null, cancelled: false, lastModify: null })
     try {
       const response = await decideProposal(proposalId, decision, comment)
       set((state) => {
@@ -429,9 +432,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
 
   reset: () => {
     // Si había un stream vivo (cambio de proyecto, logout), se aborta también.
-    const abort = abortActive
     startRun()
-    abort?.()
     set({
       currentProposal: null,
       pendingProposal: null,

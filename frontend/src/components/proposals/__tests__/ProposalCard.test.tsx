@@ -7,9 +7,12 @@ import * as proposalsApi from '../../../api/proposals'
 function resetStore() {
   proposalsStore.setState({
     currentProposal: null,
+    pendingProposal: null,
     iterations: [],
     inFlight: 'idle',
     error: null,
+    cancelled: false,
+    lastModify: null,
   })
 }
 
@@ -249,5 +252,69 @@ describe('ProposalCard', () => {
       'SSE stream failed',
     )
     expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
+  })
+
+  describe('cancelación (F19)', () => {
+    const CURRENT = {
+      id: 8,
+      project_id: 7,
+      iteration: 1,
+      content_markdown: '## Componentes\n- Gateway existente',
+      citations: [],
+      lifecycle: 'proposed' as const,
+      feedback: null,
+      created_at: null,
+    }
+
+    it('al cancelar una generación desde cero avisa que no se guardó nada y ofrece volver a generar', () => {
+      proposalsStore.setState({ cancelled: true })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.getByTestId('proposal-cancelled')).toHaveTextContent(
+        'Generación cancelada. No se guardó nada',
+      )
+      expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-modify-cancelled')).not.toBeInTheDocument()
+    })
+
+    it('si hubo un error real, se muestra el error y no el aviso de cancelado', () => {
+      proposalsStore.setState({ cancelled: true, error: 'La generación superó el tiempo máximo' })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.getByTestId('proposal-generate-error')).toHaveTextContent('tiempo máximo')
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+    })
+
+    it('al cancelar una modificación conserva la versión vigente y lo avisa', () => {
+      proposalsStore.setState({ currentProposal: CURRENT, cancelled: true })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.getByTestId('proposal-modify-cancelled')).toHaveTextContent(
+        'Se conserva la versión actual',
+      )
+      expect(screen.getByText(/Gateway existente/)).toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-generate')).not.toBeInTheDocument()
+    })
+
+    it('sin cancelación no aparece ningún aviso de cancelado', () => {
+      proposalsStore.setState({ currentProposal: CURRENT })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-modify-cancelled')).not.toBeInTheDocument()
+    })
+
+    it('mientras se genera no se muestra el aviso de cancelado de un intento anterior', () => {
+      proposalsStore.setState({ cancelled: true, inFlight: 'generating' })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+    })
   })
 })

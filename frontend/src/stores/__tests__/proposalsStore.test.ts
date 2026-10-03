@@ -243,6 +243,66 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(abort).toHaveBeenCalledTimes(1)
     expect(proposalsStore.getState().inFlight).toBe('idle')
   })
+
+  it('lanzar otra generación mientras hay un stream vivo ABORTA el anterior', async () => {
+    const abortFirst = vi.fn()
+    const abortSecond = vi.fn()
+    vi.mocked(api.createProposalStream)
+      .mockReturnValueOnce(abortFirst)
+      .mockReturnValueOnce(abortSecond)
+
+    await proposalsStore.getState().generate(1)
+    await proposalsStore.getState().generate(1)
+
+    // Sin esto el fetch anterior seguía abierto y el backend gastando tokens.
+    expect(abortFirst).toHaveBeenCalledTimes(1)
+    expect(abortSecond).not.toHaveBeenCalled()
+  })
+
+  it('los eventos tardíos del stream reemplazado no tocan la nueva generación', async () => {
+    const callbacks: StreamCallbacks[] = []
+    vi.mocked(api.createProposalStream).mockImplementation((_e, _p, cb) => {
+      callbacks.push(cb)
+      return vi.fn()
+    })
+
+    await proposalsStore.getState().generate(1)
+    await proposalsStore.getState().generate(1)
+    callbacks[0].onToken('texto del stream viejo')
+    callbacks[0].onDone(99, [], 1)
+
+    const state = proposalsStore.getState()
+    expect(state.currentProposal?.content_markdown).toBe('')
+    expect(state.inFlight).toBe('generating')
+    expect(state.iterations).toEqual([])
+  })
+
+  it('decidir limpia la marca de cancelado (no queda "Modificación cancelada" tras aprobar)', async () => {
+    vi.mocked(api.decideProposal).mockResolvedValue({
+      proposal_id: 8,
+      lifecycle: 'approved',
+      current_phase: null,
+      phase_ready: true,
+    })
+    proposalsStore.setState({
+      currentProposal: {
+        id: 8,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Gateway',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      cancelled: true,
+    })
+
+    await proposalsStore.getState().decide(8, 'approve')
+
+    expect(proposalsStore.getState().cancelled).toBe(false)
+    expect(proposalsStore.getState().currentProposal?.lifecycle).toBe('approved')
+  })
 })
 
 describe('proposalsStore reintento de una modificación (F19)', () => {
