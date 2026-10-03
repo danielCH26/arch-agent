@@ -1,6 +1,7 @@
 import { proposalsStore } from '../../stores/proposalsStore'
 import { CitationList } from './CitationList'
 import { ProposalActions } from './ProposalActions'
+import { ProposalProgress } from './ProposalProgress'
 import { renderProposalMarkdown } from './markdown.tsx'
 
 interface ProposalCardProps {
@@ -34,6 +35,7 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
   const inFlight = proposalsStore((s) => s.inFlight)
   const iterations = proposalsStore((s) => s.iterations)
   const error = proposalsStore((s) => s.error)
+  const cancelled = proposalsStore((s) => s.cancelled)
   const generate = proposalsStore((s) => s.generate)
 
   // Empty state when nothing has streamed yet (parent decided to mount us).
@@ -65,6 +67,9 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
         </p>
       )}
 
+      {/* F19: progreso visible + cancelar mientras se genera/modifica. */}
+      <ProposalProgress />
+
       <div
         className="prose prose-sm max-w-none text-gray-900"
         data-testid="proposal-content"
@@ -87,6 +92,11 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
               {error}
             </p>
           )}
+          {cancelled && !error && (
+            <p className="text-xs text-gray-500" role="status" data-testid="proposal-cancelled">
+              Generación cancelada. No se guardó nada; puedes volver a generar la propuesta.
+            </p>
+          )}
           <button
             type="button"
             data-testid="proposal-generate"
@@ -100,6 +110,12 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
 
       {currentProposal?.citations && (
         <CitationList citations={currentProposal.citations} />
+      )}
+
+      {cancelled && inFlight === 'idle' && currentProposal?.content_markdown && (
+        <p className="mt-3 text-xs text-gray-500" role="status" data-testid="proposal-modify-cancelled">
+          Modificación cancelada. Se conserva la versión actual.
+        </p>
       )}
 
       {inFlight === 'modifying' && (

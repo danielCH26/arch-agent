@@ -30,11 +30,35 @@ export interface ProposalDecisionResponse {
 
 export type ProposalDecision = 'approve' | 'modify' | 'reject'
 
+/**
+ * Evento SSE `progress` (F19). Aditivo: el backend lo emite al iniciar cada
+ * etapa y, durante la redacción, como máximo una vez por segundo.
+ */
+export type ProposalProgressStage =
+  | 'context'
+  | 'retrieval'
+  | 'generating'
+  | 'saving'
+
+export interface ProposalProgress {
+  stage: ProposalProgressStage
+  /** 0-100, estimado; llega a 100 solo cuando se emite `done`. */
+  percent: number
+  message: string
+  /** Tiempo transcurrido en el servidor desde que arrancó la generación. */
+  elapsed_ms: number
+  /** Tope de tiempo del servidor en segundos, o null si está desactivado. */
+  budget_s: number | null
+  chars?: number
+}
+
 // --- SSE streaming ---------------------------------------------------------
 
 interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
+  /** Opcional: un front/consumidor que no muestre progreso puede omitirlo. */
+  onProgress?: (progress: ProposalProgress) => void
   onDone: (
     proposalId: number,
     citations: ProposalCitation[],
@@ -69,6 +93,15 @@ function dispatchProposalSSE(
   }
 
   const rawData = dataLines.join('\n')
+
+  if (eventName === 'progress' && rawData) {
+    try {
+      callbacks.onProgress?.(JSON.parse(rawData) as ProposalProgress)
+    } catch {
+      // Un progreso ilegible no debe tumbar la generación.
+    }
+    return false
+  }
 
   if (eventName === 'sources' && rawData) {
     try {
@@ -118,6 +151,10 @@ function dispatchProposalSSE(
 /**
  * Open an SSE stream against either the generate or modify endpoint.
  *
+ * Devuelve una función que ABORTA el fetch (F19, "Cancelar"): al cerrarse la
+ * conexión el backend deja de escribir, cierra el stream del LLM y no persiste
+ * nada. Un abort es silencioso: no dispara `onError`.
+ *
  * Mirrors `createChatStream` (api/chat.ts) so the parsing pipeline is the
  * single source of truth for both chat and proposals.
  */
@@ -126,7 +163,7 @@ export function createProposalStream(
   payload: { project_id: number; feedback?: string; proposal_id?: number },
   callbacks: ProposalStreamCallbacks,
 ): () => void {
-  const { onToken, onSources, onDone, onError } = callbacks
+  const { onError } = callbacks
   const token = authStore.getState().token
   const url =
     endpoint === 'generate'
@@ -181,23 +218,13 @@ export function createProposalStream(
 
         for (const event of events) {
           if (!event.trim()) continue
-          const shouldStop = dispatchProposalSSE(event, {
-            onToken,
-            onSources,
-            onDone,
-            onError,
-          })
+          const shouldStop = dispatchProposalSSE(event, callbacks)
           if (shouldStop) return
         }
       }
 
       if (buffer.trim()) {
-        const shouldStop = dispatchProposalSSE(buffer, {
-          onToken,
-          onSources,
-          onDone,
-          onError,
-        })
+        const shouldStop = dispatchProposalSSE(buffer, callbacks)
         if (shouldStop) return
       }
 
@@ -205,7 +232,10 @@ export function createProposalStream(
       // show a banner (matching chat.ts behaviour).
       onError('Stream ended without done event')
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
+      // Cancelación del usuario (F19). Se mira `name` sin exigir `instanceof
+      // Error`: un DOMException de abort no siempre hereda de Error según el
+      // entorno/realm, y reportarlo como fallo mostraría un error falso.
+      if ((err as { name?: string } | null)?.name === 'AbortError') {
         return
       }
       onError(err instanceof Error ? err.message : 'Unknown error')

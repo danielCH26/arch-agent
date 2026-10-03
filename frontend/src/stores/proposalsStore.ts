@@ -4,6 +4,7 @@ import {
   type ProposalDecision,
   type ProposalDecisionResponse,
   type ProposalOut,
+  type ProposalProgress,
   createProposalStream,
   decideProposal,
   getProposalHistory,
@@ -39,10 +40,18 @@ interface ProposalsState {
   iterations: Proposal[]
   inFlight: InFlightStatus
   error: string | null
+  /** Última etapa reportada por el backend (F19); null fuera de una generación. */
+  progress: ProposalProgress | null
+  /** Date.now() cuando arrancó la generación en curso; base del cronómetro. */
+  startedAt: number | null
+  /** true si el usuario canceló la última generación (mensaje neutro, no error). */
+  cancelled: boolean
 
   // Streaming actions
   generate: (projectId: number) => Promise<void>
   modify: (proposalId: number, feedback: string) => Promise<void>
+  /** Aborta la generación/modificación en curso sin guardar nada (F19). */
+  cancel: () => void
 
   // Decision action
   decide: (
@@ -89,26 +98,58 @@ function proposalFromOut(out: ProposalOut): Proposal {
   }
 }
 
+// Stream activo (a lo sumo uno). `runId` invalida los callbacks de un stream
+// cancelado o reemplazado: aunque llegue un evento tardío, no toca el estado.
+let activeRun = 0
+let abortActive: (() => void) | null = null
+
+function startRun(): number {
+  abortActive = null
+  activeRun += 1
+  return activeRun
+}
+
+function trackAbort(run: number, abort: unknown, isBusy: boolean) {
+  // El stream pudo terminar de forma síncrona (tests) antes de devolver el abort.
+  abortActive = run === activeRun && isBusy && typeof abort === 'function'
+    ? (abort as () => void)
+    : null
+}
+
+const IDLE_PROGRESS = { progress: null, startedAt: null } as const
+
 export const proposalsStore = create<ProposalsState>((set, get) => ({
   currentProposal: null,
   pendingProposal: null,
   iterations: [],
   inFlight: 'idle',
   error: null,
+  progress: null,
+  startedAt: null,
+  cancelled: false,
 
   generate: async (projectId: number) => {
+    const run = startRun()
     set({
       inFlight: 'generating',
       error: null,
+      cancelled: false,
+      progress: null,
+      startedAt: Date.now(),
       currentProposal: emptyProposal(projectId),
       pendingProposal: null,
     })
 
-    createProposalStream(
+    const abort = createProposalStream(
       'generate',
       { project_id: projectId },
       {
+        onProgress: (progress) => {
+          if (run !== activeRun) return
+          set({ progress })
+        },
         onSources: (citations) => {
+          if (run !== activeRun) return
           set((state) =>
             state.currentProposal
               ? { currentProposal: { ...state.currentProposal, citations } }
@@ -116,6 +157,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
           )
         },
         onToken: (token) => {
+          if (run !== activeRun) return
           set((state) =>
             state.currentProposal
               ? {
@@ -129,6 +171,8 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
           )
         },
         onDone: (proposalId, citations, iteration) => {
+          if (run !== activeRun) return
+          abortActive = null
           set((state) => {
             const base = state.currentProposal ?? emptyProposal(projectId)
             const finalized: Proposal = {
@@ -145,14 +189,23 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
               pendingProposal: null,
               iterations: [finalized, ...state.iterations],
               inFlight: 'idle',
+              ...IDLE_PROGRESS,
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message, pendingProposal: null })
+          if (run !== activeRun) return
+          abortActive = null
+          set({
+            inFlight: 'idle',
+            error: message,
+            pendingProposal: null,
+            ...IDLE_PROGRESS,
+          })
         },
       },
     )
+    trackAbort(run, abort, get().inFlight !== 'idle')
   },
 
   modify: async (proposalId: number, feedback: string) => {
@@ -163,17 +216,26 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     const prior =
       get().iterations.find((p) => p.id === proposalId) ??
       (current?.id === proposalId ? current : undefined)
+    const run = startRun()
     set({
       inFlight: 'modifying',
       error: null,
+      cancelled: false,
+      progress: null,
+      startedAt: Date.now(),
       pendingProposal: emptyProposal(prior?.project_id ?? 0),
     })
 
-    createProposalStream(
+    const abort = createProposalStream(
       'modify',
       { project_id: prior?.project_id ?? 0, feedback, proposal_id: proposalId },
       {
+        onProgress: (progress) => {
+          if (run !== activeRun) return
+          set({ progress })
+        },
         onSources: (citations) => {
+          if (run !== activeRun) return
           set((state) =>
             state.pendingProposal
               ? { pendingProposal: { ...state.pendingProposal, citations } }
@@ -181,6 +243,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
           )
         },
         onToken: (token) => {
+          if (run !== activeRun) return
           set((state) =>
             state.pendingProposal
               ? {
@@ -194,6 +257,8 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
           )
         },
         onDone: (newProposalId, citations, iteration) => {
+          if (run !== activeRun) return
+          abortActive = null
           set((state) => {
             const base = state.pendingProposal ?? emptyProposal(0)
             const finalized: Proposal = {
@@ -211,14 +276,45 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
                 ...state.iterations.filter((proposal) => proposal.id !== finalized.id),
               ],
               inFlight: 'idle',
+              ...IDLE_PROGRESS,
             }
           })
         },
         onError: (message) => {
-          set({ inFlight: 'idle', error: message, pendingProposal: null })
+          if (run !== activeRun) return
+          abortActive = null
+          set({
+            inFlight: 'idle',
+            error: message,
+            pendingProposal: null,
+            ...IDLE_PROGRESS,
+          })
         },
       },
     )
+    trackAbort(run, abort, get().inFlight !== 'idle')
+  },
+
+  cancel: () => {
+    const { inFlight, currentProposal } = get()
+    if (inFlight !== 'generating' && inFlight !== 'modifying') return
+
+    // Aborta el fetch (el backend cierra el LLM) e invalida callbacks tardíos.
+    const abort = abortActive
+    startRun()
+    abort?.()
+
+    set({
+      inFlight: 'idle',
+      error: null,
+      cancelled: true,
+      pendingProposal: null,
+      ...IDLE_PROGRESS,
+      // Generar desde cero: el borrador vacío/parcial no se conserva y la
+      // tarjeta vuelve a ofrecer "Generar propuesta". Al modificar, la versión
+      // vigente nunca se tocó.
+      currentProposal: inFlight === 'generating' ? null : currentProposal,
+    })
   },
 
   decide: async (proposalId, decision, comment) => {
@@ -310,12 +406,18 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
   },
 
   reset: () => {
+    // Si había un stream vivo (cambio de proyecto, logout), se aborta también.
+    const abort = abortActive
+    startRun()
+    abort?.()
     set({
       currentProposal: null,
       pendingProposal: null,
       iterations: [],
       inFlight: 'idle',
       error: null,
+      cancelled: false,
+      ...IDLE_PROGRESS,
     })
   },
 
