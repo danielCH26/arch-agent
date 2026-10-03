@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { proposalsStore } from '../stores/proposalsStore'
 import type { ProposalCitation } from '../api/proposals'
 import { renderMarkdownBlocks } from './MessageBubble'
+import { ProposalProgress } from './ProposalProgress'
 import { formatDateTime } from '../lib/format'
 
 interface ProposalCardProps {
@@ -22,7 +23,7 @@ const lifecycleLabel = {
 }
 
 export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
-  const { current, iterations, projectState, activity, error, load, generate, modify, decide, reset } = proposalsStore()
+  const { current, iterations, projectState, activity, error, cancelled, load, generate, modify, decide, reset } = proposalsStore()
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [comment, setComment] = useState('')
@@ -91,6 +92,21 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
       {approvedWithoutContent && (
         <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           La propuesta de este proyecto ya fue aprobada{projectState?.approved_at ? ` el ${formatDateTime(projectState.approved_at)}` : ''}. La fase está lista para avanzar.
+        </p>
+      )}
+
+      {/* F19: progreso visible + cancelar mientras se genera/modifica. */}
+      <ProposalProgress />
+
+      {cancelled && !error && !proposal && !busy && (
+        <p className="mt-4 text-xs text-gray-500" role="status" data-testid="proposal-cancelled">
+          Generación cancelada. No se guardó nada; puedes volver a generar la propuesta.
+        </p>
+      )}
+
+      {cancelled && !error && proposal?.id && !busy && (
+        <p className="mt-3 text-xs text-gray-500" role="status" data-testid="proposal-modify-cancelled">
+          Modificación cancelada. Se conserva la versión actual.
         </p>
       )}
 

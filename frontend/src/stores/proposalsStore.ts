@@ -12,6 +12,7 @@ import {
   type ProposalDecisionResponse,
   type ProposalLifecycle,
   type ProposalOut,
+  type ProposalProgress,
 } from '../api/proposals'
 
 export interface Proposal {
@@ -32,9 +33,17 @@ interface ProposalsState {
   projectState: ProjectProposalState | null
   activity: ProposalActivity
   error: string | null
+  /** Última etapa reportada por el backend (F19); null fuera de una generación. */
+  progress: ProposalProgress | null
+  /** Date.now() cuando arrancó la generación en curso; base del cronómetro. */
+  startedAt: number | null
+  /** true si el usuario canceló la última generación (mensaje neutro, no error). */
+  cancelled: boolean
   load: (projectId: number) => Promise<void>
   generate: (projectId: number) => void
   modify: (proposalId: number, feedback: string) => void
+  /** Aborta la generación/modificación en curso sin guardar nada (F19). */
+  cancel: () => void
   decide: (proposalId: number, decision: ProposalDecision, comment?: string) => Promise<ProposalDecisionResponse>
   refresh: (proposalId: number) => Promise<void>
   reset: () => void
@@ -96,6 +105,23 @@ const fromOut = (out: ProposalOut): Proposal => ({
 
 let activeStream = 0
 
+// Stream en curso que se puede abortar con "Cancelar" (F19). `settle` libera
+// la espera de load() (backgroundStreams): un abort es silencioso y no llega a
+// onDone/onError, así que sin esto load() quedaría esperando para siempre.
+let activeAbort: { streamId: number; abort: () => void; settle: () => void } | null = null
+// Versión vigente mientras se genera una modificación: "Cancelar" vuelve a ella.
+let modifyBase: Proposal | null = null
+
+function abortActiveStream() {
+  const active = activeAbort
+  activeAbort = null
+  if (!active) return
+  active.abort()
+  active.settle()
+}
+
+const IDLE_PROGRESS = { progress: null, startedAt: null } as const
+
 // Streams que siguen corriendo aunque la tarjeta se haya desmontado (reset()
 // solo deja de reflejarlos en pantalla). Al volver al proyecto, load() espera
 // a que terminen antes de rehidratar, en vez de ofrecer generar de nuevo.
@@ -118,7 +144,15 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     onFailure: (error: string, status?: number) => void,
   ) => {
     const settle = trackStream(projectId)
-    return {
+    const release = () => {
+      if (activeAbort?.streamId === streamId) activeAbort = null
+      settle()
+    }
+    const handlers = {
+      onProgress: (progress: ProposalProgress) => {
+        if (streamId !== activeStream) return
+        set({ progress })
+      },
       onSources: (citations: ProposalCitation[]) => {
         if (streamId !== activeStream) return
         set((state) => state.current ? { current: { ...state.current, citations } } : {})
@@ -131,21 +165,34 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         // Se recuerda aunque el usuario haya salido: la propuesta ya existe en
         // el servidor y regenerarla gastaría otra iteración.
         rememberProposal(projectId, id)
-        settle()
+        release()
         if (streamId !== activeStream) return
         set((state) => {
-          if (!state.current) return { activity: 'idle' }
+          if (!state.current) return { activity: 'idle', ...IDLE_PROGRESS }
           const proposal = { ...state.current, id, citations }
-          return { current: proposal, iterations: [proposal, ...state.iterations], activity: 'idle' }
+          return { current: proposal, iterations: [proposal, ...state.iterations], activity: 'idle', ...IDLE_PROGRESS }
         })
         // El backend guarda la iteración definitiva; sincronizamos número y contenido.
         void get().refresh(id)
       },
       onError: (error: string, status?: number) => {
-        settle()
-        if (streamId === activeStream) onFailure(error, status)
+        release()
+        if (streamId !== activeStream) return
+        set(IDLE_PROGRESS)
+        onFailure(error, status)
       },
     }
+    // Se registra antes de abrir el stream; createProposalStream devuelve el
+    // abort y se adjunta con `track`.
+    const track = (abort: () => void) => {
+      // El stream pudo terminar de forma síncrona (tests) antes de devolver el abort.
+      const { activity } = get()
+      const live = activity === 'generating' || activity === 'modifying'
+      if (streamId === activeStream && live && typeof abort === 'function') {
+        activeAbort = { streamId, abort, settle }
+      }
+    }
+    return { handlers, track }
   }
 
   return {
@@ -154,6 +201,9 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     projectState: null,
     activity: 'idle',
     error: null,
+    progress: null,
+    startedAt: null,
+    cancelled: false,
 
     load: async (projectId) => {
       const streamId = ++activeStream
@@ -165,7 +215,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         await pending
         if (streamId !== activeStream) return
       }
-      set({ current: null, iterations: [], projectState: null, activity: 'loading', error: null })
+      set({ current: null, iterations: [], projectState: null, activity: 'loading', error: null, cancelled: false, ...IDLE_PROGRESS })
       const proposalId = recalledProposal(projectId)
       const [proposal, projectState] = await Promise.all([
         proposalId
@@ -185,29 +235,69 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     },
 
     generate: (projectId) => {
+      // Un stream anterior todavía vivo se aborta: si no, el backend seguiría
+      // gastando tokens en una propuesta que nadie va a ver.
+      abortActiveStream()
       const streamId = ++activeStream
-      set({ current: newProposal(projectId), iterations: [], activity: 'generating', error: null })
-      createProposalStream('generate', { projectId }, streamHandlers(streamId, projectId, (error, status) => {
+      set({
+        current: newProposal(projectId),
+        iterations: [],
+        activity: 'generating',
+        error: null,
+        cancelled: false,
+        progress: null,
+        startedAt: Date.now(),
+      })
+      const { handlers, track } = streamHandlers(streamId, projectId, (error, status) => {
         set({ current: null, activity: 'idle', error })
         // 409: el estado cambió en el backend (p. ej. la propuesta ya se aprobó
         // en otra pestaña); se vuelve a cargar sin perder el mensaje de error.
         if (status === 409) {
           void get().load(projectId).then(() => set({ error }))
         }
-      }))
+      })
+      track(createProposalStream('generate', { projectId }, handlers))
     },
 
     modify: (proposalId, feedback) => {
       const previous = get().iterations.find((proposal) => proposal.id === proposalId) ?? get().current
       if (!previous) return
+      abortActiveStream()
       const streamId = ++activeStream
       const draft: Proposal = { ...newProposal(previous.projectId), iteration: previous.iteration + 1, feedback }
-      set({ current: draft, activity: 'modifying', error: null })
-      createProposalStream('modify', { projectId: previous.projectId, proposalId, feedback }, streamHandlers(streamId, previous.projectId, (error) => {
+      modifyBase = previous
+      set({
+        current: draft,
+        activity: 'modifying',
+        error: null,
+        cancelled: false,
+        progress: null,
+        startedAt: Date.now(),
+      })
+      const { handlers, track } = streamHandlers(streamId, previous.projectId, (error) => {
         // Si la iteración falla, se vuelve a mostrar la propuesta anterior.
         set({ current: previous, activity: 'idle', error })
         void get().refresh(proposalId)
-      }))
+      })
+      track(createProposalStream('modify', { projectId: previous.projectId, proposalId, feedback }, handlers))
+    },
+
+    cancel: () => {
+      const { activity } = get()
+      if (activity !== 'generating' && activity !== 'modifying') return
+      // Aborta el fetch (el backend cierra el LLM) e invalida callbacks tardíos.
+      abortActiveStream()
+      activeStream += 1
+      set({
+        activity: 'idle',
+        error: null,
+        cancelled: true,
+        ...IDLE_PROGRESS,
+        // Generar desde cero: el borrador parcial no se conserva y la tarjeta
+        // vuelve a ofrecer "Generar propuesta". Al modificar, se vuelve a la
+        // versión vigente, que nunca se tocó.
+        current: activity === 'generating' ? null : modifyBase,
+      })
     },
 
     decide: async (proposalId, decision, comment) => {
@@ -247,8 +337,14 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     },
 
     reset: () => {
+      // No aborta: un stream que sigue tras desmontar la tarjeta termina en
+      // segundo plano y load() lo espera (ver backgroundStreams). Solo
+      // "Cancelar" corta un stream, y solo el que está en pantalla: se suelta la
+      // referencia para que un generate() posterior no aborte el de fondo.
+      activeAbort = null
+      modifyBase = null
       activeStream += 1
-      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null })
+      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null, cancelled: false, ...IDLE_PROGRESS })
     },
   }
 })
