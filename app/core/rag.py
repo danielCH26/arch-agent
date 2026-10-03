@@ -53,6 +53,7 @@ def _pattern_chunk_to_document(
         "pattern_name": pattern.pattern_name,
         "category": pattern.category,
         "tradeoffs": pattern.tradeoffs,
+        "complexity": getattr(pattern, "complexity", None),
         "chunk_type": chunk.chunk_type,
         "distance": float(distance) if distance is not None else None,
         "similarity": _similarity_from_cosine_distance(distance),

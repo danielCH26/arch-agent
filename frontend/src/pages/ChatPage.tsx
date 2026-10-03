@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
-import { getProject, Project } from '../api/projects'
+import { advancePhase, getProject, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
 import { PhaseBadge } from '../components/PhaseBadge'
@@ -49,6 +49,25 @@ export function ChatPage() {
       })
   }, [id, navigate])
 
+  // Recarga el proyecto (fase / phase_ready) sin mostrar el spinner de página
+  // completa. Se usa tras aprobar/rechazar y tras avanzar de fase.
+  const refreshProject = useCallback(async () => {
+    const projectId = Number(id)
+    if (!projectId || isNaN(projectId)) return
+    try {
+      const data = await getProject(projectId)
+      setProject(data)
+      projectsStore.getState().setCurrentProject(data)
+    } catch {
+      // Si falla la recarga se conserva el estado anterior.
+    }
+  }, [id])
+
+  const handleAdvance = useCallback(async () => {
+    await advancePhase(Number(id))
+    await refreshProject()
+  }, [id, refreshProject])
+
   if (loading) {
     return (
       <div className="flex justify-center py-12">
@@ -83,7 +102,13 @@ export function ChatPage() {
         </div>
       </div>
       <div className="flex-1 overflow-hidden">
-        <ChatWindow projectId={Number(id)} phase={project?.current_phase || null} />
+        <ChatWindow
+          projectId={Number(id)}
+          phase={project?.current_phase || null}
+          phaseReady={project?.phase_ready || false}
+          onProjectUpdated={refreshProject}
+          onAdvance={handleAdvance}
+        />
       </div>
       <DiagramHistoryPanel
         projectId={Number(id)}

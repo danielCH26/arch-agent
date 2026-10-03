@@ -224,6 +224,7 @@ CREATE TABLE architect_patterns (
     description TEXT,
     use_cases TEXT,
     tradeoffs JSONB,
+    complexity VARCHAR(10),         -- baja | media | alta (complejidad operativa)
     embedding vector(384),          -- multilingual-e5-small
     created_at TIMESTAMP
 );

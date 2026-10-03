@@ -30,6 +30,7 @@ interface ProposalCardProps {
  */
 export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
   const currentProposal = proposalsStore((s) => s.currentProposal)
+  const pendingProposal = proposalsStore((s) => s.pendingProposal)
   const inFlight = proposalsStore((s) => s.inFlight)
   const iterations = proposalsStore((s) => s.iterations)
   const error = proposalsStore((s) => s.error)
@@ -99,6 +100,36 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
 
       {currentProposal?.citations && (
         <CitationList citations={currentProposal.citations} />
+      )}
+
+      {inFlight === 'modifying' && (
+        <p className="mt-3 text-xs italic text-gray-500" data-testid="proposal-preserved-during-feedback">
+          La versión actual se conserva mientras se genera la siguiente iteración.
+          {pendingProposal?.content_markdown ? ' Aplicando los cambios solicitados...' : ''}
+        </p>
+      )}
+
+      {currentProposal && iterations.length > 1 && (
+        <details className="mt-3 border-t border-gray-200 pt-3" data-testid="proposal-history">
+          <summary className="cursor-pointer text-sm font-medium text-gray-700">
+            Evolución del diseño ({iterations.length} versiones)
+          </summary>
+          <div className="mt-3 space-y-4">
+            {iterations
+              .filter((proposal) => proposal.id !== currentProposal.id)
+              .map((proposal) => (
+                <article key={proposal.id ?? proposal.iteration} className="border-l-2 border-gray-200 pl-3">
+                  <p className="text-xs font-semibold text-gray-600">
+                    Iteración {proposal.iteration}
+                    {proposal.feedback ? ` · Feedback: ${proposal.feedback}` : ''}
+                  </p>
+                  <div className="prose prose-sm mt-1 max-w-none text-gray-800">
+                    {renderProposalMarkdown(proposal.content_markdown)}
+                  </div>
+                </article>
+              ))}
+          </div>
+        </details>
       )}
 
       {currentProposal?.id != null && lifecycle === 'proposed' && (
