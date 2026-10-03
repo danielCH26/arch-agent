@@ -869,18 +869,24 @@ def _select_citations(
     # presentar como si estuviera citado: esa distinción llega hasta la UI.
     for index, citation in enumerate(citations):
         citation["source_role"] = (
-            "primary" if index == 0 else "consulted_not_cited"
+            "primary" if index == 0 else "tradeoff_option"
         )
 
     return citations
 
 
+# El modelo a veces numera o pone en negrita el encabezado ("## 5. Trade-offs y
+# decisión", "## **Trade-offs y decisión**"): se tolera esa decoracion antes del
+# texto. Se compara sobre texto normalizado (sin acentos, en minusculas).
+_HEADING_DECOR = r"[*_`\d.)\s]*"
+_TRADEOFF_HEADING_TEXT = r"trade[\s-]?offs?\s*(?:y|&)\s*decision\w*"
+
 _REQUIRED_HEADINGS = (
-    ("Componentes", r"componentes"),
-    ("Tecnologias", r"tecnologias"),
-    ("Patrones", r"patrones"),
-    ("Justificación del patrón principal", r"justificacion del patron principal"),
-    ("Trade-offs y decisión", r"trade-?offs?\s+y\s+decision"),
+    ("Componentes", r"componentes\b"),
+    ("Tecnologias", r"tecnologias\b"),
+    ("Patrones", r"patrones\b"),
+    ("Justificación del patrón principal", r"justificacion del patron principal\b"),
+    ("Trade-offs y decisión", _TRADEOFF_HEADING_TEXT),
 )
 
 
@@ -890,7 +896,9 @@ MIN_TRADEOFF_OPTIONS = 3
 NO_RAG_SOURCE_LABEL = "Sin fuente RAG"
 
 _HEADING_LEVEL_RE = re.compile(r"^\s*(#{1,6})\s")
-_TRADEOFF_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+trade-?offs?\s+y\s+decisi")
+_TRADEOFF_HEADING_RE = re.compile(
+    r"^\s*(#{1,6})\s+" + _HEADING_DECOR + _TRADEOFF_HEADING_TEXT
+)
 # Misma definicion de separador que usa el render del frontend (markdown.tsx):
 # si la tabla no cumple esto, la UI tampoco la dibuja como tabla.
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -911,7 +919,9 @@ def _missing_sections(markdown: str | None, source_count: int = 0) -> list[str]:
     missing = [
         label
         for label, pattern in _REQUIRED_HEADINGS
-        if not re.search(r"^\s*#{1,6}\s*" + pattern + r"\b", normalized, re.MULTILINE)
+        if not re.search(
+            r"^\s*#{1,6}\s*" + _HEADING_DECOR + pattern, normalized, re.MULTILINE
+        )
     ]
     if "Justificación del patrón principal" not in missing and (
         "riesgo o costo" not in normalized
@@ -948,7 +958,13 @@ def _tradeoff_section(markdown: str | None) -> list[str] | None:
 
 
 def _table_cells(line: str) -> list[str]:
-    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    """Celdas de una fila markdown; un ``\\|`` escapado es texto, no separador."""
+    text = line.strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|") and not text.endswith("\\|"):
+        text = text[:-1]
+    return [cell.replace("\\|", "|").strip() for cell in re.split(r"(?<!\\)\|", text)]
 
 
 def _criterion_for_header(header: str) -> str | None:

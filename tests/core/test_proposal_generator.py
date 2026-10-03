@@ -74,7 +74,7 @@ def test_build_prompt_marks_one_primary_pattern_and_secondary_references():
     )
     assert "[1] CQRS" in prompt
     assert citations[0]["source_role"] == "primary"
-    assert citations[1]["source_role"] == "consulted_not_cited"
+    assert citations[1]["source_role"] == "tradeoff_option"
     assert "Patrón principal: <nombre>" in prompt
     # F10: los patrones secundarios ya no van en una linea aparte; cada [n]
     # recuperado es una fila de la tabla de trade-offs.
@@ -148,7 +148,7 @@ def test_secondary_microservices_pattern_does_not_force_distributed_baseline():
     prompt = _build_prompt(
         citations=[
             {"pattern_name": "Arquitectura en capas (Layered)", "source_role": "primary"},
-            {"pattern_name": "Microservicios", "source_role": "consulted_not_cited"},
+            {"pattern_name": "Microservicios", "source_role": "tradeoff_option"},
         ],
         prior_content=None,
         feedback=None,
@@ -685,8 +685,8 @@ def test_build_prompt_requires_a_rag_cited_tradeoff_table_with_three_options():
     prompt = _build_prompt(
         citations=[
             {"pattern_name": "Capas", "source_role": "primary", "tradeoffs": {}},
-            {"pattern_name": "Monolito modular", "source_role": "consulted_not_cited", "tradeoffs": {}},
-            {"pattern_name": "Microservicios", "source_role": "consulted_not_cited", "tradeoffs": {}},
+            {"pattern_name": "Monolito modular", "source_role": "tradeoff_option", "tradeoffs": {}},
+            {"pattern_name": "Microservicios", "source_role": "tradeoff_option", "tradeoffs": {}},
         ],
         prior_content=None,
         feedback=None,
@@ -926,7 +926,7 @@ def _citations(n):
     return [
         {
             "pattern_name": f"Patron {i}",
-            "source_role": "primary" if i == 1 else "consulted_not_cited",
+            "source_role": "primary" if i == 1 else "tradeoff_option",
             "tradeoffs": {},
         }
         for i in range(1, n + 1)
@@ -1077,10 +1077,10 @@ def test_prompt_marks_scale_discarded_rows_and_documents_the_feedback_exception(
     prompt = _build_prompt(
         citations=[
             {"pattern_name": "Monolito modular", "source_role": "primary", "tradeoffs": {}},
-            {"pattern_name": "Capas", "source_role": "consulted_not_cited", "tradeoffs": {}},
+            {"pattern_name": "Capas", "source_role": "tradeoff_option", "tradeoffs": {}},
             {
                 "pattern_name": "Microservicios",
-                "source_role": "consulted_not_cited",
+                "source_role": "tradeoff_option",
                 "tradeoffs": {},
                 "scale_disqualified": True,
             },
@@ -1149,3 +1149,76 @@ def test_missing_sections_reads_the_rag_column_before_other_cells():
     )
 
     assert _missing_sections(proposal, source_count=3) == []
+
+
+# --- F10: encabezados tolerantes, celdas con \| y source_role ---------------
+
+def _with_tradeoff_heading(heading):
+    return _FULL_PROPOSAL.replace("## Trade-offs y decisión", heading)
+
+
+def test_missing_sections_tolerates_decorated_tradeoff_headings():
+    from app.core.proposal_generator import _missing_sections
+
+    for heading in (
+        "## Trade-offs y decisión",
+        "## Trade-offs y decisiones",
+        "## 5. Trade-offs y decisión",
+        "## **Trade-offs y decisión**",
+        "## 5) **Trade-offs y decisión**",
+        "### Trade offs y decisión",
+        "## Tradeoffs y decisión",
+    ):
+        proposal = _with_tradeoff_heading(heading)
+        assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_missing_sections_tolerates_numbered_or_bold_headings_for_every_section():
+    from app.core.proposal_generator import _missing_sections
+
+    proposal = (
+        _FULL_PROPOSAL.replace("## Componentes", "## 1. Componentes")
+        .replace("## Tecnologias", "## **Tecnologías**")
+        .replace("## Patrones", "## 3. Patrones")
+        .replace("## Justificación del patrón principal", "## **4. Justificación del patrón principal**")
+        .replace("## Trade-offs y decisión", "## 5. Trade-offs y decisión")
+    )
+
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_missing_sections_still_detects_a_really_missing_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections
+
+    cut = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+
+    assert _missing_sections(cut, source_count=3) == ["Trade-offs y decisión"]
+    # Un texto con la palabra "trade-offs" que no es encabezado no cuenta.
+    assert _missing_sections(cut + "Hay trade-offs y decisión pendiente.\n") == ["Trade-offs y decisión"]
+
+
+def test_table_cells_keep_an_escaped_pipe_inside_the_cell():
+    from app.core.proposal_generator import _table_cells
+
+    assert _table_cells("| Capas | Simple \\| rápida | Baja |") == ["Capas", "Simple | rápida", "Baja"]
+    assert _table_cells("a | b") == ["a", "b"]
+    assert _table_cells("| a | b \\|") == ["a", "b |"]
+
+
+def test_missing_sections_does_not_shift_columns_when_a_cell_has_an_escaped_pipe():
+    from app.core.proposal_generator import _missing_sections
+
+    proposal = _FULL_PROPOSAL.replace(
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |",
+        "| Capas | Simple \\| rápida | Escala conjunta | Baja | Alto | [1] |",
+    )
+
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_select_citations_marks_non_primary_rows_as_tradeoff_options():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(_tight_pool(), top_n=3, min_similarity=0.0, explicit_text=_TIGHT)
+
+    assert [c["source_role"] for c in citations] == ["primary", "tradeoff_option", "tradeoff_option"]
