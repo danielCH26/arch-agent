@@ -163,6 +163,43 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(proposalsStore.getState().activity).toBe('idle')
   })
 
+  it('lanzar otra generación mientras hay un stream vivo ABORTA el anterior', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    // Sin esto el fetch anterior seguía abierto y el backend gastando tokens.
+    expect(aborts[0]).toHaveBeenCalledTimes(1)
+    expect(aborts[1]).not.toHaveBeenCalled()
+  })
+
+  it('los eventos tardíos del stream reemplazado no tocan la nueva generación', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onToken('texto del stream viejo')
+    streams[0].onDone(99, [])
+
+    const state = proposalsStore.getState()
+    expect(state.current?.content).toBe('')
+    expect(state.activity).toBe('generating')
+    expect(state.iterations).toEqual([])
+  })
+
+  it('decidir limpia la marca de cancelado (no queda "Modificación cancelada" tras aprobar)', async () => {
+    vi.mocked(api.decideProposal).mockResolvedValue({
+      proposal_id: 5,
+      lifecycle: 'approved',
+      current_phase: null,
+      phase_ready: true,
+    })
+    withCurrentProposal()
+    proposalsStore.setState({ cancelled: true })
+
+    await proposalsStore.getState().decide(5, 'approve')
+
+    expect(proposalsStore.getState().cancelled).toBe(false)
+    expect(proposalsStore.getState().current?.lifecycle).toBe('approved')
+  })
+
   it('reset() NO aborta el stream: termina en segundo plano y se recuerda', () => {
     proposalsStore.getState().generate(PROJECT_ID)
     proposalsStore.getState().reset()

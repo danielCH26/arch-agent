@@ -318,7 +318,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     },
 
     decide: async (proposalId, decision, comment) => {
-      set({ activity: 'deciding', error: null, lastModify: null })
+      set({ activity: 'deciding', error: null, cancelled: false, lastModify: null })
       try {
         const result = await decideProposal(proposalId, decision, comment)
         set((state) => ({
