@@ -13,6 +13,8 @@ separación que ya usa model_classifier.py en este mismo paquete.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -26,22 +28,42 @@ MIN_QUESTIONS = 5
 MAX_QUESTIONS = 10
 
 # Estos tres datos no son una restricción genérica más: determinan si una
-# propuesta es viable. Se buscan tanto en la conversación como en la
-# descripción y en los documentos para no volver a preguntar lo ya conocido.
+# propuesta es viable. Se buscan en las RESPUESTAS del usuario, en la
+# descripción y en los documentos (nunca en el texto de las preguntas, que casi
+# siempre nombran el tema aunque no se haya respondido) para no volver a
+# preguntar lo ya conocido.
+#
+# Cada término es un fragmento de regex que se compara sobre texto sin acentos
+# y en minúsculas, con límites de palabra (ver ``_factor_regex``): "mes" ya no
+# coincide con "mesa" ni "cop" con "copia". Se evitan términos genéricos que
+# aparecen en otros contextos ("tiempo de respuesta", "500 personas usarán el
+# sistema", "100 USD al mes"): el plazo exige una cantidad ("3 meses",
+# "12 semanas") y el equipo se detecta por rol o por la palabra "equipo".
+_NUMBER = r"(?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doce)"
 _VIABILITY_FACTORS = (
     (
         "presupuesto",
-        ("presupuesto", "costo", "coste", "cop", "usd", "dolar", "dinero", "financi", "inversion"),
+        (
+            r"presupuestos?", r"costos?", r"costes?", r"cop", r"usd",
+            r"dolar(?:es)?", r"dinero", r"financ[a-z]*", r"inversion(?:es)?",
+        ),
         "¿Con qué presupuesto cuentan para construir y operar el sistema? Si aún no está definido, indícame el rango o la restricción de gasto.",
     ),
     (
         "equipo",
-        ("equipo", "desarrollador", "ingeniero", "persona", "miembro", "senior", "junior", "devops"),
+        (
+            r"equipos?", r"desarrolladores?", r"ingenier[oa]s?", r"programadores?",
+            r"senior", r"junior", r"devops",
+        ),
         "¿Cuántas personas integran el equipo y qué experiencia o roles técnicos tienen disponibles?",
     ),
     (
         "plazo",
-        ("plazo", "tiempo", "mes", "semana", "fecha", "deadline", "entrega", "calendario", "mvp"),
+        (
+            r"plazos?", r"deadline", r"fecha(?:s)?\s+(?:limite|de\s+entrega)",
+            r"entrega", r"calendario", r"mvp",
+            _NUMBER + r"\s*(?:mes(?:es)?|semanas?|dias?|trimestres?|anos?)",
+        ),
         "¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?",
     ),
 )
@@ -221,23 +243,60 @@ def _documents_section(documents_context: Optional[str]) -> str:
     )
 
 
+def _normalize_text(text: Optional[str]) -> str:
+    """Minúsculas y sin acentos, para comparar texto libre.
+
+    Misma normalización que ``proposal_generator._normalize_text``; se repite
+    aquí para no importar ese módulo (y su acceso a base de datos) desde el
+    agente de elicitación.
+    """
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", (text or "").casefold())
+        if unicodedata.category(char) != "Mn"
+    )
+
+
+def _factor_regex(patterns: tuple[str, ...]) -> "re.Pattern[str]":
+    """Regex con límites de palabra que no cuentan dígitos a la izquierda."""
+    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(patterns) + r")(?![a-z])")
+
+
+_VIABILITY_REGEXES = {
+    name: _factor_regex(patterns) for name, patterns, _question in _VIABILITY_FACTORS
+}
+
+
 def _missing_viability_factors(
     history: list[dict],
     project_description: str,
     documents_context: Optional[str],
 ) -> list[tuple[str, str]]:
-    """Return feasibility inputs absent from all available project context."""
-    history_text = "\n".join(
-        f"{item.get('pregunta', '')}\n{item.get('respuesta', '')}"
-        for item in history
+    """Return feasibility inputs absent from all available project context.
+
+    Solo cuentan las respuestas del usuario, la descripción y los documentos.
+    Si el agente ya hizo la pregunta de viabilidad de un factor y el usuario
+    respondió (aunque sea "aún no está definido"), el factor se da por
+    cubierto: así no se repite la misma pregunta en cada turno.
+    """
+    answers_text = "\n".join(str(item.get("respuesta") or "") for item in history)
+    context = _normalize_text(
+        " ".join(
+            part
+            for part in (project_description, documents_context or "", answers_text)
+            if part
+        )
     )
-    context = " ".join(
-        part for part in (project_description, documents_context or "", history_text) if part
-    ).casefold()
+    asked_and_answered = {
+        _normalize_text(str(item.get("pregunta") or "")).strip()
+        for item in history
+        if str(item.get("respuesta") or "").strip()
+    }
     return [
         (name, question)
-        for name, keywords, question in _VIABILITY_FACTORS
-        if not any(keyword in context for keyword in keywords)
+        for name, _patterns, question in _VIABILITY_FACTORS
+        if _normalize_text(question).strip() not in asked_and_answered
+        and not _VIABILITY_REGEXES[name].search(context)
     ]
 
 
@@ -302,18 +361,26 @@ def next_step(
         reason=data.get("reason", ""),
     )
 
-    missing_viability = _missing_viability_factors(
-        history, project_description, documents_context
-    )
-    if missing_viability:
-        factor, question = missing_viability[0]
-        # Regla dura complementaria al prompt: el LLM no puede cerrar ni
-        # saltarse los límites que condicionan coste, complejidad y entrega.
-        return ElicitationDecision(
-            done=False,
-            question=question,
-            reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
+    # Regla dura complementaria al prompt: el LLM no puede cerrar ni saltarse
+    # los límites que condicionan coste, complejidad y entrega. Solo se aplica
+    # cuando el modelo quiere cerrar (done) o ya pasó el mínimo de preguntas:
+    # antes corría en cada turno y, desde la segunda, pisaba la pregunta del
+    # LLM (ya pagada) con las de presupuesto, equipo y plazo, rompiendo la
+    # progresión de HU5. Y respeta MAX_QUESTIONS: a partir del máximo no se
+    # hace una pregunta más, se cierra (ver abajo).
+    if len(history) < MAX_QUESTIONS and (
+        decision.done or len(history) >= MIN_QUESTIONS
+    ):
+        missing_viability = _missing_viability_factors(
+            history, project_description, documents_context
         )
+        if missing_viability:
+            factor, question = missing_viability[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
+            )
 
     if len(history) < MIN_QUESTIONS and decision.done:
         # Regla dura: no se puede terminar antes del mínimo, sin importar

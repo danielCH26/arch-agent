@@ -310,13 +310,7 @@ class ProposalGenerator:
                 missing_sections,
                 len(full_markdown),
             )
-            yield (
-                "error",
-                "El modelo dejó la propuesta incompleta"
-                + (f" (faltan: {', '.join(missing_sections)})" if missing_sections else "")
-                + ". No se guardó ni consumió una iteración; intenta de nuevo. "
-                "Si se repite, sube el límite de tokens de salida del modelo.",
-            )
+            yield ("error", _incomplete_proposal_message(finish_reason, missing_sections))
             return
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
@@ -491,14 +485,39 @@ def _pattern_aliases(pattern_name: str) -> list[str]:
     return sorted(a for a in aliases if len(a) >= 3)
 
 
+def _alias_mentions(pattern_name: str, normalized_text: str) -> list[tuple[int, int]]:
+    """(inicio, fin) de cada mencion del patron (o de un alias) en el texto."""
+    spans: dict[int, int] = {}
+    for alias in _pattern_aliases(pattern_name):
+        for match in re.finditer(r"\b" + re.escape(alias), normalized_text):
+            spans[match.start()] = max(spans.get(match.start(), 0), match.end())
+    return sorted(spans.items())
+
+
+# Palabras sueltas que, en la misma clausula y ANTES del patron, indican que la
+# mencion esta negada aunque no encaje en el patron estricto de _REJECT_CUE
+# ("no cambies a microservicios", "no se si usar microservicios").
+_NEGATOR = re.compile(r"\b(?:no|sin|ni|nunca|jamas|tampoco|evit\w+|nada\s+de)\b")
+# Solo para REQUERIMIENTOS: nombrar un patron como posibilidad futura no es
+# pedirlo ("a futuro podria migrar a microservicios").
+_HEDGE = re.compile(
+    r"\b(?:podria\w*|quiza\w*|tal\s+vez|eventualmente|a\s+futuro|en\s+el\s+futuro|"
+    r"mas\s+adelante|a\s+largo\s+plazo|si\s+(?:el\s+sistema\s+)?crece)\b"
+)
+
+
 def _explicitly_requested(pattern_name: str | None, explicit_text: str | None) -> bool:
-    """True si el usuario nombra el patron en sus requerimientos o cambios."""
+    """True si el usuario nombra el patron en sus requerimientos o cambios.
+
+    Una mencion negada ("evitar microservicios", "sin CQRS") o solo hipotetica
+    ("a futuro podria migrar a microservicios") NO cuenta como pedirlo.
+    """
     if not pattern_name or not explicit_text:
         return False
     haystack = _normalize_text(explicit_text)
     return any(
-        re.search(r"\b" + re.escape(alias), haystack)
-        for alias in _pattern_aliases(pattern_name)
+        not _mention_negated(haystack, start, hedge=True)
+        for start, _end in _alias_mentions(pattern_name, haystack)
     )
 
 
@@ -507,31 +526,93 @@ def _explicitly_requested(pattern_name: str | None, explicit_text: str | None) -
 # "X en vez de CQRS", "cambia la arquitectura de CQRS a X"). Solo se permite
 # relleno corto entre la palabra y el patron, para que "cambia la arquitectura
 # a hexagonal" NO cuente como rechazo de hexagonal.
-_REJECT_FILLER = (
-    r"(?:(?:el|la|los|las|un|una|de|del|con|usar|use|uses|utilices|utilizar|usemos|"
+_FILLER_WORDS = (
+    r"(?:(?:el|la|los|las|lo|un|una|de|del|con|al|su|tu|este|esta|ese|esa|"
+    r"usar|use|uses|utilices|utilizar|usemos|usen|"
     r"hagas|hacer|implementes|implementar|apliques|aplicar|incluyas|incluir|"
-    r"tengas|tener|quiero|quisiera|deseo|necesito|me\s+gusta|patron|arquitectura|"
-    r"estilo|modelo|enfoque)\s+)*"
+    r"tengas|tener|quiero|queremos|quisiera|deseo|necesito|necesitamos|necesita|"
+    r"requerimos|me\s+gusta|que|sea|sean|se|es|ser|"
+    r"por\s+completo|completamente|totalmente|del\s+todo|definitivamente|ya|"
+    r"patron|arquitectura|estilo|modelo|enfoque)\s+)*"
 )
+_REJECT_FILLER = _FILLER_WORDS
 _REJECT_CUE = re.compile(
-    r"(?:\b(?:sin|no|ni|nada\s+de|quita\w*|elimina\w*|remueve\w*|remover|evita\w*|"
+    r"(?:\b(?:sin|no|ni|nada\s+de|quita\w*|elimina\w*|remueve\w*|remover|evit\w+|"
     r"descarta\w*|deja\w*\s+de|abandona\w*|olvida\w*|reemplaza\w*|sustituye\w*|"
     r"cambia\w*(?:\s+de)?|cambio\s+de|pasa\w*\s+de|migra\w*\s+de)"
     r"|en\s+(?:vez|lugar)\s+del?)\s+" + _REJECT_FILLER + r"$"
 )
+# Verbos / marcas que piden el patron de forma explicita. Una mencion que no
+# los tiene ni esta negada es ambigua (``None``): no se interpreta como pedido.
+_WANT_CUE = re.compile(
+    r"\b(?:us(?:a|ar|as|an|e|es|en|emos|ando)|utiliz\w+|utilic\w+|prefier\w+|"
+    r"prefir\w+|quier\w+|quis\w+|dese(?:o|a|amos|an)|necesit\w+|requier\w+|"
+    r"implement\w+|adopt\w+|aplic(?:a|ar|ue|uemos|amos)|incluy\w+|agreg\w+|"
+    r"anad\w+|opt(?:a|ar|e|emos|amos)|mejor|haz\w*|hag\w+|hacer|constru\w+|"
+    r"disen\w+|basa\w*|sea|sean|ser)\s+" + _FILLER_WORDS + r"$"
+)
+# "cambia la arquitectura a X", "cambia CQRS por X", "migra a X".
+_CHANGE_TO_CUE = re.compile(
+    r"\b(?:cambi\w+|pasa\w*|pasar|migr\w+|mueve\w*|mover|convert\w+|reemplaz\w+|"
+    r"sustituy\w+|transform\w+)\b.*\b(?:a|por|hacia|en)\s+" + _FILLER_WORDS + r"$"
+)
+# "X en vez de Y": X es lo que se pide.
+_WANT_SUFFIX = re.compile(r"^\W*(?:en\s+(?:vez|lugar)\s+de|en\s+reemplazo|y\s+no\b)")
 _CLAUSE_BREAK = re.compile(r"[.,;:!?\n]")
+
+
+def _clause_before(normalized_text: str, start: int) -> str:
+    """Texto de la clausula que precede a ``start`` (max. 80 caracteres)."""
+    window = normalized_text[max(0, start - 80) : start]
+    return _CLAUSE_BREAK.split(window)[-1]
 
 
 def _is_rejected_mention(normalized_text: str, start: int) -> bool:
     """True si la mencion que empieza en ``start`` va precedida de un rechazo."""
-    prefix = _CLAUSE_BREAK.split(normalized_text[max(0, start - 80) : start])[-1]
-    return bool(_REJECT_CUE.search(prefix))
+    return bool(_REJECT_CUE.search(_clause_before(normalized_text, start)))
+
+
+def _mention_negated(normalized_text: str, start: int, *, hedge: bool = False) -> bool:
+    """True si la mencion esta negada (rechazo estricto o una negacion previa).
+
+    ``hedge=True`` tambien cuenta como no pedida la mencion hipotetica; es lo
+    que se quiere para requerimientos, no para el feedback.
+    """
+    # "no uses CQRS sino hexagonal": lo que sigue a "sino" ya no esta negado.
+    clause = re.split(r"\bsino\b", _clause_before(normalized_text, start))[-1]
+    if _REJECT_CUE.search(clause) or _NEGATOR.search(clause):
+        return True
+    return hedge and bool(_HEDGE.search(clause))
+
+
+def _mention_stance(normalized_text: str, start: int, end: int) -> str | None:
+    """``"reject"``, ``"want"`` o ``None`` (ambigua) para UNA mencion en el feedback.
+
+    Antes toda mencion no reconocida como rechazo se tomaba como ``"want"``, y
+    una negacion fuera de la lista corta de relleno ("no necesitamos X",
+    "elimina por completo X") terminaba pidiendo justo lo contrario. Ahora
+    ``"want"`` exige una senal positiva; lo ambiguo no mueve el ranking.
+    """
+    clause = _clause_before(normalized_text, start)
+    after_but = re.split(r"\bsino\b", clause)
+    clause = after_but[-1]
+    if _REJECT_CUE.search(clause):
+        return "reject"
+    if _NEGATOR.search(clause):
+        return None
+    if len(after_but) > 1:  # "... sino X"
+        return "want"
+    if _WANT_CUE.search(clause) or _CHANGE_TO_CUE.search(clause):
+        return "want"
+    if _WANT_SUFFIX.search(normalized_text[end : end + 40]):
+        return "want"
+    return None
 
 
 def _keyword_wanted(keywords: tuple[str, ...], normalized_text: str) -> bool:
-    """True si alguna keyword aparece al menos una vez SIN ser rechazada."""
+    """True si alguna keyword aparece al menos una vez SIN ser negada ni hipotetica."""
     return any(
-        not _is_rejected_mention(normalized_text, match.start())
+        not _mention_negated(normalized_text, match.start(), hedge=True)
         for keyword in keywords
         for match in re.finditer(re.escape(keyword), normalized_text)
     )
@@ -542,14 +623,15 @@ def _feedback_stance(pattern_name: str | None, feedback: str | None) -> str | No
     if not pattern_name or not feedback:
         return None
     haystack = _normalize_text(feedback)
-    rejected = [
-        _is_rejected_mention(haystack, match.start())
-        for alias in _pattern_aliases(pattern_name)
-        for match in re.finditer(r"\b" + re.escape(alias), haystack)
+    stances = [
+        _mention_stance(haystack, start, end)
+        for start, end in _alias_mentions(pattern_name, haystack)
     ]
-    if not rejected:
-        return None
-    return "reject" if all(rejected) else "want"
+    if "want" in stances:
+        return "want"
+    if "reject" in stances:
+        return "reject"
+    return None
 
 
 # Chunks que describen CUANDO NO usar un patron. Su texto menciona justo los
@@ -688,31 +770,65 @@ def _select_citations(
 
 
 _REQUIRED_HEADINGS = (
-    ("Componentes", r"componentes"),
-    ("Tecnologias", r"tecnologias"),
-    ("Patrones", r"patrones"),
-    ("Justificación del patrón principal", r"justificacion del patron principal"),
+    ("Componentes", r"componentes?"),
+    ("Tecnologias", r"tecnologias?"),
+    ("Patrones", r"patr(?:on|ones)"),
+    (
+        "Justificación del patrón principal",
+        r"justificacion(?:\s+del\s+patron(?:\s+principal)?)?",
+    ),
+)
+# "Riesgo o costo" con las variantes que escribe un modelo ("Riesgos y costos",
+# "Riesgo/costo", "Riesgo y costo"), o un bullet solo "Riesgo:" / "Costo:".
+_RISK_OR_COST_RE = re.compile(
+    r"riesgos?\s*(?:o|y|e|/|,|-)\s*costos?|^\W*(?:riesgos?|costos?)\s*:",
+    re.MULTILINE,
 )
 
 
 def _missing_sections(markdown: str | None) -> list[str]:
     """Secciones obligatorias que faltan en la propuesta (lista vacia = completa).
 
-    Comprueba los cuatro encabezados ``##`` del formato y que la justificacion
-    llegue hasta su ultimo punto (``Riesgo o costo``), que es lo primero que se
-    pierde cuando la respuesta se corta.
+    Comprueba los cuatro encabezados ``##`` del formato (tolerando singular/
+    plural, acentos y negritas) y que la justificacion llegue hasta su ultimo
+    punto (riesgo o costo), que es lo primero que se pierde cuando la respuesta
+    se corta. El riesgo se busca solo DESPUES del encabezado de la
+    justificacion para no confundirlo con otra mencion de la propuesta.
     """
     normalized = _normalize_text(markdown)
-    missing = [
-        label
-        for label, pattern in _REQUIRED_HEADINGS
-        if not re.search(r"^\s*#{1,6}\s*" + pattern + r"\b", normalized, re.MULTILINE)
-    ]
-    if "Justificación del patrón principal" not in missing and (
-        "riesgo o costo" not in normalized
+    missing: list[str] = []
+    justification_start: int | None = None
+    for label, pattern in _REQUIRED_HEADINGS:
+        match = re.search(
+            r"^[ \t]*#{1,6}[ \t]*\**[ \t]*" + pattern + r"\b", normalized, re.MULTILINE
+        )
+        if match is None:
+            missing.append(label)
+        elif label == "Justificación del patrón principal":
+            justification_start = match.end()
+    if justification_start is not None and not _RISK_OR_COST_RE.search(
+        normalized, justification_start
     ):
         missing.append("Riesgo o costo")
     return missing
+
+
+def _incomplete_proposal_message(
+    finish_reason: str | None, missing_sections: list[str]
+) -> str:
+    """Mensaje de error segun la causa real de una propuesta incompleta."""
+    missing = f" (faltan: {', '.join(missing_sections)})" if missing_sections else ""
+    if finish_reason == "length":
+        return (
+            "El modelo se quedó sin tokens de salida y la propuesta quedó "
+            f"incompleta{missing}. No se guardó ni consumió una iteración; "
+            "sube el límite de tokens de salida del modelo e intenta de nuevo."
+        )
+    return (
+        "El modelo dejó la propuesta incompleta: no incluyó todas las "
+        f"secciones obligatorias{missing}. No se guardó ni consumió una "
+        "iteración; intenta de nuevo."
+    )
 
 
 def _strip_secondary_references(text: str | None) -> str:
@@ -731,6 +847,119 @@ def _strip_secondary_references(text: str | None) -> str:
     )
 
 
+_BASELINE_MICROSERVICES = (
+    "ESTRUCTURA BASE SELECCIONADA: microservicios (sujeta a las "
+    "RESTRICCIONES DE VIABILIDAD).\n"
+    "Si el presupuesto, el equipo o el alcance son pequenos o no estan "
+    "definidos, aplica la version MINIMA: 2 o 3 servicios por dominio "
+    "de negocio, cada uno con su propia base de datos logica, "
+    "comunicacion sincrona simple (HTTP/REST), sin broker de eventos y "
+    "con logs basicos en lugar de observabilidad centralizada; explica "
+    "en 'Riesgo o costo' por que no se propone la version completa.\n"
+    "Version completa (solo si presupuesto y equipo la justifican): "
+    "incluye un API Gateway como punto de entrada, servicios de negocio "
+    "desacoplados por dominio, una base de datos privada por servicio, "
+    "comunicacion asincrona mediante broker de eventos cuando haya "
+    "integracion entre dominios y observabilidad centralizada.\n"
+    "En ambos casos no modeles una unica base de datos compartida ni un "
+    "monolito disfrazado de servicios.\n"
+    "El diagrama posterior debe poder mostrar Cliente -> (API Gateway, "
+    "si se incluye) -> Servicios y las dependencias de cada servicio "
+    "con su propia base de datos usando esos mismos nombres.\n"
+)
+_BASELINE_EVENT_DRIVEN = (
+    "ESTRUCTURA BASE SELECCIONADA: orientada a eventos (sujeta a las "
+    "RESTRICCIONES DE VIABILIDAD).\n"
+    "Incluye productores, broker o bus de eventos, consumidores "
+    "independientes, contratos de evento versionados y manejo de "
+    "reintentos/idempotencia. Con presupuesto o equipo pequenos, limita "
+    "los eventos a los flujos que realmente lo necesiten y prefiere un "
+    "broker gestionado o de bajo costo.\n"
+)
+_BASELINE_HEXAGONAL = (
+    "ESTRUCTURA BASE SELECCIONADA: arquitectura hexagonal.\n"
+    "Distingue dominio y casos de uso de los puertos; presenta los "
+    "adaptadores de entrada y salida como dependencias externas.\n"
+)
+_BASELINE_LAYERED = (
+    "ESTRUCTURA BASE SELECCIONADA: arquitectura en capas.\n"
+    "Distingue presentacion, aplicacion, dominio e infraestructura y evita "
+    "dependencias que salten capas.\n"
+)
+_BASELINE_CQRS = (
+    "ESTRUCTURA BASE SELECCIONADA: CQRS (sujeta a las RESTRICCIONES DE \
+VIABILIDAD).\n"
+    "Separa el modelo de comandos (escritura) del de consultas (lectura): \
+manejadores de comandos que validan y escriben, y manejadores de consultas que \
+solo leen.\n"
+    "Si el presupuesto, el equipo o el alcance son pequenos o no estan \
+definidos, aplica la version MINIMA: una sola base de datos con modelos de \
+lectura y escritura separados en el codigo (vistas o tablas de lectura), sin \
+broker de eventos ni segunda base de datos; explica en 'Riesgo o costo' por que \
+no se propone la version completa.\n"
+    "Version completa (solo si volumen y equipo la justifican): almacen de \
+lectura propio, sincronizado con eventos del lado de escritura.\n"
+)
+_BASELINE_EVENT_SOURCING = (
+    "ESTRUCTURA BASE SELECCIONADA: event sourcing (sujeta a las RESTRICCIONES \
+DE VIABILIDAD).\n"
+    "El estado se deriva de un registro inmutable de eventos: almacen de \
+eventos (solo agrega), agregados que emiten eventos y proyecciones que \
+reconstruyen el estado de lectura.\n"
+    "Con presupuesto o equipo pequenos, usa una tabla de eventos en la base de \
+datos principal y proyecciones sencillas, sin broker ni almacen de eventos \
+dedicado; explica en 'Riesgo o costo' el costo de versionar eventos y de \
+reconstruir proyecciones.\n"
+)
+_BASELINE_CLEAN = (
+    "ESTRUCTURA BASE SELECCIONADA: Clean Architecture.\n"
+    "Distingue entidades de dominio, casos de uso, adaptadores de interfaz \
+(controladores, repositorios) y frameworks/infraestructura; las dependencias \
+apuntan siempre hacia adentro, hacia el dominio.\n"
+)
+_BASELINE_MODULAR_MONOLITH = (
+    "ESTRUCTURA BASE SELECCIONADA: monolito modular.\n"
+    "Un solo despliegue y una sola base de datos, dividido en modulos por \
+dominio de negocio con fronteras claras: cada modulo expone una interfaz \
+publica y no accede a las tablas de otro. No modeles servicios separados ni \
+comunicacion por red entre modulos; si la evolucion a microservicios aplica, \
+mencionala solo como evolucion futura en 'Riesgo o costo'.\n"
+)
+_BASELINE_SERVERLESS = (
+    "ESTRUCTURA BASE SELECCIONADA: serverless (sujeta a las RESTRICCIONES DE \
+VIABILIDAD).\n"
+    "Funciones sin estado, una por responsabilidad, disparadas por HTTP, \
+eventos o tareas programadas; el estado vive en servicios gestionados (base de \
+datos, almacenamiento de objetos). Prefiere capas de uso gratuito y evita \
+servidores propios; explica en 'Riesgo o costo' los limites de ejecucion y el \
+arranque en frio.\n"
+)
+_BASELINE_API_GATEWAY_BFF = (
+    "ESTRUCTURA BASE SELECCIONADA: API Gateway + Backend for Frontend \
+(sujeta a las RESTRICCIONES DE VIABILIDAD).\n"
+    "Un punto de entrada unico para los clientes y, si hay clientes con \
+necesidades distintas (web, movil), un BFF por cliente que adapta y agrega las \
+respuestas del backend.\n"
+    "Con un solo cliente y un solo despliegue, expresa el BFF como una capa de \
+API dentro del mismo proyecto, sin gateway ni servicios separados.\n"
+)
+
+# (fragmentos del nombre del patron ya normalizado, estructura base). Cubre los
+# 10 patrones del catalogo; el orden solo importa si un nombre contiene dos.
+_PATTERN_BASELINES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("microserv",), _BASELINE_MICROSERVICES),
+    (("event sourcing", "event-sourcing"), _BASELINE_EVENT_SOURCING),
+    (("event driven", "event-driven", "orientada a eventos"), _BASELINE_EVENT_DRIVEN),
+    (("cqrs",), _BASELINE_CQRS),
+    (("hexagonal", "ports and adapters", "puertos y adaptadores"), _BASELINE_HEXAGONAL),
+    (("clean architecture", "arquitectura limpia"), _BASELINE_CLEAN),
+    (("monolito modular", "modular monolith"), _BASELINE_MODULAR_MONOLITH),
+    (("serverless", "function-as-a-service", "function as a service"), _BASELINE_SERVERLESS),
+    (("api gateway", "backend for frontend", "bff"), _BASELINE_API_GATEWAY_BFF),
+    (("capas", "layered"), _BASELINE_LAYERED),
+)
+
+
 def _architecture_baseline(
     *,
     citations: list[dict],
@@ -742,10 +971,18 @@ def _architecture_baseline(
 ) -> str:
     """Return the minimum structural shape for the inferred architecture.
 
-    Solo cuenta el patron PRINCIPAL (no los consultados) y el feedback del
-    usuario: los patrones secundarios son contexto y no deben imponer una
-    estructura. La estructura base queda subordinada a las RESTRICCIONES DE
+    La estructura base sale del patron PRINCIPAL (el unico que el prompt
+    declara como fuente principal), asi nunca contradice la regla de FUENTES Y
+    REFERENCIAS: antes se elegia por palabras clave en descripcion,
+    requerimientos y feedback, y un requerimiento como "a futuro podria migrar
+    a microservicios" imponia esa base junto a "el unico patron principal es
+    Monolito modular". El patron principal ya incorpora el feedback del
+    usuario (ver ``_select_citations``). Los patrones secundarios son contexto
+    y no imponen estructura. La base queda subordinada a las RESTRICCIONES DE
     VIABILIDAD (presupuesto, equipo, plazo).
+
+    Solo si NO hay patron principal (sin RAG) se infiere por palabras clave
+    del proyecto y del feedback, ignorando menciones negadas o hipoteticas.
     """
     primary_citation = next(
         (citation for citation in citations if citation.get("source_role") == "primary"),
@@ -754,66 +991,41 @@ def _architecture_baseline(
     primary_name = (
         str(primary_citation.get("pattern_name") or "") if primary_citation else ""
     )
-    # Con feedback la propuesta previa NO cuenta: si el usuario pidio cambiar de
-    # arquitectura, el texto de la version anterior (que sigue diciendo
-    # "microservicios", "CQRS"...) hacia que la estructura base se quedara con
-    # el estilo viejo. El patron principal ya incorpora el feedback.
+
+    if primary_name.strip():
+        normalized_primary = _normalize_text(primary_name)
+        for keys, baseline in _PATTERN_BASELINES:
+            if any(key in normalized_primary for key in keys):
+                return baseline
+        # Patron fuera del catalogo: no se fuerza el de otro estilo.
+        return (
+            f"ESTRUCTURA BASE SELECCIONADA: la propia del patron principal "
+            f"({primary_name.strip()}).\n"
+            "Organiza Componentes y conexiones segun ese patron y no mezcles la "
+            "estructura de otro estilo arquitectonico.\n"
+        )
+
+    # Sin patron principal. Con feedback la propuesta previa NO cuenta: si el
+    # usuario pidio cambiar de arquitectura, el texto de la version anterior
+    # (que sigue diciendo "microservicios", "CQRS"...) dejaria la base en el
+    # estilo viejo.
     has_feedback = bool(feedback and feedback.strip())
     prior_context = "" if has_feedback else _strip_secondary_references(prior_content)
-    context = "\n".join(
-        [
-            project_name or "",
-            description or "",
-            requirements_text or "",
-            feedback or "",
-            prior_context,
-            primary_name,
-        ]
+    normalized = _normalize_text(
+        "\n".join(
+            [
+                project_name or "",
+                description or "",
+                requirements_text or "",
+                feedback or "",
+                prior_context,
+            ]
+        )
     )
-    normalized = _normalize_text(context)
-
-    if _keyword_wanted(("microserv",), normalized):
-        return (
-            "ESTRUCTURA BASE SELECCIONADA: microservicios (sujeta a las "
-            "RESTRICCIONES DE VIABILIDAD).\n"
-            "Si el presupuesto, el equipo o el alcance son pequenos o no estan "
-            "definidos, aplica la version MINIMA: 2 o 3 servicios por dominio "
-            "de negocio, cada uno con su propia base de datos logica, "
-            "comunicacion sincrona simple (HTTP/REST), sin broker de eventos y "
-            "con logs basicos en lugar de observabilidad centralizada; explica "
-            "en 'Riesgo o costo' por que no se propone la version completa.\n"
-            "Version completa (solo si presupuesto y equipo la justifican): "
-            "incluye un API Gateway como punto de entrada, servicios de negocio "
-            "desacoplados por dominio, una base de datos privada por servicio, "
-            "comunicacion asincrona mediante broker de eventos cuando haya "
-            "integracion entre dominios y observabilidad centralizada.\n"
-            "En ambos casos no modeles una unica base de datos compartida ni un "
-            "monolito disfrazado de servicios.\n"
-            "El diagrama posterior debe poder mostrar Cliente -> (API Gateway, "
-            "si se incluye) -> Servicios y las dependencias de cada servicio "
-            "con su propia base de datos usando esos mismos nombres.\n"
-        )
-    if _keyword_wanted(("event driven", "event-driven", "orientada a eventos"), normalized):
-        return (
-            "ESTRUCTURA BASE SELECCIONADA: orientada a eventos (sujeta a las "
-            "RESTRICCIONES DE VIABILIDAD).\n"
-            "Incluye productores, broker o bus de eventos, consumidores "
-            "independientes, contratos de evento versionados y manejo de "
-            "reintentos/idempotencia. Con presupuesto o equipo pequenos, limita "
-            "los eventos a los flujos que realmente lo necesiten y prefiere un "
-            "broker gestionado o de bajo costo.\n"
-        )
-    if _keyword_wanted(("hexagonal", "ports and adapters"), normalized):
-        return (
-            "ESTRUCTURA BASE SELECCIONADA: arquitectura hexagonal.\n"
-            "Distingue dominio y casos de uso de los puertos; presenta los "
-            "adaptadores de entrada y salida como dependencias externas.\n"
-        )
-    return (
-        "ESTRUCTURA BASE SELECCIONADA: arquitectura en capas.\n"
-        "Distingue presentacion, aplicacion, dominio e infraestructura y evita "
-        "dependencias que salten capas.\n"
-    )
+    for keys, baseline in _PATTERN_BASELINES:
+        if baseline is not _BASELINE_LAYERED and _keyword_wanted(keys, normalized):
+            return baseline
+    return _BASELINE_LAYERED
 
 
 def _retrieve_patterns(query: str, user_id: int) -> list[Document]:
