@@ -111,6 +111,21 @@ describe('ProposalProgress (F19)', () => {
     expect(time).not.toHaveTextContent(' de ')
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '55')
   })
+
+  it('oculta Cancelar mientras la propuesta se está guardando', () => {
+    setBusy({
+      progress: {
+        stage: 'saving',
+        percent: 95,
+        message: 'Guardando la propuesta',
+        elapsed_ms: 1,
+      },
+    })
+    render(<ProposalProgress />)
+
+    expect(screen.queryByTestId('proposal-cancel-generation')).toBeNull()
+    expect(screen.getByTestId('proposal-progress-label')).toHaveAttribute('aria-live', 'polite')
+  })
 })
 
 describe('formatElapsed', () => {

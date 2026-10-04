@@ -144,6 +144,17 @@ describe('ProposalActions', () => {
     expect(screen.queryByTestId('proposal-retry')).toBeNull()
   })
 
+  it('no ofrece reintentar ante un error permanente', () => {
+    proposalsStore.setState({
+      error: 'Has alcanzado el máximo de iteraciones (5)',
+      cancelled: false,
+      lastModify: { proposalId: 101, feedback: 'x' },
+    })
+    render(<ProposalActions proposalId={101} />)
+
+    expect(screen.queryByTestId('proposal-retry')).toBeNull()
+  })
+
   it('tras cancelar una modificación también se puede reintentar', () => {
     proposalsStore.setState({
       error: null,

@@ -73,7 +73,7 @@ interface ProposalsState {
 
   // Rehidrata la propuesta viva del proyecto desde el backend (al recargar o
   // volver a entrar a la fase). No toca nada si hay un stream en curso.
-  loadLatest: (projectId: number) => Promise<void>
+  loadLatest: (projectId: number, force?: boolean) => Promise<void>
 
   // Cleanup
   reset: () => void
@@ -210,6 +210,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
         },
         onError: (message) => {
           if (run !== activeRun) return
+          const savingTimedOut = get().progress?.stage === 'saving' && /tiempo máximo/i.test(message)
           abortActive = null
           set({
             inFlight: 'idle',
@@ -221,6 +222,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             currentProposal: null,
             ...IDLE_PROGRESS,
           })
+          // El hilo de persistencia puede completar justo después del timeout.
+          // Forzamos la rehidratación para no ofrecer un reintento que chocará
+          // con la iteración que ya alcanzó a guardarse.
+          if (savingTimedOut) void get().loadLatest(projectId, true)
         },
       },
     )
@@ -303,6 +308,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
         },
         onError: (message) => {
           if (run !== activeRun) return
+          const savingTimedOut = get().progress?.stage === 'saving' && /tiempo máximo/i.test(message)
           abortActive = null
           set({
             inFlight: 'idle',
@@ -310,6 +316,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             pendingProposal: null,
             ...IDLE_PROGRESS,
           })
+          if (savingTimedOut) {
+            const projectId = prior?.project_id ?? 0
+            if (projectId) void get().loadLatest(projectId, true)
+          }
         },
       },
     )
@@ -393,12 +403,13 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     }
   },
 
-  loadLatest: async (projectId) => {
+  loadLatest: async (projectId, force = false) => {
     if (get().inFlight !== 'idle') return
     const current = get().currentProposal
     // Ya hay una propuesta cargada de ESTE proyecto (y no rechazada): no
     // pisarla. Una de otro proyecto o una rechazada sí se reemplaza.
     if (
+      !force &&
       current &&
       current.id != null &&
       current.project_id === projectId &&

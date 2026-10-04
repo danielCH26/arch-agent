@@ -44,6 +44,7 @@ export function ProposalProgress() {
     progress?.message ??
     (inFlight === 'modifying' ? 'Aplicando los cambios solicitados' : 'Iniciando la generación')
   const slow = elapsedS >= SLOW_AFTER_S
+  const isSaving = progress?.stage === 'saving'
 
   return (
     <div
@@ -51,10 +52,10 @@ export function ProposalProgress() {
       data-testid="proposal-progress"
     >
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-medium text-blue-900" data-testid="proposal-progress-label">
+        <p className="text-sm font-medium text-blue-900" data-testid="proposal-progress-label" aria-live="polite">
           {label}…
         </p>
-        <button
+        {!isSaving && <button
           type="button"
           onClick={cancel}
           className="rounded border border-blue-300 bg-white px-3 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-100"
@@ -62,7 +63,7 @@ export function ProposalProgress() {
           aria-label="Cancelar generación"
         >
           Cancelar
-        </button>
+        </button>}
       </div>
 
       <div

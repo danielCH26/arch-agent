@@ -35,7 +35,10 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
   const [localError, setLocalError] = useState<string | null>(null)
 
   const isBusy = inFlight !== 'idle'
-  const canRetry = lastModify !== null && !isBusy && (Boolean(error) || cancelled)
+  // Reintentar solo sirve para cortes transitorios. Un 4xx, el limite de
+  // iteraciones o una configuracion LLM invalida requieren una accion distinta.
+  const retryableError = error !== null && /tiempo máximo|timed out|stream failed/i.test(error)
+  const canRetry = lastModify !== null && !isBusy && (retryableError || cancelled)
 
   async function onApprove() {
     setLocalError(null)
