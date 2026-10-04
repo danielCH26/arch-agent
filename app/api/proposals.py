@@ -31,6 +31,8 @@ from app.models.project import Project
 from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
+# El mínimo evita un bucle de comentarios si se configura accidentalmente 0.
+SSE_HEARTBEAT_SECONDS = max(1.0, float(os.getenv("SSE_HEARTBEAT_SECONDS", "15")))
 
 PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
 PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
@@ -101,10 +103,36 @@ async def _sse_stream(
     con el, el stream del LLM) en lugar de esperar al recolector de basura, asi
     no se siguen gastando tokens de una propuesta que nadie va a ver.
     """
+    pending: asyncio.Task | None = None
     try:
         async with aclosing(events) as inner:
-            async for event, payload in inner:
-                yield _emit_sse(event, payload)
+            iterator = inner.__aiter__()
+            pending = asyncio.create_task(iterator.__anext__())
+            try:
+                while True:
+                    done, _ = await asyncio.wait(
+                        {pending}, timeout=SSE_HEARTBEAT_SECONDS
+                    )
+                    if not done:
+                        # Los comentarios SSE los ignora el parser del cliente, pero
+                        # mantienen viva la conexion ante proxies con idle timeout.
+                        yield ": ping\n\n"
+                        continue
+                    try:
+                        event, payload = pending.result()
+                    except StopAsyncIteration:
+                        break
+                    yield _emit_sse(event, payload)
+                    pending = asyncio.create_task(iterator.__anext__())
+            finally:
+                # Debe terminar ANTES de que aclosing() cierre el async
+                # generator; de otro modo aclose() falla con "already running".
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    try:
+                        await pending
+                    except asyncio.CancelledError:
+                        pass
     except (asyncio.CancelledError, GeneratorExit):
         logger.info("Proposal stream cancelled by client")
         raise
@@ -329,6 +357,30 @@ async def modify_proposal(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})",
+            )
+        latest = (
+            db.query(Proposal)
+            .filter(Proposal.project_id == prior.project_id)
+            .order_by(Proposal.iteration.desc())
+            .first()
+        )
+        if latest is None or latest.id != prior.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La propuesta ya no es la última iteración; recarga antes de modificar.",
+            )
+        next_exists = (
+            db.query(Proposal.id)
+            .filter(
+                Proposal.project_id == prior.project_id,
+                Proposal.iteration == prior.iteration + 1,
+            )
+            .first()
+        )
+        if next_exists is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya existe una iteración posterior; recarga antes de modificar.",
             )
         project_id = int(prior.project_id)
     finally:

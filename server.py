@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import os
 import threading
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 from app.auth.register import register_user
@@ -14,7 +15,20 @@ from app.auth.validators import ValidationError
 load_dotenv()
 
 templates = Jinja2Templates(directory="templates")
-app = FastAPI(title="Arch Agent API", version="1.0.0")
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    """Warm embeddings once at startup without coupling production to pytest."""
+    from app.core.embeddings import warmup_embeddings, warmup_enabled
+
+    if warmup_enabled():
+        threading.Thread(
+            target=warmup_embeddings, name="embeddings-warmup", daemon=True
+        ).start()
+    yield
+
+app = FastAPI(title="Arch Agent API", version="1.0.0", lifespan=_lifespan)
 
 # CORS — allow SPA frontend to call this API
 app.add_middleware(
@@ -103,21 +117,3 @@ SPA_DIST = Path(__file__).parent / "frontend" / "dist"
 if SPA_DIST.exists():
     app.mount("/", StaticFiles(directory=str(SPA_DIST), html=True), name="spa")
 
-
-# --- Warm-up ---------------------------------------------------------------
-# F19 (primera propuesta < 5 min): el modelo de embeddings se carga perezosamente
-# en la primera busqueda RAG (5-15 s, mas si hay que bajarlo). Se precarga en un
-# hilo al arrancar para que ese costo no caiga sobre la primera propuesta de un
-# usuario. EMBEDDINGS_WARMUP=off lo desactiva. La logica vive en
-# app/core/embeddings.py (warmup_enabled / warmup_embeddings) para poder testearla.
-
-
-@app.on_event("startup")
-async def _warmup_on_startup() -> None:
-    from app.core.embeddings import warmup_embeddings, warmup_enabled
-
-    if not warmup_enabled():
-        return
-    if os.getenv("PYTEST_CURRENT_TEST"):  # TestClient(app) con lifespan en tests
-        return
-    threading.Thread(target=warmup_embeddings, name="embeddings-warmup", daemon=True).start()
