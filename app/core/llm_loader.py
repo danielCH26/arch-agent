@@ -4,6 +4,7 @@ Carga de configuración LLM del usuario y construcción del modelo LangChain.
 Issue: #7 - HU12 Configuración de LLM
 """
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.core.encryption import decrypt, EncryptionError
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # Temperatura de muestreo para TODO modelo que construye la app.
@@ -32,6 +35,27 @@ from app.core.encryption import decrypt, EncryptionError
 # que aca NO se manda: se omite el kwarg y langchain aplica su default de 1, que
 # es el unico valor esos modelos soportan. Ver `_acepta_temperature`.
 DEFAULT_LLM_TEMPERATURE: float = 0.0
+
+
+# LLM por defecto del backend, para usuarios que no configuraron uno propio.
+#
+# Antes, un usuario sin configuracion recibia 409 "LLM not configured" en
+# cualquier consulta: la app no era usable sin pasar por el wizard de HU12.
+# Con esto, el default es el ultimo recurso, no el primero: si el usuario
+# configuro su LLM, el suyo gana siempre.
+#
+# `DEFAULT_LLM_BASE_URL` es constante y no variable de entorno a proposito. Si
+# fuera configurable, cualquiera que pueda tocar el entorno lo apuntaria a otro
+# endpoint y el "default del sistema" dejaria de ser un default. La unica parte
+# que viene del entorno es la credencial (`GROQ_API_KEY`), que es un secreto del
+# operador y por definicion no puede estar hardcodeada.
+#
+# Modelo: `openai/gpt-oss-120b`. Se evaluo `qwen/qwen3.8-27b` y se descarto --
+# es Preview, Groq advierte que "should not be used in production environments as
+# they may be discontinued at short notice", cuesta $4.00/1M de output contra
+# $0.60 de este, y no tiene baseline medido. Este si: ver el corpus de `evals/`.
+DEFAULT_LLM_BASE_URL: str = "https://api.groq.com/openai/v1"
+DEFAULT_LLM_MODEL: str = "openai/gpt-oss-120b"
 
 
 # Series de modelos que rechazan `temperature` distinto de 1 (400 de OpenAI).
@@ -90,14 +114,47 @@ class LLMConfigError(Exception):
         # "initialization_failed".
         self.reason = reason
 
-
 @dataclass
 class UserLLMConfig:
     """Configuración LLM de un usuario, ya desencriptada."""
+
     user_id: int
     base_url: str
     model: str
     api_key: str  # desencriptada
+    # De donde salio la config: "user" si el usuario configuro la suya,
+    # "system_default" si vino del backend (#98).
+    #
+    # Sin esto no se puede auditar cuanto trafico consume la key del sistema,
+    # que es la unica forma de atribuir gasto cuando la facturacion es una sola.
+    source: str = "user"
+
+
+def _load_system_default(user_id: int) -> Optional[UserLLMConfig]:
+    """Construye la config del LLM por defecto, o None si no hay credencial.
+
+    Se resuelve POR FUERA de la cache de sesion a proposito. Si el default
+    entrara al cache por `user_id`, un usuario que lo recibiera y despues
+    completara el wizard seguiria viendo el default hasta que expiraran los 300s
+    de TTL: configuraria su modelo y no veria ningun cambio. Resolverlo siempre
+    fresco cuesta una llamada a la DB solo en el camino no-configurado, que es
+    el raro.
+
+    Returns:
+        UserLLMConfig con el default, o None si `GROQ_API_KEY` no esta definida
+        o esta vacia. None no es un error todavia: el caller decide.
+    """
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    return UserLLMConfig(
+        user_id=user_id,
+        base_url=DEFAULT_LLM_BASE_URL,
+        model=DEFAULT_LLM_MODEL,
+        api_key=api_key,
+        source="system_default",
+    )
 
 
 # Cache en memoria por sesión (se invalida al cerrar chat)
@@ -126,23 +183,30 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
     step2) falla con 404. Por eso ahora solo exigimos base_url +
     api_key. La validacion de model vacio se hace mas adelante (en
     build_langchain_model, que es donde realmente importa).
+
+    Desde #98, si al usuario le falta cualquiera de los tres campos, se intenta
+    el LLM por defecto del backend. El default es el ULTIMO recurso: solo aplica
+    cuando la config del usuario esta incompleta, nunca la pisa.
     """
     db = SessionLocal()
     try:
         user = db.get(User, user_id)
         if user is None:
+            # Un user_id que no existe es un bug o un ataque, no "usuario sin
+            # configurar". Darle el default abriria la puerta a que cualquier
+            # id desbordado reciba el LLM del sistema.
             raise LLMConfigError(f"Usuario {user_id} no encontrado")
 
-        if not user.llm_base_url:
+        if not user.llm_base_url or not user.encrypted_api_key:
+            default = _load_system_default(user_id)
+            if default is not None:
+                return default
             raise LLMConfigError(
-                f"Usuario {user_id} no tiene URL base configurada. "
-                "Completa el paso 1 del wizard primero."
-            )
-
-        if not user.encrypted_api_key:
-            raise LLMConfigError(
-                f"Usuario {user_id} no tiene API key configurada. "
-                "Completa el paso 2 del wizard primero."
+                f"Usuario {user_id} no tiene configuracion de LLM. "
+                "Completa el wizard (pasos 1 y 2) para usar tu propia API key, "
+                "o configura GROQ_API_KEY en el backend para que la app use un "
+                "LLM por defecto.",
+                reason="not_configured",
             )
 
         # Desencriptar API key
@@ -154,11 +218,26 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
                 reason="decryption_failed",
             )
 
+        if not user.llm_model:
+            # Completo step2 pero no step3. La key es suya y se respeta; solo
+            # falta el modelo, y el default puede cubrirlo. `source` queda en
+            # "user" porque la credencial y el endpoint son suyos.
+            default = _load_system_default(user_id)
+            model = default.model if default is not None else ""
+            return UserLLMConfig(
+                user_id=user_id,
+                base_url=user.llm_base_url,
+                model=model,
+                api_key=api_key,
+                source="user",
+            )
+
         return UserLLMConfig(
             user_id=user_id,
             base_url=user.llm_base_url,
-            model=user.llm_model or "",
+            model=user.llm_model,
             api_key=api_key,
+            source="user",
         )
     finally:
         db.close()
@@ -186,19 +265,37 @@ def build_langchain_model(
     """
     import time
 
-    # 1. Verificar cache
+    # 1. Verificar cache. El default del sistema se resuelve SIEMPRE fresco
+    #    (ver `_load_system_default`): cacheado por user_id, un usuario que lo
+    #    recibiera y despues completara el wizard seguiria viendo el default
+    #    hasta que expirara el TTL.
     if not force_reload and user_id in _session_cache:
         cached_config, expires_at = _session_cache[user_id]
         if time.time() < expires_at:
+            if cached_config.source == "system_default":
+                fresh = _load_system_default(user_id)
+                if fresh is not None:
+                    return _init_model(fresh)
             return _init_model(cached_config)
 
-    # 2. Cargar config fresca desde DB
+    # 2. Cargar config fresca desde DB (con fallback al default del sistema)
     config = load_user_llm_config(user_id)
 
-    # 3. Cachear
+    # 3. Observabilidad: el origen va al log, la key nunca. Sin esto no hay
+    #    forma de saber cuanto trafico consume la cuenta del operador (#98).
+    _LOGGER.info(
+        "llm_config resuelta: source=%s model=%s base_url=%s",
+        config.source,
+        config.model,
+        config.base_url,
+    )
+
+    # 4. Cachear. El default tambien: los setters del wizard llaman
+    #    clear_session_cache(user_id), asi que la cache se invalida bien
+    #    cuando el usuario pasa a tener config propia.
     _session_cache[user_id] = (config, time.time() + _CACHE_TTL_SECONDS)
 
-    # 4. Construir modelo
+    # 5. Construir modelo
     return _init_model(config)
 
 
