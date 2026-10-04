@@ -93,3 +93,48 @@ def test_proposal_limits_fall_back_to_defaults_on_empty_or_invalid_values():
         PROPOSAL_EXPECTED_CHARS="", PROPOSAL_PROGRESS_INTERVAL_S="-3",
     )
     assert values == ["300.0", "10.0", "6000", "1.0"]
+
+
+def _eval_in_subprocess(expression: str, **env) -> list[str]:
+    """Importa proposal_generator/proposals en un proceso limpio y evalúa ``expression``."""
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "from app.core import proposal_generator as p;"
+        "from app.api import proposals as api;"
+        f"print({expression})"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, check=True,
+        env={**os.environ, "DATABASE_URL": "postgresql://u:p@localhost:5432/x", **env},
+    )
+    return result.stdout.split()
+
+
+_RAG_TUNING_EXPR = (
+    "p.PROPOSAL_RAG_TOP_N, p.PROPOSAL_RAG_CANDIDATE_CHUNKS, p.PROPOSAL_MAX_ITER, "
+    "api.PROPOSAL_MAX_ITER, p.PROPOSAL_COMPLEXITY_PENALTY, api.SSE_HEARTBEAT_SECONDS"
+)
+
+
+def test_proposal_tuning_falls_back_to_defaults_on_empty_or_invalid_values():
+    """Un .env con valores vacíos o inválidos no debe romper el import (antes: ValueError)."""
+    values = _eval_in_subprocess(
+        _RAG_TUNING_EXPR,
+        PROPOSAL_RAG_TOP_N="", PROPOSAL_RAG_CANDIDATE_CHUNKS="abc", PROPOSAL_MAX_ITER="",
+        PROPOSAL_COMPLEXITY_PENALTY="x", SSE_HEARTBEAT_SECONDS="",
+    )
+    assert values == ["3", "40", "5", "5", "0.08", "15.0"]
+
+
+def test_proposal_tuning_uses_configured_values_and_shares_max_iter():
+    values = _eval_in_subprocess(
+        _RAG_TUNING_EXPR,
+        PROPOSAL_RAG_TOP_N="4", PROPOSAL_RAG_CANDIDATE_CHUNKS="60", PROPOSAL_MAX_ITER="7",
+        PROPOSAL_COMPLEXITY_PENALTY="0", SSE_HEARTBEAT_SECONDS="0.2",
+    )
+    # PROPOSAL_MAX_ITER es una sola definición; el heartbeat conserva su mínimo de 1 s.
+    assert values == ["4", "60", "7", "7", "0.0", "1.0"]

@@ -9,10 +9,12 @@ import threading
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-from app.auth.register import register_user
-from app.auth.validators import ValidationError
-
+# load_dotenv() va ANTES de importar app.*: app.core.database lee DB_POOL_* al
+# importarse, asi que fuera de Docker (sin env_file) el .env debe estar cargado.
 load_dotenv()
+
+from app.auth.register import register_user  # noqa: E402
+from app.auth.validators import ValidationError  # noqa: E402
 
 templates = Jinja2Templates(directory="templates")
 

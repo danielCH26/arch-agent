@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+import logging
 import threading
 from time import perf_counter
 from typing import Iterable, Literal, Optional
@@ -31,12 +32,14 @@ from typing import Iterable, Literal, Optional
 from langchain_core.documents import Document
 from sqlalchemy import text
 
-from app.core.database import SessionLocal
+from app.core.database import DB_MAX_OVERFLOW, DB_POOL_SIZE, SessionLocal
 from app.core.embeddings import get_embeddings
 from app.core.env import env_int
 from app.models.architect_pattern import ArchitectPattern
 from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
+
+logger = logging.getLogger(__name__)
 
 SearchScope = Literal["all", "patterns", "documents"]
 
@@ -50,6 +53,30 @@ _embedding_cache_lock = threading.Lock()
 # asi que con pocos workers las requests concurrentes se encolan entre si. El
 # default (16) queda por debajo de DB_POOL_SIZE + DB_MAX_OVERFLOW (30).
 _SEARCH_WORKERS = env_int("RAG_SEARCH_WORKERS", 16, minimum=2)
+
+
+def _warn_if_workers_exceed_pool(workers: int, pool_size: int, max_overflow: int) -> bool:
+    """Avisa (sin bloquear el arranque) si hay mas hilos de busqueda que conexiones.
+
+    Cada rama de ``scope=all`` abre su propia sesion: con mas workers que
+    conexiones posibles (``pool_size + max_overflow``) los hilos sobrantes
+    esperan ``DB_POOL_TIMEOUT`` y fallan con ``TimeoutError`` bajo carga.
+    Devuelve True si emitio el warning.
+    """
+    capacity = pool_size + max_overflow
+    if workers <= capacity:
+        return False
+    logger.warning(
+        "RAG_SEARCH_WORKERS=%d supera DB_POOL_SIZE + DB_MAX_OVERFLOW=%d; bajo carga "
+        "los hilos de busqueda pueden agotar el pool (timeout). Reduce RAG_SEARCH_WORKERS "
+        "o sube el pool.",
+        workers,
+        capacity,
+    )
+    return True
+
+
+_warn_if_workers_exceed_pool(_SEARCH_WORKERS, DB_POOL_SIZE, DB_MAX_OVERFLOW)
 _search_executor = ThreadPoolExecutor(
     max_workers=_SEARCH_WORKERS, thread_name_prefix="rag-search"
 )

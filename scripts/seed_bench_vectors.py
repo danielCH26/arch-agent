@@ -13,11 +13,18 @@ inserta chunks sintéticos en ``architect_pattern_chunks`` y ``document_chunks``
 (las tablas que consulta ``app.core.rag``), no embeddings en la tabla padre.
 Usar una base de pruebas: los patrones sintéticos aparecen en ``/api/patterns``.
 
-La medición hace dos pasadas con las mismas 20 consultas:
+La medición hace dos pasadas con las mismas N consultas (``--queries``, default 100):
   1. distintas: la primera se descarta (cold path); sin cache hits.
   2. repetidas: mide el efecto de ``RAG_EMBEDDING_CACHE_SIZE`` (≈100 % hits con
      caché activa, 0 % con ``RAG_EMBEDDING_CACHE_SIZE=0``).
 Se reportan p50/p95 de ``search_ms``, ``embedding_ms`` y ``total_ms``.
+
+Tras sembrar se ejecuta ``ANALYZE`` (sin estadísticas el planner puede ignorar el
+índice ivfflat) y, antes de medir, se imprime el plan ``EXPLAIN`` de cada consulta
+para comprobar si realmente usa el índice vectorial.
+
+``--markdown "<etiqueta>"`` imprime las filas ya formateadas (coma decimal) para
+pegarlas en la tabla de ``docs/BENCHMARK_F19.md`` y en la descripción del PR.
 """
 from __future__ import annotations
 
@@ -41,7 +48,13 @@ BENCHMARK_CATEGORY = "benchmark-synthetic"
 BENCHMARK_USERNAME = "__benchmark_synthetic__"
 BENCHMARK_PROJECT_NAME = "__benchmark_synthetic__"
 BENCHMARK_FILENAME = "__benchmark_synthetic__.md"
-BENCHMARK_QUERIES = [f"consulta F19 distinta {number}: arquitectura resiliente" for number in range(20)]
+DEFAULT_QUERIES = 100
+PATTERN_INDEX = "idx_pattern_chunks_embedding"
+DOCUMENT_INDEX = "document_chunks_embedding_idx"
+
+
+def benchmark_queries(n: int) -> list[str]:
+    return [f"consulta F19 distinta {number}: arquitectura resiliente" for number in range(n)]
 
 
 def random_unit_vectors(n: int, dim: int) -> np.ndarray:
@@ -146,15 +159,65 @@ def seed(n: int, tables: str, batch_size: int = 500) -> tuple[int | None, int | 
 
 def reindex(tables: str) -> None:
     indexes = []
+    analyze_tables = []
     if tables in {"all", "patterns"}:
-        indexes.append("idx_pattern_chunks_embedding")
+        indexes.append(PATTERN_INDEX)
+        analyze_tables += ["architect_patterns", "architect_pattern_chunks"]
     if tables in {"all", "documents"}:
-        indexes.append("document_chunks_embedding_idx")
+        indexes.append(DOCUMENT_INDEX)
+        analyze_tables += ["uploaded_documents", "document_chunks"]
     db = SessionLocal()
     try:
         for index in indexes:
             db.execute(text(f"REINDEX INDEX {index}"))
         db.commit()
+        # Sin ANALYZE tras la carga masiva el planner trabaja con estadisticas
+        # viejas y puede descartar el indice ivfflat.
+        for table in analyze_tables:
+            db.execute(text(f"ANALYZE {table}"))
+        db.commit()
+    finally:
+        db.close()
+
+
+def explain_plans(scope: str, user_id: int | None, project_id: int | None) -> None:
+    """Imprime el plan de las consultas reales y si usan el indice ivfflat."""
+    vector = _vector(random_unit_vectors(1, EMBEDDING_DIM)[0])
+    plans: list[tuple[str, str, str, dict]] = []
+    if scope in {"all", "patterns"}:
+        plans.append(("patterns", PATTERN_INDEX, """
+            SELECT c.id FROM architect_pattern_chunks c
+            JOIN architect_patterns p ON p.id = c.pattern_id
+            WHERE c.embedding IS NOT NULL
+            ORDER BY c.embedding <=> CAST(:v AS vector) LIMIT 5
+        """, {"v": vector}))
+    if scope in {"all", "documents"} and user_id is not None:
+        project_filter = "AND d.project_id = :project_id" if project_id is not None else ""
+        params = {"v": vector, "user_id": user_id}
+        if project_id is not None:
+            params["project_id"] = project_id
+        plans.append(("documents", DOCUMENT_INDEX, f"""
+            SELECT c.id FROM document_chunks c
+            JOIN uploaded_documents d ON d.id = c.document_id
+            WHERE d.user_id = :user_id AND d.processed IS TRUE
+              AND c.embedding IS NOT NULL {project_filter}
+            ORDER BY c.embedding <=> CAST(:v AS vector) LIMIT 5
+        """, params))
+
+    db = SessionLocal()
+    try:
+        for name, index, sql, params in plans:
+            db.execute(text("SET LOCAL ivfflat.probes = 10"))
+            plan = "\n".join(row[0] for row in db.execute(text("EXPLAIN " + sql), params))
+            used = index in plan
+            print(f"[explain] {name}: {'USA' if used else 'NO USA'} el indice {index}")
+            for line in plan.splitlines():
+                if any(token in line for token in ("Scan", "Sort", "Limit")):
+                    text_line = line.strip()
+                    if len(text_line) > 140:  # el Sort Key trae el vector de 384 floats
+                        text_line = text_line[:140] + " ..."
+                    print("          " + text_line)
+            db.rollback()
     finally:
         db.close()
 
@@ -175,8 +238,29 @@ def _report(label: str, scope: str, rows: list[dict]) -> None:
           + f" | cache_hits={hits / len(rows) * 100:.0f}%")
 
 
-def benchmark(user_id: int | None, project_id: int | None, scope: str) -> None:
+def _fmt(value: float) -> str:
+    return f"{value:.2f}".replace(".", ",")
+
+
+def _markdown_row(label: str, name: str, rows: list[dict]) -> str:
+    def pair(key: str) -> str:
+        values = [r[key] for r in rows]
+        return f"{_fmt(statistics.median(values))} / {_fmt(_p(values, 95))}"
+
+    hits = sum(1 for r in rows if r.get("embedding_cached")) / len(rows) * 100
+    return f"| {label} | {name} | {pair('search_ms')} | {pair('total_ms')} | {hits:.0f} % |"
+
+
+def benchmark(
+    user_id: int | None,
+    project_id: int | None,
+    scope: str,
+    n_queries: int = DEFAULT_QUERIES,
+    markdown_label: str | None = None,
+) -> None:
     from app.core import rag
+
+    queries = benchmark_queries(n_queries)
 
     rag.clear_embedding_cache()
 
@@ -185,11 +269,15 @@ def benchmark(user_id: int | None, project_id: int | None, scope: str) -> None:
         return metrics
 
     # Pasada 1: consultas distintas. La primera es cold path y no se reporta.
-    distinct = [run(query) for query in BENCHMARK_QUERIES][1:]
+    distinct = [run(query) for query in queries][1:]
     _report("distintas", scope, distinct)
     # Pasada 2: mismas consultas. Aquí se ve el efecto de la caché de embeddings.
-    repeated = [run(query) for query in BENCHMARK_QUERIES]
+    repeated = [run(query) for query in queries]
     _report("repetidas", scope, repeated)
+    if markdown_label:
+        print("\nFilas para la tabla (| Configuración | Pasada | search_ms p50 / p95 | total_ms p50 / p95 | Cache hits |):")
+        print(_markdown_row(markdown_label, "distintas", distinct))
+        print(_markdown_row(markdown_label, "repetidas", repeated))
 
     worst = max(r["search_ms"] for r in distinct + repeated)
     verdict = "CUMPLE" if _p([r["search_ms"] for r in distinct + repeated], 95) < 100 else "NO CUMPLE"
@@ -229,6 +317,10 @@ if __name__ == "__main__":
                         help="scope a medir (default: all si hay corpus de documentos, si no patterns)")
     parser.add_argument("--cleanup", action="store_true", help="borra solo el corpus sintético y sale")
     parser.add_argument("--skip-seed", action="store_true", help="no sembrar; medir el corpus ya existente")
+    parser.add_argument("--queries", type=int, default=DEFAULT_QUERIES,
+                        help=f"consultas por pasada (default {DEFAULT_QUERIES}; con pocas muestras el p95 es casi el máximo)")
+    parser.add_argument("--markdown", metavar="ETIQUETA", default=None,
+                        help="imprime filas listas para la tabla de docs/BENCHMARK_F19.md")
     args = parser.parse_args()
 
     if args.cleanup:
@@ -250,4 +342,7 @@ if __name__ == "__main__":
             f"scope={scope} requiere el corpus de documentos sintético: "
             "ejecutá sin --skip-seed (con --tables all|documents) o medí con --scope patterns"
         )
-    benchmark(user_id, project_id, scope)
+    if args.queries < 2:
+        raise SystemExit("--queries debe ser >= 2 (la primera consulta se descarta)")
+    explain_plans(scope, user_id, project_id)
+    benchmark(user_id, project_id, scope, n_queries=args.queries, markdown_label=args.markdown)

@@ -56,14 +56,14 @@ RAG_MIN_SIMILARITY = 0.85
 #   PROPOSAL_RAG_CANDIDATE_CHUNKS chunks que se piden a PGVector antes de
 #                                agrupar por patron (default 40)
 #   PROPOSAL_RAG_MIN_SIMILARITY  piso opcional; 0.0 = sin piso (default)
-PROPOSAL_RAG_TOP_N = int(os.getenv("PROPOSAL_RAG_TOP_N", "3"))
-PROPOSAL_RAG_CANDIDATE_CHUNKS = int(os.getenv("PROPOSAL_RAG_CANDIDATE_CHUNKS", "40"))
-PROPOSAL_RAG_MIN_SIMILARITY = float(os.getenv("PROPOSAL_RAG_MIN_SIMILARITY", "0.0"))
+PROPOSAL_RAG_TOP_N = env_int("PROPOSAL_RAG_TOP_N", 3, minimum=1)
+PROPOSAL_RAG_CANDIDATE_CHUNKS = env_int("PROPOSAL_RAG_CANDIDATE_CHUNKS", 40, minimum=1)
+PROPOSAL_RAG_MIN_SIMILARITY = env_float("PROPOSAL_RAG_MIN_SIMILARITY", 0.0, minimum=-1.0)
 
 # Tope de caracteres de la propuesta previa que se le pasa al LLM al iterar.
 # Antes eran 1500: una propuesta completa mide 5000+, asi que el modelo nunca
 # veia la parte donde estaba lo que el usuario queria cambiar.
-PRIOR_PROPOSAL_MAX_CHARS = int(os.getenv("PROPOSAL_PRIOR_MAX_CHARS", "12000"))
+PRIOR_PROPOSAL_MAX_CHARS = env_int("PROPOSAL_PRIOR_MAX_CHARS", 12000, minimum=0)
 
 # F19 (HU: primera propuesta en < 5 min). Presupuesto total desde que el
 # usuario pide la propuesta hasta que se guarda. Aplica a TODAS las etapas
@@ -96,7 +96,7 @@ _GEN_START, _GEN_END = 20, 92
 # Default maximum number of iterations per project. Mirrors the design
 # (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
 # at request time so ops can tune it without code changes.
-PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
+PROPOSAL_MAX_ITER = env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
 
 # Engram port per ADR-008: the memory mirror is best-effort, never blocking
 # (REQ-9 / SCN-10). Override for tests/dev with ENGRAM_URL.
@@ -652,7 +652,7 @@ class ProposalGenerator:
 # estrecha (~0.80-0.90), asi que 0.03 por nivel no alcanzaba para bajar a
 # CQRS/microservicios en un proyecto chico: 0.08 (alta = 0.16) si, y un patron
 # pesado con muchisima mas similitud, o nombrado por el usuario, aun puede ganar.
-PROPOSAL_COMPLEXITY_PENALTY = float(os.getenv("PROPOSAL_COMPLEXITY_PENALTY", "0.08"))
+PROPOSAL_COMPLEXITY_PENALTY = env_float("PROPOSAL_COMPLEXITY_PENALTY", 0.08, minimum=0.0)
 _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 
 # La penalizacion de arriba es un empate SUAVE (ver comentario de arriba: "un
@@ -666,8 +666,8 @@ _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 # patron de complejidad "alta" no puede ser el principal salvo que el usuario
 # lo pida por nombre (ver _explicitly_requested) -- sin importar cuanta mas
 # similitud tenga.
-PROPOSAL_SMALL_TEAM_MAX = int(os.getenv("PROPOSAL_SMALL_TEAM_MAX", "4"))
-PROPOSAL_SMALL_BUDGET_USD = float(os.getenv("PROPOSAL_SMALL_BUDGET_USD", "20000"))
+PROPOSAL_SMALL_TEAM_MAX = env_int("PROPOSAL_SMALL_TEAM_MAX", 4, minimum=0)
+PROPOSAL_SMALL_BUDGET_USD = env_float("PROPOSAL_SMALL_BUDGET_USD", 20000.0, minimum=0.0)
 
 _TEAM_SIZE_RE = re.compile(
     r"equipo\s+(?:de\s+)?(\d+)\s*"

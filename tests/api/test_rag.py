@@ -212,3 +212,18 @@ class TestRAGCoreHelpers:
         monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", lambda *_args, **_kwargs: ([], 1.0))
         rag.similarity_search("patterns", user_id=1, scope="patterns")
         rag.similarity_search("documents", user_id=1, scope="documents")
+
+    def test_warns_when_search_workers_exceed_the_db_pool(self, caplog):
+        from app.core import rag
+
+        with caplog.at_level("WARNING", logger="app.core.rag"):
+            assert rag._warn_if_workers_exceed_pool(31, 10, 20) is True
+        assert "RAG_SEARCH_WORKERS=31" in caplog.text
+
+    def test_no_warning_when_search_workers_fit_in_the_db_pool(self, caplog):
+        from app.core import rag
+
+        with caplog.at_level("WARNING", logger="app.core.rag"):
+            assert rag._warn_if_workers_exceed_pool(30, 10, 20) is False
+            assert rag._warn_if_workers_exceed_pool(16, 10, 20) is False
+        assert caplog.text == ""

@@ -8,14 +8,20 @@ generación de propuestas (presupuesto total de cinco minutos).
 1. Levantar PostgreSQL con los índices de `migrations/0007_add_document_chunks_indexes.sql`.
 2. Cargar al menos 10.000 vectores por tabla con
    `python scripts/seed_bench_vectors.py` (siembra `architect_pattern_chunks` y
-   `document_chunks`, reindexa y mide). Usar una base de pruebas: los patrones
-   sintéticos (`category='benchmark-synthetic'`) aparecen en `/api/patterns`.
-   Limpiar con `--cleanup`.
+   `document_chunks`, reindexa, ejecuta `ANALYZE` y mide). Usar una base de
+   pruebas: los patrones sintéticos (`category='benchmark-synthetic'`) aparecen en
+   `/api/patterns`. Limpiar con `--cleanup`.
+   Antes de medir, el script imprime el `EXPLAIN` de cada consulta e indica si usa
+   el índice ivfflat (`USA` / `NO USA`); si dice `NO USA`, la latencia medida no es
+   la de PGVector con índice y hay que investigarlo antes de dar el resultado por
+   válido.
 3. Arrancar el backend y esperar el log `Modelo de embeddings precargado`.
-4. Usar el mismo corpus, usuario, proyecto y valor de `k` en todas las
-   mediciones. El script ejecuta dos pasadas de 20 consultas: *distintas*
+4. Usar el mismo corpus, usuario, proyecto, `k` y `--scope` en todas las
+   mediciones (baseline y optimizada deben compararse con el mismo scope). El
+   script ejecuta dos pasadas de `--queries` consultas (default 100): *distintas*
    (descarta la primera) y *repetidas* (efecto de la caché), y reporta p50/p95
-   de `search_ms`, `embedding_ms` y `total_ms`.
+   de `search_ms`, `embedding_ms` y `total_ms`. Con `--markdown "<etiqueta>"`
+   imprime las filas listas para la tabla de abajo.
 
 ## Captura
 
@@ -43,33 +49,45 @@ activa carga de modelo, conexión y caché.
 ## Resultados antes/después
 
 Corpus sintético de 10.000 vectores por tabla (`architect_pattern_chunks` y
-`document_chunks`), k=5, Docker, 20 consultas por pasada (la primera de las
-distintas se descarta).
+`document_chunks`), k=5, Docker, `--queries 100` por pasada (la primera de las
+distintas se descarta: 99 y 100 muestras), `--scope all` en todas las filas.
 
 - Fecha: 2026-10-03
 - Hardware: AMD Ryzen 7 5700G (8 núcleos / 16 hilos), 14 GB RAM, Windows; Docker con 16 CPUs y ~7 GB de memoria
 - Scope medido: all
+- `EXPLAIN`: patrones **usa** `idx_pattern_chunks_embedding` (ivfflat); documentos
+  **no usa** `document_chunks_embedding_idx` (ver Limitaciones)
 
 | Configuración | Pasada | `search_ms` p50 / p95 | `total_ms` p50 / p95 | Cache hits |
 | --- | --- | --- | --- | --- |
-| Baseline (`RAG_EMBEDDING_CACHE_SIZE=0`) | distintas | 12,74 / 13,99 | 30,60 / 35,21 | 0 % |
-| Baseline (`RAG_EMBEDDING_CACHE_SIZE=0`) | repetidas | 13,92 / 17,59 | 35,78 / 55,99 | 0 % |
-| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - patterns) | distintas | 5,30 / 6,26 | 23,50 / 26,17 | 0 % |
-| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - patterns) | repetidas | 3,80 / 4,47 | 3,80 / 4,47 | 100 % |
-| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - documents) | distintas | 12,21 / 13,07 | 31,26 / 34,71 | 0 % |
-| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - documents) | repetidas | 10,84 / 11,78 | 10,84 / 11,78 | 100 % |
+| Baseline (`RAG_EMBEDDING_CACHE_SIZE=0`) | distintas | 13,12 / 14,45 | 32,17 / 36,82 | 0 % |
+| Baseline (`RAG_EMBEDDING_CACHE_SIZE=0`) | repetidas | 13,35 / 17,18 | 32,55 / 52,11 | 0 % |
+| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512`) | distintas | 13,22 / 17,13 | 33,23 / 44,92 | 0 % |
+| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512`) | repetidas | 12,05 / 14,18 | 12,05 / 14,18 | 100 % |
 
-- **Búsqueda RAG < 100 ms:** `search_ms` p95 entre 15 y 19 ms en todas las filas
-  (el 13,61 es un p50). `total_ms` p95 sin caché: 36,88 ms (distintas) y 47,42 ms
-  (repetidas).
-- **Caché:** en consultas repetidas, `total_ms` p50 baja de 35,95 a 13,61 ms
-  (−62 %) y p95 de 47,42 a 14,96 ms (−68 %). En consultas distintas no hay
-  diferencia. `search_ms` no depende de la caché: las diferencias de ~1,5 ms entre
-  filas son ruido de la medición (19 a 20 muestras por pasada; el p95 es casi el
-  máximo).
-- **Paralelización (`scope=all`):** p50 14,89 ms, frente a patrones solos 14,02 ms
-  y documentos solos 12,25 ms. Queda en la rama más lenta (+~0,9 ms) y no en la
-  suma (~26,3 ms).
+Referencia por scope (misma corrida de 100 consultas, caché activa; `search_ms`
+no depende de la caché):
+
+| Scope | Pasada | `search_ms` p50 / p95 | `total_ms` p50 / p95 |
+| --- | --- | --- | --- |
+| patterns | distintas | 5,65 / 7,08 | 25,54 / 35,47 |
+| documents | distintas | 12,20 / 13,27 | 31,40 / 37,22 |
+
+- **Búsqueda RAG < 100 ms:** `search_ms` p95 entre 14 y 17 ms en todas las filas de
+  `scope=all`; máximo observado 26,20 ms. `total_ms` p95 sin caché: 36,82 ms
+  (distintas) y 52,11 ms (repetidas).
+- **Caché:** en consultas repetidas, `total_ms` p50 baja de 32,55 a 12,05 ms
+  (−63 %) y p95 de 52,11 a 14,18 ms (−73 %). En consultas distintas la caché no
+  interviene: la diferencia entre filas (p50 32,17 frente a 33,23 ms; p95 36,82
+  frente a 44,92 ms) viene del tiempo del embedding en CPU, que varía entre
+  corridas (p95 de `embedding_ms` 23,24 frente a 27,41 ms), no de la caché. Con 99
+  muestras el p95 es casi el cuarto valor más alto, así que es sensible a una
+  corrida.
+- **Paralelización (`scope=all`):** `search_ms` p50 13,22 ms (distintas), frente a
+  patrones solos 5,65 ms y documentos solos 12,20 ms. Queda cerca de la rama más
+  lenta (+~1,0 ms) y no de la suma (17,85 ms): ahorra ~4,6 ms (~26 %). El ahorro es
+  acotado porque las dos ramas son asimétricas; con ramas de duración parecida
+  sería mayor.
 - **Pool y batching de embeddings:** no tienen baseline propio; no se midió una
   mejora atribuible a ninguno de los dos.
 
@@ -77,11 +95,17 @@ distintas se descarta).
 
 - Vectores sintéticos aleatorios: la latencia es representativa, el recall no se
   midió.
+- **Documentos: el planner no usó el índice ivfflat.** El `EXPLAIN` de la consulta
+  real muestra `Index Scan using idx_document_chunks_document_id` seguido de un
+  `Sort` por distancia: filtra por documento con el índice b-tree y ordena de forma
+  exacta. La latencia de ~12 ms de `document_chunks` corresponde a ese plan, no a
+  una búsqueda aproximada con ivfflat (y, al ser exacta, no pierde resultados por
+  `ivfflat.probes`). Con un corpus real (muchos documentos y usuarios) el plan
+  puede cambiar y no se verificó. El plan de patrones sí usa
+  `idx_pattern_chunks_embedding`.
 - Un solo usuario y un solo proyecto son dueños de todos los `document_chunks`
-  sintéticos. Con ivfflat el filtro por `user_id`/`project_id` se aplica sobre los
-  candidatos de las listas visitadas (`ivfflat.probes`), así que con datos
-  multiusuario reales la latencia y el número de resultados pueden diferir. No se
-  verificó con `EXPLAIN` el uso del índice.
+  sintéticos, así que el filtro por `user_id`/`project_id` no discrimina; con datos
+  multiusuario la latencia y el número de resultados pueden diferir.
 - Una sola conexión y consultas secuenciales: no se mide carga concurrente, el
   pool ni `RAG_SEARCH_WORKERS`.
 - El beneficio real de la caché depende del hit rate en producción. Las consultas
@@ -103,11 +127,11 @@ executor por proceso (`RAG_SEARCH_WORKERS`, default 16); mantenerlo por debajo d
 
 ### Ruta RAG
 
-Baseline sin caché, consultas distintas, p50: embedding ≈ 18,5 ms (~54 % del
-`total_ms` de 34,1 ms) y búsqueda PGVector ≈ 14,5 ms (~43 %). Los percentiles de
-cada componente no suman exactamente el del total (por eso queda ~3 % sin
-asignar). El embedding en CPU es el mayor componente; con 10.000 vectores por
-tabla la búsqueda no es el cuello de botella.
+Baseline sin caché, consultas distintas, p50: embedding ≈ 19,06 ms (~59 % del
+`total_ms` de 32,17 ms) y búsqueda ≈ 13,12 ms (~41 %). Los percentiles de cada
+componente no tienen por qué sumar exactamente el del total (aquí suman 32,18 ms).
+El embedding en CPU es el mayor componente; con 10.000 vectores por tabla la
+búsqueda no es el cuello de botella.
 
 ### Propuesta completa (KR de Sofía, < 5 min)
 
