@@ -144,7 +144,9 @@ Se probaron dos enfoques (umbral por tipo, dominancia relativa entre grupos) y a
 
 ## Criterio 3 — Tiempo de búsqueda < 100ms para 10k vectores ✅ CUMPLIDO
 
-**Componente probado:** `search_ms` en la respuesta de `similarity_search` (excluye el tiempo de generar el embedding de la query, solo mide la consulta a PGVector).
+**Componente probado:** `search_ms` en la respuesta de `similarity_search` (excluye el tiempo de generar el embedding de la query).
+
+> **Nota (F19):** esta evidencia es anterior a F19 y mide una sola consulta PGVector. Desde F19, `search_ms` es el tiempo de pared de toda la etapa de búsqueda (con `scope=all`, dos tablas en paralelo más encolado y join), por lo que las cifras nuevas (p95 de 15 a 19 ms) no son comparables 1:1 con estas. Ver `docs/BENCHMARK_F19.md`.
 
 **Evidencia (`scripts/seed_bench_vectors.py`, corrido dentro del contenedor `backend` — `docker compose exec backend python scripts/seed_bench_vectors.py` —, 10,000 vectores sintéticos 384d + `REINDEX` del índice `ivfflat`):**
 

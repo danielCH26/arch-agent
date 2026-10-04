@@ -76,9 +76,11 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
     """
     try:
         texts = [f"passage: {c.page_content}" for c in chunks]
-        # BackgroundTasks ejecuta esta función fuera del request. Cada llamada
-        # aprovecha el batch nativo del modelo y conserva el orden exigido por
-        # save_chunks_and_mark_processed.
+        # BackgroundTasks ejecuta esta función fuera del request. Los textos se
+        # envían en lotes de EMBEDDING_BATCH_SIZE por llamada a embed_documents y
+        # el orden se conserva (lo exige save_chunks_and_mark_processed). Ojo: eso
+        # solo acota cuántos textos entran por llamada; el batch interno de
+        # sentence-transformers (encode, 32 por defecto) no cambia con esta variable.
         model = get_embeddings()
         embeddings = []
         for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
