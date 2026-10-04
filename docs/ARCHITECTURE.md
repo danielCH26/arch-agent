@@ -374,7 +374,7 @@ curl http://localhost:8000/health
 | Tiempo de propuesta | < 5 min | HU9, F19: tope `PROPOSAL_MAX_SECONDS` (300 s) sobre todo el flujo; `elapsed_ms` en el evento SSE `done` y `latency_ms` en logs |
 | Tiempo de respuesta promedio | < 3 min | KR4 Santiago |
 | Embeddings de 100 chunks | ~5 seg | Bench local |
-| Búsqueda k=5 (10k vectores) | ~50 ms | PGVector con IVFFLAT |
+| Búsqueda RAG k=5 (10k vectores por tabla) | `search_ms` < 100 ms | PGVector con IVFFLAT; F19 midió p95 de 15 a 19 ms en corpus sintético (ver `docs/BENCHMARK_F19.md`) |
 | Cobertura de tests | ≥ 80% | F18 |
 
 ---

@@ -28,6 +28,7 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
+from app.core.env import env_float, env_int
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.rag import similarity_search
@@ -68,18 +69,19 @@ PRIOR_PROPOSAL_MAX_CHARS = int(os.getenv("PROPOSAL_PRIOR_MAX_CHARS", "12000"))
 # usuario pide la propuesta hasta que se guarda. Aplica a TODAS las etapas
 # (contexto, retrieval, LLM y guardado): si se agota, la generacion se corta con
 # un error claro y NO se persiste (el usuario puede reintentar).
-# PROPOSAL_MAX_SECONDS=0 lo desactiva.
-PROPOSAL_MAX_SECONDS = float(os.getenv("PROPOSAL_MAX_SECONDS", "300"))
+# PROPOSAL_MAX_SECONDS=0 lo desactiva; un valor vacío, no numérico o negativo
+# vuelve al default (300) con un warning en vez de impedir el arranque.
+PROPOSAL_MAX_SECONDS = env_float("PROPOSAL_MAX_SECONDS", 300.0, minimum=0.0)
 # Parte del final del presupuesto reservada para guardar. Las etapas de trabajo
 # (contexto, retrieval, LLM) deben terminar antes de ``MAX - reserva``: asi una
 # propuesta ya completa no se pierde por unos segundos de guardado y el total
 # sigue sin pasar del tope. Nunca supera el 20 % del tope.
-PROPOSAL_SAVE_RESERVE_S = float(os.getenv("PROPOSAL_SAVE_RESERVE_S", "10"))
+PROPOSAL_SAVE_RESERVE_S = env_float("PROPOSAL_SAVE_RESERVE_S", 10.0, minimum=0.0)
 # Longitud tipica (caracteres) de una propuesta completa: solo se usa para
 # estimar el porcentaje del evento ``progress`` mientras llegan tokens.
-PROPOSAL_EXPECTED_CHARS = int(os.getenv("PROPOSAL_EXPECTED_CHARS", "6000"))
+PROPOSAL_EXPECTED_CHARS = env_int("PROPOSAL_EXPECTED_CHARS", 6000, minimum=0)
 # Separacion minima entre eventos ``progress`` durante el streaming de tokens.
-PROPOSAL_PROGRESS_INTERVAL_S = float(os.getenv("PROPOSAL_PROGRESS_INTERVAL_S", "1.0"))
+PROPOSAL_PROGRESS_INTERVAL_S = env_float("PROPOSAL_PROGRESS_INTERVAL_S", 1.0, minimum=0.0)
 
 # Porcentaje al inicio de cada etapa. La etapa "generating" avanza de
 # _GEN_START a _GEN_END segun los caracteres recibidos.

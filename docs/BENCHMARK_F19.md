@@ -34,7 +34,7 @@ corpus. La caché solo mejora `embedding_ms`/`total_ms` (no `search_ms`), y solo
 en la pasada de consultas repetidas.
 
 Alcance de la comparación: la caché es la única optimización con interruptor.
-La paralelización de `scope=all` y el pool no tienen baseline propio; su efecto
+La paralelización de `scope=all`, el pool y el batching de embeddings no tienen baseline propio; su efecto
 se observa comparando `search_ms` de `--scope all` contra `--scope patterns` y
 `--scope documents` (en paralelo, `all` debería rondar el máximo de ambos y no
 su suma). La primera consulta no representa el rendimiento estable:
@@ -42,16 +42,52 @@ activa carga de modelo, conexión y caché.
 
 ## Resultados antes/después
 
-⚠️ **Pendiente de medir en un entorno con PostgreSQL y corpus representativo.**
-No se debe declarar el SLO cumplido hasta completar esta tabla. El script usa
-20 consultas distintas, descarta la primera y reporta p50/p95.
+Corpus sintético de 10.000 vectores por tabla (`architect_pattern_chunks` y
+`document_chunks`), k=5, Docker, 20 consultas por pasada (la primera de las
+distintas se descarta).
 
-| Fecha | Commit | Configuración | Pasada | Corpus (pattern/document chunks) | Hardware | `search_ms` p50 / p95 | `total_ms` p50 / p95 | Cache hits |
-|---|---|---|---|---|---|---:|---:|---:|
-| Pendiente | Pendiente | Baseline: `RAG_EMBEDDING_CACHE_SIZE=0` | distintas | 10.000 / 10.000 | Pendiente | — | — | — |
-| Pendiente | Pendiente | Baseline: `RAG_EMBEDDING_CACHE_SIZE=0` | repetidas | 10.000 / 10.000 | Pendiente | — | — | — |
-| Pendiente | Pendiente | Optimizada: `RAG_EMBEDDING_CACHE_SIZE=512` | distintas | 10.000 / 10.000 | Pendiente | — | — | — |
-| Pendiente | Pendiente | Optimizada: `RAG_EMBEDDING_CACHE_SIZE=512` | repetidas | 10.000 / 10.000 | Pendiente | — | — | — |
+- Fecha: 2026-10-03
+- Hardware: AMD Ryzen 7 5700G (8 núcleos / 16 hilos), 14 GB RAM, Windows; Docker con 16 CPUs y ~7 GB de memoria
+- Scope medido: all
+
+| Configuración | Pasada | `search_ms` p50 / p95 | `total_ms` p50 / p95 | Cache hits |
+| --- | --- | --- | --- | --- |
+| Baseline (`RAG_EMBEDDING_CACHE_SIZE=0`) | distintas | 12,74 / 13,99 | 30,60 / 35,21 | 0 % |
+| Baseline (`RAG_EMBEDDING_CACHE_SIZE=0`) | repetidas | 13,92 / 17,59 | 35,78 / 55,99 | 0 % |
+| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - patterns) | distintas | 5,30 / 6,26 | 23,50 / 26,17 | 0 % |
+| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - patterns) | repetidas | 3,80 / 4,47 | 3,80 / 4,47 | 100 % |
+| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - documents) | distintas | 12,21 / 13,07 | 31,26 / 34,71 | 0 % |
+| Optimizada (`RAG_EMBEDDING_CACHE_SIZE=512` - documents) | repetidas | 10,84 / 11,78 | 10,84 / 11,78 | 100 % |
+
+- **Búsqueda RAG < 100 ms:** `search_ms` p95 entre 15 y 19 ms en todas las filas
+  (el 13,61 es un p50). `total_ms` p95 sin caché: 36,88 ms (distintas) y 47,42 ms
+  (repetidas).
+- **Caché:** en consultas repetidas, `total_ms` p50 baja de 35,95 a 13,61 ms
+  (−62 %) y p95 de 47,42 a 14,96 ms (−68 %). En consultas distintas no hay
+  diferencia. `search_ms` no depende de la caché: las diferencias de ~1,5 ms entre
+  filas son ruido de la medición (19 a 20 muestras por pasada; el p95 es casi el
+  máximo).
+- **Paralelización (`scope=all`):** p50 14,89 ms, frente a patrones solos 14,02 ms
+  y documentos solos 12,25 ms. Queda en la rama más lenta (+~0,9 ms) y no en la
+  suma (~26,3 ms).
+- **Pool y batching de embeddings:** no tienen baseline propio; no se midió una
+  mejora atribuible a ninguno de los dos.
+
+### Limitaciones de la medición
+
+- Vectores sintéticos aleatorios: la latencia es representativa, el recall no se
+  midió.
+- Un solo usuario y un solo proyecto son dueños de todos los `document_chunks`
+  sintéticos. Con ivfflat el filtro por `user_id`/`project_id` se aplica sobre los
+  candidatos de las listas visitadas (`ivfflat.probes`), así que con datos
+  multiusuario reales la latencia y el número de resultados pueden diferir. No se
+  verificó con `EXPLAIN` el uso del índice.
+- Una sola conexión y consultas secuenciales: no se mide carga concurrente, el
+  pool ni `RAG_SEARCH_WORKERS`.
+- El beneficio real de la caché depende del hit rate en producción. Las consultas
+  de retrieval de una propuesta concatenan nombre, descripción, requerimientos y
+  feedback, por lo que rara vez se repiten: la caché ayuda sobre todo a
+  `/api/rag/*` y al chat.
 
 ## Límites y observabilidad
 
@@ -65,19 +101,38 @@ executor por proceso (`RAG_SEARCH_WORKERS`, default 16); mantenerlo por debajo d
 
 ## Perfilado de bottlenecks y KRs
 
-Para perfilar una propuesta, correlacionar los eventos SSE `progress` por etapa:
-`context`, `retrieval`, `generating` y `saving`. `elapsed_ms` indica tiempo
-acumulado y `budget_s` el presupuesto disponible. En RAG, separar
-`embedding_ms` (CPU/modelo) de `search_ms` (PGVector); en una propuesta, el
-tramo `generating` identifica la latencia del LLM y `saving` la persistencia.
+### Ruta RAG
 
-El KR de Sofía se protege con `PROPOSAL_MAX_SECONDS=300`: corta con error al
-superar cinco minutos; no acelera el flujo. El KR de Santiago (respuesta
-promedio menor a tres minutos) requiere instrumentación de extremo a extremo
-del request, incluyendo LLM y streaming, y queda **fuera de alcance de esta
-optimización RAG** hasta registrar esa métrica en producción.
-**Perfil de la ruta RAG (baseline sin caché, consultas distintas, p50):** embedding ≈ 18,5 ms
-(~54 % del `total_ms` de 34,1 ms) y búsqueda PGVector ≈ 14,5 ms (~43 %). El embedding en CPU es
-el mayor componente; la búsqueda con 10.000 vectores por tabla no es el cuello de botella.
-El perfil de la propuesta completa (contexto, retrieval, generación del LLM, guardado) no se midió
-en este PR: se obtiene de los eventos SSE `progress` y de `latency_ms` en el log del backend.
+Baseline sin caché, consultas distintas, p50: embedding ≈ 18,5 ms (~54 % del
+`total_ms` de 34,1 ms) y búsqueda PGVector ≈ 14,5 ms (~43 %). Los percentiles de
+cada componente no suman exactamente el del total (por eso queda ~3 % sin
+asignar). El embedding en CPU es el mayor componente; con 10.000 vectores por
+tabla la búsqueda no es el cuello de botella.
+
+### Propuesta completa (KR de Sofía, < 5 min)
+
+Se midió en el frontend, con la pestaña Network del navegador (flujo
+`EventStream` de `POST /api/proposals/generate`): el evento `progress` de cada
+etapa trae `elapsed_ms` y el evento `done` trae el `elapsed_ms` total. Se hicieron
+2 corridas con `openai/gpt-oss-20b`. Resultado reportado: **total 2,41 s**
+(contexto 0,52 s, retrieval 0,48 s, generación 1,15 s, guardado 0,26 s).
+
+Es una medición manual de dos corridas con un modelo rápido: sirve como
+referencia, no como distribución. Con otro proveedor o modelo la generación
+domina el tiempo (ver el tope abajo). Para repetirla, correlacionar los eventos
+SSE `progress` por etapa: `context`, `retrieval`, `generating` y `saving`;
+`elapsed_ms` es el tiempo acumulado y `budget_s` el presupuesto disponible. El log
+del backend registra `latency_ms` por propuesta guardada.
+
+`PROPOSAL_MAX_SECONDS=300` es el límite duro: corta con error al superar cinco
+minutos, no acelera el flujo. En la práctica las etapas de trabajo (contexto,
+retrieval, LLM) deben terminar antes de `300 − PROPOSAL_SAVE_RESERVE_S` (10 s por
+defecto); el guardado usa ese margen. En la etapa `saving` el hilo de la base de
+datos no se puede abortar a la fuerza, así que en un caso extremo la fila podría
+guardarse después del corte.
+
+### KR de Santiago (respuesta promedio < 3 min)
+
+Requiere instrumentación de extremo a extremo del request, incluyendo LLM y
+streaming, y queda **fuera de alcance de esta optimización RAG** hasta registrar
+esa métrica en producción.

@@ -8,6 +8,16 @@ Expone busquedas semanticas para:
 La integracion con LangChain se mantiene en dos puntos:
 - get_embeddings() provee el Embeddings model usado para query/documents.
 - Los resultados se retornan como langchain_core.documents.Document.
+
+Metricas (F19), todas en milisegundos:
+- embedding_ms: tiempo de embeber la consulta; 0 en un cache hit.
+- search_ms: tiempo de pared de TODA la etapa de busqueda. Con scope="all"
+  incluye encolado en el executor, la ejecucion de las dos ramas (en paralelo)
+  y el join, asi que ronda la rama mas lenta y no la suma. Con un solo scope es
+  la consulta PGVector de esa tabla.
+- total_ms: embedding_ms + search_ms.
+Las cifras anteriores a F19 (docs/QA_criterios_aceptacion_RAG_final.md, una sola
+tabla y sin executor) no son comparables 1:1 con search_ms de scope="all".
 """
 
 from __future__ import annotations
@@ -111,7 +121,21 @@ def clear_embedding_cache() -> None:
 
 
 def _query_embedding(query: str) -> tuple[list[float], float, bool]:
-    """Genera o recupera el embedding E5 de una consulta, con LRU thread-safe."""
+    """Genera o recupera el embedding E5 de una consulta, con LRU thread-safe.
+
+    Devuelve ``(embedding, embedding_ms, cached)``. La clave es el texto exacto de
+    la consulta (con el prefijo ``query: `` de E5): no se normaliza mayusculas ni
+    espacios. Con ``RAG_EMBEDDING_CACHE_SIZE=0`` la cache esta desactivada.
+
+    La cache es por proceso y compartida entre usuarios: solo guarda vectores
+    (nunca resultados ni datos de usuarios), pero un ``embedding_ms == 0``
+    delata que ese mismo texto ya se consulto antes en este proceso.
+
+    Si dos hilos calculan a la vez la misma consulta nueva, ambos gastan el
+    embedding; el que termina segundo reutiliza el vector ya guardado y devuelve
+    ``(vector, 0.0, True)`` aunque su tiempo real no fue 0. Es una subestimacion
+    acotada de ``embedding_ms`` solo en esa carrera.
+    """
     cache_key = f"query: {query}"
     if _EMBEDDING_CACHE_SIZE:
         with _embedding_cache_lock:
@@ -249,9 +273,11 @@ def similarity_search(
     Busca en patrones y/o documentos con una sola interfaz.
 
     Returns:
-        (documents, metrics) donde metrics separa embedding_ms y search_ms.
-        search_ms mide solo consultas PGVector; es el numero relevante para
-        validar el criterio <100ms con 10k vectores.
+        (documents, metrics) con ``embedding_ms``, ``search_ms``, ``total_ms`` y
+        ``embedding_cached``. ``search_ms`` es el tiempo de pared de toda la etapa
+        de busqueda (encolado + ejecucion + join de las ramas paralelas con
+        scope="all"); es el numero que se compara con el criterio < 100 ms con
+        10k vectores por tabla. ``embedding_ms`` queda fuera de ``search_ms``.
     """
     if scope not in {"all", "patterns", "documents"}:
         raise RAGSearchError("scope debe ser 'all', 'patterns' o 'documents'")
