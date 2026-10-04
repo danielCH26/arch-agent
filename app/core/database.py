@@ -16,7 +16,7 @@ DATABASE_URL = os.environ.get(
 DB_POOL_SIZE = env_int("DB_POOL_SIZE", 10, minimum=1)
 DB_MAX_OVERFLOW = env_int("DB_MAX_OVERFLOW", 20, minimum=0)
 DB_POOL_TIMEOUT = env_int("DB_POOL_TIMEOUT", 30, minimum=1)
-DB_POOL_RECYCLE = env_int("DB_POOL_RECYCLE", 1800, minimum=0)
+DB_POOL_RECYCLE = env_int("DB_POOL_RECYCLE", 1800, minimum=1)  # 0 = reciclar en cada checkout
 
 engine = create_engine(
     DATABASE_URL,
