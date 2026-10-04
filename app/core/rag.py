@@ -36,7 +36,13 @@ SearchScope = Literal["all", "patterns", "documents"]
 _EMBEDDING_CACHE_SIZE = env_int("RAG_EMBEDDING_CACHE_SIZE", 512, minimum=0)
 _embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
 _embedding_cache_lock = threading.Lock()
-_search_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag-search")
+# Executor compartido por todas las requests: cada busqueda scope=all usa 2 hilos,
+# asi que con pocos workers las requests concurrentes se encolan entre si. El
+# default (16) queda por debajo de DB_POOL_SIZE + DB_MAX_OVERFLOW (30).
+_SEARCH_WORKERS = env_int("RAG_SEARCH_WORKERS", 16, minimum=2)
+_search_executor = ThreadPoolExecutor(
+    max_workers=_SEARCH_WORKERS, thread_name_prefix="rag-search"
+)
 
 
 class RAGSearchError(Exception):

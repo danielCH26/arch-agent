@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import asyncio
 import threading
+import time
 import pytest
 from langchain_core.documents import Document
 
@@ -111,12 +112,18 @@ class TestRAGCoreHelpers:
 
         rag.clear_embedding_cache()
         monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})())
-        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", lambda *_args, **_kwargs: ([], 11.0))
-        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", lambda *_args, **_kwargs: ([], 23.0))
+
+        def branch(*_args, **_kwargs):
+            time.sleep(0.1)
+            return [], 100.0
+
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", branch)
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", branch)
 
         _, metrics = rag.similarity_search("latencia", user_id=7, scope="all")
 
-        assert metrics["search_ms"] >= 0.0
+        # Dos ramas de 100 ms en paralelo: ~100 ms de pared (secuencial serian ~200).
+        assert 90 <= metrics["search_ms"] < 180
 
     def test_embedding_cache_evicts_least_recently_used_entry(self, monkeypatch):
         from app.core import rag
@@ -151,13 +158,49 @@ class TestRAGCoreHelpers:
         monkeypatch.setattr(rag, "_EMBEDDING_CACHE_SIZE", 2)
         monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})())
         errors = []
-        threads = [threading.Thread(target=lambda: rag._query_embedding("same")) for _ in range(8)]
+
+        def worker(index):
+            try:
+                rag._query_embedding(f"query-{index % 4}")
+            except Exception as exc:  # pragma: no cover - solo si falla el LRU
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(16)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
-        assert not errors
+        assert errors == []
         assert len(rag._embedding_cache) <= 2
+
+    def test_parallel_searches_from_concurrent_requests_do_not_serialize(self, monkeypatch):
+        """El executor compartido debe tener hilos para varias requests a la vez."""
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})())
+
+        def branch(*_args, **_kwargs):
+            time.sleep(0.1)
+            return [], 100.0
+
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", branch)
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", branch)
+        results = []
+        threads = [
+            threading.Thread(
+                target=lambda i=i: results.append(rag.similarity_search(f"q{i}", user_id=1, scope="all")[1]["search_ms"])
+            )
+            for i in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert rag._SEARCH_WORKERS >= 8
+        # Con 2 hilos globales la 4.a request esperaria ~300 ms extra.
+        assert max(results) < 250
 
     def test_single_scope_does_not_submit_to_parallel_executor(self, monkeypatch):
         from app.core import rag
