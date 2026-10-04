@@ -12,6 +12,10 @@ La integracion con LangChain se mantiene en dos puntos:
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+import os
+import threading
 from time import perf_counter
 from typing import Iterable, Literal, Optional
 
@@ -25,6 +29,13 @@ from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
 
 SearchScope = Literal["all", "patterns", "documents"]
+
+# La caché es por proceso y sólo contiene vectores de consultas; nunca guarda
+# documentos ni resultados ligados a un usuario. Evita recalcular consultas
+# frecuentes sin alterar autorización ni frescura de los resultados de DB.
+_EMBEDDING_CACHE_SIZE = max(0, int(os.getenv("RAG_EMBEDDING_CACHE_SIZE", "512")))
+_embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
+_embedding_cache_lock = threading.Lock()
 
 
 class RAGSearchError(Exception):
@@ -84,6 +95,42 @@ def _chunk_to_document(
 def _set_pgvector_probes(db, probes: int) -> None:
     """Ajusta el recall de ivfflat para la transaccion actual."""
     db.execute(text(f"SET LOCAL ivfflat.probes = {int(probes)}"))
+
+
+def clear_embedding_cache() -> None:
+    """Vacía la caché de embeddings de consulta (útil para tests y operación)."""
+    with _embedding_cache_lock:
+        _embedding_cache.clear()
+
+
+def _query_embedding(query: str) -> tuple[list[float], float, bool]:
+    """Genera o recupera el embedding E5 de una consulta, con LRU thread-safe."""
+    cache_key = f"query: {query}"
+    if _EMBEDDING_CACHE_SIZE:
+        with _embedding_cache_lock:
+            cached = _embedding_cache.get(cache_key)
+            if cached is not None:
+                _embedding_cache.move_to_end(cache_key)
+                return cached, 0.0, True
+
+    started = perf_counter()
+    embedding = get_embeddings().embed_query(cache_key)
+    elapsed_ms = (perf_counter() - started) * 1000
+    _validate_embedding(embedding)
+
+    if _EMBEDDING_CACHE_SIZE:
+        with _embedding_cache_lock:
+            # Otro request puede haber terminado la misma consulta durante el
+            # cálculo. Reusamos su vector y conservamos un LRU acotado.
+            cached = _embedding_cache.get(cache_key)
+            if cached is not None:
+                _embedding_cache.move_to_end(cache_key)
+                return cached, elapsed_ms, True
+            _embedding_cache[cache_key] = embedding
+            _embedding_cache.move_to_end(cache_key)
+            while len(_embedding_cache) > _EMBEDDING_CACHE_SIZE:
+                _embedding_cache.popitem(last=False)
+    return embedding, elapsed_ms, False
 
 
 def similarity_search_patterns_by_vector(
@@ -151,9 +198,7 @@ def similarity_search_patterns(
     category: Optional[str] = None,
 ) -> tuple[list[Document], float, float]:
     """Embebe una consulta y busca patrones relevantes."""
-    embed_started = perf_counter()
-    query_embedding = get_embeddings().embed_query(f"query: {query}")
-    embedding_ms = (perf_counter() - embed_started) * 1000
+    query_embedding, embedding_ms, _ = _query_embedding(query)
     docs, search_ms = similarity_search_patterns_by_vector(query_embedding, k=k, category=category)
     return docs, search_ms, embedding_ms
 
@@ -165,9 +210,7 @@ def similarity_search_document_chunks(
     k: int = 5,
 ) -> tuple[list[Document], float, float]:
     """Embebe una consulta y busca chunks privados relevantes."""
-    embed_started = perf_counter()
-    query_embedding = get_embeddings().embed_query(f"query: {query}")
-    embedding_ms = (perf_counter() - embed_started) * 1000
+    query_embedding, embedding_ms, _ = _query_embedding(query)
     docs, search_ms = similarity_search_document_chunks_by_vector(
         query_embedding,
         user_id=user_id,
@@ -208,14 +251,24 @@ def similarity_search(
     if scope in {"all", "documents"} and user_id is None:
         raise RAGSearchError("user_id es requerido para buscar documentos")
 
-    embed_started = perf_counter()
-    query_embedding = get_embeddings().embed_query(f"query: {query}")
-    embedding_ms = (perf_counter() - embed_started) * 1000
+    query_embedding, embedding_ms, embedding_cached = _query_embedding(query)
 
     groups: list[tuple[list[Document], float]] = []
-    if scope in {"all", "patterns"}:
+    if scope == "all":
+        # Cada función abre/cierra su propia sesión, por lo que estas lecturas
+        # no comparten estado y pueden ejecutarse en paralelo de forma segura.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag-search") as executor:
+            pattern_future = executor.submit(
+                similarity_search_patterns_by_vector, query_embedding, k, category
+            )
+            document_future = executor.submit(
+                similarity_search_document_chunks_by_vector,
+                query_embedding, int(user_id), project_id, k,
+            )
+            groups.extend((pattern_future.result(), document_future.result()))
+    elif scope == "patterns":
         groups.append(similarity_search_patterns_by_vector(query_embedding, k=k, category=category))
-    if scope in {"all", "documents"}:
+    elif scope == "documents":
         groups.append(
             similarity_search_document_chunks_by_vector(
                 query_embedding,
@@ -226,9 +279,12 @@ def similarity_search(
         )
 
     merged = _merge_by_distance(groups)[:k]
-    search_ms = sum(group_ms for _, group_ms in groups)
+    # Las búsquedas paralelas comparten la pared de tiempo: reportamos el peor
+    # tramo, que es el valor útil frente al SLO de 100 ms.
+    search_ms = max((group_ms for _, group_ms in groups), default=0.0)
     return merged, {
         "embedding_ms": embedding_ms,
         "search_ms": search_ms,
         "total_ms": embedding_ms + search_ms,
+        "embedding_cached": embedding_cached,
     }
