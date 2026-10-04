@@ -29,10 +29,11 @@ from app.core.document_storage import (
     save_document_pending,
 )
 from app.core.embeddings import get_embeddings
+from app.core.env import env_int
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
-EMBEDDING_BATCH_SIZE = max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "64")))
+EMBEDDING_BATCH_SIZE = env_int("EMBEDDING_BATCH_SIZE", 64, minimum=1)
 
 
 # --- Pydantic models ---------------------------------------------------------
@@ -75,9 +76,9 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
     """
     try:
         texts = [f"passage: {c.page_content}" for c in chunks]
-        # Limitar cada lote mantiene predecible el uso de RAM en documentos
-        # grandes y aprovecha el batch nativo del modelo (sin un embedding por
-        # chunk). Se conserva el orden exigido por save_chunks_and_mark_processed.
+        # BackgroundTasks ejecuta esta función fuera del request. Cada llamada
+        # aprovecha el batch nativo del modelo y conserva el orden exigido por
+        # save_chunks_and_mark_processed.
         model = get_embeddings()
         embeddings = []
         for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):

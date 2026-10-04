@@ -18,7 +18,7 @@ La respuesta de `POST /api/rag/search` expone estos valores en milisegundos:
 
 | Campo | Qué mide | Target |
 |---|---|---|
-| `search_ms` | tramo PGVector; con `scope=all` es el máximo de las ramas paralelas | < 100 ms |
+| `search_ms` | tiempo de pared del tramo de búsqueda, incluido encolado y join de las ramas paralelas | < 100 ms |
 | `embedding_ms` | embedding de consulta; `0` en cache hit | minimizar |
 | `total_ms` | embedding + tramo de búsqueda | referencia de RAG |
 
@@ -27,9 +27,16 @@ Para una línea base, iniciar temporalmente con
 normal (`512`). La primera consulta no representa el rendimiento estable:
 activa carga de modelo, conexión y caché.
 
-Registra los resultados en el PR/incidente con fecha, commit, tamaño de corpus,
-hardware, p50, p95 y el porcentaje de cache hits. Así un cambio de modelo o de
-índice no se atribuye equivocadamente a esta optimización.
+## Resultados antes/después
+
+⚠️ **Pendiente de medir en un entorno con PostgreSQL y corpus representativo.**
+No se debe declarar el SLO cumplido hasta completar esta tabla. El script usa
+20 consultas distintas, descarta la primera y reporta p50/p95.
+
+| Fecha | Commit | Configuración | Corpus (pattern/document chunks) | Hardware | p50 `search_ms` | p95 `search_ms` | Cache hits |
+|---|---|---|---|---|---:|---:|---:|
+| Pendiente | Pendiente | Baseline: `RAG_EMBEDDING_CACHE_SIZE=0` | 10.000 / 10.000 | Pendiente | — | — | — |
+| Pendiente | Pendiente | Optimizada: `RAG_EMBEDDING_CACHE_SIZE=512` | 10.000 / 10.000 | Pendiente | — | — | — |
 
 ## Límites y observabilidad
 
@@ -38,3 +45,17 @@ SSE `progress` incluyen `elapsed_ms` y `budget_s`, por lo que permiten auditar
 una ejecución lenta por etapa. Si el p95 de `search_ms` supera 100 ms, revisar
 primero los índices PGVector, `ivfflat.probes`, saturación del pool y tamaño del
 corpus antes de aumentar `DB_POOL_SIZE`.
+
+## Perfilado de bottlenecks y KRs
+
+Para perfilar una propuesta, correlacionar los eventos SSE `progress` por etapa:
+`context`, `retrieval`, `generating` y `saving`. `elapsed_ms` indica tiempo
+acumulado y `budget_s` el presupuesto disponible. En RAG, separar
+`embedding_ms` (CPU/modelo) de `search_ms` (PGVector); en una propuesta, el
+tramo `generating` identifica la latencia del LLM y `saving` la persistencia.
+
+El KR de Sofía se protege con `PROPOSAL_MAX_SECONDS=300`: corta con error al
+superar cinco minutos; no acelera el flujo. El KR de Santiago (respuesta
+promedio menor a tres minutos) requiere instrumentación de extremo a extremo
+del request, incluyendo LLM y streaming, y queda **fuera de alcance de esta
+optimización RAG** hasta registrar esa métrica en producción.

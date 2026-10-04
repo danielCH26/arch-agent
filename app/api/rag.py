@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -48,7 +49,8 @@ async def search_rag(
 ):
     """Busca semanticamente en patrones y/o documentos subidos."""
     try:
-        results, metrics = similarity_search(
+        results, metrics = await asyncio.to_thread(
+            similarity_search,
             query=body.query,
             user_id=current_user["user_id"],
             project_id=body.project_id,
@@ -70,7 +72,8 @@ async def search_patterns(
 ):
     """Busca patrones de arquitectura relevantes."""
     try:
-        results, metrics = similarity_search(
+        results, metrics = await asyncio.to_thread(
+            similarity_search,
             query=q,
             user_id=current_user["user_id"],
             k=k,
@@ -91,7 +94,8 @@ async def search_documents(
 ):
     """Busca chunks consultables de documentos del usuario autenticado."""
     try:
-        results, metrics = similarity_search(
+        results, metrics = await asyncio.to_thread(
+            similarity_search,
             query=q,
             user_id=current_user["user_id"],
             project_id=project_id,
