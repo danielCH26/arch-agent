@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-import os
 import threading
 from time import perf_counter
 from typing import Iterable, Literal, Optional
@@ -24,6 +23,7 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.embeddings import get_embeddings
+from app.core.env import env_int
 from app.models.architect_pattern import ArchitectPattern
 from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
@@ -33,9 +33,10 @@ SearchScope = Literal["all", "patterns", "documents"]
 # La caché es por proceso y sólo contiene vectores de consultas; nunca guarda
 # documentos ni resultados ligados a un usuario. Evita recalcular consultas
 # frecuentes sin alterar autorización ni frescura de los resultados de DB.
-_EMBEDDING_CACHE_SIZE = max(0, int(os.getenv("RAG_EMBEDDING_CACHE_SIZE", "512")))
+_EMBEDDING_CACHE_SIZE = env_int("RAG_EMBEDDING_CACHE_SIZE", 512, minimum=0)
 _embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
 _embedding_cache_lock = threading.Lock()
+_search_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag-search")
 
 
 class RAGSearchError(Exception):
@@ -111,7 +112,7 @@ def _query_embedding(query: str) -> tuple[list[float], float, bool]:
             cached = _embedding_cache.get(cache_key)
             if cached is not None:
                 _embedding_cache.move_to_end(cache_key)
-                return cached, 0.0, True
+                return list(cached), 0.0, True
 
     started = perf_counter()
     embedding = get_embeddings().embed_query(cache_key)
@@ -125,12 +126,12 @@ def _query_embedding(query: str) -> tuple[list[float], float, bool]:
             cached = _embedding_cache.get(cache_key)
             if cached is not None:
                 _embedding_cache.move_to_end(cache_key)
-                return cached, elapsed_ms, True
-            _embedding_cache[cache_key] = embedding
+                return list(cached), 0.0, True
+            _embedding_cache[cache_key] = list(embedding)
             _embedding_cache.move_to_end(cache_key)
             while len(_embedding_cache) > _EMBEDDING_CACHE_SIZE:
                 _embedding_cache.popitem(last=False)
-    return embedding, elapsed_ms, False
+    return list(embedding), elapsed_ms, False
 
 
 def similarity_search_patterns_by_vector(
@@ -254,18 +255,18 @@ def similarity_search(
     query_embedding, embedding_ms, embedding_cached = _query_embedding(query)
 
     groups: list[tuple[list[Document], float]] = []
+    search_started = perf_counter()
     if scope == "all":
         # Cada función abre/cierra su propia sesión, por lo que estas lecturas
         # no comparten estado y pueden ejecutarse en paralelo de forma segura.
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag-search") as executor:
-            pattern_future = executor.submit(
-                similarity_search_patterns_by_vector, query_embedding, k, category
-            )
-            document_future = executor.submit(
-                similarity_search_document_chunks_by_vector,
-                query_embedding, int(user_id), project_id, k,
-            )
-            groups.extend((pattern_future.result(), document_future.result()))
+        pattern_future = _search_executor.submit(
+            similarity_search_patterns_by_vector, query_embedding, k, category
+        )
+        document_future = _search_executor.submit(
+            similarity_search_document_chunks_by_vector,
+            query_embedding, int(user_id), project_id, k,
+        )
+        groups.extend((pattern_future.result(), document_future.result()))
     elif scope == "patterns":
         groups.append(similarity_search_patterns_by_vector(query_embedding, k=k, category=category))
     elif scope == "documents":
@@ -279,9 +280,8 @@ def similarity_search(
         )
 
     merged = _merge_by_distance(groups)[:k]
-    # Las búsquedas paralelas comparten la pared de tiempo: reportamos el peor
-    # tramo, que es el valor útil frente al SLO de 100 ms.
-    search_ms = max((group_ms for _, group_ms in groups), default=0.0)
+    # Incluye encolado, ejecución y join de las ramas paralelas.
+    search_ms = (perf_counter() - search_started) * 1000
     return merged, {
         "embedding_ms": embedding_ms,
         "search_ms": search_ms,

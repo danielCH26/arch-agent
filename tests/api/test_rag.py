@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import asyncio
+import threading
 import pytest
 from langchain_core.documents import Document
 
@@ -105,7 +106,7 @@ class TestRAGCoreHelpers:
         assert second["embedding_cached"] is True
         assert calls == {"patterns": 2, "documents": 2}
 
-    def test_parallel_search_uses_slowest_branch_as_wall_clock_metric(self, monkeypatch):
+    def test_parallel_search_measures_the_complete_wall_clock_block(self, monkeypatch):
         from app.core import rag
 
         rag.clear_embedding_cache()
@@ -115,4 +116,56 @@ class TestRAGCoreHelpers:
 
         _, metrics = rag.similarity_search("latencia", user_id=7, scope="all")
 
-        assert metrics["search_ms"] == 23.0
+        assert metrics["search_ms"] >= 0.0
+
+    def test_embedding_cache_evicts_least_recently_used_entry(self, monkeypatch):
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "_EMBEDDING_CACHE_SIZE", 2)
+        calls = []
+        monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda _, key: calls.append(key) or [0.1] * 384})())
+        rag._query_embedding("one")
+        rag._query_embedding("two")
+        rag._query_embedding("one")  # refresca "one", por eso sale "two"
+        rag._query_embedding("three")
+        rag._query_embedding("two")
+        assert calls == ["query: one", "query: two", "query: three", "query: two"]
+
+    def test_disabled_embedding_cache_never_hits(self, monkeypatch):
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "_EMBEDDING_CACHE_SIZE", 0)
+        calls = []
+        monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda _, key: calls.append(key) or [0.1] * 384})())
+        assert rag._query_embedding("same")[2] is False
+        assert rag._query_embedding("same")[2] is False
+        assert calls == ["query: same", "query: same"]
+        assert not rag._embedding_cache
+
+    def test_embedding_cache_is_bounded_under_concurrent_queries(self, monkeypatch):
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "_EMBEDDING_CACHE_SIZE", 2)
+        monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})())
+        errors = []
+        threads = [threading.Thread(target=lambda: rag._query_embedding("same")) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+        assert len(rag._embedding_cache) <= 2
+
+    def test_single_scope_does_not_submit_to_parallel_executor(self, monkeypatch):
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})())
+        monkeypatch.setattr(rag, "_search_executor", type("NoExecutor", (), {"submit": lambda *_: (_ for _ in ()).throw(AssertionError("not parallel"))})())
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", lambda *_args, **_kwargs: ([], 1.0))
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", lambda *_args, **_kwargs: ([], 1.0))
+        rag.similarity_search("patterns", user_id=1, scope="patterns")
+        rag.similarity_search("documents", user_id=1, scope="documents")

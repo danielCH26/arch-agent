@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
+"""Siembra y mide el corpus sintético F19 en las tablas que consulta RAG.
+
+Uso: ``python scripts/seed_bench_vectors.py [--tables all|patterns|documents]``.
+Los patrones reales se mantienen con ``scripts/seed_patterns.py``. Este script
+inserta chunks sintéticos, no embeddings en la tabla padre.
 """
-Benchmark del Criterio 3: tiempo de busqueda < 100ms para 10k vectores.
-
-Inserta ~10,000 patrones SINTETICOS con vectores aleatorios normalizados
-(384d, para matchear multilingual-e5-small) directamente por SQL -- no usa
-el modelo de embeddings real porque generar 10k embeddings en CPU es lento
-y no aporta nada a esta prueba puntual (aqui medimos velocidad del indice
-ivfflat, no relevancia semantica; eso ya se prueba en el Criterio 1 con
-datos reales).
-
-Todos los registros sinteticos quedan marcados con category='benchmark-synthetic'
-para poder limpiarlos despues sin tocar los patrones reales sembrados por
-scripts/seed_architect_patterns.py.
-
-Uso:
-    docker compose exec backend python scripts/seed_bench_vectors.py            # carga 10k + mide
-    docker compose exec backend python scripts/seed_bench_vectors.py --n 20000  # otro volumen
-    docker compose exec backend python scripts/seed_bench_vectors.py --cleanup  # borra solo los sinteticos
-"""
-
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -37,137 +24,127 @@ from app.core.database import SessionLocal
 from app.core.embeddings import EMBEDDING_DIM, get_embeddings
 
 BENCHMARK_CATEGORY = "benchmark-synthetic"
+BENCHMARK_USERNAME = "__benchmark_synthetic__"
+BENCHMARK_PROJECT_NAME = "__benchmark_synthetic__"
+BENCHMARK_FILENAME = "__benchmark_synthetic__.md"
 
 
 def random_unit_vectors(n: int, dim: int) -> np.ndarray:
-    """Vectores aleatorios normalizados (norma 1), igual que hace el
-    modelo real con normalize_embeddings=True -- asi la distancia coseno
-    que usa ivfflat se comporta de forma comparable a datos reales."""
     vectors = np.random.randn(n, dim).astype(np.float32)
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    return vectors / norms
+    return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
 
-def seed(n: int, batch_size: int = 500) -> None:
-    print(f"Insertando {n} patrones sinteticos ({EMBEDDING_DIM}d)...")
+def _vector(vector: np.ndarray) -> str:
+    return "[" + ",".join(f"{value:.6f}" for value in vector) + "]"
+
+
+def _document_owner(db) -> tuple[int, int]:
+    user_id = db.execute(text("""
+        INSERT INTO users (username, email, password_hash, is_demo_user)
+        VALUES (:username, :email, 'benchmark-only', true)
+        ON CONFLICT (username) DO UPDATE SET username=EXCLUDED.username RETURNING id
+    """), {"username": BENCHMARK_USERNAME, "email": "benchmark-synthetic@example.invalid"}).scalar_one()
+    project_id = db.execute(text("SELECT id FROM projects WHERE user_id=:user_id AND name=:name"), {"user_id": user_id, "name": BENCHMARK_PROJECT_NAME}).scalar()
+    if project_id is None:
+        project_id = db.execute(text("""
+            INSERT INTO projects (user_id, name, description, is_demo)
+            VALUES (:user_id, :name, 'Corpus sintético F19', true) RETURNING id
+        """), {"user_id": user_id, "name": BENCHMARK_PROJECT_NAME}).scalar_one()
+    return int(user_id), int(project_id)
+
+
+def seed(n: int, tables: str, batch_size: int = 500) -> tuple[int | None, int | None]:
+    """Inserta n vectores en cada ámbito seleccionado y devuelve user/proyecto."""
     db = SessionLocal()
     try:
-        inserted = 0
-        t0 = time.perf_counter()
+        user_id = project_id = document_id = None
+        if tables in {"all", "documents"}:
+            user_id, project_id = _document_owner(db)
+            db.execute(text("DELETE FROM uploaded_documents WHERE user_id=:user_id AND filename=:filename"), {"user_id": user_id, "filename": BENCHMARK_FILENAME})
+            document_id = db.execute(text("""
+                INSERT INTO uploaded_documents (user_id, project_id, filename, file_type, file_size_bytes, chunk_count, processed, version)
+                VALUES (:user_id, :project_id, :filename, '.md', 0, :n, true, 1) RETURNING id
+            """), {"user_id": user_id, "project_id": project_id, "filename": BENCHMARK_FILENAME, "n": n}).scalar_one()
+        print(f"Insertando {n} vectores sintéticos en {tables} ({EMBEDDING_DIM}d)...")
+        started = time.perf_counter()
         for start in range(0, n, batch_size):
-            batch_n = min(batch_size, n - start)
-            vectors = random_unit_vectors(batch_n, EMBEDDING_DIM)
-            rows = [
-                {
-                    "pattern_name": f"__bench_pattern_{start + i}",
-                    "category": BENCHMARK_CATEGORY,
-                    "description": "Vector sintetico para benchmark de performance.",
-                    "embedding": "[" + ",".join(f"{x:.6f}" for x in vec) + "]",
-                }
-                for i, vec in enumerate(vectors)
-            ]
-            db.execute(
-                text(
-                    """
-                    INSERT INTO architect_patterns
-                        (pattern_name, category, description, embedding)
-                    VALUES
-                        (:pattern_name, :category, :description, CAST(:embedding AS vector))
-                    """
-                ),
-                rows,
-            )
+            vectors = random_unit_vectors(min(batch_size, n - start), EMBEDDING_DIM)
+            if tables in {"all", "patterns"}:
+                pattern_id = db.execute(text("""
+                    INSERT INTO architect_patterns (pattern_name, category, description)
+                    VALUES (:name, :category, 'Corpus sintético F19') RETURNING id
+                """), {"name": f"__bench_pattern_{start}", "category": BENCHMARK_CATEGORY}).scalar_one()
+                db.execute(text("""
+                    INSERT INTO architect_pattern_chunks (pattern_id, chunk_type, chunk_text, embedding)
+                    VALUES (:pattern_id, 'benchmark', :chunk_text, CAST(:embedding AS vector))
+                """), [{"pattern_id": pattern_id, "chunk_text": f"synthetic pattern chunk {start + index}", "embedding": _vector(vector)} for index, vector in enumerate(vectors)])
+            if document_id is not None:
+                db.execute(text("""
+                    INSERT INTO document_chunks (document_id, chunk_text, chunk_index, embedding)
+                    VALUES (:document_id, :chunk_text, :chunk_index, CAST(:embedding AS vector))
+                """), [{"document_id": document_id, "chunk_text": f"synthetic document chunk {start + index}", "chunk_index": start + index, "embedding": _vector(vector)} for index, vector in enumerate(vectors)])
             db.commit()
-            inserted += batch_n
-            print(f"  {inserted}/{n}", end="\r")
-        print(f"\nInsertados {inserted} en {time.perf_counter() - t0:.1f}s")
+        print(f"Insertados en {time.perf_counter() - started:.1f}s")
+        return user_id, project_id
     finally:
         db.close()
 
 
-def reindex() -> None:
-    """El indice ivfflat se construye con las listas calculadas para el
-    volumen que tenia la tabla al momento de crearlo (ver schema.sql).
-    Si la tabla crecio mucho desde entonces (como aca, +10k filas), hay
-    que REINDEX para que el planner lo use bien."""
-    print("Reindexando idx_architect_patterns_embedding...")
+def reindex(tables: str) -> None:
+    indexes = (["idx_pattern_chunks_embedding"] if tables in {"all", "patterns"} else []) + (["document_chunks_embedding_idx"] if tables in {"all", "documents"} else [])
     db = SessionLocal()
     try:
-        db.execute(text("REINDEX INDEX idx_architect_patterns_embedding"))
+        for index in indexes:
+            db.execute(text(f"REINDEX INDEX {index}"))
         db.commit()
     finally:
         db.close()
 
 
-def benchmark(rounds: int = 10) -> None:
+def benchmark(user_id: int | None, project_id: int | None, scope: str) -> None:
     from app.core.rag import similarity_search
-
-    print(f"\nEjecutando {rounds} busquedas de prueba...\n")
-    queries = [
-        "arquitectura de microservicios independientes",
-        "como implemento CQRS y event sourcing",
-        "seguridad y autenticacion en APIs",
-        "escalado horizontal de servicios",
-        "patrones de resiliencia y circuit breaker",
-    ]
-
-    search_times = []
-    for i in range(rounds):
-        query = queries[i % len(queries)]
-        _docs, metrics = similarity_search(
-            query=query, user_id=None, project_id=None, k=5, scope="patterns"
-        )
-        search_times.append(metrics["search_ms"])
-        print(f"  [{i + 1:2d}] query={query[:40]:<40} search_ms={metrics['search_ms']:.2f}")
-
-    avg = sum(search_times) / len(search_times)
-    p95 = sorted(search_times)[int(len(search_times) * 0.95) - 1]
-    print(f"\nsearch_ms -> avg={avg:.2f}ms  min={min(search_times):.2f}ms  "
-          f"max={max(search_times):.2f}ms  p95={p95:.2f}ms")
-
-    if max(search_times) < 100:
-        print("\n✅ CRITERIO 3 CUMPLIDO: todas las busquedas < 100ms")
-    else:
-        over = [t for t in search_times if t >= 100]
-        print(f"\n❌ CRITERIO 3 NO CUMPLIDO: {len(over)}/{rounds} busquedas >= 100ms")
+    queries = [f"consulta F19 distinta {number}: arquitectura resiliente" for number in range(20)]
+    samples, hits = [], 0
+    for index, query in enumerate(queries):
+        _, metrics = similarity_search(query, user_id=user_id, project_id=project_id, k=5, scope=scope)
+        if index:  # primera consulta: cold path, no se reporta
+            samples.append(metrics["search_ms"])
+            hits += int(bool(metrics.get("embedding_cached")))
+    print("scope={} n={} p50={:.2f}ms p95={:.2f}ms cache_hits={:.1f}%".format(
+        scope, len(samples), statistics.median(samples), statistics.quantiles(samples, n=100, method="inclusive")[94], hits / len(samples) * 100,
+    ))
 
 
 def cleanup() -> None:
-    print("Borrando patrones sinteticos de benchmark...")
     db = SessionLocal()
     try:
-        result = db.execute(
-            text("DELETE FROM architect_patterns WHERE category = :cat"),
-            {"cat": BENCHMARK_CATEGORY},
-        )
+        # El cascade borra architect_pattern_chunks y document_chunks.
+        db.execute(text("DELETE FROM architect_patterns WHERE category=:category"), {"category": BENCHMARK_CATEGORY})
+        user_id = db.execute(text("SELECT id FROM users WHERE username=:username"), {"username": BENCHMARK_USERNAME}).scalar()
+        if user_id is not None:
+            db.execute(text("DELETE FROM uploaded_documents WHERE user_id=:user_id AND filename=:filename"), {"user_id": user_id, "filename": BENCHMARK_FILENAME})
+            db.execute(text("DELETE FROM projects WHERE user_id=:user_id AND name=:name"), {"user_id": user_id, "name": BENCHMARK_PROJECT_NAME})
+            # Conservamos el usuario técnico: eliminarlo podría cascada datos
+            # ajenos si alguien reutilizó accidentalmente ese identificador.
         db.commit()
-        print(f"Borrados {result.rowcount} registros sinteticos.")
     finally:
         db.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--n", type=int, default=10_000, help="Cantidad de vectores a insertar")
-    parser.add_argument("--rounds", type=int, default=10, help="Cantidad de busquedas a medir")
-    parser.add_argument("--cleanup", action="store_true", help="Solo borra los datos sinteticos y sale")
-    parser.add_argument("--skip-seed", action="store_true", help="No insertar, solo medir (si ya sembraste antes)")
+    parser.add_argument("--n", type=int, default=10_000)
+    parser.add_argument("--tables", choices=("all", "patterns", "documents"), default="all")
+    parser.add_argument("--scope", choices=("all", "patterns"), default="all")
+    parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument("--skip-seed", action="store_true")
     args = parser.parse_args()
-
     if args.cleanup:
-        cleanup()
-        sys.exit(0)
-
-    # Toca get_embeddings() una vez antes para que el modelo real (usado
-    # por similarity_search al vectorizar la QUERY) ya este cacheado y no
-    # infle el primer tiempo medido.
-    get_embeddings()
-
+        cleanup(); raise SystemExit(0)
+    get_embeddings()  # warm-up fuera de las mediciones
+    user_id, project_id = (None, None) if args.skip_seed else seed(args.n, args.tables)
     if not args.skip_seed:
-        seed(args.n)
-        reindex()
-
-    benchmark(args.rounds)
-
-    print("\nPara limpiar los datos sinteticos despues:")
-    print("  docker compose exec backend python scripts/seed_bench_vectors.py --cleanup")
+        reindex(args.tables)
+    if args.scope == "all" and user_id is None:
+        raise SystemExit("scope=all requiere un corpus de documentos recién sembrado")
+    benchmark(user_id, project_id, args.scope)
