@@ -217,6 +217,11 @@ export function getProposal(proposalId: number) {
   return apiFetch<ProposalOut>(`/api/proposals/${proposalId}`)
 }
 
+/** Última propuesta viva (proposed/approved) del proyecto, o null. */
+export function getLatestProposal(projectId: number) {
+  return apiFetch<ProposalOut | null>(`/api/projects/${projectId}/proposals/latest`)
+}
+
 export function getProjectProposalState(projectId: number) {
   return apiFetch<ProjectProposalState>(`/api/projects/${projectId}/proposal`)
 }

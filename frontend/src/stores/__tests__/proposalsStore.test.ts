@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../../api/proposals', () => ({
   createProposalStream: vi.fn(),
   decideProposal: vi.fn(),
+  getLatestProposal: vi.fn(),
   getProjectProposalState: vi.fn(),
   getProposal: vi.fn(),
 }))
@@ -286,5 +287,30 @@ describe('proposalsStore reintento de una modificación (F19)', () => {
     vi.mocked(api.createProposalStream).mockClear()
     proposalsStore.getState().retry() // sigue en curso
     expect(api.createProposalStream).not.toHaveBeenCalled()
+  })
+})
+
+describe('proposalsStore corte por tiempo al guardar (F19)', () => {
+  it('rehidrata la última propuesta viva y conserva el error', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(12, 1))
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+
+    streams[0].onError('La generación superó el tiempo máximo (5 min)')
+
+    await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(12))
+    expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID)
+    expect(proposalsStore.getState().error).toContain('tiempo máximo')
+    expect(localStorage.getItem(`archagent:user:anon:last-proposal:${PROJECT_ID}`)).toBe('12')
+  })
+
+  it('un corte por tiempo antes de guardar no rehidrata', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onProgress?.(progress)
+
+    streams[0].onError('La generación superó el tiempo máximo (5 min)')
+
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+    expect(proposalsStore.getState().current).toBeNull()
   })
 })

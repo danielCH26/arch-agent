@@ -48,7 +48,10 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   const iterationLimitReached = maxIterations !== null && (proposal?.iteration ?? 0) >= maxIterations
   // Si una modificación falla, se corta por el tope de tiempo o se cancela, el
   // feedback ya no está en el formulario: "Reintentar" lo reenvía.
-  const canRetry = lastModify !== null && !busy && (Boolean(error) || cancelled)
+  // Reintentar solo sirve para cortes transitorios. Un 4xx, el límite de
+  // iteraciones o una configuración LLM inválida requieren una acción distinta.
+  const retryableError = error !== null && /tiempo máximo|timed out|stream failed/i.test(error)
+  const canRetry = lastModify !== null && !busy && (retryableError || cancelled)
 
   const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!proposal?.id) return

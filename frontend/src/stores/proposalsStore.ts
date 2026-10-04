@@ -4,6 +4,7 @@ import { authStore } from './authStore'
 import {
   createProposalStream,
   decideProposal,
+  getLatestProposal,
   getProjectProposalState,
   getProposal,
   type ProjectProposalState,
@@ -130,6 +131,13 @@ function abortActiveStream() {
 
 const IDLE_PROGRESS = { progress: null, startedAt: null } as const
 
+interface FailureDetails {
+  /** Código HTTP cuando el error viene de la respuesta (p. ej. 409). */
+  status?: number
+  /** El tope de tiempo se agotó mientras se guardaba: la fila pudo quedar escrita. */
+  savingTimedOut: boolean
+}
+
 // Streams que siguen corriendo aunque la tarjeta se haya desmontado (reset()
 // solo deja de reflejarlos en pantalla). Al volver al proyecto, load() espera
 // a que terminen antes de rehidratar, en vez de ofrecer generar de nuevo.
@@ -149,7 +157,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
   const streamHandlers = (
     streamId: number,
     projectId: number,
-    onFailure: (error: string, status?: number) => void,
+    onFailure: (error: string, details: FailureDetails) => void,
   ) => {
     const settle = trackStream(projectId)
     const release = () => {
@@ -186,8 +194,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       onError: (error: string, status?: number) => {
         release()
         if (streamId !== activeStream) return
+        // Se lee antes de limpiar el progreso: decide si el corte fue guardando.
+        const savingTimedOut = get().progress?.stage === 'saving' && /tiempo máximo/i.test(error)
         set(IDLE_PROGRESS)
-        onFailure(error, status)
+        onFailure(error, { status, savingTimedOut })
       },
     }
     // Se registra antes de abrir el stream; createProposalStream devuelve el
@@ -201,6 +211,24 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       }
     }
     return { handlers, track }
+  }
+
+  // Tras un corte por tiempo GUARDANDO, la fila pudo quedar escrita: se trae la
+  // última propuesta viva del backend y se adopta como vigente. El mensaje de
+  // error se conserva: es lo que explica por qué el usuario no vio el final.
+  const rehydrateLatest = async (streamId: number, projectId: number) => {
+    try {
+      const latest = await getLatestProposal(projectId)
+      if (streamId !== activeStream || !latest || latest.project_id !== projectId) return
+      rememberProposal(projectId, latest.id)
+      const proposal = fromOut(latest)
+      set((state) => ({
+        current: proposal,
+        iterations: [proposal, ...state.iterations.filter((item) => item.id !== proposal.id)],
+      }))
+    } catch {
+      // Silencioso: si falla, la tarjeta queda con el error y el botón de reintento.
+    }
   }
 
   return {
@@ -258,8 +286,12 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         progress: null,
         startedAt: Date.now(),
       })
-      const { handlers, track } = streamHandlers(streamId, projectId, (error, status) => {
+      const { handlers, track } = streamHandlers(streamId, projectId, (error, { status, savingTimedOut }) => {
         set({ current: null, activity: 'idle', error })
+        // El hilo de persistencia puede completar justo después del timeout:
+        // se rehidrata para no ofrecer un reintento que chocará con la
+        // iteración que ya alcanzó a guardarse.
+        if (savingTimedOut) void rehydrateLatest(streamId, projectId)
         // 409: el estado cambió en el backend (p. ej. la propuesta ya se aprobó
         // en otra pestaña); se vuelve a cargar sin perder el mensaje de error.
         if (status === 409) {
@@ -285,10 +317,11 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         progress: null,
         startedAt: Date.now(),
       })
-      const { handlers, track } = streamHandlers(streamId, previous.projectId, (error) => {
+      const { handlers, track } = streamHandlers(streamId, previous.projectId, (error, { savingTimedOut }) => {
         // Si la iteración falla, se vuelve a mostrar la propuesta anterior.
         set({ current: previous, activity: 'idle', error })
-        void get().refresh(proposalId)
+        if (savingTimedOut) void rehydrateLatest(streamId, previous.projectId)
+        else void get().refresh(proposalId)
       })
       track(createProposalStream('modify', { projectId: previous.projectId, proposalId, feedback }, handlers))
     },

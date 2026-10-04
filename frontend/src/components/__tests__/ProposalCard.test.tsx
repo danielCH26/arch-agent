@@ -237,6 +237,19 @@ describe('ProposalCard', () => {
       act(() => streams[1].onError('Reintento cancelado en el test.'))
     })
 
+    it('no ofrece reintentar ante un error permanente (p. ej. límite de iteraciones)', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'x')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      act(() => streams[0].onError('Has alcanzado el máximo de iteraciones (5)'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('máximo de iteraciones')
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
     it('tras cancelar una modificación conserva la versión actual y permite reintentar', async () => {
       const user = userEvent.setup()
       await renderWithProposal(proposalOut())
