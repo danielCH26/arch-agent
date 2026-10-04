@@ -76,3 +76,43 @@ class TestRAGCoreHelpers:
         _validate_embedding([0.1] * 384)
         with pytest.raises(RAGSearchError, match="384 dimensiones"):
             _validate_embedding([0.1] * 383)
+
+    def test_reuses_cached_query_embedding_without_caching_search_results(self, monkeypatch):
+        """Una consulta repetida evita el modelo, pero ambas búsquedas siguen a DB."""
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "_EMBEDDING_CACHE_SIZE", 2)
+        model = type("Embeddings", (), {"embed_query": lambda self, _: [0.1] * 384})()
+        calls = {"patterns": 0, "documents": 0}
+
+        def patterns(*_args, **_kwargs):
+            calls["patterns"] += 1
+            return [], 4.0
+
+        def documents(*_args, **_kwargs):
+            calls["documents"] += 1
+            return [], 5.0
+
+        monkeypatch.setattr(rag, "get_embeddings", lambda: model)
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", patterns)
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", documents)
+
+        _, first = rag.similarity_search("consulta frecuente", user_id=7, scope="all")
+        _, second = rag.similarity_search("consulta frecuente", user_id=7, scope="all")
+
+        assert first["embedding_cached"] is False
+        assert second["embedding_cached"] is True
+        assert calls == {"patterns": 2, "documents": 2}
+
+    def test_parallel_search_uses_slowest_branch_as_wall_clock_metric(self, monkeypatch):
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})())
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", lambda *_args, **_kwargs: ([], 11.0))
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", lambda *_args, **_kwargs: ([], 23.0))
+
+        _, metrics = rag.similarity_search("latencia", user_id=7, scope="all")
+
+        assert metrics["search_ms"] == 23.0
