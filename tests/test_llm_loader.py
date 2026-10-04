@@ -68,13 +68,17 @@ class TestLoadUserLLMConfig:
             load_user_llm_config(99)
 
     @patch("app.core.llm_loader.SessionLocal")
-    def test_missing_base_url_raises(self, mock_session_local):
+    def test_missing_base_url_raises(self, mock_session_local, monkeypatch):
+        # Sin GROQ_API_KEY no hay default, asi que se mantiene el error (#98).
+        # El mensaje ahora cubre las DOS causas: falta config del usuario, o
+        # falta la key del default en el backend.
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         user = FakeUser(user_id=1, base_url=None, model="gpt-4o", encrypted_api_key="x")
         mock_db = MagicMock()
         mock_db.get.return_value = user
         mock_session_local.return_value = mock_db
 
-        with pytest.raises(LLMConfigError, match="URL base"):
+        with pytest.raises(LLMConfigError, match="no tiene configuracion de LLM"):
             load_user_llm_config(1)
 
     @patch("app.core.llm_loader.SessionLocal")
@@ -96,7 +100,9 @@ class TestLoadUserLLMConfig:
         assert config.model == ""
 
     @patch("app.core.llm_loader.SessionLocal")
-    def test_missing_api_key_raises(self, mock_session_local):
+    def test_missing_api_key_raises(self, mock_session_local, monkeypatch):
+        # Mismo criterio que el caso de base_url: sin key del default, error.
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         user = FakeUser(
             user_id=1, base_url="https://x.com", model="gpt-4o", encrypted_api_key=None
         )
@@ -104,7 +110,7 @@ class TestLoadUserLLMConfig:
         mock_db.get.return_value = user
         mock_session_local.return_value = mock_db
 
-        with pytest.raises(LLMConfigError, match="no tiene API key"):
+        with pytest.raises(LLMConfigError, match="no tiene configuracion de LLM"):
             load_user_llm_config(1)
 
     @patch("app.core.llm_loader.SessionLocal")
