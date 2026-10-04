@@ -115,6 +115,7 @@ _T = TypeVar("_T")
 # antes de que ``perf_counter`` llegue al deadline (en Windows la resolucion del
 # reloj es ~15 ms) y eso se vería como un TimeoutError "ajeno".
 _DEADLINE_TOLERANCE_S = 0.05
+_engram_tasks: set[asyncio.Task[None]] = set()
 
 
 async def _within_budget(
@@ -140,7 +141,11 @@ async def _within_budget(
             close()
         raise _GenerationTimeout(stage)
     try:
-        return await asyncio.wait_for(awaitable, timeout=remaining)
+        # timeout_at evita crear una Task extra por cada token en Python 3.11.
+        # El reloj de asyncio no es perf_counter, asi que trasladamos el margen.
+        loop = asyncio.get_running_loop()
+        async with asyncio.timeout_at(loop.time() + remaining):
+            return await awaitable
     except asyncio.TimeoutError:
         if perf_counter() >= deadline - _DEADLINE_TOLERANCE_S:
             raise _GenerationTimeout(stage) from None
@@ -585,16 +590,21 @@ class ProposalGenerator:
                 self.user_id,
                 exc,
             )
-            yield ("error", f"Failed to persist proposal: {exc}")
+            # El detalle tecnico queda en el log; no se mezcla SQL ni wrappers
+            # internos con el mensaje accionable de la interfaz.
+            yield ("error", "No se pudo guardar la propuesta. Recarga para comprobar el estado e intenta de nuevo.")
             return
 
-        # 8. Best-effort Engram mirror (REQ-9 / SCN-10 -- never blocks).
-        await _engram_mirror(
+        # 8. Engram es estrictamente secundario: conservar una referencia fuerte
+        # evita que la tarea se pierda, sin retrasar el evento done.
+        mirror_task = asyncio.create_task(_engram_mirror(
             session_id=session_id,
             proposal_id=proposal_id,
             interaction_id=interaction_id,
             markdown=full_markdown,
-        )
+        ))
+        _engram_tasks.add(mirror_task)
+        mirror_task.add_done_callback(_engram_tasks.discard)
 
         latency_ms = int((perf_counter() - started_at) * 1000)
         logger.info(
@@ -605,8 +615,8 @@ class ProposalGenerator:
             latency_ms,
         )
         if PROPOSAL_MAX_SECONDS > 0 and latency_ms > PROPOSAL_MAX_SECONDS * 1000:
-            # Pasa si la persistencia o el espejo en Engram se llevaron el
-            # margen que dejo el stream: la propuesta se guarda igual.
+            # La persistencia puede consumir el margen final: la propuesta se
+            # guarda igual y se informa la latencia real.
             logger.warning(
                 "Proposal over time budget project_id=%s latency_ms=%s budget_s=%s",
                 effective_project_id,
@@ -1674,9 +1684,8 @@ def _persist_proposal_and_log(
     transaccion (``set_config(..., is_local=true)``); ``None`` = el de la BD.
 
     Returns ``(proposal_id, interaction_id, iteration)`` for the SSE done
-    payload and the Engram mirror. Idempotency on (project_id, iteration) is delegated
-    to the DB UNIQUE constraint -- a duplicate INSERT raises IntegrityError
-    which the caller turns into a 409.
+    payload and the Engram mirror. The preconditions are checked again here to
+    close the race between the router precheck and a delayed DB commit.
     """
     db = SessionLocal()
     try:
@@ -1698,6 +1707,20 @@ def _persist_proposal_and_log(
             raise _ProposalDomainError(
                 f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})"
             )
+
+        latest = (
+            db.query(Proposal)
+            .filter(Proposal.project_id == project_id)
+            .order_by(Proposal.iteration.desc())
+            .first()
+        )
+        if prior_proposal_id is not None:
+            if latest is None or latest.id != prior_proposal_id:
+                raise _ProposalDomainError(
+                    "La propuesta ya no es la última iteración; recarga antes de modificar."
+                )
+            if int(iteration) != int(prior_iteration) + 1:
+                raise _ProposalDomainError("La siguiente iteración no es válida; recarga e intenta de nuevo.")
 
         # For modify path, freeze the prior content in a proposal_approvals row
         # BEFORE inserting the new proposal so the audit trail is intact even

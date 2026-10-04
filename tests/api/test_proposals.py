@@ -368,6 +368,23 @@ class TestSSEStreamCancellation:
         assert first.startswith("event: token")
         assert closed == [True]
 
+    def test_sends_heartbeat_while_waiting_for_a_slow_event(self, monkeypatch):
+        from app.api import proposals as proposals_module
+
+        monkeypatch.setattr(proposals_module, "SSE_HEARTBEAT_SECONDS", 0.001)
+
+        async def inner():
+            await asyncio.sleep(0.01)
+            yield "token", "a"
+
+        async def run():
+            stream = proposals_module._sse_stream(inner())
+            first = await stream.__anext__()
+            await stream.aclose()
+            return first
+
+        assert asyncio.run(run()) == ": ping\n\n"
+
     def test_cancelled_error_is_propagated_not_swallowed(self):
         from app.api.proposals import _sse_stream
 
