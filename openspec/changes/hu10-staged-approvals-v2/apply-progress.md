@@ -85,21 +85,26 @@ None.
 | 8 | `fix(conftest): stop overriding DATABASE_URL default` | `tests/conftest.py` | Preserve skipif semantics |
 | 9 | `test(hu10-v2): update tests for inverted pending_decision and new advance UI` | `tests/core/test_phase_decisions.py`, `tests/api/test_projects_hu10.py` | Updated tests for new semantics |
 | 10 | `docs(pr91): v3 review-blockers resolution notes` | `docs/PR91-v3-notes.md` | Documentation |
+| 11 | `fix(frontend+tests): correct JSX orphan + restore Postgres skipif` | `frontend/src/components/PhaseActions/PhaseActions.tsx`, `tests/conftest.py`, `tests/api/conftest.py`, `tests/api/test_auth.py`, `tests/core/test_phase_decisions_concurrency.py`, `tests/models/test_approval.py` | Removed JSX orphan; tighten skipif to also exclude placeholder default; drop hardcoded CI URL from api conftest |
 
 ### Verification Status
 
 | Test | Status | Command |
 |---|---|---|
 | pytest unit tests | **PASSED** (38 tests) | `pytest tests/core/test_phase_decisions.py tests/api/test_projects_hu10.py -v` |
-| pytest Postgres tests | DEFERRED to CI (no docker) | `pytest tests/core/test_phase_decisions_concurrency.py tests/models/test_approval.py -v` |
+| pytest Postgres tests (skipped without DATABASE_URL) | **8 skipped, 0 errors** | `pytest tests/core/test_phase_decisions_concurrency.py tests/models/test_approval.py -v` |
 | Frontend tests | DEFERRED to CI (no node) | `npm run test:run` |
 
 ### Changes Summary
 
 - **Backend**: 6 files modified
 - **Frontend**: 2 files modified
-- **Tests**: 2 files updated, 5 new test functions
-- **Docs**: 1 new file
+- **Tests**: 4 files updated, 5 new test functions, 1 module-level skipif added to test_approval.py
+- **Docs**: 1 new file (`docs/PR91-v3-notes.md`)
+
+### Pre-existing failures (NOT in v3 scope)
+
+`tests/api/test_elicitation.py::TestDecideElicitation` (9 ERRORs) fail with `AttributeError: 'SQLiteTypeCompiler' object has no attribute 'visit_JSONB'`. The fixture creates a SQLite in-memory engine, but the `approvals` model has `previous_output JSONB` (added by migration 0018 in v2) which SQLite cannot render. This is **pre-existing** on `0cdea47` (verified by `git stash` and re-running) — out of scope for the v3 review-blocker fixes. Track as follow-up: either migrate the elicitation tests to use Postgres or use a generic JSON column instead of JSONB.
 
 ### Deferred to CI
 
