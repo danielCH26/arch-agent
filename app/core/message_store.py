@@ -119,6 +119,7 @@ def save_message(
     content: str,
     citations: Any = None,
     attachments: Any = None,
+    display_content: str | None = None,
 ) -> Message:
     """Insert a single ``Message`` row.
 
@@ -127,6 +128,11 @@ def save_message(
     is merged into the row's JSONB column inside the same ``flush`` so a
     later SQLAlchemy failure rolls back BOTH the row and the merged
     attachment entries (REQ-ATT-1 atomicity).
+
+    Args:
+        display_content: Optional rendered content (e.g., Mermaid diagram) that
+            differs from the narrative content. Used when the displayed version
+            needs to be persisted separately.
     """
     _validate_role(role)
     msg = Message(
@@ -135,6 +141,7 @@ def save_message(
         user_id=user_id,
         role=role,
         content=content,
+        display_content=display_content,
         citations=_coerce_citations(citations),
         attachments=_coerce_attachments(attachments),
     )
@@ -273,10 +280,13 @@ def engram_mirror(
                 # Session may already exist (Engram returns 409/400). Safe to ignore.
                 pass
 
+            # topic_key isolates observations per (user, project) per REQ-6, ADR-011
+            topic_key = f"chat-{user_id}-{project_id}" if project_id else f"chat-{user_id}"
             result = client.save(
+                topic_key,
+                content=message.content,
                 session_id=session_id,
                 project=project,
-                content=message.content,
                 title=f"{message.role}:{message.id or 'pending'}",
                 observation_type="manual",
             )
