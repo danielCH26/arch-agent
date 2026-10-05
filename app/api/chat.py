@@ -509,7 +509,7 @@ async def chat(
                         if session is None:
                             return []
                         rows = list_recent(
-                            db, session.id, project_id=body.project_id, limit=10
+                            db, session.id, project_id=body.project_id, limit=5
                         )
                     finally:
                         db.close()
@@ -518,7 +518,11 @@ async def chat(
                     for row in reversed(rows):
                         if not row.content:
                             continue
-                        history.append({"role": row.role, "content": row.content})
+                        entry = {"role": row.role, "content": row.content}
+                        # Include display_content if present (for diagram messages)
+                        if row.display_content:
+                            entry["display_content"] = row.display_content
+                        history.append(entry)
                 except SQLAlchemyError as exc:
                     logger.warning(
                         "history read skipped user_id=%s project_id=%s: %s",
