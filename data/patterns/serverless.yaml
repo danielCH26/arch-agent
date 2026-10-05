@@ -1,0 +1,25 @@
+pattern_name: "Serverless (Function-as-a-Service)"
+category: "Distribuida"
+description: >
+  La lógica se despliega como funciones individuales que ejecuta el proveedor
+  cloud bajo demanda, sin gestionar servidores directamente.
+use_cases: >
+  Cargas de trabajo intermitentes o impredecibles, equipos sin capacidad de
+  operar infraestructura propia.
+when_not_to_use: >
+  No conviene para procesos de larga duración, latencia muy predecible o
+  requisitos estrictos de portabilidad entre proveedores.
+tradeoffs:
+  ventajas:
+    - "Sin gestión de servidores; se paga solo por ejecución real"
+    - "Escala automáticamente ante picos de tráfico sin intervención manual"
+  desventajas:
+    - "Cold starts pueden afectar la latencia en funciones poco usadas"
+    - "Dependencia fuerte del proveedor cloud (vendor lock-in)"
+decision_signals:
+  - pregunta: "¿La carga es intermitente y quieres pagar principalmente por ejecuciones reales?"
+    señal_patron: "sí -> Serverless (Function-as-a-Service)"
+  - pregunta: "¿El equipo quiere evitar administrar servidores o autoescalado directamente?"
+    señal_patron: "sí -> Serverless (Function-as-a-Service)"
+  - pregunta: "¿Las funciones son cortas y toleran cierta variabilidad de arranque?"
+    señal_patron: "sí -> Serverless (Function-as-a-Service)"

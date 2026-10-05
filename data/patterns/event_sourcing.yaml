@@ -1,0 +1,24 @@
+pattern_name: "Event sourcing"
+category: "Patrón de datos"
+description: >
+  Persiste eventos inmutables como fuente de verdad y reconstruye el estado
+  actual reproduciendo esos eventos.
+use_cases: >
+  Auditoría fuerte, historial completo, dominios financieros o transaccionales.
+when_not_to_use: >
+  No conviene cuando basta con guardar el estado actual y no existe una necesidad
+  fuerte de auditoría o reconstrucción histórica.
+tradeoffs:
+  ventajas:
+    - "Auditoría completa: cada cambio queda registrado como evento inmutable"
+    - "Permite reconstruir el estado en cualquier punto del tiempo (replay)"
+  desventajas:
+    - "Modelo mental más complejo que CRUD tradicional"
+    - "Las consultas requieren proyecciones separadas del log de eventos"
+decision_signals:
+  - pregunta: "¿Debes explicar exactamente cada cambio de estado por auditoría o cumplimiento?"
+    señal_patron: "sí -> Event sourcing"
+  - pregunta: "¿Necesitas reconstruir el estado de una entidad en una fecha pasada?"
+    señal_patron: "sí -> Event sourcing"
+  - pregunta: "¿El dominio puede modelarse claramente como eventos de negocio inmutables?"
+    señal_patron: "sí -> Event sourcing"

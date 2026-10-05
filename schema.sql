@@ -1,4 +1,4 @@
--- =============================================================================
+--- =============================================================================
 -- Schema inicial de arch-agent (aplicado por scripts/init_db.py).
 --
 -- Las migraciones incrementales viven en migrations/NNNN_*.sql (ver
@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS architect_patterns (
     description TEXT,
     use_cases TEXT,
     tradeoffs JSONB,
+    when_not_to_use TEXT,
+    decision_signals JSONB,
     embedding vector(384),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -95,6 +97,23 @@ CREATE INDEX IF NOT EXISTS idx_architect_patterns_embedding
 
 CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
     ON architect_patterns (category);
+
+CREATE TABLE IF NOT EXISTS architect_pattern_chunks (
+    id SERIAL PRIMARY KEY,
+    pattern_id INTEGER NOT NULL REFERENCES architect_patterns(id) ON DELETE CASCADE,
+    chunk_type VARCHAR(50) NOT NULL,
+    chunk_text TEXT NOT NULL,
+    embedding vector(384),
+    chunk_metadata JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_chunks_embedding
+    ON architect_pattern_chunks USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_chunks_pattern_id
+    ON architect_pattern_chunks (pattern_id);
 
 -- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
 -- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
@@ -135,3 +154,68 @@ ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFER
 -- del seed. El demo_user NO debe poder autenticarse nunca.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- =============================================================================
+-- F12 — capability engram-conversation-memory (issue #14, migration 0008)
+-- Tabla messages: source-of-truth para el historial de chat.
+-- Postgres guarda cada turn (user + assistant) en una sola transacción
+-- antes del yield 'event: done'; Engram recibe un mirror fire-and-forget.
+-- Ver docs/adr/011-engram-conversation-mirror.md y openspec/specs/engram-conversation-memory.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGSERIAL PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(16) NOT NULL,
+    content TEXT NOT NULL,
+    citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+    attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    engram_observation_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT messages_role_check CHECK (role IN ('user','assistant','system'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_id_created_at
+    ON messages (session_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
+    ON messages (user_id, project_id, created_at DESC);
+
+-- =============================================================================
+-- F13 — capability chat-attachments (issue #17, migration 0011, REQ-EM-DELTA-1)
+-- Filename renumbered from 0009 in PR #76 review fix #3 to avoid collision
+-- with PR #63's 0008_add_approvals_decision_check.sql.
+-- Idempotent ALTER for DBs created by init_db.py BEFORE migration 0011 ran.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- approvals.project_id (migration 0016) -- fix de aislamiento entre
+-- proyectos: session_id solo no alcanza porque sessions es 1 fila por
+-- usuario, no por proyecto (ver hallazgo #1, revisión feature/hu6-diagrama).
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_approvals_project_phase
+    ON approvals (project_id, phase);
+
+-- approvals.attachment_id (migration 0017) -- decisión POR diagrama: UUID del
+-- adjunto (messages.attachments[].id) sobre el que se decidió. Permite que el
+-- chat y el historial recuerden qué diagramas ya tienen una decisión.
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS attachment_id VARCHAR(64);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_attachment_id
+    ON approvals (attachment_id);
+
+-- =============================================================================
+-- F14 — display_content (migracion 0015). Idempotente para DBs creadas por
+-- init_db.py antes de que corriera la migracion 0015.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS display_content TEXT NULL;
+
+-- architect_pattern_chunks.chunk_metadata (migration 0009)
+ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;

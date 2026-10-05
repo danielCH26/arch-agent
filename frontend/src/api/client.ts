@@ -1,4 +1,5 @@
 import { authStore } from '../stores/authStore'
+import { redirectToLogin } from './navigation'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -117,8 +118,7 @@ export function streamErrorMessage(payload: unknown, fallback = UNEXPECTED_ERROR
  */
 export function handleUnauthorized(): ApiError {
   void authStore.getState().logout()
-  // replace: no deja la página protegida en el historial.
-  window.location.replace('/login')
+  redirectToLogin()
   return new ApiError(401, STATUS_MESSAGES[401])
 }
 

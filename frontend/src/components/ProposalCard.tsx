@@ -31,7 +31,11 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   const [comment, setComment] = useState('')
 
   useEffect(() => {
-    void load(projectId)
+    // Si ya hay una propuesta de este proyecto en curso, no se recarga:
+    // load() reinicia el estado y cortaría el stream.
+    const { activity, current } = proposalsStore.getState()
+    const streamingHere = (activity === 'generating' || activity === 'modifying') && current?.projectId === projectId
+    if (!streamingHere) void load(projectId)
     return () => reset()
   }, [projectId, load, reset])
 

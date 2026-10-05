@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
+import { ApiError } from '../api/client'
 import { advancePhase, getProject, getProjectPhase, markReady, PhaseInfo, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
@@ -21,6 +22,7 @@ export function ChatPage() {
 
 function ChatPageContent() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const projectId = Number(id)
   const [project, setProject] = useState<Project | null>(null)
   const [phase, setPhase] = useState<PhaseInfo | null>(null)
@@ -54,7 +56,17 @@ function ChatPageContent() {
         projectsStore.getState().setCurrentProject(projectData)
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')
+        if (cancelled) return
+        // Proyecto ajeno o eliminado: volver a "Mis proyectos" con un aviso.
+        if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+          projectsStore.getState().setCurrentProject(null)
+          navigate('/projects', {
+            replace: true,
+            state: { message: 'Ese proyecto ya no está disponible para tu usuario.' },
+          })
+          return
+        }
+        setError(err instanceof Error ? err.message : 'Error al cargar el proyecto')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -63,7 +75,7 @@ function ChatPageContent() {
     return () => {
       cancelled = true
     }
-  }, [projectId])
+  }, [projectId, navigate])
 
   const refreshAfterPhaseChange = useCallback(async () => {
     const [projectData, phaseData] = await Promise.all([getProject(projectId), getProjectPhase(projectId)])

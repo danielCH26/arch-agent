@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -137,13 +137,27 @@ def _extract_json_object(text: str) -> str:
     return text[start : end + 1]
 
 
-def _invoke_json(model: BaseChatModel, system_prompt: str, context: str) -> dict:
+def _invoke_json(
+    model: BaseChatModel,
+    system_prompt: str,
+    context: str,
+    callbacks: Optional[list[Any]] = None,
+    run_name: Optional[str] = None,
+) -> dict:
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=context),
     ]
     try:
-        response = model.invoke(messages)
+        if callbacks:
+            # F14: con callbacks (ej. Langfuse) la llamada queda trazada.
+            # run_name distingue estas trazas de las del chat en la UI.
+            config: dict[str, Any] = {"callbacks": callbacks}
+            if run_name:
+                config["run_name"] = run_name
+            response = model.invoke(messages, config=config)
+        else:
+            response = model.invoke(messages)
     except Exception as e:
         # Cualquier falla real de la llamada (429 rate limit, timeout, error
         # de red o del proveedor) -- no solo errores de parseo de JSON.
@@ -164,6 +178,7 @@ def next_step(
     model: BaseChatModel,
     history: list[dict],
     project_description: str = "",
+    callbacks: Optional[list[Any]] = None,
 ) -> ElicitationDecision:
     """
     Decide la siguiente pregunta progresiva, o si el contexto ya es
@@ -173,6 +188,7 @@ def next_step(
         model: modelo LangChain ya construido (llm_loader.build_langchain_model)
         history: lista de {"pregunta": str, "respuesta": str} ya respondidas
         project_description: descripción inicial del proyecto, si existe
+        callbacks: handlers de LangChain opcionales (ej. Langfuse, F14)
 
     Returns:
         ElicitationDecision(done, question, reason)
@@ -192,7 +208,13 @@ def next_step(
         f"Preguntas y respuestas hasta ahora:\n{_history_to_text(history)}"
     )
 
-    data = _invoke_json(model, NEXT_STEP_SYSTEM_PROMPT, context)
+    data = _invoke_json(
+        model,
+        NEXT_STEP_SYSTEM_PROMPT,
+        context,
+        callbacks=callbacks,
+        run_name="elicitation-next-step",
+    )
     if "done" not in data:
         raise ElicitationAgentError(f"Falta la clave 'done' en la respuesta del modelo: {data}")
 
@@ -228,6 +250,7 @@ def generate_summary(
     model: BaseChatModel,
     history: list[dict],
     project_description: str = "",
+    callbacks: Optional[list[Any]] = None,
 ) -> dict:
     """
     Genera el resumen estructurado del contexto capturado (criterio de
@@ -238,4 +261,10 @@ def generate_summary(
         f"{project_description or '(no proporcionada)'}\n\n"
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
     )
-    return _invoke_json(model, SUMMARY_SYSTEM_PROMPT, context)
+    return _invoke_json(
+        model,
+        SUMMARY_SYSTEM_PROMPT,
+        context,
+        callbacks=callbacks,
+        run_name="elicitation-summary",
+    )

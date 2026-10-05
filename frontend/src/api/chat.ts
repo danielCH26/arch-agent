@@ -246,11 +246,12 @@ export async function fetchChatHistory(
 
   return payload.messages.map((message) => ({
     ...message,
-    attachments: normalizeAttachments(message.attachments),
+    attachments: _normaliseHistoryAttachments(message.attachments),
   }))
 }
 
-function normalizeAttachments(value: unknown): Attachment[] {
+/** Descarta adjuntos malformados del historial; conserva `id` y `decision`. */
+export function _normaliseHistoryAttachments(value: unknown): Attachment[] {
   if (!Array.isArray(value)) return []
   return value.filter(
     (attachment): attachment is Attachment =>

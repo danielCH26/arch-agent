@@ -9,10 +9,13 @@ interface DiagramHistoryPanelProps {
   onClose: () => void
 }
 
+// Estado de cada versión, solo informativo. Las decisiones (aprobar /
+// rechazar / pedir cambios) se toman únicamente en el chat, cuando se le
+// muestra el diagrama al usuario.
 const labels: Record<DiagramDecision, string> = {
-  approve: 'Aprobado',
-  reject: 'Rechazado',
-  modify: 'Cambios solicitados',
+  approve: '✅ Aprobado',
+  reject: '❌ Rechazado',
+  modify: '✏️ Cambios solicitados',
 }
 
 const styles: Record<DiagramDecision, string> = {
@@ -76,7 +79,7 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
 
         {loading && <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-200 border-b-sky-600" /></div>}
         {!loading && error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-        {!loading && !error && diagrams.length === 0 && <p className="py-8 text-center text-sm text-gray-500">Todavía no hay diagramas generados.</p>}
+        {!loading && !error && diagrams.length === 0 && <p className="py-8 text-center text-sm text-gray-500">Todavía no hay diagramas generados en este proyecto.</p>}
 
         <div className="space-y-4">
           {diagrams.map((diagram) => (
@@ -91,6 +94,12 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
             </article>
           ))}
         </div>
+
+        {diagrams.length > 0 && (
+          <p className="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-500">
+            Aquí solo se consulta el historial. Las decisiones sobre un diagrama se toman en el chat, cuando se te muestra.
+          </p>
+        )}
       </section>
     </div>
   )

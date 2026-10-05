@@ -1,0 +1,25 @@
+pattern_name: "CQRS (Command Query Responsibility Segregation)"
+category: "Patrón de datos"
+description: >
+  Separa el modelo de escritura (comandos) del modelo de lectura (consultas),
+  permitiendo optimizar cada uno de forma independiente.
+use_cases: >
+  Sistemas con patrones de lectura y escritura muy distintos entre sí, o con
+  necesidad de escalar las lecturas por separado.
+when_not_to_use: >
+  Es mala idea para CRUD sencillo o dominios donde lecturas y escrituras tienen
+  el mismo volumen y forma.
+tradeoffs:
+  ventajas:
+    - "Permite optimizar y escalar lecturas y escrituras de forma independiente"
+    - "Modelos de lectura simplificados, adaptados exactamente a cada vista"
+  desventajas:
+    - "Añade complejidad de sincronización entre el modelo de escritura y de lectura"
+    - "Sobredimensionado para sistemas con carga de lectura/escritura simple"
+decision_signals:
+  - pregunta: "¿Las consultas tienen mucha más carga o requisitos de forma distintos que las escrituras?"
+    señal_patron: "sí -> CQRS (Command Query Responsibility Segregation)"
+  - pregunta: "¿Necesitas vistas de lectura denormalizadas y optimizadas por pantalla o reporte?"
+    señal_patron: "sí -> CQRS (Command Query Responsibility Segregation)"
+  - pregunta: "¿El equipo acepta consistencia eventual entre el modelo de escritura y lectura?"
+    señal_patron: "sí -> CQRS (Command Query Responsibility Segregation)"

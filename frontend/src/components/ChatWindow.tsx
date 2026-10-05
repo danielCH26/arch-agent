@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { chatStore, HISTORY_LIMIT } from '../stores/chatStore'
+import { projectsStore } from '../stores/projectsStore'
+import { proposalsStore } from '../stores/proposalsStore'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
@@ -26,6 +28,13 @@ interface ChatWindowProps {
 
 export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
+  // Fase: la que pasa la página o, si no viene, la del proyecto activo.
+  const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
+  const currentPhase = phase ?? storePhase
+  // La tarjeta de propuesta se mantiene montada mientras se genera o
+  // modifica una propuesta, aunque la fase cambie durante el stream.
+  const proposalStreaming = proposalsStore((s) => s.activity === 'generating' || s.activity === 'modifying')
+  const showProposalCard = currentPhase === 'propuesta' || proposalStreaming
   const messagesEndRef = useRef<HTMLDivElement>(null)
   // Anuncios para lectores de pantalla: la respuesta llega por fragmentos,
   // así que se anuncia una sola vez al terminar en vez de marcar la lista
@@ -72,7 +81,7 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         {announcement}
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {phase === 'propuesta' && (
+        {showProposalCard && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
         )}
         {loadingHistory && messages.length === 0 && <ChatHistorySkeleton />}

@@ -1,0 +1,29 @@
+pattern_name: "Clean Architecture"
+category: "Monolítica"
+description: >
+  Organiza la aplicación alrededor de reglas de negocio y casos de uso en el
+  centro, haciendo que las dependencias del código apunten hacia adentro. La UI,
+  la base de datos, frameworks y servicios externos quedan como detalles de
+  infraestructura que dependen del núcleo, no al revés.
+use_cases: >
+  Aplicaciones con dominio importante, reglas de negocio que deben probarse sin
+  infraestructura, y equipos que necesitan mantener independencia frente a
+  cambios de framework, base de datos o servicios externos.
+when_not_to_use: >
+  No conviene para aplicaciones CRUD pequeñas o prototipos de corta vida donde
+  separar entidades, casos de uso, adaptadores e infraestructura introduce más
+  estructura de la que el equipo necesita.
+tradeoffs:
+  ventajas:
+    - "Aísla la lógica de negocio de frameworks, UI, base de datos y servicios externos"
+    - "Facilita pruebas del núcleo de la aplicación mediante interfaces y dependencias invertidas"
+  desventajas:
+    - "Añade más capas, proyectos e interfaces que una estructura simple por carpetas"
+    - "Puede solaparse con arquitectura hexagonal si el equipo no define límites claros"
+decision_signals:
+  - pregunta: "¿Las reglas de negocio deben probarse sin levantar base de datos, framework web ni servicios externos?"
+    señal_patron: "sí -> Clean Architecture"
+  - pregunta: "¿Esperas cambiar detalles de infraestructura sin tocar entidades ni casos de uso?"
+    señal_patron: "sí -> Clean Architecture"
+  - pregunta: "¿El dominio tiene suficientes reglas y casos de uso como para justificar capas explícitas?"
+    señal_patron: "sí -> Clean Architecture"

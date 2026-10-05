@@ -6,6 +6,7 @@ Issue: #8 - HU13 Subir archivos PDF/MD al RAG
 Funciones puras (testeables sin DB ni Chainlit):
 - validate_file_extension(filename) -> bool
 - validate_file_size(size_bytes, max_bytes) -> bool
+- sniff_file_type(file_path) -> str
 - load_document(file_path) -> list[Document]
 - split_documents(documents, chunk_size, chunk_overlap) -> list[Document]
 - process_file(file_path) -> list[Document] (orquesta load + split)
@@ -25,6 +26,7 @@ ALLOWED_EXTENSIONS = {".pdf", ".md"}
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
+PDF_MAGIC = b"%PDF-"
 
 
 class DocumentProcessingError(Exception):
@@ -58,6 +60,21 @@ def validate_file_size(
         True si el tamaño es válido (> 0 y <= max_bytes)
     """
     return 0 < size_bytes <= max_bytes
+
+
+def sniff_file_type(file_path: str) -> str:
+    """
+    Detecta el tipo real del archivo por sus bytes iniciales, no por la
+    extensión declarada. Protege contra un PDF renombrado a .md (o viceversa)
+    que pasaría el filtro de extensión y sería procesado por el parser
+    equivocado.
+
+    Returns:
+        "pdf" si el archivo empieza con la firma %PDF-, "md" en caso contrario.
+    """
+    with open(file_path, "rb") as f:
+        header = f.read(5)
+    return "pdf" if header == PDF_MAGIC else "md"
 
 
 def load_document(file_path: str) -> List[Document]:
@@ -150,8 +167,18 @@ def process_file(file_path: str) -> List[Document]:
         Lista de chunks con metadata preservada
 
     Raises:
-        DocumentProcessingError: si hay error en cualquier paso
+        DocumentProcessingError: si hay error en cualquier paso, o si la
+            extensión declarada no coincide con el contenido real detectado
+            (ej. un PDF renombrado a .md).
     """
+    ext = Path(file_path).suffix.lower().lstrip(".")
+    real_type = sniff_file_type(file_path)
+    if ext != real_type:
+        raise DocumentProcessingError(
+            f"La extensión declarada (.{ext}) no coincide con el contenido "
+            f"real del archivo (detectado: {real_type}). Verificá el archivo."
+        )
+
     documents = load_document(file_path)
     # Sanitize NUL characters before splitting (some PDFs extract with NUL bytes)
     for doc in documents:

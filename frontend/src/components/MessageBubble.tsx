@@ -527,10 +527,13 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
   )
 }
 
+// Zoom inicial del visor de diagramas (1 = ancho de la ventana).
+const DEFAULT_DIAGRAM_ZOOM = 2
+
 const decisionLabels: Record<DiagramDecision, string> = {
   approve: 'Diagrama aprobado.',
   reject: 'Diagrama rechazado.',
-  modify: 'Cambios solicitados para el diagrama.',
+  modify: 'Se registró tu solicitud de cambios.',
 }
 
 function DiagramAttachments({
@@ -552,6 +555,7 @@ function DiagramAttachments({
   const [submitting, setSubmitting] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
+  const [diagramZoom, setDiagramZoom] = useState(DEFAULT_DIAGRAM_ZOOM)
   // Ajustes ya registrados en esta sesión, para reenviarlos si la respuesta
   // del agente falló.
   const [sentAdjustments, setSentAdjustments] = useState<Record<number, { prompt: string; display: string }>>({})
@@ -562,7 +566,8 @@ function DiagramAttachments({
   // Envía el mensaje al chat; false si no se pudo (hay otra respuesta en curso).
   const send = async (text: string, displayText?: string) => {
     if (!onSendMessage) return false
-    if ((await onSendMessage(text, displayText)) === false) {
+    const result = displayText === undefined ? onSendMessage(text) : onSendMessage(text, displayText)
+    if ((await result) === false) {
       setError('Hay una respuesta en curso. Inténtalo de nuevo cuando termine.')
       return false
     }
@@ -618,14 +623,17 @@ function DiagramAttachments({
           <div key={`${attachment.id ?? attachment.url}-${index}`} className="rounded-xl border border-sky-200 bg-white/70 p-2">
             <button
               type="button"
-              onClick={() => setExpandedUrl(attachment.url)}
+              onClick={() => {
+                setDiagramZoom(DEFAULT_DIAGRAM_ZOOM)
+                setExpandedUrl(attachment.url)
+              }}
               className="block w-full cursor-zoom-in rounded-lg"
               aria-label={`Ampliar ${attachment.filename || 'diagrama'}`}
-              title="Haz clic para ampliar"
             >
               <img
                 src={attachment.url}
                 alt={attachment.filename || 'Diagrama generado'}
+                title="Click para ampliar"
                 className="max-h-[420px] w-full rounded-lg bg-white object-contain"
                 loading="lazy"
               />
@@ -656,7 +664,7 @@ function DiagramAttachments({
                     }}
                     className="rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
                   >
-                    Aprobar
+                    ✅ Aprobar
                   </button>
                   <button
                     type="button"
@@ -664,7 +672,7 @@ function DiagramAttachments({
                     onClick={() => void recordDecision(index, 'reject')}
                     className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
                   >
-                    Rechazar
+                    ❌ Rechazar
                   </button>
                   <button
                     type="button"
@@ -672,13 +680,13 @@ function DiagramAttachments({
                     onClick={() => { setFeedbackIndex(index); setFeedback(''); setError('') }}
                     className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
                   >
-                    Solicitar cambios
+                    ✏️ Solicitar cambios
                   </button>
                 </div>
 
                 {feedbackIndex === index && (
                   <div className="mt-3 space-y-2">
-                    <label htmlFor={`diagram-feedback-${index}`} className="block text-xs font-medium text-gray-700">¿Qué debe ajustarse?</label>
+                    <label htmlFor={`diagram-feedback-${index}`} className="block text-xs font-medium text-gray-700">¿Qué debe ajustarse en el diagrama?</label>
                     <textarea
                       id={`diagram-feedback-${index}`}
                       value={feedback}
@@ -706,18 +714,69 @@ function DiagramAttachments({
           ref={lightboxRef}
           role="dialog"
           aria-modal="true"
-          aria-label="Diagrama ampliado"
-          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-slate-950/80 p-6"
-          onClick={() => setExpandedUrl(null)}
+          aria-label="Visor de diagrama ampliado"
+          className="fixed inset-0 z-50 bg-slate-950/90"
         >
-          <button
-            type="button"
-            onClick={() => setExpandedUrl(null)}
-            className="absolute right-4 top-4 rounded-lg bg-black/60 px-3 py-1.5 text-sm font-medium text-white hover:bg-black/80"
-          >
-            Cerrar
-          </button>
-          <img src={expandedUrl} alt="Diagrama ampliado" className="max-h-full max-w-full rounded-xl bg-white shadow-2xl" />
+          {/* Controles de zoom (Esc también cierra). */}
+          <div className="fixed bottom-4 left-1/2 z-10 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white p-2 text-sm shadow-2xl">
+            <span className="px-2 font-semibold text-gray-800">Controles</span>
+            <button
+              type="button"
+              onClick={() => setDiagramZoom((zoom) => Math.max(1, zoom - 0.5))}
+              className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+              aria-label="Alejar diagrama"
+            >
+              -
+            </button>
+            <span
+              className="min-w-14 text-center font-medium text-gray-700"
+              role="status"
+              aria-label={`Zoom actual ${Math.round(diagramZoom * 100)}%`}
+            >
+              {Math.round(diagramZoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={() => setDiagramZoom((zoom) => Math.min(6, zoom + 0.5))}
+              className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+              aria-label="Acercar diagrama"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              onClick={() => setDiagramZoom(DEFAULT_DIAGRAM_ZOOM)}
+              className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+            >
+              {DEFAULT_DIAGRAM_ZOOM * 100}%
+            </button>
+            <a
+              href={expandedUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+            >
+              Abrir original
+            </a>
+            <button
+              type="button"
+              onClick={() => setExpandedUrl(null)}
+              className="rounded bg-solid-blue-700 px-3 py-1 font-medium text-white hover:bg-solid-blue-800"
+              aria-label="Cerrar visor de diagrama"
+            >
+              Cerrar
+            </button>
+          </div>
+          <div className="h-full w-full overflow-auto px-6 pb-24 pt-6">
+            <div className="flex min-h-full min-w-full items-start justify-center">
+              <img
+                src={expandedUrl}
+                alt="Diagrama ampliado"
+                className="h-auto max-w-none rounded bg-white shadow-2xl"
+                style={{ width: `${diagramZoom * 100}%` }}
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>

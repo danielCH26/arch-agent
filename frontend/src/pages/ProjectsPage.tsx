@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { projectsStore } from '../stores/projectsStore'
 import { ProjectCard } from '../components/ProjectCard'
 import { CreateProjectDialog } from '../components/CreateProjectDialog'
 import { ProjectCardsSkeleton } from '../components/Skeleton'
 
 export function ProjectsPage() {
+  const location = useLocation()
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const { projects, error, hasLoaded, fetchProjects } = projectsStore()
+  // Mensaje al llegar redirigido (p. ej. desde un proyecto que ya no existe).
+  const routeMessage = (location.state as { message?: string } | null)?.message
 
   useEffect(() => {
     fetchProjects()
@@ -33,6 +37,12 @@ export function ProjectsPage() {
       {error && (
         <div role="alert" className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
           {error}
+        </div>
+      )}
+
+      {routeMessage && (
+        <div role="status" className="mb-4 rounded-lg bg-amber-50 p-4 text-amber-800">
+          {routeMessage}
         </div>
       )}
 

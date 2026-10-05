@@ -1,0 +1,28 @@
+pattern_name: "Monolito modular (Modular Monolith)"
+category: "Monolítica"
+description: >
+  Un único despliegue, pero organizado internamente en módulos con límites
+  explícitos (bounded contexts), como paso intermedio antes de migrar a
+  microservicios. Es una práctica de la industria, con Shopify como caso público
+  de referencia frecuente, más que un patrón atribuido a un autor o publicación
+  fundacional única.
+use_cases: >
+  Equipos que quieren orden y límites claros entre dominios sin asumir todavía
+  el costo operativo de microservicios.
+when_not_to_use: >
+  No resuelve bien casos donde cada módulo necesita escalar o desplegarse por
+  separado desde el inicio.
+tradeoffs:
+  ventajas:
+    - "Mantiene la simplicidad operativa de un solo despliegue"
+    - "Facilita una futura migración a microservicios si el proyecto crece"
+  desventajas:
+    - "Requiere disciplina del equipo para no romper los límites entre módulos"
+    - "No resuelve el escalado independiente de módulos, solo lo organiza"
+decision_signals:
+  - pregunta: "¿Necesitas separar dominios internos sin pagar aún el costo de microservicios?"
+    señal_patron: "sí -> Monolito modular (Modular Monolith)"
+  - pregunta: "¿Quieres preservar un despliegue único mientras defines bounded contexts?"
+    señal_patron: "sí -> Monolito modular (Modular Monolith)"
+  - pregunta: "¿Existe la posibilidad de extraer módulos a servicios si el producto crece?"
+    señal_patron: "sí -> Monolito modular (Modular Monolith)"

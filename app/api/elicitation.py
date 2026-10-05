@@ -1,3 +1,4 @@
+import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,11 +9,13 @@ from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
+from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import build_langchain_model, LLMConfigError
-from app.core.session_store import load_session_state, save_session_state
-from app.models.approval import Approval
+from app.core.session_store import load_session_state, record_approval_decision, save_session_state
 from app.models.project import Project
 from app.models.session import UserSession
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["elicitation"])
 
@@ -21,11 +24,10 @@ router = APIRouter(prefix="/api/projects", tags=["elicitation"])
 # para no desalinearse si el orden de fases cambia.
 PHASE = AVAILABLE_PHASES[0]  # "requerimientos"
 
-DECISION_TO_DB = {
-    "approve": "approved",
-    "modify": "modified",
-    "reject": "rejected",
-}
+# Hallazgo #8 (revisión feature/hu6-diagrama): este módulo tenía su propio
+# `DECISION_TO_DB` + `db.add(Approval(...))`, duplicando exactamente lo que
+# ya centraliza `record_approval_decision` en session_store.py (usado por
+# proposals.py y diagrams.py). Se elimina la duplicación -- ver más abajo.
 
 
 # --- Pydantic models --------------------------------------------------------
@@ -169,10 +171,18 @@ async def send_elicitation_message(
             detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
         )
 
+    # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).
+    langfuse_handler = get_langfuse_handler()
+    callbacks = [langfuse_handler] if langfuse_handler is not None else None
+
     try:
-        decision = elicitation_agent.next_step(model, history, project.description or "")
+        decision = elicitation_agent.next_step(
+            model, history, project.description or "", callbacks=callbacks
+        )
         if decision.done:
-            resumen = elicitation_agent.generate_summary(model, history, project.description or "")
+            resumen = elicitation_agent.generate_summary(
+                model, history, project.description or "", callbacks=callbacks
+            )
         else:
             resumen = None
     except elicitation_agent.ElicitationLLMError as e:
@@ -185,10 +195,27 @@ async def send_elicitation_message(
             f"unos segundos. Detalle: {e}",
         )
     except elicitation_agent.ElicitationAgentError as e:
+        # El detalle técnico (JSON crudo, a veces con un <think> truncado de
+        # modelos de razonamiento que se quedan sin tokens de salida antes
+        # de llegar al JSON) es ruido para el usuario y no le dice qué
+        # hacer -- se registra para debug y se responde con un mensaje
+        # accionable en su lugar.
+        logger.error(
+            "ElicitationAgentError en project_id=%s: %s", project_id, e
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"El agente no pudo procesar la elicitación: {e}",
+            detail="El modelo de IA no devolvió una respuesta válida esta vez "
+            "(puede pasar con algunos modelos de razonamiento que se quedan "
+            "sin espacio de salida). Intenta de nuevo o prueba con otro "
+            "modelo en la configuración de LLM.",
         )
+    finally:
+        # F14: exportar la traza de inmediato -- no depender solo del ciclo
+        # en segundo plano del SDK, que puede no alcanzar a correr si el
+        # proceso se reinicia justo después de esta respuesta.
+        if callbacks:
+            flush_langfuse()
 
     phase_data = {
         "preguntas_respuestas": history,
@@ -235,16 +262,20 @@ async def decide_elicitation(
 
     db = SessionLocal()
     try:
+        # Hallazgo #8 (revisión feature/hu6-diagrama, corrección post-revisión):
+        # antes se cortaba acá con 400 si todavía no existía una `UserSession`,
+        # a diferencia de proposals.py/diagrams.py que la crean de forma
+        # perezosa vía `record_approval_decision`. En la práctica es casi
+        # inalcanzable (no se llega a tener un `resumen` sin haber pasado
+        # antes por /elicitation/message, que ya crea la sesión), pero el
+        # criterio quedaba desalineado entre endpoints. Ahora: la ausencia de
+        # sesión se trata igual que la ausencia de `resumen` -- mismo mensaje
+        # y código que ya existía para ese caso -- en vez de un 400 aparte.
         session_row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
-        if session_row is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No hay una sesión de elicitación activa para este proyecto.",
-            )
 
         # Copia nueva del dict, no una referencia al mismo objeto que
         # session_row.engram_state -- ver nota de flag_modified() más abajo.
-        engram_state = dict(session_row.engram_state or {})
+        engram_state = dict((session_row.engram_state if session_row else None) or {})
         phase_data = _phase_data_from_engram(engram_state, project_id)
         if phase_data.get("resumen") is None:
             raise HTTPException(
@@ -255,14 +286,27 @@ async def decide_elicitation(
 
         project = db.query(Project).filter(Project.id == project_id).first()
 
-        db.add(
-            Approval(
-                session_id=session_row.id,
-                phase=PHASE,
-                decision=DECISION_TO_DB[body.decision],
-                feedback=body.feedback,
-            )
+        # Antes: `db.add(Approval(...))` construido a mano con un
+        # `DECISION_TO_DB` propio de este módulo (hallazgo #8). Ahora usa el
+        # mismo helper que proposals.py/diagrams.py, y le pasa `project_id`
+        # (migration 0016) para que esta decisión no se filtre como
+        # "aprobada" en otro proyecto del mismo usuario (hallazgo #1).
+        # También crea la `UserSession` si todavía no existiera (no debería
+        # pasar llegados a este punto, dado el chequeo de `resumen` arriba,
+        # pero mantiene el mismo criterio unificado que el resto de los
+        # endpoints en vez de asumirlo).
+        approval = record_approval_decision(
+            db,
+            user_id=user_id,
+            phase=PHASE,
+            decision=body.decision,
+            feedback=body.feedback,
+            project_id=project_id,
         )
+        if session_row is None:
+            session_row = (
+                db.query(UserSession).filter(UserSession.id == approval.session_id).first()
+            )
 
         if body.decision == "approve":
             project.phase_ready = True

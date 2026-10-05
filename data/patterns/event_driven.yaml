@@ -1,0 +1,25 @@
+pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
+category: "Distribuida"
+description: >
+  Los componentes se comunican mediante eventos publicados a un bus o cola, en
+  vez de llamadas directas, favoreciendo el bajo acoplamiento temporal.
+use_cases: >
+  Sistemas con notificaciones en tiempo real, flujos asíncronos, o integraciones
+  entre módulos que no deben bloquearse entre sí.
+when_not_to_use: >
+  No es recomendable para flujos estrictamente transaccionales y simples donde
+  una llamada síncrona es suficiente.
+tradeoffs:
+  ventajas:
+    - "Bajo acoplamiento: los productores no conocen a los consumidores"
+    - "Buen ajuste natural para notificaciones y procesamiento asíncrono"
+  desventajas:
+    - "Depurar el flujo completo de un evento es más difícil (trazabilidad)"
+    - "Requiere infraestructura de mensajería adicional (cola o bus de eventos)"
+decision_signals:
+  - pregunta: "¿Hay procesos que pueden completarse de forma asíncrona sin bloquear al usuario?"
+    señal_patron: "sí -> Arquitectura orientada a eventos (Event-Driven)"
+  - pregunta: "¿Varios módulos deben reaccionar al mismo cambio sin depender entre sí?"
+    señal_patron: "sí -> Arquitectura orientada a eventos (Event-Driven)"
+  - pregunta: "¿Necesitas absorber picos de trabajo con colas y procesamiento diferido?"
+    señal_patron: "sí -> Arquitectura orientada a eventos (Event-Driven)"
