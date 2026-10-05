@@ -53,6 +53,11 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_MODEL: ${LLM_MODEL}
 
+      # Fallback LLM del backend (issue #98): si un usuario no configuro el
+      # suyo, la app consume la key de Groq del operador para servir el default.
+      # Si esta vacia, esos usuarios caen al error de "no hay LLM configurado".
+      GROQ_API_KEY: ${GROQ_API_KEY}
+
       # F13 — Puppeteer MCP sidecar (issue #17).
       PUPPETEER_MCP_URL: ${PUPPETEER_MCP_URL:-http://puppeteer-mcp:8931/mcp}
       PUPPETEER_RENDER_TIMEOUT_SECONDS: ${PUPPETEER_RENDER_TIMEOUT_SECONDS:-15}
