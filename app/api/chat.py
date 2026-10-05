@@ -657,7 +657,7 @@ def chat_history(
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, list[dict[str, Any]]]:
     """
-    GET /api/chat/history?project_id=<int>&limit=<int:1..50,default=5>
+    GET /api/chat/history?project_id=<int>&limit=<int:1..50,default=50>
 
     Returns the last ``limit`` messages for ``(user_id, project_id)`` ordered
     newest-first. Cross-user access returns 404 (REQ-7, do not leak existence).
