@@ -13,12 +13,14 @@ separación que ya usa model_classifier.py en este mismo paquete.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+_LOGGER = logging.getLogger(__name__)
 # Reglas duras que NO dependen del LLM -- evitan que el agente "se rinda"
 # demasiado pronto o se alargue indefinidamente, sin importar lo que
 # decida el modelo.
@@ -49,6 +51,20 @@ a lo largo de la conversación (no todo en una sola pregunta):
    obligatoriamente evitadas.
 4. Calidad: rendimiento, seguridad, disponibilidad, y cualquier otro \
    requerimiento no funcional relevante.
+
+Reglas de granularidad para cada pregunta (Issue #100):
+- Una pregunta cubre UNA sola dimensión (usuarios, funcionalidades, \
+restricciones o calidad). Nunca dos en la misma pregunta.
+- Prohibida la pregunta compuesta: no unir dos interrogaciones con "y/e/o" \
+ni apilar varios bloques ¿...? en un mismo turno.
+- Granularidad: la pregunta debe poder responderse en una o dos oraciones. \
+Si la respuesta natural sería una lista, dividí en preguntas separadas \
+para los turnos siguientes.
+
+Ejemplos (solo ilustran la regla de arriba, no son preguntas nuevas):
+- MALA (compuesta): "¿Quiénes son los usuarios principales y qué \
+funcionalidades críticas necesitan?"
+- BUENA (granular): "¿Quiénes son los usuarios principales del sistema?"
 
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
@@ -101,6 +117,32 @@ class ElicitationDecision:
     done: bool
     question: Optional[str]
     reason: str
+
+
+# Instrucción correctiva efímera del reintento (Issue #100): solo viaja en
+# el contexto de ESTA llamada -- nunca se persiste en historial ni estado.
+_CORRECCION_PREGUNTA_COMPUESTA = (
+    "Tu pregunta anterior combinaba varios temas en una sola pregunta. "
+    "Devolvé en el mismo JSON UNA sola pregunta sobre UN solo tema, "
+    "sin 'y' que una dos interrogaciones."
+)
+
+
+def _es_pregunta_compuesta(question: str) -> bool:
+    """
+    Detector determinista de preguntas compuestas (Issue #100): cada bloque
+    interrogativo termina en '?', así que 2 o más cierres = 2 o más
+    preguntas en un mismo turno.
+
+    Heurística deliberadamente angosta para evitar falsos positivos: una
+    sola pregunta con "y" interno legítimo ("¿Qué frameworks y bases de
+    datos usan?") tiene UN solo '?' y NO se marca como compuesta -- ese
+    caso lo cubren las reglas del prompt, no este guardarraíl.
+    """
+    if not isinstance(question, str):
+        # Fail-open: un tipo inesperado no debe romper el flujo del agente.
+        return False
+    return question.count("?") >= 2
 
 
 def _history_to_text(history: list[dict]) -> str:
@@ -174,6 +216,66 @@ def _invoke_json(
         ) from e
 
 
+def _decision_from_data(data: dict) -> ElicitationDecision:
+    return ElicitationDecision(
+        done=bool(data["done"]),
+        question=data.get("question"),
+        reason=data.get("reason", ""),
+    )
+
+
+def _reintentar_pregunta_granular(
+    model: BaseChatModel,
+    decision: ElicitationDecision,
+    context: str,
+    callbacks: Optional[list[Any]],
+) -> ElicitationDecision:
+    """
+    Guardarraíl determinista (Issue #100): si la pregunta del modelo es
+    evidentemente compuesta, se reintenta UNA sola vez agregando una
+    instrucción correctiva al contexto. Si el reintento falla (error de
+    invocación/parseo o sigue compuesto) se hace fail-open: se devuelve la
+    pregunta original con un warning -- nunca se eleva el error al usuario.
+    """
+    try:
+        data = _invoke_json(
+            model,
+            NEXT_STEP_SYSTEM_PROMPT,
+            f"{context}\n\n{_CORRECCION_PREGUNTA_COMPUESTA}",
+            callbacks=callbacks,
+            run_name="elicitation-next-step",
+        )
+    except ElicitationAgentError:
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta falló al invocar o parsear el "
+            "JSON; se devuelve la pregunta original: %s",
+            decision.question,
+        )
+        return decision
+
+    if "done" not in data:
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió un JSON sin la clave "
+            "'done'; se devuelve la pregunta original: %s",
+            decision.question,
+        )
+        return decision
+
+    reintentada = _decision_from_data(data)
+    if (
+        not reintentada.done
+        and reintentada.question
+        and not _es_pregunta_compuesta(reintentada.question)
+    ):
+        return reintentada
+
+    _LOGGER.warning(
+        "Pregunta compuesta devuelta pese al reintento correctivo: %s",
+        decision.question,
+    )
+    return decision
+
+
 def next_step(
     model: BaseChatModel,
     history: list[dict],
@@ -218,11 +320,7 @@ def next_step(
     if "done" not in data:
         raise ElicitationAgentError(f"Falta la clave 'done' en la respuesta del modelo: {data}")
 
-    decision = ElicitationDecision(
-        done=bool(data["done"]),
-        question=data.get("question"),
-        reason=data.get("reason", ""),
-    )
+    decision = _decision_from_data(data)
 
     if len(history) < MIN_QUESTIONS and decision.done:
         # Regla dura: no se puede terminar antes del mínimo, sin importar
@@ -242,6 +340,16 @@ def next_step(
             question=None,
             reason=f"Forzado: se alcanzó el máximo de preguntas ({MAX_QUESTIONS}).",
         )
+
+    if (
+        not decision.done
+        and decision.question
+        and _es_pregunta_compuesta(decision.question)
+    ):
+        # Issue #100: guardarraíl determinista contra preguntas compuestas.
+        # Va después de las reglas duras para no gastar un reintento en una
+        # pregunta que igual sería descartada (ej. máximo alcanzado).
+        decision = _reintentar_pregunta_granular(model, decision, context, callbacks)
 
     return decision
 
