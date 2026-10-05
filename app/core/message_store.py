@@ -129,6 +129,12 @@ def save_message(
     later SQLAlchemy failure rolls back BOTH the row and the merged
     attachment entries (REQ-ATT-1 atomicity).
 
+    REQ-EM-DELTA-2: ``display_content`` is coerced to ``None`` when empty
+    or whitespace-only. Most turns see ``display_content is None``; only
+    "Solicitar cambios" on a Mermaid diagram (or similar user-bubble
+    override) sets it. Persisting whitespace would defeat the
+    ``row.display_content or row.content`` fallback on read.
+
     Args:
         display_content: Optional rendered content (e.g., Mermaid diagram) that
             differs from the narrative content. Used when the displayed version
@@ -141,7 +147,9 @@ def save_message(
         user_id=user_id,
         role=role,
         content=content,
-        display_content=display_content,
+        # REQ-EM-DELTA-2: coerce empty / whitespace-only to None so
+        # `row.display_content or row.content` on read picks the right one.
+        display_content=(display_content.strip() or None) if display_content else None,
         citations=_coerce_citations(citations),
         attachments=_coerce_attachments(attachments),
     )

@@ -284,10 +284,12 @@ def _format_history_recap(history: list[dict]) -> str:
         role = msg.get("role", "unknown")
         if role not in ("user", "assistant"):
             continue
+        # REQ-EM-DELTA-2: the agent MUST NEVER receive `display_content`.
+        # `display_content` is the user-facing bubble (e.g. short feedback
+        # for "Solicitar cambios" on a Mermaid diagram); the LLM gets the
+        # actual `content` (the prompt + previous Mermaid). Drop the
+        # user-facing key here.
         content = msg.get("content", "")
-        # Use display_content if present (for diagram messages)
-        if msg.get("display_content"):
-            content = msg["display_content"]
         if content:
             entries.append(f"{role.upper()}: {content}")
 

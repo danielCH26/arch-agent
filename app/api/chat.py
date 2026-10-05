@@ -519,9 +519,11 @@ async def chat(
                         if not row.content:
                             continue
                         entry = {"role": row.role, "content": row.content}
-                        # Include display_content if present (for diagram messages)
-                        if row.display_content:
-                            entry["display_content"] = row.display_content
+                        # REQ-EM-DELTA-2: do NOT include `display_content`
+                        # in the dict passed to the agent. The LLM must
+                        # only see the actual prompt+diagram (`content`).
+                        # `display_content` is for the user's bubble on
+                        # reload (handled in /api/chat/history at line ~741).
                         history.append(entry)
                 except SQLAlchemyError as exc:
                     logger.warning(

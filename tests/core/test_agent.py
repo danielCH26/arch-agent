@@ -1290,3 +1290,84 @@ def test_grounding_still_flags_invented_components(label):
     code = f'flowchart LR\n  X["{label}"] --> Y["API Gateway"]'
 
     assert label in find_ungrounded_mermaid_nodes(code, [_approved_proposal_doc()])
+
+
+# ---------------------------------------------------------------------------
+# PR76-integration-rework: REQ-EM-DELTA-2/3 — history + display_content contract
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_signature_accepts_history_kwarg():
+    """REQ-EM-DELTA-3: run_agent MUST accept a `history` parameter (default None)."""
+    import inspect
+    from app.core.agent import run_agent
+
+    sig = inspect.signature(run_agent)
+    assert "history" in sig.parameters, "run_agent must accept history kwarg"
+    assert sig.parameters["history"].default is None
+
+
+def test_format_history_recap_skips_non_user_assistant_roles():
+    """Only user/assistant roles make it into the recap. system excluded."""
+    from app.core.agent import _format_history_recap
+
+    history = [
+        {"role": "system", "content": "you are a careful assistant"},
+        {"role": "user", "content": "real user message"},
+        {"role": "tool", "content": "tool noise"},
+        {"role": "assistant", "content": "real assistant reply"},
+    ]
+    recap = _format_history_recap(history)
+    assert "real user message" in recap
+    assert "real assistant reply" in recap
+    assert "you are a careful assistant" not in recap
+    assert "tool noise" not in recap
+
+
+def test_format_history_recap_strips_display_content_from_agent_view():
+    """REQ-EM-DELTA-2: the agent MUST NEVER receive `display_content`.
+
+    Even if a history entry carries `display_content`, only `content` is
+    injected into the recap. The LLM sees the actual prompt/diagram, not
+    the user-facing bubble text.
+    """
+    from app.core.agent import _format_history_recap
+
+    history = [
+        {
+            "role": "user",
+            "content": "prompt-with-mermaid-actual",
+            "display_content": "Aclará el actor del API Gateway",
+        },
+        {
+            "role": "assistant",
+            "content": "diagram-v2",
+            "display_content": "Aclará el actor del API Gateway",
+        },
+    ]
+    recap = _format_history_recap(history)
+    assert "prompt-with-mermaid-actual" in recap
+    assert "diagram-v2" in recap
+    # The user-facing bubble text MUST NOT appear in what the LLM sees.
+    assert "Aclará el actor del API Gateway" not in recap
+
+
+def test_format_history_recap_caps_at_five_entries():
+    """Cap at 5 even when more are provided (caller may pre-cap; helper is the last gate)."""
+    from app.core.agent import _format_history_recap
+
+    history = [{"role": "user", "content": f"msg-{i}"} for i in range(10)]
+    recap = _format_history_recap(history)
+    # The helper takes the last 5 entries (newest-first slice).
+    for i in range(5, 10):
+        assert f"msg-{i}" in recap
+    for i in range(0, 5):
+        assert f"msg-{i}" not in recap
+
+
+def test_format_history_recap_empty_yields_empty_string():
+    """SCN-EM-DELTA-3-2: empty history list is equivalent to None (no recap block)."""
+    from app.core.agent import _format_history_recap
+
+    assert _format_history_recap([]) == ""
+    assert _format_history_recap(None) == ""
