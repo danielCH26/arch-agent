@@ -31,7 +31,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
 from sqlalchemy import select
@@ -116,30 +116,9 @@ class PhaseMismatchError(PhaseDecisionError):
         self.requested_phase = requested_phase
 
 
-@dataclass
-class DecisionConflict:
-    """REQ-SA-34: typed body for 409 conflicts.
-
-    Returned by ``record_decision`` when an identical retry is NOT in
-    scope (i.e. the recent decision was a different action/payload), so
-    the caller raises HTTP 409 with this body verbatim — never
-    ``str(exc)``.
-    """
-
-    current_decision: str
-    decided_at: datetime
-    current_phase: str
-    decision_id: int
-
-    def to_detail(self) -> dict[str, Any]:
-        """FastAPI ``HTTPException(detail=...)`` payload."""
-        return {
-            "error": "decision_conflict",
-            "current_decision": self.current_decision,
-            "decided_at": self.decided_at.isoformat() if self.decided_at else None,
-            "current_phase": self.current_phase,
-            "decision_id": self.decision_id,
-        }
+# NOTE: DecisionConflict was removed in v3. The 409 types that ARE used are:
+#   - PhaseMismatchError (REQ-SA-28): phase != current_phase
+#   - PhaseNotApprovedError (REQ-SA-36): no approved row before /advance
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +276,7 @@ def record_decision(
             Approval.project_id == project_id,
             Approval.phase == phase,
             Approval.created_at
-            >= datetime.utcnow() - timedelta(seconds=IDEMPOTENCY_WINDOW_SECONDS),
+            >= datetime.now(tz=timezone.utc) - timedelta(seconds=IDEMPOTENCY_WINDOW_SECONDS),
         )
         .order_by(Approval.created_at.desc(), Approval.id.desc())
         .limit(1)
@@ -376,20 +355,49 @@ class PendingDecision:
 def get_pending_decision(
     db: Session, *, project_id: int
 ) -> Optional[PendingDecision]:
-    """Return the latest decision for ``(project_id, current_phase)``,
-    or ``None`` when no decision is on file for the current phase.
+    """SCN-SA-12.1: Return pending decision for HU10-owned phases.
 
-    This is the canonical helper for ``GET /api/projects/{id}/phases``
-    (REQ-SA-12). The frontend ``approvalsStore`` reads the top-level
+    Returns ``{phase, since}`` when:
+      - ``current_phase`` is in HU10_OWNED_PHASES
+      - AND no ``approved`` decision exists for ``(project_id, current_phase)``
+
+    Returns ``None`` when:
+      - An ``approved`` decision already exists for the current phase
+      - OR the phase is ``requerimientos`` (F05-owned, no surface)
+
+    The frontend ``approvalsStore`` reads the top-level
     ``pending_decision`` from the response and mounts
     ``<PhaseActions>`` if it is non-null (REQ-SA-26.1).
     """
+    from datetime import datetime, timezone
+
     project = db.execute(
         select(Project).where(Project.id == project_id)
     ).scalar_one_or_none()
     if project is None or not project.current_phase:
         return None
 
+    # F05-owned phase: no HU10 surface
+    if project.current_phase in F05_OWNED_PHASES:
+        return None
+
+    # Check if there's an approved decision for this phase
+    approved = db.execute(
+        select(Approval)
+        .where(
+            Approval.project_id == project_id,
+            Approval.phase == project.current_phase,
+            Approval.decision == "approved",
+        )
+        .order_by(Approval.created_at.desc(), Approval.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    # Already approved: no pending surface needed
+    if approved is not None:
+        return None
+
+    # Get the most recent decision (if any) for this phase
     recent = db.execute(
         select(Approval)
         .where(
@@ -399,14 +407,15 @@ def get_pending_decision(
         .order_by(Approval.created_at.desc(), Approval.id.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if recent is None:
-        return None
+
+    # Return pending with since = decision timestamp, or utcnow if none exist yet
+    since = recent.created_at if recent else datetime.now(tz=timezone.utc)
 
     return PendingDecision(
         phase=project.current_phase,
-        since=recent.created_at,
-        last_decision=recent.decision,
-        last_decided_at=recent.created_at,
+        since=since,
+        last_decision=recent.decision if recent else None,
+        last_decided_at=recent.created_at if recent else since,
     )
 
 
