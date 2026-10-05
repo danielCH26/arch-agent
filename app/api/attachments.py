@@ -13,11 +13,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.auth import get_current_user
 from app.core.attachment_tokens import (
     DEFAULT_TTL_SECONDS,
     _ensure_uploads_dir,
@@ -34,15 +33,15 @@ logger = logging.getLogger(__name__)
 def get_attachment(
     id: str,
     token: str | None = Query(default=None),
-    user_id: int = Depends(get_current_user),
 ) -> FileResponse:
     """Serve the attachment bytes for ``id`` if the signed URL is valid.
 
     Auth posture:
-      * ``get_current_user`` provides the authenticated user context.
+      * No Authorization header required (for <img> tag compatibility).
       * ``token`` is REQUIRED (returns 401 if missing/expired/forged).
-      * The signed payload binds ``(attachment_id, user_id)``. When
-        ``token`` verifies but the row's owner differs, the lookup
+      * The signed payload binds ``(attachment_id, user_id)``. The endpoint
+        extracts user_id from the token and uses it for the attachment lookup.
+        When the token verifies but the row's owner differs, the lookup
         returns ``[]`` (no row) and the route returns 404 — same as the
         unknown-id path (defense in depth, REQ-ATT-2 SCN-ATT-4).
 
@@ -50,7 +49,6 @@ def get_attachment(
         id: Attachment UUID (the value the row's ``attachments[].id``
             column holds).
         token: Signed query-string token (TTL 5 min, REQ-ATT-2).
-        user_id: Authenticated user from session (via ``get_current_user``).
 
     Returns:
         ``FileResponse`` carrying the PNG bytes + ``Content-Type`` from
@@ -65,16 +63,22 @@ def get_attachment(
 
     # Delegate token verification to the helper. Returns (valid, payload_uid)
     # or (False, None) on any failure — indistinguishably maps to 401.
+    # The helper verifies the token is for this attachment_id, but we need
+    # to pass a placeholder user_id for the signature check. We'll extract
+    # the real user_id from the token after verification.
     valid, payload_uid = verify_attachment_token(
         token,
         attachment_id=id,
-        user_id=user_id,
+        user_id=0,  # placeholder; actual uid comes from token payload
     )
-    if not valid or payload_uid != user_id:
+    if not valid or payload_uid is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+
+    # Use the user_id from the token payload for the lookup
+    user_id = payload_uid
 
     # Look up the attachment using dialect-aware helper.
     # Postgres uses JSONB containment with GIN index; SQLite falls back to Python filter.
