@@ -34,9 +34,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytest
 
 
+# Skip unless the runner EXPLICITLY opts in by setting DATABASE_URL to
+# something other than the placeholder default in ``app/core/database.py``.
+# Without this guard, importing ``app.core`` populates ``DATABASE_URL``
+# with the default and the skipif never fires locally (HU10 v3 fix).
+_PLACEHOLDER = "postgresql://asistente:asistente@localhost:5432/asistente_db"
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("DATABASE_URL"),
-    reason="requires Postgres (DATABASE_URL env var); SQLite does not enforce row locks",
+    not os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_URL") == _PLACEHOLDER,
+    reason="requires explicit DATABASE_URL pointing at a real Postgres (SQLite does not enforce row locks)",
 )
 
 

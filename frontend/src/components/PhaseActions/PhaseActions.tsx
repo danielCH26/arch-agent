@@ -160,7 +160,6 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
             {advancing ? 'Avanzando...' : 'Avanzar'}
           </button>
         )}
-        ))}
         <button
           type="button"
           disabled={busy}
