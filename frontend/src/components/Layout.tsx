@@ -7,7 +7,7 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { Logo } from './Logo'
 import { SidebarProjectsSkeleton } from './Skeleton'
 import { ThemeToggle } from './ThemeToggle'
-import { ArchiveIcon, ChatIcon, ClockIcon, DocumentIcon } from './NavIcons'
+import { ArchiveIcon, ChatIcon, ClockIcon, DocumentIcon, FolderIcon } from './NavIcons'
 
 export function Layout() {
   const navigate = useNavigate()
@@ -115,6 +115,17 @@ export function Layout() {
         <div className="flex-1 overflow-y-auto px-4">
           {/* Primary nav */}
           <nav className="space-y-1 border-b border-gray-200 pb-3">
+            <Link
+              to="/projects"
+              aria-current={isActivePath('/projects') ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors ${
+                isActivePath('/projects') ? 'bg-[#0e54ce] text-white' : 'text-gray-800 hover:bg-gray-100'
+              }`}
+            >
+              <FolderIcon />
+              <span>Mis proyectos</span>
+            </Link>
+
             <button
               type="button"
               onClick={() => setShowCreateDialog(true)}
@@ -127,6 +138,7 @@ export function Layout() {
             {currentProject && (
               <Link
                 to={`/projects/${currentProject.id}/chat`}
+                aria-current={isOnActiveSession ? 'page' : undefined}
                 className={`flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors ${
                   isOnActiveSession ? 'bg-[#0e54ce] text-white' : 'text-gray-800 hover:bg-gray-100'
                 }`}
@@ -138,6 +150,7 @@ export function Layout() {
 
             <Link
               to="/patterns"
+              aria-current={isActivePath('/patterns') ? 'page' : undefined}
               className={`flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors ${
                 isActivePath('/patterns') ? 'bg-[#0e54ce] text-white' : 'text-gray-800 hover:bg-gray-100'
               }`}

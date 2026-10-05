@@ -64,7 +64,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
   return (
     <div className="group rounded-[10px] border border-gray-300 bg-gray-50 p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
-        <h3 className="min-w-0 break-words text-xl font-semibold text-gray-900">
+        <h2 className="min-w-0 break-words text-xl font-semibold text-gray-900">
           <button
             type="button"
             onClick={() => navigate(`/projects/${project.id}`)}
@@ -72,7 +72,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
           >
             {project.name}
           </button>
-        </h3>
+        </h2>
         <div className="flex shrink-0 items-center gap-2">
           <span className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium ${badge.className}`}>
             {badge.label}
@@ -136,7 +136,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
             aria-describedby={`delete-desc-${project.id}`}
             className="mx-4 w-full max-w-sm rounded-lg bg-white p-6"
           >
-            <h3 id={`delete-title-${project.id}`} className="text-lg font-semibold text-gray-900">Confirmar eliminación</h3>
+            <h2 id={`delete-title-${project.id}`} className="text-lg font-semibold text-gray-900">Confirmar eliminación</h2>
             <p id={`delete-desc-${project.id}`} className="mt-2 text-gray-600">
               ¿Estás seguro de eliminar "{project.name}"? Esta acción no se puede deshacer.
             </p>

@@ -38,7 +38,7 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
   const showRobotPanel = useMediaQuery('(min-width: 768px)')
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e4f2fa] to-[#f7fbf9] px-4 py-12 dark:from-gray-100 dark:to-gray-100">
+    <main className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e4f2fa] to-[#f7fbf9] px-4 py-12 dark:from-gray-100 dark:to-gray-100">
       <ThemeToggle className="absolute right-4 top-4" />
       <div className="grid w-full max-w-5xl grid-cols-1 gap-6 md:grid-cols-2">
         <div className="flex flex-col justify-center rounded-3xl bg-white p-8 shadow-[0px_10px_40px_rgba(14,84,206,0.12)] sm:p-12">
@@ -79,6 +79,6 @@ export function AuthLayout({ title, subtitle, greeting, children }: AuthLayoutPr
           </div>
         </div>
       </div>
-    </div>
+    </main>
   )
 }
