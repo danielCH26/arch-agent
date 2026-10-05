@@ -7,6 +7,8 @@
  *   * Reject opens the inline `<RejectDialog>` -- never `window.prompt`.
  *   * Calls the typed `decidePhase` client; 409 responses surface as
  *     `ApiConflictError` (REQ-SA-29, REQ-SA-34).
+ *
+ * Also includes "Avanzar" button when phaseReady=true (REQ-SA-23/24).
  */
 
 import { useState } from 'react'
@@ -14,7 +16,9 @@ import {
   ApiConflictError,
   type PhaseDecisionAction,
 } from '../../api/approvals'
+import { advancePhase } from '../../api/projects'
 import { useApprovalsStore } from '../../stores/approvalsStore'
+import { useProjectsStore } from '../../stores/projectsStore'
 import { RejectDialog } from './RejectDialog'
 
 export interface PhaseActionsProps {
@@ -22,6 +26,8 @@ export interface PhaseActionsProps {
   phase: string
   /** Hide the Modificar button on `final` (REQ-SA-8). */
   allowModify?: boolean
+  /** Show "Avanzar" button when phase is ready to advance */
+  phaseReady?: boolean
 }
 
 const ACTIONS: Array<{ action: PhaseDecisionAction; label: string; testId: string }> = [
@@ -29,16 +35,18 @@ const ACTIONS: Array<{ action: PhaseDecisionAction; label: string; testId: strin
   { action: 'modify', label: 'Modificar', testId: 'phase-action-modify' },
 ]
 
-export function PhaseActions({ projectId, phase, allowModify = true }: PhaseActionsProps) {
+export function PhaseActions({ projectId, phase, allowModify = true, phaseReady = false }: PhaseActionsProps) {
   const decide = useApprovalsStore((s) => s.decide)
   const pending = useApprovalsStore((s) => s.pendingByPhase[phase] ?? null)
   const errorMessage = useApprovalsStore((s) => s.error)
   const clearError = useApprovalsStore((s) => s.clearError)
+  const getProject = useProjectsStore((s) => s.getProject)
 
   const [busy, setBusy] = useState(false)
   const [modifyFeedback, setModifyFeedback] = useState('')
   const [showModify, setShowModify] = useState(false)
   const [showReject, setShowReject] = useState(false)
+  const [advancing, setAdvancing] = useState(false)
 
   async function handle(action: PhaseDecisionAction, feedback?: string) {
     if (action === 'modify' && !feedback?.trim()) {
@@ -65,6 +73,22 @@ export function PhaseActions({ projectId, phase, allowModify = true }: PhaseActi
       setBusy(false)
     }
   }
+
+  async function handleAdvance() {
+    setAdvancing(true)
+    try {
+      await advancePhase(projectId)
+      // Refresh project state to show new phase
+      await getProject(projectId)
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('PhaseActions.advance failed', err)
+    } finally {
+      setAdvancing(false)
+    }
+  }
+
+  const showAdvance = phaseReady && phase !== 'requerimientos' && phase !== 'final'
 
   if (!pending) {
     // No pending decision for this phase: do not render the surface
@@ -123,6 +147,19 @@ export function PhaseActions({ projectId, phase, allowModify = true }: PhaseActi
           >
             {a.label}
           </button>
+        ))}
+
+        {showAdvance && (
+          <button
+            type="button"
+            disabled={advancing}
+            data-testid="phase-action-advance"
+            onClick={() => void handleAdvance()}
+            className="rounded bg-indigo-600 px-3 py-2 font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {advancing ? 'Avanzando...' : 'Avanzar'}
+          </button>
+        )}
         ))}
         <button
           type="button"

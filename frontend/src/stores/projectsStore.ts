@@ -19,6 +19,7 @@ interface ProjectsState {
   fetchProjects: () => Promise<void>
   createProject: (name: string, description?: string) => Promise<Project>
   deleteProject: (id: number) => Promise<void>
+  getProject: (id: number) => Promise<Project | null>
   setCurrentProject: (project: Project | null) => void
   clearError: () => void
 }
@@ -69,6 +70,21 @@ export const projectsStore = create<ProjectsState>((set) => ({
       const message = error instanceof Error ? error.message : 'Failed to delete project'
       set({ status: 'error', error: message })
       throw error
+    }
+  },
+
+  getProject: async (id: number) => {
+    try {
+      const project = await projectsApi.getProject(id)
+      set((state) => ({
+        currentProject: project,
+        projects: state.projects.map((p) => (p.id === id ? project : p)),
+      }))
+      return project
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch project'
+      set({ status: 'error', error: message })
+      return null
     }
   },
 
