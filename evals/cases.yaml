@@ -7,12 +7,13 @@
 # Los `snippet` salen del contenido real de los YAML de `data/patterns/`.
 # Si se edita un patron, actualiza aqui el fragmento correspondiente.
 #
-# Nota sobre `descripcion`: en produccion la descripcion viaja al modelo por dos
-# caminos. Arma la query del RAG via `_build_summary_query`, y ademas se incluye
-# directo en el prompt via `_build_prompt`. Como este set congela las citations
-# (no consulta PGVector), el segundo camino es el que mide el harness: sin el,
-# los casos con `citations: []` le darian al modelo un prompt sin ninguna
-# informacion del proyecto. Ver README, seccion "Limitaciones honestas".
+# Nota sobre `descripcion`: en produccion la descripcion viaja al modelo solo
+# por el camino del RAG (`_build_summary_query` la concatena a la query del
+# recuperador). NO entra al prompt del LLM: la firma de `_build_prompt`
+# recibe 4 argumentos (citations, prior_content, feedback, project_name) y
+# `descripcion` no es uno de ellos. Este campo se conserva en el YAML por
+# valor documental -- el README, seccion "Limitaciones honestas", explica
+# por que el harness no la envia al modelo y como se compensa.
 
 casos:
   - id: hex-001

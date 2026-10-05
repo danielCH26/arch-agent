@@ -242,24 +242,31 @@ def dry_run(casos: list[dict]) -> int:
         f"(comparacion estricta, sin normalizar acentos)"
     )
 
-    # Verificacion opcional del prompt real: confirma que se puede importar
-    # _build_prompt y construir una muestra. No es fatal si falla, para que el
-    # dry-run siga sirviendo en un entorno sin las deps de la app.
-    try:
-        from app.core.proposal_generator import _build_prompt
+    # Verificacion obligatoria del prompt real: confirma que el harness
+    # puede construir el prompt que mandaria al LLM. Si falla, NO es un
+    # "AVISO" silencioso: el runner nunca podra ejecutar este caso, asi
+    # que el dry-run debe fallar loud (exit code != 0). Antes del fix B1
+    # la llamada tenia un quinto argumento que la firma no aceptaba, asi
+    # que cada invocacion levantaba TypeError, el except lo tragaba y el
+    # dry-run reportaba 0 con un mensaje de "AVISO" -- falso verde.
+    from app.core.proposal_generator import _build_prompt
 
+    try:
         muestra = _build_prompt(
             casos[0]["citations"],
             None,
             None,
             casos[0]["project_name"],
-            casos[0]["descripcion"],
         )
-        print(f"\n_build_prompt importado OK. Muestra ({len(muestra)} caracteres):")
-        print("-" * 60)
-        print(muestra)
-    except Exception as exc:  # noqa: BLE001 -- el dry-run no debe abortar
-        print(f"\n[AVISO] No se pudo importar _build_prompt: {exc}")
+    except Exception as exc:  # noqa: BLE001 -- queremos reportar y abortar
+        print(
+            f"\n[ERROR] No se pudo construir el prompt con _build_prompt: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\n_build_prompt importado OK. Muestra ({len(muestra)} caracteres):")
+    print("-" * 60)
+    print(muestra)
 
     print("\n[OK] Corpus valido. No se realizo ninguna llamada de red.")
     return 0
@@ -388,13 +395,15 @@ def construir_modelo(modelo: str, base_url: str, api_key: str, temperature: floa
 
     La app fija ``temperature`` via ``DEFAULT_LLM_TEMPERATURE`` (0.0) en
     ``app/core/llm_loader.py``; aca queda parametrizable para poder medir como
-    se comporta el corpus con otros valores.
+    se comporta el corpus con otros valores. La construccion del modelo (y la
+    omision de ``temperature`` para la serie ``o*``) se delega a
+    ``_build_chat_model`` para no duplicar la regla y reventar con un 400 si
+    el corpus incluye razonadores.
     """
-    from langchain.chat_models import init_chat_model
+    from app.core.llm_loader import _build_chat_model
 
-    return init_chat_model(
+    return _build_chat_model(
         model=modelo,
-        model_provider="openai",  # Cualquier API OpenAI-compatible
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
@@ -464,7 +473,6 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
                         None,
                         None,
                         caso["project_name"],
-                        caso["descripcion"],
                     )
                 except Exception as exc:  # noqa: BLE001
                     print(f"{marca} ERROR al armar el prompt: {exc}")
@@ -559,6 +567,20 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
     )
 
     _imprimir_resumen(resumen, variabilidad, ejecuciones, ruta_json)
+
+    # Exit code: 0 si al menos una invocacion dio "ok"; 1 si TODAS
+    # fallaron. Asi CI puede distinguir "corri pero el LLM dio 0" de
+    # "nunca llego a ejecutarse". Antes del fix B1 el runner llegaba aca
+    # con ``ejecuciones`` lleno de fallos ``prompt: ...`` y devolvia 0
+    # igual -- el harness reportaba "OK" midiendo nada.
+    exitosos = sum(1 for e in ejecuciones if e.get("ok"))
+    if exitosos == 0 and ejecuciones:
+        print(
+            "\n[ERROR] Todas las invocaciones fallaron. "
+            "Revisar errores arriba.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

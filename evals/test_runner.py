@@ -8,13 +8,17 @@ en CI.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from evals.runner import (
     SECCIONES_REQUERIDAS,
+    _filtrar_peores,
     _jaccard,
     calcular_variabilidad,
     cargar_casos,
+    construir_modelo,
     marcadores_cita,
     score_output,
 )
@@ -305,3 +309,53 @@ def test_los_casos_reales_sin_citations_rechazan_la_salida_de_ejemplo():
         # provistas eso debe fallar la validacion de citas.
         score = score_output(SALIDA_PERFECTA, caso_real)
         assert score["citas_validas"] is False
+
+
+# --- Construccion del modelo: el runner NO debe duplicar la logica de prod ---
+
+
+def test_construir_modelo_omite_temperature_para_serie_o():
+    """El runner debe respetar la misma omision de temperature que la app.
+
+    Antes del I6, ``construir_modelo`` llamaba ``init_chat_model`` directo con
+    ``temperature=...`` siempre. Si el usuario del harness queria medir la
+    serie o* (que solo admite 1), terminaba con un 400 silencioso. El fix
+    centraliza la regla en ``app.core.llm_loader._build_chat_model``, igual
+    que produccion, y el runner la consume en vez de duplicarla.
+    """
+    from unittest.mock import patch
+
+    with patch("app.core.llm_loader.init_chat_model") as mock_init:
+        mock_init.return_value = MagicMock() if False else None  # type: ignore
+        construir_modelo(
+            modelo="o1-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            temperature=0.0,
+        )
+
+    # Si el helper del runner no omite temperature, init_chat_model la recibe
+    # y OpenAI responde 400 al primer token.
+    kwargs = mock_init.call_args.kwargs
+    assert "temperature" not in kwargs
+
+
+def test_construir_modelo_manda_temperature_para_familia_comun():
+    """El runner sigue mandando temperature para modelos que la soportan."""
+    from unittest.mock import patch, MagicMock
+
+    with patch("app.core.llm_loader.init_chat_model") as mock_init:
+        mock_init.return_value = MagicMock()
+        construir_modelo(
+            modelo="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            temperature=0.0,
+        )
+
+    kwargs = mock_init.call_args.kwargs
+    assert kwargs["temperature"] == 0.0
+    assert kwargs["model"] == "gpt-4o-mini"
+    assert kwargs["model_provider"] == "openai"
+    assert kwargs["base_url"] == "https://api.openai.com/v1"
+    assert kwargs["api_key"] == "sk-test"
