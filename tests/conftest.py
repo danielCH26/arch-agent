@@ -9,23 +9,24 @@ import pytest
 from cryptography.fernet import Fernet
 
 
-# Configurar ANTES de cualquier import del proyecto para que
-# app.core.database cree el engine con la DB de test, no la real.
-os.environ.setdefault(
-    "DATABASE_URL", "postgresql://asistente:asistente@localhost:5432/asistente_db"
-)
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars")
+# Only set defaults if NOT already set. This preserves skipif semantics:
+# tests that require DATABASE_URL will skip when the var is not set.
+# CI provides DATABASE_URL explicitly via env: block in the workflow.
+if "DATABASE_URL" not in os.environ:
+    os.environ.setdefault(
+        "DATABASE_URL", "postgresql://asistente:asistente@localhost:5432/asistente_db"
+    )
+if "JWT_SECRET_KEY" not in os.environ:
+    os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars")
 
 
 def pytest_configure(config):
     """Hook que corre antes de cualquier test collection."""
-    # Garantizar que las env vars esten seteadas cuando se carguen los modulos.
-    os.environ.setdefault(
-        "DATABASE_URL", "postgresql://asistente:asistente@localhost:5432/asistente_db"
-    )
-    os.environ.setdefault(
-        "JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars"
-    )
+    # Only set defaults if NOT already set (respects skipif on DB-dependent tests)
+    if "DATABASE_URL" not in os.environ:
+        os.environ["DATABASE_URL"] = "postgresql://asistente:asistente@localhost:5432/asistente_db"
+    if "JWT_SECRET_KEY" not in os.environ:
+        os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars"
 
 
 @pytest.fixture(autouse=True)
