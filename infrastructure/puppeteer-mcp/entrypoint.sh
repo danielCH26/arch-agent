@@ -31,4 +31,6 @@ exec npx -y supergateway \
     --outputTransport streamableHttp \
     --streamableHttpPath /mcp \
     --healthEndpoint /health \
-    --logLevel info
+    --logLevel info \
+    --stateful \
+    --sessionTimeout 300000

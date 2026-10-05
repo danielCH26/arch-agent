@@ -145,7 +145,7 @@ RUN mkdir -p /home/node/.cache && chown -R node:node /home/node
 # sandbox simply cannot be constructed there, regardless of the process
 # being non-root. Mitigate at the container boundary instead: we already
 # run as the unprivileged ``node`` user, the container is network-isolated
-# (no published ports), memory-capped (512m) and renders only caller-
+# (no published ports), memory-capped (1g) and renders only caller-
 # supplied Mermaid via ``data:`` URLs — so running Chromium with
 # ``--no-sandbox`` inside this boundary is the accepted trade-off
 # (originally suggested as the quick fix in review round 3; kernel
