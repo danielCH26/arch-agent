@@ -47,12 +47,6 @@ temp/
 !README_hu2.md
 !QA_criterios_aceptacion_RAG_final.md
 !QA_feature-hu6-diagrama.md
-!.atl/
-!.atl/**/*.md
-!openspec/
-!openspec/**/*.md
-!docs/adr/
-!docs/adr/**/*.md
 
 # Frontend (Vite + React)
 frontend/node_modules/
