@@ -37,10 +37,11 @@ from typing import Any
 import yaml
 
 # --- Contrato del prompt de produccion ---------------------------------------
-# Estos tres encabezados son los literales de ``_build_prompt``. OJO: "Tecnologias"
-# va SIN tilde, asi esta en el prompt real y el harness no lo "corrige": medir
-# si el modelo respeta el contrato exige que el contrato sea exacto.
-SECCIONES_REQUERIDAS: tuple[str, ...] = ("Componentes", "Tecnologias", "Patrones")
+# Estos tres encabezados son los literales de ``_build_prompt`` (en espanol,
+# con la tilde en "Tecnologias"). El prompt de produccion usa la forma con
+# tilde; el harness la refleja exactamente para que medir el contrato del
+# modelo no tenga desviaciones por "correccion" del scorer.
+SECCIONES_REQUERIDAS: tuple[str, ...] = ("Componentes", "Tecnologías", "Patrones")
 
 RUTA_CASES = Path(__file__).with_name("cases.yaml")
 RUTA_RESULTADOS = Path(__file__).with_name("results")
@@ -62,7 +63,7 @@ _RE_BULLET = re.compile(r"^\s*[-*]\s+\S")
 def _normalizar_heading(texto: str) -> str:
     """Compara encabezados ignorando mayusculas y espacios sobrantes.
 
-    NO normaliza acentos: el prompt pide ``Tecnologias`` sin tilde y eso es
+    NO normaliza acentos: el prompt pide ``Tecnologías`` con tilde y eso es
     parte del contrato que se quiere medir.
     """
     return " ".join(texto.strip().split()).casefold()
@@ -606,6 +607,31 @@ def _fmt(valor: float | None, decimales: int = 3) -> str:
     return f"{valor:.{decimales}f}"
 
 
+def _filtrar_peores(variabilidad: list[dict]) -> dict:
+    """Particiona ``variabilidad`` en pares con variabilidad observada y pares sin datos.
+
+    La regla original (``(v.get("tasa_exacta") or 1.0) < 1.0``) excluia
+    silenciosamente los pares con ``tasa_exacta is None``: cuando todos
+    los repeats fallaron, ``None or 1.0 == 1.0`` y el par quedaba fuera
+    del listado -- al reves de lo util para diagnosticar. Esta funcion
+    separa los dos grupos para que ``_imprimir_resumen`` los muestre
+    como secciones distintas.
+
+    Returns:
+        ``{"peor": [...], "all_failed": [...]}``. Las dos listas son
+        disjuntas: ``peor`` tiene tasa_exacta entre [0.0, 1.0); ``all_failed``
+        tiene tasa_exacta == None (0 o 1 repeats_ok). Los pares con
+        tasa_exacta == 1.0 (perfectamente reproducibles) no aparecen en
+        ninguna.
+    """
+    peor = [
+        v for v in variabilidad
+        if v.get("tasa_exacta") is not None and v["tasa_exacta"] < 1.0
+    ]
+    all_failed = [v for v in variabilidad if v.get("tasa_exacta") is None]
+    return {"peor": peor, "all_failed": all_failed}
+
+
 def _imprimir_resumen(
     resumen: dict,
     variabilidad: list[dict],
@@ -642,7 +668,9 @@ def _imprimir_resumen(
             print(f"  - {e['caso_id']} / {e['modelo']} / repeat {e['repeat']}: "
                   f"{e.get('error', '')[:110]}")
 
-    peor = [v for v in variabilidad if (v.get("tasa_exacta") or 1.0) < 1.0]
+    grupos = _filtrar_peores(variabilidad)
+    peor = grupos["peor"]
+    all_failed = grupos["all_failed"]
     if peor:
         print(f"\nPares (caso, modelo) con al menos un repeat distinto: {len(peor)}")
         for v in peor:
@@ -651,6 +679,17 @@ def _imprimir_resumen(
                 f"exacta={_fmt(v['tasa_exacta'])} "
                 f"acuerdo={_fmt(v['acuerdo_estructural'])} "
                 f"desv_lg={_fmt(v['desvio_largo'], 1)}"
+            )
+    if all_failed:
+        print(
+            f"\nEjecuciones con todos los repeats fallidos (sin variabilidad "
+            f"calculable): {len(all_failed)}"
+        )
+        for v in all_failed:
+            print(
+                f"  - {v['caso_id']:<13} {v['modelo']:<24} "
+                f"repeats_ok={v.get('repeats_ok', 0)} "
+                f"repeats_fallidos={v.get('repeats_fallidos', 0)}"
             )
 
     print(f"\nDetalle completo: {ruta_json}")

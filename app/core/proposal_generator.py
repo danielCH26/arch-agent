@@ -348,7 +348,7 @@ def _build_prompt(
         "\nFormato OBLIGATORIO (responde exactamente con estas tres secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
-        "## Tecnologias\n- ...\n\n"
+        "## Tecnologías\n- ...\n\n"
         "## Patrones\n- ...\n\n"
         "Patrones candidatos (usa solo los que apliquen; cita el numero entre "
         "corchetes donde corresponda):\n"
