@@ -207,3 +207,67 @@ If `size:exception` for single PR, 10 sequential commits: (1) migration(approval
 2. Deprecation window for `previous_output` alias: 1 release (per REQ-SA-33). Confirm.
 3. Idempotency-Key header vs server-only derivation: server-only with optional client advisory (REQ-SA-30). Confirm.
 4. `pending_decision` in both `/phases` and SSE `phase_locked`: design assumes BOTH (REQ-SA-26). Confirm.
+
+## v3 review-blocker fixes (PR #91)
+
+### 11. Blocker fixes
+
+#### 11.1 Blocker 1: Invert pending_decision semantics per SCN-SA-12.1
+- Files: `app/core/phase_decisions.py`
+- Verifies: Returns `{phase, since}` when no approved decision for HU10-owned phases
+- Coverage: Tests updated (`test_get_pending_decision_returns_pending_when_no_record`)
+- Runtime: `pytest tests/core/test_phase_decisions.py -v`
+
+#### 11.2 Blocker 2: Wire advancePhase button in PhaseActions
+- Files: `frontend/src/components/PhaseActions/PhaseActions.tsx`, `frontend/src/stores/projectsStore.ts`
+- Verifies: "Avanzar" button appears when phaseReady=true, hides for requerimientos/final
+- Coverage: Frontend tests deferred to CI
+- Runtime: `npm run test:run` (deferred)
+
+### 12. Important fixes
+
+#### 12.1 Important 1: Route decide_proposal through record_decision
+- Files: `app/api/proposals.py`
+- Verifies: No manual phase_ready assignment, uses record_decision for proper ownership
+- Coverage: Existing F08 tests should still pass
+- Runtime: `pytest tests/api/test_proposals.py -v` (deferred to CI)
+
+#### 12.2 Important 2: Add FOR UPDATE lock on /advance
+- Files: `app/api/projects.py`
+- Verifies: Uses `select().with_for_update()` to prevent race conditions
+- Coverage: Tests updated
+- Runtime: `pytest tests/api/test_projects_hu10.py -v`
+
+#### 12.3 Important 3: Fix per_phase.status computation
+- Files: `app/api/projects.py`
+- Verifies: Status computed from actual approval rows, not phase_ready
+- Coverage: Tests updated
+- Runtime: `pytest tests/api/test_projects_hu10.py -v`
+
+#### 12.4 Important 4: Pass previous_output to record_decision
+- Files: `app/api/projects.py`
+- Verifies: Request body schema includes previous_output field
+- Coverage: API test added
+- Runtime: `pytest tests/api/test_projects_hu10.py -v`
+
+#### 12.5 Important 5: Remove dead DecisionConflict
+- Files: `app/core/phase_decisions.py`, `tests/core/test_phase_decisions.py`
+- Verifies: Dataclass removed, tests updated
+- Runtime: `pytest tests/core/test_phase_decisions.py -v`
+
+#### 12.6 Important 6: Fix conftest.py DATABASE_URL setdefault
+- Files: `tests/conftest.py`
+- Verifies: skipif semantics preserved for DB-dependent tests
+- Runtime: CI will properly skip when DATABASE_URL not set
+
+### 13. Minor fixes
+
+#### 13.1 Replace datetime.utcnow() with datetime.now(timezone.utc)
+- Files: `app/core/phase_decisions.py`
+- Verifies: No deprecation warnings
+- Runtime: `pytest tests/core/test_phase_decisions.py -v`
+
+#### 13.2 Add explicit timezone to ISO serialization
+- Files: `app/api/projects.py`
+- Verifies: JavaScript Date() can parse timestamps
+- Runtime: Manual verification

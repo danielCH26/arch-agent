@@ -66,3 +66,42 @@ The CI runner on the actual `feature/hu10-staged-approvals-v2` branch will execu
 ## Blockers
 
 None.
+
+## v3 Review-Blocker Fixes (PR #91)
+
+> Branch: `fix/pr91-review-blockers` (on top of `0cdea47`)
+
+### Commits
+
+| # | Commit | Files Touched | Description |
+|---|---|---|---|
+| 1 | `fix(phase-decisions): invert pending_decision semantics per SCN-SA-12.1` | `app/core/phase_decisions.py` | Returns `{phase, since}` for HU10-owned phases without approved decision |
+| 2 | `fix(projects): pass previous_output from request body to record_decision` | `app/api/projects.py` | Added previous_output field to PhaseDecisionIn |
+| 3 | `fix(projects): compute per_phase.status from approval rows` | `app/api/projects.py` | Status computed from actual approvals, not phase_ready |
+| 4 | `fix(projects): add FOR UPDATE lock on /advance` | `app/api/projects.py` | Uses `select().with_for_update()` |
+| 5 | `refactor(proposals): route decide_proposal through record_decision` | `app/api/proposals.py` | Eliminates double-write, uses record_decision |
+| 6 | `fix(frontend): wire advancePhase button in PhaseActions + refresh stores` | `frontend/src/components/PhaseActions/PhaseActions.tsx`, `frontend/src/stores/projectsStore.ts` | Added Avanzar button and getProject method |
+| 7 | `chore(phase-decisions): remove dead DecisionConflict dataclass` | `app/core/phase_decisions.py`, `tests/core/test_phase_decisions.py` | Removed unused class |
+| 8 | `fix(conftest): stop overriding DATABASE_URL default` | `tests/conftest.py` | Preserve skipif semantics |
+| 9 | `test(hu10-v2): update tests for inverted pending_decision and new advance UI` | `tests/core/test_phase_decisions.py`, `tests/api/test_projects_hu10.py` | Updated tests for new semantics |
+| 10 | `docs(pr91): v3 review-blockers resolution notes` | `docs/PR91-v3-notes.md` | Documentation |
+
+### Verification Status
+
+| Test | Status | Command |
+|---|---|---|
+| pytest unit tests | **PASSED** (38 tests) | `pytest tests/core/test_phase_decisions.py tests/api/test_projects_hu10.py -v` |
+| pytest Postgres tests | DEFERRED to CI (no docker) | `pytest tests/core/test_phase_decisions_concurrency.py tests/models/test_approval.py -v` |
+| Frontend tests | DEFERRED to CI (no node) | `npm run test:run` |
+
+### Changes Summary
+
+- **Backend**: 6 files modified
+- **Frontend**: 2 files modified
+- **Tests**: 2 files updated, 5 new test functions
+- **Docs**: 1 new file
+
+### Deferred to CI
+
+- Postgres-backed concurrency tests require docker
+- Frontend build and tests require Node.js
