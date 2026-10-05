@@ -73,7 +73,9 @@ _PUPPETEER_ALLOWED_TOOLS: frozenset = frozenset({"puppeteer_screenshot"})
 # F14 if horizontal scaling arrives (R-SPEC-4 mitigation in ADR-013 §Security).
 _RATE_LIMIT_WINDOW_SECONDS: int = 60
 _RATE_LIMITER: dict[int, list[float]] = {}
+_RATE_LIMITER_LAST_SEEN: dict[int, float] = {}  # tracks last activity per user
 _RATE_LIMIT_LOCK = asyncio.Lock()  # guards window mutation; see ``_check_rate_limit``
+_RATE_LIMITER_PURGE_TTL_SECONDS: int = 3600  # 1 hour
 
 # REQ-PMCP-3: byte cap on render results. Hardcoded default mirrors ADR-013 §2 (2 MB).
 # Override via env var for tests / future tuning.
@@ -107,6 +109,29 @@ def _rate_limit_per_minute() -> int:
         return 5
 
 
+def _purge_inactive_users() -> None:
+    """Remove inactive users from rate limiter to prevent memory growth.
+
+    Removes entries older than _RATE_LIMITER_PURGE_TTL_SECONDS (default 1 hour).
+    Called periodically from _check_rate_limit.
+    """
+    now = _time.time()
+    cutoff = now - _RATE_LIMITER_PURGE_TTL_SECONDS
+
+    # Find and remove inactive users
+    inactive_keys = [
+        key for key, last_seen in _RATE_LIMITER_LAST_SEEN.items()
+        if last_seen < cutoff
+    ]
+
+    for key in inactive_keys:
+        _RATE_LIMITER.pop(key, None)
+        _RATE_LIMITER_LAST_SEEN.pop(key, None)
+
+    if inactive_keys:
+        _LOGGER.debug("Purged %d inactive users from rate limiter", len(inactive_keys))
+
+
 async def _check_rate_limit(user_id: int | None) -> None:
     """Sliding-window rate limiter (REQ-PMCP-4) — async + locked.
 
@@ -136,10 +161,18 @@ async def _check_rate_limit(user_id: int | None) -> None:
         if window is None:
             window = []
             _RATE_LIMITER[key] = window
+            _RATE_LIMITER_LAST_SEEN[key] = now
 
         # Prune timestamps older than the window.
         while window and window[0] < cutoff:
             window.pop(0)
+
+        # Update last seen timestamp
+        _RATE_LIMITER_LAST_SEEN[key] = now
+
+        # Periodically purge inactive users (every 10 calls)
+        if len(_RATE_LIMITER) > 0 and sum(1 for w in _RATE_LIMITER.values() if w) % 10 == 0:
+            _purge_inactive_users()
 
         if len(window) >= limit:
             _LOGGER.warning(

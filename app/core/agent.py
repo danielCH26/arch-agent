@@ -891,7 +891,7 @@ async def run_agent(
             try:
                 from app.core.puppeteer_mcp import _check_rate_limit
 
-                _check_rate_limit(user_id)
+                await _check_rate_limit(user_id)
                 puppeteer_available = True
             except Exception as e:
                 puppeteer_available = False
