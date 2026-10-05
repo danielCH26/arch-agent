@@ -78,7 +78,11 @@ DEFAULT_LLM_MODEL: str = "openai/gpt-oss-120b"
 # Punto de extension: si manana otro proveedor -- u otra familia de OpenAI --
 # tiene la misma restriccion, su patron se agrega ACa. Este es el unico lugar
 # que decide si se manda la temperatura.
-_RECHAZA_TEMPERATURE_RE = re.compile(r"^o\d")
+#
+# Formato de los nombres: los providers OpenAI-style suelen prefijar con
+# ``provider/`` (Groq devuelve ``openai/o1-mini`` en ``/v1/models``). La forma
+# ``(?:^|/)o\d`` matchea tanto ``o1-mini`` como ``openai/o1-mini``.
+_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)o\d")
 
 
 def _acepta_temperature(model: str) -> bool:
@@ -87,14 +91,16 @@ def _acepta_temperature(model: str) -> bool:
     Funcion pura, sin dependencias: facil de testear y de extender.
 
     Args:
-        model: nombre del modelo tal como lo eligio el usuario en el wizard.
+        model: nombre del modelo tal como lo eligio el usuario en el wizard,
+            con o sin prefijo de provider (``openai/``, ``groq/``, ``azure/``).
 
     Returns:
         True si se le puede pasar `temperature` (ej. `gpt-4o-mini`,
-        `llama-3.3-70b`). False si hay que omitir el kwarg para que la libreria
-        aplique su default (ej. `o1`, `o1-mini`, `o3-mini`, `o4-mini`).
+        `llama-3.3-70b`, `openai/gpt-4o-mini`). False si hay que omitir el kwarg
+        para que la libreria aplique su default (ej. `o1`, `o1-mini`, `o3-mini`,
+        `o4-mini`, `openai/o1-mini`).
     """
-    return not _RECHAZA_TEMPERATURE_RE.match((model or "").strip().lower())
+    return not _RECHAZA_TEMPERATURE_RE.search((model or "").strip().lower())
 
 
 class LLMConfigError(Exception):
@@ -127,12 +133,14 @@ class UserLLMConfig:
 def _load_system_default(user_id: int) -> Optional[UserLLMConfig]:
     """Construye la config del LLM por defecto, o None si no hay credencial.
 
-    Se resuelve POR FUERA de la cache de sesion a proposito. Si el default
+    Se resuelve POR FUERA de la cache de sesion a proposito. El caller
+    (`build_langchain_model`) tiene la orden explicita de NO escribir configs
+    con ``source == "system_default"`` a `_session_cache`: si el default
     entrara al cache por `user_id`, un usuario que lo recibiera y despues
-    completara el wizard seguiria viendo el default hasta que expiraran los 300s
-    de TTL: configuraria su modelo y no veria ningun cambio. Resolverlo siempre
-    fresco cuesta una llamada a la DB solo en el camino no-configurado, que es
-    el raro.
+    completara el wizard seguiria viendo el default hasta que expiraran los
+    300s de TTL: configuraria su modelo y no veria ningun cambio. Resolverlo
+    siempre fresco cuesta una llamada a la DB solo en el camino no-configurado,
+    que es el raro.
 
     Returns:
         UserLLMConfig con el default, o None si `GROQ_API_KEY` no esta definida
@@ -156,19 +164,35 @@ _session_cache: dict[int, tuple[UserLLMConfig, float]] = {}
 _CACHE_TTL_SECONDS = 300  # 5 minutos
 
 
-def load_user_llm_config(user_id: int) -> UserLLMConfig:
+def load_user_llm_config(user_id: int, allow_default: bool = True) -> UserLLMConfig:
     """
     Carga la configuración LLM del usuario desde la DB.
 
     Args:
-        user_id: ID del usuario
+        user_id: ID del usuario.
+        allow_default: si True (default), cae al LLM del sistema cuando el
+            usuario no tiene config completa. Si False, propaga
+            ``LLMConfigError(reason="not_configured")`` en su lugar. Los
+            endpoints del wizard (step3, available-models) lo pasan en False
+            porque necesitan que el usuario complete los pasos antes de
+            continuar; el camino de chat lo deja en True para que un usuario
+            nuevo pueda hablar sin tener que configurar nada.
 
     Returns:
         UserLLMConfig con la API key ya desencriptada y el model (puede
         ser vacio si el user no completo todavia el step3 del wizard).
 
     Raises:
-        LLMConfigError: si el usuario no tiene config o está corrupta
+        LLMConfigError: si el usuario no tiene config o está corrupta.
+            El atributo ``reason`` distingue los modos:
+              - ``"not_configured"``: no hay config del usuario y (si
+                ``allow_default=False``) tampoco se pidio fallback al sistema.
+            ``"- decryption_failed"``: la API key en DB no se puede desencriptar.
+            ``"- missing"``: hay base_url + api_key del usuario pero falta el
+                modelo. Antes del fix B3 se completaba con el del default, lo
+                que mezclaba el endpoint del usuario con un id de modelo que
+                ese provider no reconoce (400 silencioso al primer request).
+            ``"- initialization_failed"``: error al construir el chat model.
 
     Nota historica: antes esta funcion requeria que `llm_model` estuviera
     seteado, pero eso rompe el flujo del wizard: despues de step2 el
@@ -192,9 +216,10 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
             raise LLMConfigError(f"Usuario {user_id} no encontrado")
 
         if not user.llm_base_url or not user.encrypted_api_key:
-            default = _load_system_default(user_id)
-            if default is not None:
-                return default
+            if allow_default:
+                default = _load_system_default(user_id)
+                if default is not None:
+                    return default
             raise LLMConfigError(
                 f"Usuario {user_id} no tiene configuracion de LLM. "
                 "Completa el wizard (pasos 1 y 2) para usar tu propia API key, "
@@ -213,17 +238,17 @@ def load_user_llm_config(user_id: int) -> UserLLMConfig:
             )
 
         if not user.llm_model:
-            # Completo step2 pero no step3. La key es suya y se respeta; solo
-            # falta el modelo, y el default puede cubrirlo. `source` queda en
-            # "user" porque la credencial y el endpoint son suyos.
-            default = _load_system_default(user_id)
-            model = default.model if default is not None else ""
-            return UserLLMConfig(
-                user_id=user_id,
-                base_url=user.llm_base_url,
-                model=model,
-                api_key=api_key,
-                source="user",
+            # El endpoint y la key son del usuario, pero el modelo no.
+            # Mezclar el modelo del default con el endpoint del usuario
+            # genera un 400 (modelo Groq contra endpoint OpenAI, por
+            # ejemplo). Mejor pedir que complete el paso 3 del wizard.
+            # Esta validacion corre SIEMPRE, independiente de
+            # ``allow_default``: el default solo cubre el caso "no config",
+            # nunca "config parcial del usuario".
+            raise LLMConfigError(
+                f"Usuario {user_id} completo los pasos 1 y 2 pero no el 3. "
+                "Elegi un modelo antes de continuar.",
+                reason="missing",
             )
 
         return UserLLMConfig(
@@ -284,10 +309,12 @@ def build_langchain_model(
         config.base_url,
     )
 
-    # 4. Cachear. El default tambien: los setters del wizard llaman
-    #    clear_session_cache(user_id), asi que la cache se invalida bien
-    #    cuando el usuario pasa a tener config propia.
-    _session_cache[user_id] = (config, time.time() + _CACHE_TTL_SECONDS)
+    # 4. Cachear SOLO configs del usuario. El default del sistema queda fuera
+    #    del cache por design (ver `_load_system_default`): si un usuario lo
+    #    recibiera y despues completara el wizard, sin este guard seguiria
+    #    viendo el default cacheado hasta que expirara el TTL de 300s.
+    if config.source == "user":
+        _session_cache[user_id] = (config, time.time() + _CACHE_TTL_SECONDS)
 
     # 5. Construir modelo
     return _init_model(config)

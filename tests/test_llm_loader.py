@@ -82,7 +82,14 @@ class TestLoadUserLLMConfig:
             load_user_llm_config(1)
 
     @patch("app.core.llm_loader.SessionLocal")
-    def test_missing_model_loads_empty_model_for_wizard_flow(self, mock_session_local):
+    def test_missing_model_raises_missing_wizard_flow(self, mock_session_local):
+        """Con base_url + key pero sin modelo: antes devolvia config.model='' y
+        dejaba que el wizard step3 lo llenara. Eso permitia que un ``load`` en
+        el flujo del chat recibiera una ``UserLLMConfig`` con un id de modelo
+        que el provider del usuario no reconoce (mezcla endpoint OpenAI con
+        id de Groq, ver B3). El fix: el loader levanta ``LLMConfigError``
+        con ``reason="missing"`` y cada caller decide que hacer.
+        """
         from app.core.encryption import encrypt
 
         user = FakeUser(
@@ -95,9 +102,10 @@ class TestLoadUserLLMConfig:
         mock_db.get.return_value = user
         mock_session_local.return_value = mock_db
 
-        config = load_user_llm_config(1)
+        with pytest.raises(LLMConfigError) as exc:
+            load_user_llm_config(1)
 
-        assert config.model == ""
+        assert exc.value.reason == "missing"
 
     @patch("app.core.llm_loader.SessionLocal")
     def test_missing_api_key_raises(self, mock_session_local, monkeypatch):
@@ -303,6 +311,40 @@ class TestBuildLangchainModel:
         with pytest.raises(LLMConfigError, match="paso 3"):
             build_langchain_model(1)
 
+    @patch("app.core.llm_loader.init_chat_model")
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_system_default_no_se_cachea_en_sesion(
+        self, mock_load, mock_init
+    ):
+        """El default del sistema NO entra al cache por user_id.
+
+        El docstring de ``_load_system_default`` promete que el default
+        se resuelve POR FUERA de la cache a proposito: si un usuario lo
+        recibe y despues completa el wizard, la siguiente llamada tiene
+        que ver la config propia recien guardada, no el default cacheado
+        esperando a expirar el TTL. Antes del fix, ``build_langchain_model``
+        escribia TODA config al cache sin mirar ``source``, asi que el
+        default quedaba cacheado igual.
+        """
+        from app.core import llm_loader
+        from app.core.llm_loader import UserLLMConfig
+
+        mock_load.return_value = UserLLMConfig(
+            user_id=1,
+            base_url="https://api.groq.com/openai/v1",
+            model="openai/gpt-oss-120b",
+            api_key="gsk-test",
+            source="system_default",
+        )
+        mock_init.return_value = MagicMock()
+
+        build_langchain_model(1)
+
+        assert 1 not in llm_loader._session_cache, (
+            "Una config system_default no debe quedar en _session_cache; "
+            "la siguiente llamada tiene que re-resolverla."
+        )
+
 
 class TestAceptaTemperature:
     """`_acepta_temperature` decide si se manda el kwarg `temperature`.
@@ -364,6 +406,49 @@ class TestAceptaTemperature:
         """
         for model in ("gpt-4o", "gpt-4o-mini", "llama-3.3-70b", "qwen2.5"):
             assert _acepta_temperature(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # Prefijos de provider que envia Groq en /v1/models (formato
+            # "openai/o1-mini"): la regex tiene que reconocer el `o\d`
+            # aunque venga precedido de `provider/`.
+            "openai/o1-mini",
+            "openai/o1",
+            "groq/o1",
+            "groq/o1-mini",
+            "azure/o4-mini",
+            "openai/o3-pro",
+            "openai/o3",
+            # Mayusculas y espacios: la normalizacion debe llegar antes.
+            "OpenAI/O1-Mini",
+            "  openai/o1-mini  ",
+            # Provider en otro formato (sin slash) que aun empieza por o\d
+            # no deberia colarse: lo que importa es el token despues del slash.
+            "anthropic/o3",
+        ],
+    )
+    def test_serie_o_con_prefijo_de_provider_no_acepta(self, model):
+        r"""Con prefijo `provider/`, la regex `(?:^|/)o\d` lo reconoce igual.
+
+        Antes del fix, `_RECHAZA_TEMPERATURE_RE = re.compile(r"^o\d")`
+        fallaba con `openai/o1-mini`: sin hacer match, el modelo recibia
+        temperature=0 y OpenAI respondia 400.
+        """
+        assert _acepta_temperature(model) is False
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # Aunque arranque con `openai/`, si el token siguiente NO es
+            # `o\d` (p.ej. `gpt-4o-mini`), la regex no debe matchear.
+            "openai/gpt-4o-mini",
+            "groq/llama-3.3-70b-versatile",
+            "anthropic/claude-3-opus",
+        ],
+    )
+    def test_provider_prefijado_que_no_es_o_digito_si_acepta(self, model):
+        assert _acepta_temperature(model) is True
 
 
 class TestInitModelTemperature:

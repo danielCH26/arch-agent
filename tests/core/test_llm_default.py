@@ -92,8 +92,20 @@ class TestFallbackAlDefault:
         assert config.model == DEFAULT_LLM_MODEL
         assert config.api_key == "gsk_test_default"
 
-    def test_usuario_sin_modelo_usa_el_del_default(self, monkeypatch):
-        """Tiene base_url y key, pero no completo el step3."""
+    def test_usuario_con_base_url_pero_sin_modelo_no_carga_default(self, monkeypatch):
+        """Tiene base_url y key, pero no completo el step3: NO se mezcla con el default.
+
+        Antes del fix (B3), la app devolvia ``UserLLMConfig(base_url=user.llm_base_url,
+        model=default.model, ...)``: el endpoint y la key son del usuario pero
+        el modelo es el del backend (Groq). Eso produce un 400 silencioso
+        cuando el user eligio, por ejemplo, OpenAI como provider: Groq recibe
+        un modelo que el no conoce y rechaza el primer request.
+
+        El comportamiento correcto es pedirle al usuario que complete el paso 3
+        antes de seguir. La excepcion ``reason="missing"`` es la misma que ya
+        lanza ``_init_model`` mas adelante, asi el caller no necesita branches
+        adicionales.
+        """
         _patch_user(
             monkeypatch,
             _FakeUser(base_url="https://api.openai.com/v1", encrypted_key="enc"),
@@ -103,12 +115,42 @@ class TestFallbackAlDefault:
             "app.core.llm_loader.decrypt", lambda _x: "sk-user-real"
         )
 
-        config = load_user_llm_config(user_id=1)
+        with pytest.raises(LLMConfigError) as exc:
+            load_user_llm_config(user_id=1)
 
-        # Su base_url y su key siguen siendo suyas. Solo el modelo falta.
-        assert config.base_url == "https://api.openai.com/v1"
-        assert config.api_key == "sk-user-real"
-        assert config.model == DEFAULT_LLM_MODEL
+        assert exc.value.reason == "missing"
+        assert "paso" in str(exc.value).lower() and "3" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            # OpenAI: el caso reportado en el review (Groq recibe un modelo
+            # que no es suyo y devuelve 400 al primer token).
+            "https://api.openai.com/v1",
+            # Ollama local: el caso opuesto, el endpoint NO sabe hablar con
+            # un id de Groq.
+            "http://localhost:11434/v1",
+        ],
+    )
+    def test_base_url_del_usuario_no_se_combina_con_modelo_del_default(
+        self, monkeypatch, base_url
+    ):
+        """Triangulacion sobre distintos endpoints: el modelo del default
+        NUNCA termina pegado al endpoint del usuario, en ninguna combinacion.
+        """
+        _patch_user(
+            monkeypatch,
+            _FakeUser(base_url=base_url, encrypted_key="enc"),
+        )
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
+        monkeypatch.setattr(
+            "app.core.llm_loader.decrypt", lambda _x: "sk-user-real"
+        )
+
+        with pytest.raises(LLMConfigError) as exc:
+            load_user_llm_config(user_id=1)
+
+        assert exc.value.reason == "missing"
 
     def test_el_default_marca_su_origen(self, monkeypatch):
         """Sin esto no se puede auditar cuanto trafico va por la key del sistema."""
@@ -271,3 +313,35 @@ class TestUsuarioDesconocido:
 
         with pytest.raises(LLMConfigError):
             load_user_llm_config(user_id=999)
+
+
+class TestAllowDefault:
+    """El parametro ``allow_default=False`` lo usan los endpoints del wizard.
+
+    Sin default el endpoint responde 404 con "Completá los pasos 1 y 2".
+    Con default, el chat flow recibe el LLM del sistema y la app sigue.
+    """
+
+    def test_allow_default_false_no_cae_al_default_sin_config(
+        self, monkeypatch
+    ):
+        """Usuario sin config + GROQ_API_KEY presente => NO devuelve el default."""
+        _patch_user(monkeypatch, _FakeUser())
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
+
+        with pytest.raises(LLMConfigError) as exc:
+            load_user_llm_config(user_id=1, allow_default=False)
+
+        assert exc.value.reason == "not_configured"
+
+    def test_allow_default_true_sigue_cayendo_al_default_sin_config(
+        self, monkeypatch
+    ):
+        """El default sigue siendo el ultimo recurso para el chat flow."""
+        _patch_user(monkeypatch, _FakeUser())
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
+
+        config = load_user_llm_config(user_id=1, allow_default=True)
+
+        assert config.source == "system_default"
+        assert config.api_key == "gsk_test_default"
