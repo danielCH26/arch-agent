@@ -338,27 +338,56 @@ def _init_model(config: UserLLMConfig) -> BaseChatModel:
             reason="missing",
         )
 
-    kwargs: dict = {
-        "model": config.model,
-        "model_provider": "openai",  # Cualquier API OpenAI-compatible
-        "base_url": config.base_url,
-        "api_key": config.api_key,
-    }
-    # Solo se manda `temperature` si el modelo lo admite. Omitirlo no es un
-    # descuido: es lo unico que hace que la serie `o*` funcione, porque su unico
-    # valor valido es 1 y mandarle 0.0 produce un 400 en request time (que
-    # aflora como SSE `event: error` sin explicar la causa).
-    if _acepta_temperature(config.model):
-        kwargs["temperature"] = DEFAULT_LLM_TEMPERATURE
-
     try:
-        model = init_chat_model(**kwargs)
-        return model
+        return _build_chat_model(
+            config.model,
+            config.base_url,
+            config.api_key,
+            DEFAULT_LLM_TEMPERATURE,
+        )
     except Exception as e:
         raise LLMConfigError(
             f"No se pudo inicializar el modelo {config.model}: {e}",
             reason="initialization_failed",
         )
+
+
+def _build_chat_model(
+    model: str,
+    base_url: str,
+    api_key: str,
+    temperature: float,
+) -> BaseChatModel:
+    """Construye un chat model OpenAI-compatible, omitiendo temperature para la serie o*.
+
+    Antes este codigo vivia inline en ``_init_model`` y se duplicaba en
+    ``evals/runner.py:construir_modelo``. Centralizarlo evita el bug que
+    sufrio el harness: si el runner duplicaba la construccion sin respetar
+    la omision de temperature, ``openai/o1-mini`` se construia con
+    ``temperature=0.0`` y el provider devolvia 400 al primer token.
+
+    Args:
+        model: nombre del modelo (con o sin prefijo ``provider/``).
+        base_url: endpoint del provider OpenAI-compatible.
+        api_key: API key en texto plano (ya desencriptada).
+        temperature: valor a pasar al provider si el modelo lo admite.
+
+    Returns:
+        Instancia de ``BaseChatModel`` lista para ``invoke`` / ``astream``.
+    """
+    kwargs: dict = {
+        "model": model,
+        "model_provider": "openai",  # Cualquier API OpenAI-compatible
+        "base_url": base_url,
+        "api_key": api_key,
+    }
+    # Solo se manda `temperature` si el modelo lo admite. Omitirlo no es un
+    # descuido: es lo unico que hace que la serie `o*` funcione, porque su
+    # unico valor valido es 1 y mandarle otro produce un 400 en request time.
+    if _acepta_temperature(model):
+        kwargs["temperature"] = temperature
+
+    return init_chat_model(**kwargs)
 
 
 def clear_session_cache(user_id: Optional[int] = None) -> None:
