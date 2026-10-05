@@ -88,6 +88,16 @@ def sign_attachment_token(
     return serializer.dumps(payload)
 
 
+def build_attachment_url(attachment_id: str, user_id: int) -> str:
+    """Return a signed URL for serving an attachment image.
+
+    The returned URL includes a query-string token that authenticates
+    the request without an Authorization header (required for <img> tags).
+    """
+    token = sign_attachment_token(attachment_id, user_id)
+    return f"/api/chat/attachments/{attachment_id}?token={token}"
+
+
 def verify_attachment_token(
     token: str,
     *,
@@ -160,6 +170,7 @@ def _ensure_uploads_dir() -> str:
 
 __all__ = [
     "DEFAULT_TTL_SECONDS",
+    "build_attachment_url",
     "sign_attachment_token",
     "verify_attachment_token",
     "reset_serializer_for_tests",
