@@ -109,13 +109,25 @@ def test_get_phases_includes_pending_decision(client, auth_headers, mock_user, m
     assert body["pending_decision"]["last_decision"] == "approved"
 
 
-def test_get_phases_pending_decision_null_when_no_record(client, auth_headers, mock_user, monkeypatch):
-    """REQ-SA-26: pending_decision is null when no decision on file."""
-    project = _project_row(current_phase="requerimientos", phase_ready=False)
+def test_get_phases_pending_decision_present_when_no_record(client, auth_headers, mock_user, monkeypatch):
+    """SCN-SA-12.1: pending_decision is present when no approved decision exists
+    for HU10-owned phase (propuesta, refinamiento, revision, final)."""
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+
+    project = _project_row(current_phase="refinamiento", phase_ready=False)
+
+    pending = MagicMock()
+    pending.phase = "refinamiento"
+    pending.since = datetime(2026, 9, 27, 22, 0, 0, tzinfo=timezone.utc)
+    pending.last_decision = None
+    pending.last_decided_at = None
+
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = project
+    db.execute.return_value.scalars.return_value.all.return_value = []
 
-    with patch("app.core.phase_decisions.get_pending_decision", return_value=None), \
+    with patch("app.core.phase_decisions.get_pending_decision", return_value=pending), \
          patch("app.api.projects.SessionLocal", return_value=db):
         response = client.get(
             f"/api/projects/{project.id}/phases",
@@ -123,7 +135,8 @@ def test_get_phases_pending_decision_null_when_no_record(client, auth_headers, m
         )
 
     assert response.status_code == 200
-    assert response.json()["pending_decision"] is None
+    assert response.json()["pending_decision"] is not None
+    assert response.json()["pending_decision"]["phase"] == "refinamiento"
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +309,8 @@ def test_advance_passes_f05_owned_phase(client, auth_headers, mock_user, monkeyp
     """REQ-SA-36: `requerimientos` (F05-owned) skips the HU10 gate."""
     project = _project_row(current_phase="requerimientos", phase_ready=True)
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = project
+    # Mock the execute() method for FOR UPDATE query
+    db.execute.return_value.scalar_one_or_none.return_value = project
 
     # Mock assert_hu10_approval_for_current_phase as a no-op so we can detect
     # the call; F05's path must NOT trigger it.

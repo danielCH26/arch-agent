@@ -7,7 +7,7 @@ Covers:
       AND different-feedback retries are accepted (a corrected ``modify``
       feedback is never collapsed into the original decision).
     * REQ-SA-31: ``with_for_update`` issued on the projects row.
-    * REQ-SA-34: typed ``DecisionConflict`` body; never ``str(exc)``.
+    * REQ-SA-34: typed 409 bodies via ``PhaseMismatchError``; never ``str(exc)``.
     * REQ-SA-36: single-owner gate (``requerimientos`` skips, others require
       a HU10 approval row before /advance).
 
@@ -28,7 +28,6 @@ from app.core.phase_decisions import (
     F05_OWNED_PHASES,
     HU10_OWNED_PHASES,
     IDEMPOTENCY_WINDOW_SECONDS,
-    DecisionConflict,
     InvalidActionError,
     InvalidPhaseError,
     PhaseDecisionResult,
@@ -401,15 +400,20 @@ def test_record_decision_modify_requires_feedback():
 # ---------------------------------------------------------------------------
 
 
-def test_get_pending_decision_returns_latest_for_current_phase():
+def test_get_pending_decision_returns_pending_with_rejected_decision():
+    """SCN-SA-12.1: pending when there's a non-approved decision (e.g., rejected)."""
     db = MagicMock()
     project = MagicMock()
     project.current_phase = "refinamiento"
+
+    # First call: project lookup
+    # Second call: approved check (returns None - no approval yet)
+    # Third call: recent decision check (returns a rejected decision)
     recent = MagicMock()
     recent.created_at = datetime(2026, 9, 27, 22, 0, 0)
-    recent.decision = "approved"
+    recent.decision = "rejected"
 
-    executions = iter([project, recent])
+    executions = iter([project, None, recent])
 
     def execute_side_effect(*_args, **_kwargs):
         result = MagicMock()
@@ -421,16 +425,23 @@ def test_get_pending_decision_returns_latest_for_current_phase():
     pending = get_pending_decision(db, project_id=7)
     assert pending is not None
     assert pending.phase == "refinamiento"
-    assert pending.last_decision == "approved"
+    assert pending.last_decision == "rejected"
     assert pending.since == recent.created_at
 
 
-def test_get_pending_decision_returns_none_when_no_record():
+def test_get_pending_decision_returns_pending_when_no_record():
+    """SCN-SA-12.1: pending_decision returns non-null when no approved decision exists
+    for HU10-owned phase (propuesta, refinamiento, revision, final)."""
+    from datetime import timezone
+
     db = MagicMock()
     project = MagicMock()
-    project.current_phase = "requerimientos"
+    project.current_phase = "refinamiento"
 
-    executions = iter([project, None])
+    # First call: project lookup
+    # Second call: approved check (returns None - no approval yet)
+    # Third call: recent decision check (returns None - no decisions at all)
+    executions = iter([project, None, None])
 
     def execute_side_effect(*_args, **_kwargs):
         result = MagicMock()
@@ -438,7 +449,53 @@ def test_get_pending_decision_returns_none_when_no_record():
         return result
 
     db.execute.side_effect = execute_side_effect
-    assert get_pending_decision(db, project_id=7) is None
+
+    pending = get_pending_decision(db, project_id=7)
+    assert pending is not None
+    assert pending.phase == "refinamiento"
+    assert pending.since is not None  # Should return utcnow() fallback
+
+
+def test_get_pending_decision_returns_none_when_approved():
+    """SCN-SA-12.1: returns None when an approved decision already exists."""
+    db = MagicMock()
+    project = MagicMock()
+    project.current_phase = "refinamiento"
+
+    # First call: project lookup
+    # Second call: approved check (returns approved row)
+    approved = MagicMock()
+    approved.decision = "approved"
+    executions = iter([project, approved])
+
+    def execute_side_effect(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.side_effect = lambda: next(executions, None)
+        return result
+
+    db.execute.side_effect = execute_side_effect
+
+    pending = get_pending_decision(db, project_id=7)
+    assert pending is None
+
+
+def test_get_pending_decision_returns_none_for_requerimientos():
+    """SCN-SA-12.1: requerimientos is F05-owned, returns None."""
+    db = MagicMock()
+    project = MagicMock()
+    project.current_phase = "requerimientos"
+
+    executions = iter([project])
+
+    def execute_side_effect(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.side_effect = lambda: next(executions, None)
+        return result
+
+    db.execute.side_effect = execute_side_effect
+
+    pending = get_pending_decision(db, project_id=7)
+    assert pending is None
 
 
 # ---------------------------------------------------------------------------
@@ -503,28 +560,6 @@ def test_advance_gate_passes_when_hu10_approval_exists():
     db.execute.side_effect = execute_side_effect
     # MUST NOT raise.
     assert_hu10_approval_for_current_phase(db, project_id=7)
-
-
-# ---------------------------------------------------------------------------
-# DecisionConflict body shape (REQ-SA-34)
-# ---------------------------------------------------------------------------
-
-
-def test_decision_conflict_body_shape():
-    """REQ-SA-34: typed body carries current_decision/decided_at/current_phase."""
-    when = datetime(2026, 9, 27, 22, 0, 0)
-    conflict = DecisionConflict(
-        current_decision="approve",
-        decided_at=when,
-        current_phase="propuesta",
-        decision_id=42,
-    )
-    body = conflict.to_detail()
-    assert body["current_decision"] == "approve"
-    assert body["decided_at"] == "2026-09-27T22:00:00"
-    assert body["current_phase"] == "propuesta"
-    assert body["decision_id"] == 42
-    assert body["error"] == "decision_conflict"
 
 
 # ---------------------------------------------------------------------------
