@@ -63,7 +63,7 @@ además dispara un backoff para no encadenar el rate limit.
 
 El scorer (`score_output`) es puro: sin red, sin DB, sin LLM. Verifica que la
 salida cumpla el contrato de formato que exige el prompt de producción
-(`## Componentes`, `## Tecnologias`, `## Patrones`, en ese orden, sin secciones
+(`## Componentes`, `## Tecnologías`, `## Patrones`, en ese orden, sin secciones
 extra, con citas dentro de rango).
 
 | Métrica | Qué es | Cómo interpretarla |
