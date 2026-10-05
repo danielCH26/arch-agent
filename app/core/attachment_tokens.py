@@ -102,7 +102,6 @@ def verify_attachment_token(
     token: str,
     *,
     attachment_id: str,
-    user_id: int,
     max_age: int = DEFAULT_TTL_SECONDS,
 ) -> tuple[bool, int | None]:
     """Return ``(valid, payload_user_id)``.
@@ -110,14 +109,16 @@ def verify_attachment_token(
     ``payload_user_id`` is the ``uid`` claim from the signed payload when
     the signature is valid AND the payload is fresh AND the payload's
     ``aid`` claim matches ``attachment_id``. On ANY failure mode
-    (missing/expired/forged/mismatched aid/wrong uid) the function
+    (missing/expired/forged/mismatched aid) the function
     returns ``(False, None)`` indistinguishably so the route can map
     every failure to 401 without leaking which check failed.
 
-    The ``user_id`` argument is the user_id from the route's
-    authenticated context. We verify the token's ``uid`` claim matches
-    it as a second check (defense in depth — even if a token leaked, it
-    can only be used for the user that minted it).
+    The user_id ownership check is the route's job (the route compares
+    the returned ``payload_user_id`` against the attachment row's owner).
+    Doing the check at the route level lets a single signed token authorize
+    reads for the right user without pre-knowledge of the request's user
+    context (REQ-ATT-2: signed URLs that <img> tags can use without
+    Authorization headers).
     """
     if not token:
         return False, None
@@ -141,8 +142,6 @@ def verify_attachment_token(
     try:
         payload_uid = int(payload.get("uid", -1))
     except (TypeError, ValueError):
-        return False, None
-    if payload_uid != int(user_id):
         return False, None
     return True, payload_uid
 

@@ -34,7 +34,7 @@ def test_verify_returns_valid_and_uid_on_good_token():
     valid, payload_uid = attachment_tokens.verify_attachment_token(
         token,
         attachment_id="att-123",
-        user_id=42,
+
     )
     assert valid is True
     assert payload_uid == 42
@@ -52,7 +52,7 @@ def test_verify_returns_false_none_on_expired():
     valid, payload_uid = attachment_tokens.verify_attachment_token(
         token,
         attachment_id="att-123",
-        user_id=42,
+
         max_age=1,
     )
     assert valid is False
@@ -69,7 +69,7 @@ def test_verify_returns_false_none_on_bad_signature():
     valid, payload_uid = attachment_tokens.verify_attachment_token(
         mangled,
         attachment_id="att-123",
-        user_id=42,
+
     )
     assert valid is False
     assert payload_uid is None
@@ -83,24 +83,19 @@ def test_verify_returns_false_none_on_mismatched_aid():
     valid, payload_uid = attachment_tokens.verify_attachment_token(
         token,
         attachment_id="att-B",  # Different from what was signed
-        user_id=42,
+
     )
     assert valid is False
     assert payload_uid is None
 
 
-def test_verify_returns_false_none_on_mismatched_uid():
-    """Token signed for user 42, verified for user 99 returns (False, None)."""
-    from app.core import attachment_tokens
-
-    token = attachment_tokens.sign_attachment_token("att-123", user_id=42)
-    valid, payload_uid = attachment_tokens.verify_attachment_token(
-        token,
-        attachment_id="att-123",
-        user_id=99,  # Different from what was signed
-    )
-    assert valid is False
-    assert payload_uid is None
+# NOTE: A test for "verify returns False on mismatched user_id" was deleted.
+# After PR76-integration-rework commit c77c0bb, the helper no longer takes
+# a user_id parameter; the route's row lookup handles ownership (REQ-ATT-2:
+# "owned by the current user" is enforced by the DB query, not the token
+# verifier). The token only proves the requester knows the signing secret
+# for the (attachment_id, user_id) pair; the user_id flows out of the
+# payload so the route can scope its lookup.
 
 
 def test_verify_returns_false_none_on_empty_token():
@@ -110,7 +105,7 @@ def test_verify_returns_false_none_on_empty_token():
     valid, payload_uid = attachment_tokens.verify_attachment_token(
         "",
         attachment_id="att-123",
-        user_id=42,
+
     )
     assert valid is False
     assert payload_uid is None
@@ -140,7 +135,7 @@ def test_verify_returns_false_none_on_non_dict_payload():
             valid, payload_uid = attachment_tokens.verify_attachment_token(
                 "fake-token",
                 attachment_id="att-123",
-                user_id=42,
+        
             )
             assert valid is False
             assert payload_uid is None

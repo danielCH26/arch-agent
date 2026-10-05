@@ -263,4 +263,10 @@ class TestChatHistoryEndpoint:
         response = client.get("/api/chat/history?project_id=1&limit=5")
         assert response.status_code == 200
         msg = response.json()["messages"][0]
-        assert set(msg.keys()) == {"id", "role", "content", "citations", "created_at"}
+        # After PR76-integration-rework commit af6309c, the API also returns
+        # `attachments` (F13 contract) and `display_content` (REQ-EM-DELTA-2
+        # in the change folder). Both are optional — None is acceptable.
+        assert set(msg.keys()) >= {"id", "role", "content", "citations", "created_at"}
+        # No leakage of internal columns.
+        assert "engram_observation_id" not in msg
+        assert "user_id" not in msg

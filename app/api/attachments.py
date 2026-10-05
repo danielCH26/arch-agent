@@ -63,13 +63,12 @@ def get_attachment(
 
     # Delegate token verification to the helper. Returns (valid, payload_uid)
     # or (False, None) on any failure — indistinguishably maps to 401.
-    # The helper verifies the token is for this attachment_id, but we need
-    # to pass a placeholder user_id for the signature check. We'll extract
-    # the real user_id from the token after verification.
+    # The helper verifies the token is for this attachment_id; the
+    # ownership-vs-user check happens below by comparing payload_uid to
+    # the attachment row's user_id.
     valid, payload_uid = verify_attachment_token(
         token,
         attachment_id=id,
-        user_id=0,  # placeholder; actual uid comes from token payload
     )
     if not valid or payload_uid is None:
         raise HTTPException(

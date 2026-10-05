@@ -1099,7 +1099,11 @@ def test_run_agent_emits_degraded_with_rate_limited_reason_before_render(monkeyp
     # Agota la (unica) cuota del usuario ANTES de correr el turno.
     monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
     puppeteer_mcp._RATE_LIMITER.clear()
-    puppeteer_mcp._check_rate_limit(user_id=7)
+    # PR76-integration-rework commit f8bbc2a added `await` to _check_rate_limit
+    # at the call site (it's async def). The test exhausted the quota
+    # pre-call; the call site itself now needs to be awaited too.
+    import asyncio
+    asyncio.run(puppeteer_mcp._check_rate_limit(user_id=7))
 
     render_mock = AsyncMock()
 
