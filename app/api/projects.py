@@ -2,10 +2,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.api.dependencies import get_current_user
 from app.auth.validators import ValidationError
 from app.core.database import SessionLocal
+from app.models.approval import Approval
 from app.models.project import Project
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -74,6 +76,7 @@ class PhaseDecisionIn(BaseModel):
     feedback: Optional[str] = None
     payload: Optional[dict] = None
     idempotency_key: Optional[str] = None
+    previous_output: Optional[dict] = None  # REQ-SA-35: snapshot from prior phase
 
 
 class PhaseDecisionOut(BaseModel):
@@ -276,26 +279,42 @@ async def get_phases(
         pending = get_pending_decision(db, project_id=project_id)
         pending_out: Optional[PendingDecisionOut] = None
         if pending is not None:
+            # Include explicit +00:00 suffix for JavaScript Date() parsing
+            since_iso = pending.since.isoformat() if pending.since else None
+            if since_iso and pending.since.tzinfo is None:
+                since_iso = since_iso + "+00:00"
             pending_out = PendingDecisionOut(
                 phase=pending.phase,
-                since=pending.since.isoformat() if pending.since else None,
+                since=since_iso,
                 last_decision=pending.last_decision,
                 last_decided_at=(
                     pending.last_decided_at.isoformat() if pending.last_decided_at else None
                 ),
             )
 
-        # Per-phase status snapshot for the UI (5 entries; status derived from
-        # ``projects.current_phase`` vs each phase name).
+        # Per-phase status snapshot for the UI (5 entries).
+        # Status computed from actual approval rows:
+        #   - Past phases (index < current): approved if approval row exists
+        #   - Current phase: "current"
+        #   - Future phases (index > current): "pending"
         per_phase: list[dict] = []
-        for phase_name in AVAILABLE_PHASES:
-            status_value = "current" if phase_name == project.current_phase else (
-                "approved" if (
-                    project.phase_ready is False
-                    and phase_name != project.current_phase
-                )
-                else "pending"
-            )
+        current_idx = AVAILABLE_PHASES.index(project.current_phase) if project.current_phase in AVAILABLE_PHASES else -1
+
+        # Fetch all approvals for this project to determine past phases
+        all_approvals = db.execute(
+            select(Approval).where(Approval.project_id == project_id)
+        ).scalars().all()
+        approved_phases = {a.phase for a in all_approvals if a.decision == "approved"}
+
+        for idx, phase_name in enumerate(AVAILABLE_PHASES):
+            if idx < current_idx:
+                # Past phase: approved if there's an approval row
+                status_value = "approved" if phase_name in approved_phases else "pending"
+            elif idx == current_idx:
+                status_value = "current"
+            else:
+                # Future phase
+                status_value = "pending"
             per_phase.append(
                 {
                     "phase": phase_name,
@@ -393,6 +412,7 @@ async def post_phase_decision(
             feedback=body.feedback,
             payload=body.payload,
             idempotency_key=body.idempotency_key,
+            previous_output=body.previous_output,
         )
         db.commit()
     except PhaseMismatchError as exc:
@@ -457,11 +477,17 @@ async def advance_phase(
     user_id = current_user["user_id"]
     db = SessionLocal()
     try:
-        project = db.query(Project).filter(
-            Project.id == project_id, Project.user_id == user_id
-        ).first()
+        # FOR UPDATE lock to prevent race conditions with concurrent reject
+        project = db.execute(
+            select(Project).where(
+                Project.id == project_id,
+                Project.user_id == user_id
+            ).with_for_update()
+        ).scalar_one_or_none()
         if project is None:
-            exists = db.query(Project).filter(Project.id == project_id).first()
+            exists = db.execute(
+                select(Project).where(Project.id == project_id)
+            ).scalar_one_or_none()
             if exists:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a este proyecto")
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
