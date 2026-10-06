@@ -105,6 +105,8 @@ def _project_key(project_id: int) -> str:
 
 
 def _load_project_state(session_row: UserSession, project_id: int) -> tuple[dict, dict]:
+    if session_row is None:
+        return {}, {}
     engram_state = dict(session_row.engram_state or {})
     raw = engram_state.get(_project_key(project_id))
     project_state = dict(raw) if isinstance(raw, dict) else {}

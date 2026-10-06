@@ -1,0 +1,130 @@
+# ============================================================================
+# CI: tests + coverage
+#
+# Criterios de aceptación de issue #26 (F18 Tests automatizados):
+#   - Suite corre en cada push a development y cada PR contra development
+#   - Coverage report se genera (term + XML)
+#   - ≥80% de cobertura — el job falla si no se llega
+#   - Tests pasan en cada commit
+#
+# Stack del repo (ver backend/Dockerfile):
+#   - Python 3.11 (matching con Dockerfile del backend para que el test
+#     refleje el runtime, no una versión distinta)
+#   - PostgreSQL 16 con pgvector (mismo servicio que docker-compose)
+#   - Deps en requirements.txt
+#
+# Notas de implementación:
+#   - CPU-only torch: Pinned a la wheel CPU para que la imagen no descargue
+#     los ~2GB de CUDA. Mismo truco que el Dockerfile.
+#   - pgvector se inicializa con psql corriendo schema.sql (no Alembic — el
+#     repo usa schema.sql plano para las migraciones).
+#   - Variables de entorno en env se copian desde el bloque env del job;
+#     los tests las overridean via monkeypatch cuando hace falta.
+# ============================================================================
+name: tests
+
+on:
+  push:
+    branches:
+      - development
+      - main
+  pull_request:
+    branches:
+      - development
+      - main
+
+# Cancelar runs anteriores del mismo branch cuando se pushea un commit nuevo.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: arch_agent_test
+        ports:
+          - 5432:5432
+        # Healthcheck: pg_isready es nativo de Postgres y respeta el TCP abierto
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # DB
+      DATABASE_URL: postgresql://test:test@localhost:5432/arch_agent_test
+      # JWT
+      JWT_SECRET_KEY: ci-test-secret-key-for-testing-only-32ch
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRES_MINUTES: '60'
+      # Encriptación de credenciales LLM por usuario
+      ENCRYPTION_KEY: ci-test-encryption-key-32-chars!!
+      # Langfuse deshabilitado en CI (no llama a API externa)
+      LANGFUSE_ENABLED: 'false'
+      # Forzar CPU para torch/sentence-transformers
+      CUDA_VISIBLE_DEVICES: ''
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install CPU-only torch first (cacheable layer)
+        # Mismo truco que el Dockerfile: torch CPU-only pesa ~200MB y
+        # cualquier cambio en requirements.txt lo reinstalaría sin esto.
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install test extras
+        # pytest-cov no está en requirements.txt principal — solo CI lo necesita
+        run: pip install pytest-cov
+
+      - name: Initialize schema
+        # El repo usa schema.sql plano (no Alembic). Cargarlo con psql.
+        run: |
+          PGPASSWORD=test psql -h localhost -U test -d arch_agent_test \
+            -v ON_ERROR_STOP=1 -f schema.sql
+
+      - name: Run tests with coverage
+        # Fallar si la cobertura total de app/ baja de 80%.
+        # Excluimos scripts/ y tests/ de la medición.
+        # --cov-report=term-missing imprime las líneas no cubiertas por archivo.
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=80 \
+            -v \
+            --tb=short \
+            --ignore=tests/test_llm_model_benchmarks.py
+
+      - name: Upload coverage artifact
+        # coverage.xml queda disponible 30 días para descarga desde la UI de Actions.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
