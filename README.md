@@ -2,6 +2,23 @@
 
 Asistente IA que guía a equipos de desarrollo en la definición de arquitecturas de software, desde una idea de producto hasta propuestas justificadas con diagramas y trade-offs.
 
+#Screenshot-página-principal
+
+---
+
+## 📘 Documentación de usuario
+
+¿Vas a **usar** Arch Agent? Empieza por acá:
+
+| Guía | Descripción |
+|------|-------------|
+| [Guía de inicio rápido](docs/usuario/01-inicio-rapido.md) | De cero a tu primera propuesta en 5 pasos. |
+| [Tutorial paso a paso](docs/usuario/02-tutorial.md) | Recorrido completo por cada pantalla y fase, con un proyecto de ejemplo. |
+| [Preguntas frecuentes](docs/usuario/03-faq.md) | Problemas habituales y cómo resolverlos. |
+| [Glosario](docs/usuario/04-glosario.md) | Conceptos de la app, de arquitectura y de LLMs. |
+
+Índice completo: [`docs/usuario/`](docs/usuario/README.md).
+
 ---
 
 ## Quickstart
@@ -33,9 +50,10 @@ Cuando el stack esté arriba:
 | Postgres | localhost:5432 |
 | Engram (memoria) | http://localhost:7439 |
 
-1. Abrí **http://localhost:5173** y registrate con username + email + password
-2. Te logueás automáticamente y caés en el dashboard de proyectos
-3. Para usar el agente, primero configurá tu LLM: **Settings → LLM Config** (ver sección abajo)
+1. Abrir **http://localhost:5173** y registrate con username + email + password
+2. Te logueas automáticamente y entras en el dashboard de proyectos
+3. Para usar el agente, primero configura tu LLM: **Settings → LLM Config** (ver sección abajo)
+4. Seguir la [guía de inicio rápido](docs/usuario/01-inicio-rapido.md) para crear tu primer proyecto
 
 ---
 
@@ -47,6 +65,15 @@ Cuando el stack esté arriba:
 - **Diagramas Mermaid.js** — Renderizados automáticamente
 - **Trade-offs** — Tabla comparativa con criterios
 - **Control del usuario** — Aprueba, modifica o rechaza cada propuesta
+
+#Screenshot-elicitacion
+<!-- Reemplazar por: ![Chat de elicitación](docs/usuario/screenshots/elicitacion.png) -->
+
+#Screenshot-propuesta
+<!-- Reemplazar por: ![Propuesta de arquitectura con trade-offs](docs/usuario/screenshots/propuesta.png) -->
+
+#Screenshot-diagrama
+<!-- Reemplazar por: ![Diagrama generado](docs/usuario/screenshots/diagrama.png) -->
 
 ---
 
@@ -77,15 +104,15 @@ Cada usuario configura su propio LLM a través de un **wizard obligatorio de 3 p
 
 ### Wizard de 3 pasos
 
-1. **Base URL** — Pegás la URL del provider (ej: `https://api.openai.com/v1`). El wizard verifica que el endpoint `/models` existe.
-2. **API Key** — Pegás tu key. El wizard testea conexión real con Bearer contra `/models`.
+1. **Base URL** — Pegas la URL del provider (ej: `https://api.openai.com/v1`). El wizard verifica que el endpoint `/models` existe.
+2. **API Key** — Pegas tu key. El wizard testea conexión real con Bearer contra `/models`.
 3. **Modelo** — Dropdown filtrado por tier MMLU:
    - **Tier 1 (MMLU ≥ 85)**: badge verde "Recomendado", seleccionable.
    - **Tier 2 / sin score (MMLU 60–85 o desconocido)**: badge amber "Sin score conocido", requiere confirmación.
    - **Tier bloqueado (MMLU < 60)**: NO aparece en el dropdown (gpt-3.5-turbo, llama-8b).
    - **Free-text fallback**: botón "Cancelar" en paso 3 revela un input de texto para tipear modelos custom no listados (fine-tunes, etc).
 
-Si ya tenés config guardada, el wizard muestra una **Summary View** con dos botones: "Cambiar modelo" (salta al paso 3 directo) o "Cambiar todo" (vuelve al paso 1).
+Si ya tienes config guardada, el wizard muestra una **Summary View** con dos botones: "Cambiar modelo" (salta al paso 3 directo) o "Cambiar todo" (vuelve al paso 1).
 
 ### Proveedores soportados
 
@@ -102,7 +129,7 @@ Cualquier API que implemente el formato OpenAI Chat Completions:
 | DeepSeek | `https://api.deepseek.com/v1` |
 | Together AI | `https://api.together.xyz/v1` |
 
-> **Ollama / LM Studio desde Docker:** usá `host.docker.internal` en vez de `localhost` para que el contenedor `backend` alcance al provider corriendo en el host.
+> **Ollama / LM Studio desde Docker:** usa `host.docker.internal` en vez de `localhost` para que el contenedor `backend` alcance al provider corriendo en el host.
 
 ### Modelos recomendados (Tier 1)
 
@@ -113,13 +140,13 @@ Whitelist mantenida en `app/core/llm_model_benchmarks.yaml`:
 - **Google:** `gemini-2.5-pro`, `gemini-2.0-pro`
 - **Meta:** `llama-3.1-405b-instruct`, `llama-3.3-70b-instruct`
 
-Para agregar más modelos, editá el YAML (citación de fuente requerida) y abrí PR.
+Para agregar más modelos, editá el YAML (citación de fuente requerida) y abre un PR.
 
 ---
 
 ## Variables de entorno
 
-Copiá `.env.example` a `.env`. Las variables marcadas con `*` son obligatorias.
+Copia `.env.example` a `.env`. Las variables marcadas con `*` son obligatorias.
 
 | Variable | Descripción | Ejemplo |
 |----------|-------------|---------|
@@ -194,6 +221,8 @@ arch-agent/
 │   ├── core/                   # DB, encryption, JWT, LLM loader/validator/classifier
 │   ├── models/                 # SQLAlchemy models (User, Project, UploadedDocument, etc)
 │   └── auth/                   # Register, login, validators
+├── docs/                       # Documentación técnica (ARCHITECTURE, ADRs, QA)
+│   └── usuario/                # Documentación de usuario final (guías, FAQ, glosario, screenshots)
 ├── migrations/                 # SQL migrations numeradas (0001-0004)
 ├── scripts/                    # init_db.py, generate_encryption_key.py, setup-local.sh
 ├── tests/                      # Tests pytest
@@ -229,7 +258,7 @@ arch-agent/
 | `POST` | `/api/llm/wizard/step3` | Sí | Wizard paso 3: guarda config con tier enforcement |
 | `GET` | `/api/llm/wizard/available-models` | Sí | Lista modelos del provider guardado |
 
-`POST /api/llm/config/validate` está **deprecated** (retorna 410 Gone). Usá el wizard.
+`POST /api/llm/config/validate` está **deprecated** (retorna 410 Gone). Usa el wizard.
 
 ---
 
@@ -237,7 +266,7 @@ arch-agent/
 
 **F11 (Context7) y F13 (Puppeteer MCP) dependen de Tool Calling nativo del modelo.** El modelo por defecto en `.env.example` es `llama3` (Ollama, 8k ctx), que **NO tiene soporte sólido de tool calling** — emite texto libre en lugar de un `tool_calls` válido cuando se le pide invocar una herramienta, lo que rompe el end-to-end test de F13 (el sidecar Puppeteer nunca recibe la llamada `puppeteer_screenshot` y no se renderiza el diagrama Mermaid).
 
-Para verificar F11 / F13 end-to-end **usá uno de estos modelos** (cualquiera con buen soporte de function/tool calling):
+Para verificar F11 / F13 end-to-end **usa uno de estos modelos** (cualquiera con buen soporte de function/tool calling):
 
 | Familia | Modelos recomendados | Notas |
 |---------|----------------------|-------|
@@ -246,7 +275,7 @@ Para verificar F11 / F13 end-to-end **usá uno de estos modelos** (cualquiera co
 | **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o3-mini` | Tool calling robusto out-of-the-box |
 | **Anthropic** | `claude-3-5-sonnet-latest`, `claude-3-7-sonnet`, `claude-sonnet-4` | Tool calling robusto |
 
-Configurá el modelo desde el **wizard de LLM** (`Settings → LLM Config`, paso 3) o directamente en el `.env` cambiando `LLM_MODEL=...`. Si el modelo no soporta tool calling, vas a ver este patrón en el log del backend:
+Configura el modelo desde el **wizard de LLM** (`Settings → LLM Config`, paso 3) o directamente en el `.env` cambiando `LLM_MODEL=...`. Si el modelo no soporta tool calling, vas a ver este patrón en el log del backend:
 
 ```
 WARNING LangChain agent produced no tool_calls despite tool_intent=puppeteer_screenshot
