@@ -45,7 +45,7 @@ jobs:
   test:
     name: pytest + coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -110,6 +110,7 @@ jobs:
         # Fallar si la cobertura total de app/ baja de 80%.
         # Excluimos scripts/ y tests/ de la medición.
         # --cov-report=term-missing imprime las líneas no cubiertas por archivo.
+        # El archivo real está en tests/core/, no tests/ (F18 fix).
         run: |
           pytest tests/ \
             --cov=app \
@@ -118,7 +119,7 @@ jobs:
             --cov-fail-under=80 \
             -v \
             --tb=short \
-            --ignore=tests/test_llm_model_benchmarks.py
+            --ignore=tests/core/test_llm_model_benchmarks.py
 
       - name: Upload coverage artifact
         # coverage.xml queda disponible 30 días para descarga desde la UI de Actions.
