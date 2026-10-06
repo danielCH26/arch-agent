@@ -50,7 +50,9 @@ function parseInline(content: string): InlineToken[] {
 /**
  * El modelo separa los efectos de una celda con `<br>` (una tabla markdown no
  * admite saltos de linea). Se convierten a <br/> reales, sin HTML crudo, tambien
- * cuando el `<br>` queda dentro de un token en negrita o de codigo.
+ * cuando el `<br>` queda dentro de un token en negrita. En codigo en linea
+ * (`` `<br>` ``) NO se convierte: es el unico modo de mostrar la etiqueta como
+ * texto literal.
  */
 function renderWithBreaks(value: string): React.ReactNode {
   return value.split(/<br\s*\/?>/gi).map((part, partIndex) => (
@@ -72,7 +74,7 @@ function renderInline(content: string): React.ReactNode {
           key={index}
           className="rounded bg-black/10 px-1 py-0.5 text-[0.9em]"
         >
-          {renderWithBreaks(token.value)}
+          {token.value}
         </code>
       )
     }

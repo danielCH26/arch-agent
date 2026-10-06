@@ -183,14 +183,14 @@ describe('ProposalCard', () => {
     expect(table.textContent).not.toMatch(/\\\|/)
   })
 
-  it('renders <br> inside bold and code tokens as line breaks too', () => {
+  it('renders <br> inside bold as a line break but keeps it literal inside inline code', () => {
     proposalsStore.setState({
       currentProposal: {
         id: 102,
         project_id: 1,
         iteration: 1,
         content_markdown:
-          '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Capas | **Simple<br>y claro** | `sin<br>broker` | Baja |\n| Modular | a | b | Media |\n| Hexagonal | a | b | Media |',
+          '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Capas | **Simple<br>y claro** | usa `<br>` literal | Baja |\n| Modular | a | b | Media |\n| Hexagonal | a | b | Media |',
         citations: [],
         lifecycle: 'proposed',
         feedback: null,
@@ -202,9 +202,10 @@ describe('ProposalCard', () => {
     render(<ProposalCard forceMount />)
 
     const table = screen.getByTestId('proposal-markdown-table')
-    expect(table.textContent).not.toMatch(/<br/i)
     expect(table.querySelectorAll('strong br').length).toBe(1)
-    expect(table.querySelectorAll('code br').length).toBe(1)
+    // En codigo en linea la etiqueta se muestra como texto, sin salto de linea.
+    expect(table.querySelectorAll('code br').length).toBe(0)
+    expect(table.querySelector('code')).toHaveTextContent('<br>')
   })
 
   it('shows the "Aprobada" chip and hides actions after a successful approve', () => {
