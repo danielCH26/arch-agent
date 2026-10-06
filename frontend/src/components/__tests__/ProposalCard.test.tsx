@@ -250,6 +250,16 @@ describe('ProposalCard', () => {
       expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
     })
 
+    it('no ofrece reintentar si el feedback pendiente es de otra propuesta (id viejo)', async () => {
+      await renderWithProposal(proposalOut())
+      act(() => proposalsStore.setState({
+        error: 'La generación superó el tiempo máximo (5 min)',
+        lastModify: { proposalId: 40, feedback: 'agrega caché' },
+      }))
+
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
     it('tras cancelar una modificación conserva la versión actual y permite reintentar', async () => {
       const user = userEvent.setup()
       await renderWithProposal(proposalOut())

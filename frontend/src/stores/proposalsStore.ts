@@ -319,7 +319,16 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       })
       const { handlers, track } = streamHandlers(streamId, previous.projectId, (error, { savingTimedOut }) => {
         // Si la iteración falla, se vuelve a mostrar la propuesta anterior.
-        set({ current: previous, activity: 'idle', error })
+        set({
+          current: previous,
+          activity: 'idle',
+          error,
+          // Si el corte fue GUARDANDO, la iteración pudo quedar en la base: un
+          // reintento con el `proposalId` viejo chocaría con un 409. Se olvida
+          // el feedback pendiente y se rehidrata para que el usuario vea el
+          // estado real y decida desde ahí.
+          ...(savingTimedOut ? { lastModify: null } : {}),
+        })
         if (savingTimedOut) void rehydrateLatest(streamId, previous.projectId)
         else void get().refresh(proposalId)
       })

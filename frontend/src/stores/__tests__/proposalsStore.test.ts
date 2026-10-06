@@ -314,3 +314,44 @@ describe('proposalsStore corte por tiempo al guardar (F19)', () => {
     expect(proposalsStore.getState().current).toBeNull()
   })
 })
+
+describe('proposalsStore: timeout durante el guardado al modificar (review PR)', () => {
+  it('no deja "Reintentar" disponible y conserva el mensaje aunque la rehidratación termine', async () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(6, 2))
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+
+    expect(proposalsStore.getState().lastModify).toBeNull()
+    await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(6))
+    expect(proposalsStore.getState().error).toContain('tiempo máximo')
+  })
+
+  it('si la rehidratación falla en silencio tampoco se ofrece reintentar', async () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockRejectedValue(new Error('red caída'))
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+    await Promise.resolve()
+
+    const state = proposalsStore.getState()
+    expect(state.lastModify).toBeNull()
+    expect(state.current?.id).toBe(5)
+    expect(state.error).toContain('tiempo máximo')
+  })
+
+  it('un timeout que NO fue guardando sigue permitiendo reintentar', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.(progress)
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+  })
+})

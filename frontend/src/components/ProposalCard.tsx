@@ -51,7 +51,13 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   // Reintentar solo sirve para cortes transitorios. Un 4xx, el límite de
   // iteraciones o una configuración LLM inválida requieren una acción distinta.
   const retryableError = error !== null && /tiempo máximo|timed out|stream failed/i.test(error)
-  const canRetry = lastModify !== null && !busy && (retryableError || cancelled)
+  // Además, el feedback pendiente debe ser de ESTA propuesta: si la vigente ya
+  // cambió (se rehidrató tras un corte al guardar), el `proposalId` viejo daría 409.
+  const canRetry =
+    lastModify !== null &&
+    lastModify.proposalId === proposal?.id &&
+    !busy &&
+    (retryableError || cancelled)
 
   const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!proposal?.id) return
