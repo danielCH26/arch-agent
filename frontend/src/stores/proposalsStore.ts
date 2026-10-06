@@ -292,16 +292,16 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       ])
       if (get().inFlight !== 'idle') return
       const hydratedHistory = history.map(proposalFromOut)
-      // El historial también contiene propuestas rechazadas. No puede ocupar
-      // `currentProposal`: al regresar de requerimientos el endpoint latest
-      // devuelve null justamente para abrir una nueva generación, mientras
-      // que tomar history[0] dejaba visible el texto rechazado y ocultaba el
-      // botón "Generar propuesta".
+      // La vigente sale de /proposals/latest (excluye rechazadas). El
+      // historial incluye rechazadas, así que solo alimenta `iterations`:
+      // si todas están rechazadas, `out` es null y la tarjeta ofrece
+      // "Generar propuesta" en vez de mostrar una versión rechazada.
       const hydrated = out ? proposalFromOut(out) : null
       set({
         currentProposal: hydrated,
         pendingProposal: null,
-        iterations: hydratedHistory.length > 0 ? hydratedHistory : (hydrated ? [hydrated] : []),
+        iterations:
+          hydratedHistory.length > 0 ? hydratedHistory : hydrated ? [hydrated] : [],
         error: null,
       })
     } catch {

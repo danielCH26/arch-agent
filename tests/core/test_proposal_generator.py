@@ -1222,3 +1222,294 @@ def test_select_citations_marks_non_primary_rows_as_tradeoff_options():
     citations = _select_citations(_tight_pool(), top_n=3, min_similarity=0.0, explicit_text=_TIGHT)
 
     assert [c["source_role"] for c in citations] == ["primary", "tradeoff_option", "tradeoff_option"]
+
+
+# --- Tests que venian de la rama `fixes` (lectura de feedback, baselines por patron, mensajes) ---
+
+def test_build_prompt_tells_the_model_to_decide_instead_of_offering_alternatives():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+    assert "REGLA DE DECISION" in prompt
+    # F10: compara alternativas en la tabla y recomienda UNA sola opcion; las
+    # formulas ambiguas ("X o Y") solo se admiten dentro de la tabla.
+    assert "UNA sola opción" in prompt
+    assert "fuera de la tabla" in prompt
+    # La regla va antes del formato de salida para que el modelo la vea primero.
+    assert prompt.index("REGLA DE DECISION") < prompt.index("Formato OBLIGATORIO")
+
+
+def test_feedback_stance_reads_common_negations_as_reject():
+    from app.core.proposal_generator import _feedback_stance
+
+    for feedback in (
+        "no necesitamos microservicios",
+        "no quiero que sea microservicios",
+        "elimina por completo los microservicios",
+        "evitemos los microservicios",
+    ):
+        assert _feedback_stance("Microservicios", feedback) == "reject", feedback
+
+
+def test_feedback_stance_unrecognized_mention_is_ambiguous_not_want():
+    from app.core.proposal_generator import _feedback_stance
+
+    for feedback in (
+        "no cambies a microservicios",
+        "no se si usar microservicios",
+        "los usuarios de microservicios",
+    ):
+        assert _feedback_stance("Microservicios", feedback) is None, feedback
+
+
+def test_feedback_stance_needs_a_positive_signal_to_be_want():
+    from app.core.proposal_generator import _feedback_stance
+
+    for feedback in (
+        "quiero microservicios",
+        "usa microservicios",
+        "prefiero microservicios",
+        "cambia la arquitectura a microservicios",
+        "no uses capas sino microservicios",
+        "microservicios en vez de capas",
+    ):
+        assert _feedback_stance("Microservicios", feedback) == "want", feedback
+
+
+def test_negated_feedback_does_not_make_microservices_primary_for_a_small_team():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Microservicios", 1, 0.90, "alta"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.80, "baja"),
+        _pat("Monolito modular (Modular Monolith)", 3, 0.78, "baja"),
+    ]
+
+    for feedback in (
+        "no necesitamos microservicios",
+        "no quiero que sea microservicios",
+        "elimina por completo los microservicios",
+    ):
+        citations = _select_citations(
+            docs,
+            top_n=3,
+            min_similarity=0.0,
+            explicit_text="Equipo de 3 personas",
+            feedback=feedback,
+        )
+        names = [c["pattern_name"] for c in citations]
+        assert "Microservicios" not in names, feedback
+        assert citations[0]["source_role"] == "primary"
+
+
+def test_explicitly_requested_ignores_negated_and_hypothetical_mentions():
+    from app.core.proposal_generator import _explicitly_requested
+
+    assert not _explicitly_requested(
+        "Microservicios", "Restricciones: evitar microservicios; equipo de 3 personas"
+    )
+    assert not _explicitly_requested("Microservicios", "sin microservicios")
+    assert not _explicitly_requested(
+        "Microservicios", "a futuro podría migrar a microservicios"
+    )
+    assert _explicitly_requested("Microservicios", "Necesitamos microservicios por dominio")
+
+
+def test_requirement_that_avoids_a_pattern_keeps_the_scale_disqualification():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    docs = [
+        _pat("Microservicios", 1, 0.95, "alta"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.80, "baja"),
+    ]
+    # Sin penalizacion por complejidad: solo la descalificacion dura puede bajarlo.
+    with patch.object(gen, "PROPOSAL_COMPLEXITY_PENALTY", 0.0):
+        citations = gen._select_citations(
+            docs,
+            top_n=2,
+            min_similarity=0.0,
+            explicit_text="Restricciones: evitar microservicios; equipo de 3 personas",
+        )
+
+    assert citations[0]["pattern_name"] == "Arquitectura en capas (Layered)"
+
+
+def _baseline_head(primary, requirements_text=None, feedback=None):
+    from app.core.proposal_generator import _architecture_baseline
+
+    return _architecture_baseline(
+        citations=[{"pattern_name": primary, "source_role": "primary"}],
+        project_name="P",
+        description=None,
+        requirements_text=requirements_text,
+        prior_content=None,
+        feedback=feedback,
+    ).split("\n")[0]
+
+
+def test_baseline_follows_primary_pattern_not_requirement_keywords():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Monolito modular (Modular Monolith)", "source_role": "primary"}
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+        requirements_text="Restricciones: a futuro podría migrar a microservicios",
+    )
+
+    assert "ESTRUCTURA BASE SELECCIONADA: monolito modular" in prompt
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in prompt
+
+
+def test_baseline_has_its_own_case_for_each_catalog_pattern():
+    expected = {
+        "Serverless (Function-as-a-Service)": "serverless",
+        "API Gateway + Backend for Frontend (BFF)": "API Gateway + Backend for Frontend",
+        "CQRS (Command Query Responsibility Segregation)": "CQRS",
+        "Microservicios": "microservicios",
+        "Arquitectura orientada a eventos (Event-Driven)": "orientada a eventos",
+        "Arquitectura en capas (Layered)": "arquitectura en capas",
+        "Clean Architecture": "Clean Architecture",
+        "Monolito modular (Modular Monolith)": "monolito modular",
+        "Event sourcing": "event sourcing",
+        "Arquitectura hexagonal (Puertos y Adaptadores)": "arquitectura hexagonal",
+    }
+    for name, label in expected.items():
+        assert _baseline_head(name).startswith(
+            f"ESTRUCTURA BASE SELECCIONADA: {label}"
+        ), name
+
+
+def test_baseline_covers_every_pattern_in_the_seed_catalog():
+    import pathlib
+
+    import yaml
+
+    patterns_dir = pathlib.Path(__file__).resolve().parents[2] / "data" / "patterns"
+    names = [
+        yaml.safe_load(path.read_text(encoding="utf-8"))["pattern_name"]
+        for path in sorted(patterns_dir.glob("*.yaml"))
+    ]
+    assert len(names) >= 10
+    for name in names:
+        assert "la propia del patron principal" not in _baseline_head(name), name
+
+
+def test_baseline_for_unknown_primary_does_not_force_another_style():
+    # Un patron fuera del catalogo (Saga ya tiene su propia base desde F10).
+    head = _baseline_head("Arquitectura basada en espacios (Space-Based)")
+
+    assert "la propia del patron principal (Arquitectura basada en espacios" in head
+    assert "arquitectura en capas" not in head
+
+
+def test_baseline_fallback_without_primary_ignores_hypothetical_mentions():
+    from app.core.proposal_generator import _architecture_baseline
+
+    def _base(**kw):
+        return _architecture_baseline(
+            citations=[],
+            project_name="P",
+            description=None,
+            requirements_text=kw.get("requirements_text"),
+            prior_content=None,
+            feedback=kw.get("feedback"),
+        ).split("\n")[0]
+
+    assert "microservicios" in _base(feedback="quiero microservicios")
+    assert "arquitectura en capas" in _base(
+        requirements_text="a futuro podría migrar a microservicios"
+    )
+    assert "arquitectura en capas" in _base(feedback="no quiero microservicios")
+
+
+# Seccion de trade-offs valida (la quinta seccion que exige F10), tomada de la
+# propuesta completa de los tests de F10.
+_TRADEOFFS_BLOCK = _FULL_PROPOSAL[_FULL_PROPOSAL.index("## Trade-offs y decisión"):]
+
+
+def _proposal_with_risk(label):
+    return (
+        "## Componentes\n- API\n\n## Tecnologías\n- Python\n\n"
+        "## Patrones\n- Patrón principal: Arquitectura en capas (Layered)\n\n"
+        "## Justificación del patrón principal\n"
+        "- Motivo de elección: reduce el riesgo de acoplamiento.\n"
+        "- Reflejo en la arquitectura: ...\n- Beneficio esperado: ...\n"
+        f"- {label}: ...\n\n" + _TRADEOFFS_BLOCK
+    )
+
+
+def test_missing_sections_accepts_risk_and_cost_variants():
+    from app.core.proposal_generator import _missing_sections
+
+    for label in (
+        "Riesgo o costo",
+        "Riesgos y costos",
+        "Riesgo/costo",
+        "**Riesgo o costo**",
+        "Riesgo",
+    ):
+        assert _missing_sections(_proposal_with_risk(label)) == [], label
+
+
+def test_missing_sections_does_not_take_a_risk_word_from_the_motive_bullet():
+    from app.core.proposal_generator import _missing_sections
+
+    cut = _proposal_with_risk("Riesgo o costo").split("- Reflejo")[0]
+
+    # Cortada en la justificacion: faltan el riesgo y (F10) la seccion de trade-offs.
+    assert sorted(_missing_sections(cut)) == ["Riesgo o costo", "Trade-offs y decisión"]
+
+    # Un "Riesgo:" dentro de la tabla de trade-offs tampoco cuenta como el de la
+    # justificacion: el riesgo se busca antes del encabezado de trade-offs.
+    no_risk = _proposal_with_risk("Beneficio extra").replace(
+        "## Trade-offs y decisión", "## Trade-offs y decisión\n- Riesgo: algo\n", 1
+    )
+    assert _missing_sections(no_risk) == ["Riesgo o costo"]
+
+
+def test_missing_sections_tolerates_singular_and_shorter_headings():
+    from app.core.proposal_generator import _missing_sections
+
+    markdown = (
+        "## Componente\n- API\n## Tecnología\n- Python\n## Patrón\n- X\n"
+        "## Justificación\n- Riesgos y costos: ...\n\n" + _TRADEOFFS_BLOCK
+    )
+
+    assert _missing_sections(markdown) == []
+
+
+def test_incomplete_message_names_the_real_cause():
+    from app.core.proposal_generator import _incomplete_proposal_message
+
+    by_length = _incomplete_proposal_message("length", ["Riesgo o costo"])
+    by_sections = _incomplete_proposal_message("stop", ["Tecnologias"])
+
+    assert "incompleta" in by_length and "incompleta" in by_sections
+    assert "límite de tokens" in by_length
+    assert "límite de tokens" not in by_sections
+    assert "Tecnologias" in by_sections
+
+
+def test_complete_proposal_with_variant_headings_is_persisted():
+    events, persisted = _stream_with(
+        None, _proposal_with_risk("Riesgos y costos"), finish_reason="stop"
+    )
+
+    assert len(persisted) == 1
+    assert events[-1][0] == "done"
+
+
+def test_section_error_does_not_blame_the_token_limit():
+    events, persisted = _stream_with(
+        None, "## Componentes\n- API\n", finish_reason="stop"
+    )
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+    assert "límite de tokens" not in events[-1][1]

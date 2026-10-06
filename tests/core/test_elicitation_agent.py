@@ -13,6 +13,7 @@ from app.core.elicitation_agent import (
     ElicitationAgentError,
     ElicitationLLMError,
     FIRST_QUESTION,
+    MAX_QUESTIONS,
     _extract_json_object,
     _strip_json_fences,
     generate_summary,
@@ -209,3 +210,110 @@ class TestGenerateSummary:
         assert set(summary.keys()) == {
             "problema", "usuarios", "funcionalidades", "restricciones", "calidad"
         }
+
+
+# --- Verificación de viabilidad (review #5 y #6) ---------------------------
+
+from app.core.elicitation_agent import (  # noqa: E402
+    _VIABILITY_FACTORS,
+    _missing_viability_factors,
+)
+
+
+def _missing(history, description="", documents=None):
+    return [name for name, _ in _missing_viability_factors(history, description, documents)]
+
+
+class TestMissingViabilityFactors:
+    def test_generic_question_text_does_not_cover_team_or_deadline(self):
+        history = [
+            {"pregunta": "¿Cuántas personas usarán el sistema?", "respuesta": "Unas 50"},
+            {"pregunta": "¿Qué tiempo de respuesta esperan?", "respuesta": "Menos de 2 s"},
+        ]
+        assert _missing(history) == ["presupuesto", "equipo", "plazo"]
+
+    def test_question_text_alone_never_counts(self):
+        history = [
+            {"pregunta": "¿Cuál es el presupuesto, el equipo y el plazo?", "respuesta": "No sé"},
+        ]
+        assert _missing(history) == ["presupuesto", "equipo", "plazo"]
+
+    def test_keywords_need_word_boundaries(self):
+        history = [
+            {
+                "pregunta": "p",
+                "respuesta": "Reservas de mesa, una promesa de servicio y hacemos copia diaria",
+            }
+        ]
+        assert _missing(history) == ["presupuesto", "equipo", "plazo"]
+
+    def test_accented_words_are_recognized(self):
+        history = [
+            {"pregunta": "p", "respuesta": "Una inversión de 5.000 dólares"},
+            {"pregunta": "p", "respuesta": "Equipo de 2 desarrolladores"},
+            {"pregunta": "p", "respuesta": "Entrega en 3 meses"},
+        ]
+        assert _missing(history) == []
+
+    def test_monthly_cost_and_real_time_are_not_a_deadline(self):
+        history = [
+            {"pregunta": "p", "respuesta": "Máximo 100 USD al mes. Equipo de 3."},
+            {"pregunta": "p", "respuesta": "Necesitamos notificaciones en tiempo real"},
+        ]
+        assert _missing(history) == ["plazo"]
+
+    def test_description_and_documents_still_count(self):
+        assert _missing(
+            [],
+            "Presupuesto bajo",
+            "Equipo de 3 personas. Plazo de 3 meses.",
+        ) == []
+
+    def test_answering_the_viability_question_with_unknown_closes_the_factor(self):
+        budget_question = _VIABILITY_FACTORS[0][2]
+        history = [{"pregunta": budget_question, "respuesta": "Aún no lo definimos"}]
+        assert _missing(history) == ["equipo", "plazo"]
+
+
+class TestViabilityRuleGating:
+    def test_does_not_replace_the_llm_question_in_early_turns(self):
+        for size in (1, 2, 3, 4):
+            history = [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(size)]
+            model = _FakeModel(
+                ['{"done": false, "question": "¿Qué usuarios tendrá?", "reason": "x"}']
+            )
+            decision = next_step(model, history=history)
+            assert decision.question == "¿Qué usuarios tendrá?", size
+            assert decision.done is False
+
+    def test_applies_when_the_llm_wants_to_finish_early(self):
+        model = _FakeModel(['{"done": true, "question": null, "reason": "ya"}'])
+        decision = next_step(model, history=HISTORY_1)
+        assert decision.done is False
+        assert "presupuesto" in (decision.question or "").lower()
+
+    def test_applies_once_the_minimum_is_reached(self):
+        model = _FakeModel(
+            ['{"done": false, "question": "otra", "reason": "sigo"}']
+        )
+        decision = next_step(model, history=HISTORY_5)
+        assert decision.done is False
+        assert "presupuesto" in (decision.question or "").lower()
+        assert "viabilidad" in decision.reason
+
+    def test_never_asks_an_eleventh_question(self):
+        model = _FakeModel(['{"done": false, "question": "otra", "reason": "sigo"}'])
+        decision = next_step(model, history=HISTORY_10)
+        assert decision.done is True
+        assert decision.question is None
+
+    def test_vague_answers_never_exceed_max_questions(self):
+        model_response = '{"done": false, "question": "¿Qué usuarios tendrá?", "reason": "x"}'
+        history = []
+        for _ in range(MAX_QUESTIONS + 2):
+            decision = next_step(_FakeModel([model_response]), history=history)
+            if decision.done:
+                break
+            history.append({"pregunta": decision.question, "respuesta": "no sé"})
+        assert decision.done is True
+        assert len(history) == MAX_QUESTIONS
