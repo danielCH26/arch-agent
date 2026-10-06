@@ -77,6 +77,13 @@ jobs:
       # Forzar CPU para torch/sentence-transformers
       CUDA_VISIBLE_DEVICES: ''
       PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      # F18: rutas escribibles en /tmp — el working dir (/app) no es
+      # escribible en el runner de GitHub Actions.
+      # - PUPPETEER_UPLOADS_DIR: /app/uploads/screenshots/ de attachment_tokens._ensure_uploads_dir
+      # - SENTENCE_TRANSFORMERS_HOME: /app/.cache/sentence-transformers de app/core/embeddings.py
+      PUPPETEER_UPLOADS_DIR: /tmp/uploads
+      SENTENCE_TRANSFORMERS_HOME: /tmp/sentence-transformers
+      HF_HOME: /tmp/huggingface
 
     steps:
       - name: Checkout
