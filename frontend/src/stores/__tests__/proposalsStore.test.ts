@@ -388,3 +388,108 @@ describe('proposalsStore reintento de una modificación (F19)', () => {
     expect(api.createProposalStream).not.toHaveBeenCalled()
   })
 })
+
+// --- Review PR: corte por tiempo durante el guardado -------------------------
+
+describe('proposalsStore: timeout durante el guardado (review PR)', () => {
+  const SAVING = {
+    stage: 'saving' as const,
+    percent: 95,
+    message: 'Guardando la propuesta',
+    elapsed_ms: 299_000,
+    budget_s: 300,
+  }
+  const MSG = 'El guardado superó el tiempo máximo (5 min). Recarga para ver si la propuesta se guardó.'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    proposalsStore.getState().reset()
+    vi.mocked(api.getProposalHistory).mockResolvedValue([])
+  })
+
+  it('modificar: no deja "Reintentar" disponible y conserva el mensaje aunque la rehidratación termine', async () => {
+    const { cb } = captureStream()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(8, 1, 'proposed'))
+    proposalsStore.setState({ currentProposal: { ...proposalFromOutForTest(out(8, 1, 'proposed')) } })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onProgress?.(SAVING)
+
+    cb().onError(MSG)
+
+    // Inmediatamente (loadLatest todavía en curso): ya no hay qué reintentar.
+    expect(proposalsStore.getState().lastModify).toBeNull()
+    expect(proposalsStore.getState().error).toBe(MSG)
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(1))
+    await flushAsync() // deja terminar loadLatest antes de comprobar
+    expect(proposalsStore.getState().currentProposal?.id).toBe(8)
+    expect(proposalsStore.getState().error).toBe(MSG) // la rehidratación no lo borra
+    expect(proposalsStore.getState().lastModify).toBeNull()
+  })
+
+  it('modificar: si la rehidratación falla en silencio tampoco se ofrece reintentar', async () => {
+    const { cb } = captureStream()
+    vi.mocked(api.getLatestProposal).mockRejectedValue(new Error('red caída'))
+    proposalsStore.setState({ currentProposal: proposalFromOutForTest(out(8, 1, 'proposed')) })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onProgress?.(SAVING)
+
+    cb().onError(MSG)
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalled())
+
+    expect(proposalsStore.getState().lastModify).toBeNull()
+    expect(proposalsStore.getState().error).toBe(MSG)
+  })
+
+  it('generar: si no se guardó nada, el usuario ve el motivo junto a "Generar propuesta"', async () => {
+    const { cb } = captureStream()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(null)
+    await proposalsStore.getState().generate(1)
+    cb().onProgress?.(SAVING)
+
+    cb().onError(MSG)
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalled())
+    await flushAsync() // deja terminar loadLatest antes de comprobar
+
+    const state = proposalsStore.getState()
+    expect(state.currentProposal).toBeNull() // la tarjeta ofrece generar de nuevo
+    expect(state.error).toBe(MSG) // y explica qué pasó
+  })
+
+  it('un timeout que NO fue guardando sigue permitiendo reintentar', async () => {
+    const { cb } = captureStream()
+    proposalsStore.setState({ currentProposal: proposalFromOutForTest(out(8, 1, 'proposed')) })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onProgress?.({ ...SAVING, stage: 'generating', percent: 60 })
+
+    cb().onError('La generación superó el tiempo máximo (5 min)')
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 8, feedback: 'agrega caché' })
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+  })
+
+  it('loadLatest sin force sí limpia el error (comportamiento normal al entrar a la fase)', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(1, 1, 'proposed'))
+    proposalsStore.setState({ error: 'error viejo' })
+
+    await proposalsStore.getState().loadLatest(1)
+
+    expect(proposalsStore.getState().error).toBeNull()
+  })
+})
+
+// Vacía la cola de microtareas: loadLatest encadena varios awaits.
+const flushAsync = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+function proposalFromOutForTest(o: ReturnType<typeof out>) {
+  return {
+    id: o.id,
+    project_id: o.project_id,
+    iteration: o.iteration,
+    content_markdown: o.content,
+    citations: [],
+    lifecycle: o.lifecycle,
+    feedback: o.feedback,
+    created_at: o.created_at,
+  }
+}

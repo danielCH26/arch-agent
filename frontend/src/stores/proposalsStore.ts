@@ -315,6 +315,11 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             error: message,
             pendingProposal: null,
             ...IDLE_PROGRESS,
+            // Si el corte fue GUARDANDO, la iteración pudo quedar en la base: un
+            // reintento con el `proposalId` viejo chocaría con un 409. Se
+            // olvida el feedback pendiente y se rehidrata (abajo) para que el
+            // usuario vea el estado real y decida desde ahí.
+            ...(savingTimedOut ? { lastModify: null } : {}),
           })
           if (savingTimedOut) {
             const projectId = prior?.project_id ?? 0
@@ -434,7 +439,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
         pendingProposal: null,
         iterations:
           hydratedHistory.length > 0 ? hydratedHistory : hydrated ? [hydrated] : [],
-        error: null,
+        // La rehidratación forzada ocurre justo tras un corte por tiempo al
+        // guardar: el mensaje de error es lo único que le explica al usuario
+        // por qué no ve su propuesta, así que no se borra.
+        ...(force ? {} : { error: null }),
       })
     } catch {
       // Silencioso: si falla, la tarjeta queda con el botón "Generar propuesta".

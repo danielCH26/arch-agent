@@ -166,3 +166,29 @@ describe('ProposalActions', () => {
     expect(screen.getByTestId('proposal-retry')).toBeInTheDocument()
   })
 })
+
+describe('ProposalActions: reintento solo para la propuesta vigente (review PR)', () => {
+  beforeEach(() => resetStore())
+  afterEach(() => resetStore())
+
+  it('no ofrece reintentar si el feedback pendiente es de otra propuesta (id viejo)', () => {
+    proposalsStore.setState({
+      error: 'La generación superó el tiempo máximo (5 min)',
+      lastModify: { proposalId: 101, feedback: 'agrega caché' },
+    })
+    // La vigente ya es la 102: reintentar con 101 daría 409.
+    render(<ProposalActions proposalId={102} />)
+
+    expect(screen.queryByTestId('proposal-retry')).toBeNull()
+  })
+
+  it('tras cancelar también exige que sea la misma propuesta', () => {
+    proposalsStore.setState({
+      cancelled: true,
+      lastModify: { proposalId: 101, feedback: 'x' },
+    })
+    render(<ProposalActions proposalId={103} />)
+
+    expect(screen.queryByTestId('proposal-retry')).toBeNull()
+  })
+})
