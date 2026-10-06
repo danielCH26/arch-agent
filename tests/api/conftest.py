@@ -65,3 +65,8 @@ def auth_token(mock_user):
 def auth_headers(auth_token):
     """Headers con Authorization Bearer token."""
     return {"Authorization": f"Bearer {auth_token}"}
+
+# F18: silence pydantic deprecation warnings
+filterwarnings = [
+    "ignore::DeprecationWarning:pydantic.*",
+]
