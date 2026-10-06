@@ -140,9 +140,16 @@ class TestGlobalHandlerCoexistsWithDecorators(unittest.TestCase):
     the global handler.
     """
     def test_decorated_endpoint_still_returns_decorator_code(self):
+        """Soomri round 5: build a fresh app WITHOUT the global handler so the
+        409 can only come from ``@handle_db_errors``. Using ``server.app``
+        (which mounts the SPA on ``/`` when ``frontend/dist`` exists) made
+        the test 404 in any environment that built the frontend.
+        """
+        from fastapi import FastAPI
         from app.core.error_handlers import handle_db_errors
-        from server import app
-        from app.api.dependencies import get_current_user
+
+        # No add_exception_handler here — the 409 must come from the decorator.
+        app = FastAPI()
 
         @app.get("/_test_route_decorated_db")
         @handle_db_errors
@@ -152,8 +159,5 @@ class TestGlobalHandlerCoexistsWithDecorators(unittest.TestCase):
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/_test_route_decorated_db")
-        # Both the decorator and the global handler produce 409; we just
-        # assert the code path is alive (the test from TestDecoratorReachedByFastAPI
-        # in test_error_handling_integration already covers the actual mapping).
         self.assertEqual(resp.status_code, 409)
         client.close()
