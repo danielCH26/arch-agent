@@ -30,9 +30,13 @@ MAX_QUESTIONS = 10
 # HU5: "El sistema inicia con pregunta abierta" -- se fuerza determinísticamente
 # (no se le pide al LLM que decida la primera pregunta) para que este criterio
 # de aceptación no dependa de que el modelo se porte bien.
+# Issue #100 (Soomri review round 2): una sola dimensión, no compuesta. El
+# detector _es_pregunta_compuesta() solo cuenta '?' así que no atraparía un
+# "... y para quién es?" implícito. Por eso esta constante es la única
+# fuente de verdad de la primera pregunta, y se testea por intención.
 FIRST_QUESTION = (
-    "Para empezar, cuéntame en tus propias palabras: ¿qué problema quieres "
-    "resolver con este sistema, y para quién es?"
+    "Cuéntame en tus propias palabras: ¿qué problema querés resolver "
+    "con este sistema?"
 )
 
 # HU5: "Se cubren: usuarios, funcionalidades, restricciones, calidad" -- las
@@ -243,7 +247,12 @@ def _reintentar_pregunta_granular(
             NEXT_STEP_SYSTEM_PROMPT,
             f"{context}\n\n{_CORRECCION_PREGUNTA_COMPUESTA}",
             callbacks=callbacks,
-            run_name="elicitation-next-step",
+            # Issue #100 (Soomri review round 2, sugerencia 3): run_name
+            # distinto al de la llamada principal para que Langfuse pueda
+            # medir cada cuánto se dispara el guardarraíl. La instrucción
+            # correctiva sigue siendo efímera: solo viaja en este
+            # contexto, nunca se persiste.
+            run_name="elicitation-next-step-retry",
         )
     except ElicitationAgentError:
         _LOGGER.warning(
