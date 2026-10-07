@@ -359,6 +359,49 @@ class TestAceptaTemperature:
         for model in ("gpt-4o", "gpt-4o-mini", "llama-3.3-70b", "qwen2.5"):
             assert _acepta_temperature(model) is True
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # Prefijos de provider que envia Groq en /v1/models (formato
+            # "openai/o1-mini"): la regex tiene que reconocer el `o\d`
+            # aunque venga precedido de `provider/`.
+            "openai/o1-mini",
+            "openai/o1",
+            "groq/o1",
+            "groq/o1-mini",
+            "azure/o4-mini",
+            "openai/o3-pro",
+            "openai/o3",
+            # Mayusculas y espacios: la normalizacion debe llegar antes.
+            "OpenAI/O1-Mini",
+            "  openai/o1-mini  ",
+            # Provider en otro formato (sin slash) que aun empieza por o\d
+            # no deberia colarse: lo que importa es el token despues del slash.
+            "anthropic/o3",
+        ],
+    )
+    def test_serie_o_con_prefijo_de_provider_no_acepta(self, model):
+        r"""Con prefijo `provider/`, la regex `(?:^|/)o\d` lo reconoce igual.
+
+        Antes del fix, `_RECHAZA_TEMPERATURE_RE = re.compile(r"^o\d")`
+        fallaba con `openai/o1-mini`: sin hacer match, el modelo recibia
+        temperature=0 y OpenAI respondia 400.
+        """
+        assert _acepta_temperature(model) is False
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # Aunque arranque con `openai/`, si el token siguiente NO es
+            # `o\d` (p.ej. `gpt-4o-mini`), la regex no debe matchear.
+            "openai/gpt-4o-mini",
+            "groq/llama-3.3-70b-versatile",
+            "anthropic/claude-3-opus",
+        ],
+    )
+    def test_provider_prefijado_que_no_es_o_digito_si_acepta(self, model):
+        assert _acepta_temperature(model) is True
+
 
 class TestInitModelTemperature:
     """`_init_model` solo manda `temperature` si el modelo lo acepta."""

@@ -54,7 +54,11 @@ DEFAULT_LLM_TEMPERATURE: float = 0.0
 # Punto de extension: si manana otro proveedor -- u otra familia de OpenAI --
 # tiene la misma restriccion, su patron se agrega ACa. Este es el unico lugar
 # que decide si se manda la temperatura.
-_RECHAZA_TEMPERATURE_RE = re.compile(r"^o\d")
+#
+# Formato de los nombres: los providers OpenAI-style suelen prefijar con
+# ``provider/`` (Groq devuelve ``openai/o1-mini`` en ``/v1/models``). La forma
+# ``(?:^|/)o\d`` matchea tanto ``o1-mini`` como ``openai/o1-mini``.
+_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)o\d")
 
 
 def _acepta_temperature(model: str) -> bool:
@@ -63,14 +67,16 @@ def _acepta_temperature(model: str) -> bool:
     Funcion pura, sin dependencias: facil de testear y de extender.
 
     Args:
-        model: nombre del modelo tal como lo eligio el usuario en el wizard.
+        model: nombre del modelo tal como lo eligio el usuario en el wizard,
+            con o sin prefijo de provider (``openai/``, ``groq/``, ``azure/``).
 
     Returns:
         True si se le puede pasar `temperature` (ej. `gpt-4o-mini`,
-        `llama-3.3-70b`). False si hay que omitir el kwarg para que la libreria
-        aplique su default (ej. `o1`, `o1-mini`, `o3-mini`, `o4-mini`).
+        `llama-3.3-70b`, `openai/gpt-4o-mini`). False si hay que omitir el kwarg
+        para que la libreria aplique su default (ej. `o1`, `o1-mini`, `o3-mini`,
+        `o4-mini`, `openai/o1-mini`).
     """
-    return not _RECHAZA_TEMPERATURE_RE.match((model or "").strip().lower())
+    return not _RECHAZA_TEMPERATURE_RE.search((model or "").strip().lower())
 
 
 class LLMConfigError(Exception):
