@@ -237,14 +237,21 @@ def load_user_llm_config(user_id: int, allow_default: bool = True) -> UserLLMCon
                 reason="decryption_failed",
             )
 
-        if not user.llm_model:
+        if not user.llm_model and allow_default:
             # El endpoint y la key son del usuario, pero el modelo no.
             # Mezclar el modelo del default con el endpoint del usuario
             # genera un 400 (modelo Groq contra endpoint OpenAI, por
-            # ejemplo). Mejor pedir que complete el paso 3 del wizard.
-            # Esta validacion corre SIEMPRE, independiente de
-            # ``allow_default``: el default solo cubre el caso "no config",
-            # nunca "config parcial del usuario".
+            # ejemplo). En el camino de chat no hay como completarlo:
+            # error claro.
+            #
+            # Soomri round-2 (bloqueante sobre d58d3ca): con
+            # ``allow_default=False`` (los endpoints del wizard: step3 y
+            # available-models) la config parcial se devuelve con
+            # ``model=""`` -- esos endpoints existen justamente para el
+            # momento en que el usuario todavia no eligio modelo. Chequear
+            # siempre reintroducia el bug historico: nadie podia terminar
+            # el wizard. El docstring "Nota historica" de esta funcion lo
+            # documenta; d58d3ca lo revirtio sin querer.
             raise LLMConfigError(
                 f"Usuario {user_id} completo los pasos 1 y 2 pero no el 3. "
                 "Elegi un modelo antes de continuar.",
@@ -254,7 +261,9 @@ def load_user_llm_config(user_id: int, allow_default: bool = True) -> UserLLMCon
         return UserLLMConfig(
             user_id=user_id,
             base_url=user.llm_base_url,
-            model=user.llm_model,
+            # Normalizado a "": el dataclass declara ``model: str`` y los
+            # consumers del wizard no deben distinguir None vs vacio.
+            model=user.llm_model or "",
             api_key=api_key,
             source="user",
         )

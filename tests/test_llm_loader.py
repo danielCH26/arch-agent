@@ -108,6 +108,32 @@ class TestLoadUserLLMConfig:
         assert exc.value.reason == "missing"
 
     @patch("app.core.llm_loader.SessionLocal")
+    def test_partial_config_without_model_ok_for_wizard(self, mock_session_local):
+        """Soomri round-2: con ``allow_default=False`` (los endpoints del
+        wizard), una config parcial (base_url + key, sin modelo) se devuelve
+        con ``model=""`` para que step3 la complete. El chequeo de modelo
+        vacio solo corre en el camino de chat (``allow_default=True``),
+        donde mezclar endpoint del usuario con id del default es el bug B3.
+        """
+        from app.core.encryption import encrypt
+
+        user = FakeUser(
+            user_id=1,
+            base_url="https://x.com",
+            model=None,
+            encrypted_api_key=encrypt("sk-test"),
+        )
+        mock_db = MagicMock()
+        mock_db.get.return_value = user
+        mock_session_local.return_value = mock_db
+
+        config = load_user_llm_config(1, allow_default=False)
+
+        assert config.model == ""
+        assert config.base_url == "https://x.com"
+        assert config.source == "user"
+
+    @patch("app.core.llm_loader.SessionLocal")
     def test_missing_api_key_raises(self, mock_session_local, monkeypatch):
         # Mismo criterio que el caso de base_url: sin key del default, error.
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
