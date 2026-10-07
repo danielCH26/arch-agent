@@ -46,7 +46,13 @@ Modificar MUST create NEW `proposals` row with `iteration = previous + 1`; prior
 - THEN row `id=101, iteration=2, feedback="agregar cache"` MUST exist; `approvals.previous_output` MUST equal row 100's `content`.
 
 ### REQ-5
-`migrations/0008_proposals_and_logs.sql` MUST use `CREATE TABLE IF NOT EXISTS`; FKs to `sessions(id)`, `projects(id)`; `approvals.proposal_id` → `proposals(id)` CASCADE.
+`migrations/0014_proposal_approvals_table.sql` MUST use `CREATE TABLE IF NOT EXISTS`; FKs to `sessions(id)`, `projects(id)`; `approvals.proposal_id` → `proposals(id)` CASCADE.
+
+> Note (PR #76 cleanup, 2026-10-07): the migration was originally
+> authored as `0008_proposals_and_logs.sql` in the F08 change folder,
+> then renumbered to `0014_proposal_approvals_table.sql` to make room
+> for F07 (patterns), F12 (messages) and F13 (attachments) without
+> filename collisions. The SQL DDL is unchanged.
 
 #### SCN-6: Migration 0008 rerun is idempotent (table counts unchanged)
 - GIVEN migration 0008 already applied
@@ -101,7 +107,7 @@ Tests MUST exist: pytest (`test_proposals.py`, `test_interaction_logs.py`), Vite
 | `interaction_logs` | `id`, `session_id`, `project_id`, `phase`, `action_type`, `comment?`, `prompt?`, `response?`, `model?`, `tokens_used?`, `latency_ms?`, `created_at` | `sessions(id)`, `projects(id)` CASCADE |
 | `approvals` | `id`, `proposal_id`, `decision VARCHAR(16) CHECK`, `previous_output JSONB?`, `created_at` | `proposals(id)` CASCADE |
 
-Indexes: `proposals(project_id, iteration)`, `interaction_logs(project_id, phase, created_at)`. SQL DDL ships in migration `0008_proposals_and_logs.sql`.
+Indexes: `proposals(project_id, iteration)`, `interaction_logs(project_id, phase, created_at)`. SQL DDL ships in migration `0014_proposal_approvals_table.sql`.
 
 ## Out of scope
 

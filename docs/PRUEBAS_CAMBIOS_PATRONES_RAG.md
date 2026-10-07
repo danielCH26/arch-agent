@@ -39,7 +39,7 @@ docker compose up -d backend
 docker compose exec backend python migrations/run_migrations.py
 ```
 
-Esperado: se reconstruye el backend con `data/patterns` dentro de `/app`, se aplica `0008_add_pattern_context_and_chunks.sql` o indica que no hay migraciones pendientes si ya estaba aplicada.
+Esperado: se reconstruye el backend con `data/patterns` dentro de `/app`, se aplica `0018_add_pattern_context_and_chunks.sql` o indica que no hay migraciones pendientes si ya estaba aplicada. (Filename renumbered from `0008` → `0018` during PR #76 cleanup to avoid collision with F05's `0008_add_approvals_decision_check.sql`. SQL DDL is unchanged.)
 
 Verificar columnas y tabla:
 

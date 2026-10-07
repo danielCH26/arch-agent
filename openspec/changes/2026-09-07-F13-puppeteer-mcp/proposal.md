@@ -1,5 +1,22 @@
 # Proposal: F13 — Puppeteer MCP (Render Mermaid / HTML to PNG)
 
+> **Note (PR #76 cleanup, 2026-10-07):** Migration filenames renumbered
+> in this change folder:
+> - `0008_add_messages_table.sql` → `0010_add_messages_table.sql`
+>   (F12 messages; collision with F05 approvals)
+> - `0009_add_message_attachments.sql` → `0011_add_message_attachments.sql`
+>   (F13 attachments; paired with 0010)
+> - `0011_add_message_attachments.sql` was then further paired with the
+>   new `0013_add_message_attachments_gin_index.sql` in the F13 review
+>   fixes change folder, which adds the GIN index for the Postgres
+>   containment path in `app/api/attachments.py:_lookup_attachment`.
+>
+> The SQL DDL is unchanged. References to the old `0008` / `0009`
+> filenames in this and the other files in this change folder are
+> historical and intentionally left as-is (they describe the filenames
+> at the time the proposal was written). The `migrations/` directory
+> is the source of truth.
+
 | Field | Value |
 |---|---|
 | Change slug | `F13-puppeteer-mcp` |
