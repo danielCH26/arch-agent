@@ -15,6 +15,7 @@ import {
 vi.mock('../../api/proposals', () => ({
   createProposalStream: vi.fn(),
   decideProposal: vi.fn(),
+  getLatestProposal: vi.fn(),
   getProjectProposalState: vi.fn(),
   getProposal: vi.fn(),
 }))

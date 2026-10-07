@@ -15,7 +15,9 @@ DATABASE_URL = os.environ.get(
 # overflow). Estos valores hacen su capacidad y sus límites configurables por
 # despliegue. OJO: los defaults de aquí (10 + 20) son MAYORES que los de
 # SQLAlchemy: cada proceso backend puede abrir hasta 30 conexiones, así que
-# ``max_connections`` de PostgreSQL debe cubrir 30 x procesos (+ otros clientes).
+# ``max_connections`` de PostgreSQL debe cubrir 30 x procesos (+ otros clientes);
+# la formula completa (incluido el executor de asyncio.to_thread) esta en
+# ``.env.example``.
 # Valores vacíos, no numéricos o menores que el mínimo vuelven al default con un
 # warning (ver app/core/env.py); por eso ``DB_POOL_RECYCLE=0`` NO es válido
 # (mínimo 1) y cae a 1800 s.

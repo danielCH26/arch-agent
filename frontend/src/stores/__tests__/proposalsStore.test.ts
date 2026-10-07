@@ -59,6 +59,8 @@ beforeEach(() => {
     last_decision: null,
   })
   vi.mocked(api.getProposal).mockImplementation(async (id: number) => out(id, 1))
+  // cancel() resincroniza con /proposals/latest: por defecto no hay nada guardado.
+  vi.mocked(api.getLatestProposal).mockResolvedValue(null)
 })
 
 afterEach(() => {
@@ -141,6 +143,40 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(state.current?.id).toBe(5)
     expect(state.current?.content).not.toContain('a medias')
     expect(state.cancelled).toBe(true)
+  })
+
+  it('cancel() resincroniza con el servidor por si el guardado ya había empezado', async () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID))
+    expect(proposalsStore.getState().current).toBeNull()
+    expect(proposalsStore.getState().cancelled).toBe(true)
+  })
+
+  it('si la propuesta se guardó antes de que la cancelación llegara, se muestra y no se dice "cancelada"', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(41, 1))
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(41))
+    const state = proposalsStore.getState()
+    expect(state.cancelled).toBe(false)
+    expect(state.activity).toBe('idle')
+  })
+
+  it('cancelar una modificación recarga la versión del servidor y sigue "cancelada" si no cambió', async () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(5, 1))
+    proposalsStore.getState().modify(5, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID))
+    expect(proposalsStore.getState().current?.id).toBe(5)
+    expect(proposalsStore.getState().cancelled).toBe(true)
   })
 
   it('cancel() sin generación en curso no hace nada', () => {

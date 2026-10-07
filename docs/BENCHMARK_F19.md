@@ -25,13 +25,19 @@ generación de propuestas (presupuesto total de cinco minutos).
 
 ## Captura
 
-La respuesta de `POST /api/rag/search` expone estos valores en milisegundos:
+Las métricas salen de `rag.similarity_search()` (es lo que llama
+`scripts/seed_bench_vectors.py`) y se registran en el log del backend
+(`rag search embedding_ms=… search_ms=…`). La respuesta pública de
+`POST /api/rag/search` solo expone `search_ms`: `embedding_ms`, `total_ms` y
+`embedding_cached` se quitaron porque la caché se comparte entre usuarios y un
+`embedding_ms` de 0 (o `total_ms − search_ms`) revelaría que otro usuario ya
+consultó ese texto exacto.
 
-| Campo | Qué mide | Target |
-|---|---|---|
-| `search_ms` | tiempo de pared del tramo de búsqueda, incluido encolado y join de las ramas paralelas | < 100 ms |
-| `embedding_ms` | embedding de consulta; `0` en cache hit | minimizar |
-| `total_ms` | embedding + tramo de búsqueda | referencia de RAG |
+| Campo | Qué mide | Target | ¿En la API pública? |
+|---|---|---|---|
+| `search_ms` | tiempo de pared del tramo de búsqueda, incluido encolado y join de las ramas paralelas | < 100 ms | sí |
+| `embedding_ms` | embedding de consulta; `0` en cache hit | minimizar | no (log / script) |
+| `total_ms` | embedding + tramo de búsqueda | referencia de RAG | no (log / script) |
 
 Para una línea base, ejecutar el script con
 `RAG_EMBEDDING_CACHE_SIZE=0 python scripts/seed_bench_vectors.py --skip-seed`;
@@ -76,7 +82,14 @@ no depende de la caché):
 - **Búsqueda RAG < 100 ms:** `search_ms` p95 entre 14 y 17 ms en todas las filas de
   `scope=all`; máximo observado 26,20 ms. `total_ms` p95 sin caché: 36,82 ms
   (distintas) y 52,11 ms (repetidas).
-- **Caché:** en consultas repetidas, `total_ms` p50 baja de 32,55 a 12,05 ms
+- **Caché (leer con cuidado):** el −63 % / −73 % de abajo sale de una sola
+  situación: repetir **exactamente el mismo texto** con 100 % de cache hits, un
+  escenario artificial (ver "Limitaciones": las consultas reales casi nunca se
+  repiten). **Con consultas distintas la versión optimizada no mejora: en p95 es
+  peor** (`search_ms` 14,45 → 17,13 ms y `total_ms` 36,82 → 44,92 ms). Con esta
+  muestra no se puede separar el ruido de CPU de una regresión real, así que no
+  se afirma ninguna mejora fuera del caso de repetición exacta. En consultas
+  repetidas, `total_ms` p50 baja de 32,55 a 12,05 ms
   (−63 %) y p95 de 52,11 a 14,18 ms (−73 %). En consultas distintas la caché no
   interviene: la diferencia entre filas (p50 32,17 frente a 33,23 ms; p95 36,82
   frente a 44,92 ms) viene del tiempo del embedding en CPU, que varía entre
@@ -106,8 +119,10 @@ no depende de la caché):
 - Un solo usuario y un solo proyecto son dueños de todos los `document_chunks`
   sintéticos, así que el filtro por `user_id`/`project_id` no discrimina; con datos
   multiusuario la latencia y el número de resultados pueden diferir.
-- Una sola conexión y consultas secuenciales: no se mide carga concurrente, el
-  pool ni `RAG_SEARCH_WORKERS`.
+- Una sola conexión y consultas secuenciales: **no se validó con carga
+  concurrente**. Ni el pool, ni `RAG_SEARCH_WORKERS`, ni la paralelización de
+  `scope=all` bajo varios usuarios simultáneos están medidos; los valores por
+  defecto (10 + 20 conexiones, 16 hilos) son una estimación, no un resultado.
 - El beneficio real de la caché depende del hit rate en producción. Las consultas
   de retrieval de una propuesta concatenan nombre, descripción, requerimientos y
   feedback, por lo que rara vez se repiten: la caché ayuda sobre todo a
@@ -120,8 +135,9 @@ SSE `progress` incluyen `elapsed_ms` y `budget_s`, por lo que permiten auditar
 una ejecución lenta por etapa. Si el p95 de `search_ms` supera 100 ms, revisar
 primero los índices PGVector, `ivfflat.probes`, saturación del pool y tamaño del
 corpus antes de aumentar `DB_POOL_SIZE`. Las búsquedas paralelas comparten un
-executor por proceso (`RAG_SEARCH_WORKERS`, default 16); mantenerlo por debajo de
-`DB_POOL_SIZE + DB_MAX_OVERFLOW`.
+executor por proceso (`RAG_SEARCH_WORKERS`, default 16). El dimensionamiento
+completo del pool (por proceso y contra `max_connections` de PostgreSQL, incluido
+el executor de `asyncio.to_thread`) está en `.env.example`.
 
 ## Perfilado de bottlenecks y KRs
 
@@ -152,8 +168,13 @@ del backend registra `latency_ms` por propuesta guardada.
 minutos, no acelera el flujo. En la práctica las etapas de trabajo (contexto,
 retrieval, LLM) deben terminar antes de `300 − PROPOSAL_SAVE_RESERVE_S` (10 s por
 defecto); el guardado usa ese margen. En la etapa `saving` el hilo de la base de
-datos no se puede abortar a la fuerza, así que en un caso extremo la fila podría
-guardarse después del corte.
+datos no se puede abortar a la fuerza. Para que "Cancelar" o el corte por tiempo no
+dejen una iteración guardada (que gastaría una de `PROPOSAL_MAX_ITER`), el
+generador marca un `threading.Event` que el hilo de guardado comprueba **justo
+antes del `commit`** y, si está marcado, hace rollback. Es best-effort: si el
+`commit` ya empezó cuando llega la cancelación no hay forma de deshacerlo, y la
+propuesta queda guardada; por eso el front resincroniza con
+`GET /api/projects/{id}/proposals/latest` al cancelar.
 
 ### KR de Santiago (respuesta promedio < 3 min)
 

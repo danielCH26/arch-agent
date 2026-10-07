@@ -32,8 +32,10 @@ from app.models.project import Project
 from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
-# El mínimo evita un bucle de comentarios si se configura accidentalmente 0.
-SSE_HEARTBEAT_SECONDS = max(1.0, env_float("SSE_HEARTBEAT_SECONDS", 15.0, minimum=0.0))
+# Mínimo 1 s: con 0 (o negativo) el heartbeat sería un bucle de comentarios. Como
+# el resto de ``env_float``, un valor por debajo del mínimo vuelve al default (15 s)
+# con un warning, en lugar de recortarse en silencio.
+SSE_HEARTBEAT_SECONDS = env_float("SSE_HEARTBEAT_SECONDS", 15.0, minimum=1.0)
 
 PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
 # PROPOSAL_MAX_ITER se importa de proposal_generator (una sola definicion).
@@ -325,7 +327,26 @@ def _raise_if_iteration_cap_reached(db: Session, *, project_id: int) -> None:
         )
 
 
-@router.post("/api/proposals/generate")
+_GENERATE_RESPONSES = {
+    status.HTTP_409_CONFLICT: {
+        "description": (
+            "Se alcanzó PROPOSAL_MAX_ITER. Se responde ANTES de abrir el stream "
+            "SSE, como JSON normal (`detail`), no como evento `error`."
+        ),
+    },
+}
+_MODIFY_RESPONSES = {
+    status.HTTP_409_CONFLICT: {
+        "description": (
+            "Antes de abrir el stream SSE: la propuesta no está en estado "
+            "`proposed`, alcanzó PROPOSAL_MAX_ITER, ya no es la última iteración "
+            "o ya existe una iteración posterior."
+        ),
+    },
+}
+
+
+@router.post("/api/proposals/generate", responses=_GENERATE_RESPONSES)
 async def generate_proposal(
     body: GenerateRequest,
     current_user: dict = Depends(get_current_user),
@@ -355,7 +376,7 @@ async def generate_proposal(
     )
 
 
-@router.post("/api/proposals/{proposal_id}/modify")
+@router.post("/api/proposals/{proposal_id}/modify", responses=_MODIFY_RESPONSES)
 async def modify_proposal(
     proposal_id: int,
     body: ModifyRequest,

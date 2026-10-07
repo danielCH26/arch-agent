@@ -224,18 +224,21 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
   // Tras un corte por tiempo GUARDANDO, la fila pudo quedar escrita: se trae la
   // última propuesta viva del backend y se adopta como vigente. El mensaje de
   // error se conserva: es lo que explica por qué el usuario no vio el final.
-  const rehydrateLatest = async (streamId: number, projectId: number) => {
+  // Devuelve la propuesta adoptada (o null si no había ninguna o ya no aplica).
+  const rehydrateLatest = async (streamId: number, projectId: number): Promise<Proposal | null> => {
     try {
       const latest = await getLatestProposal(projectId)
-      if (streamId !== activeStream || !latest || latest.project_id !== projectId) return
+      if (streamId !== activeStream || !latest || latest.project_id !== projectId) return null
       rememberProposal(projectId, latest.id)
       const proposal = fromOut(latest)
       set((state) => ({
         current: proposal,
         iterations: [proposal, ...state.iterations.filter((item) => item.id !== proposal.id)],
       }))
+      return proposal
     } catch {
       // Silencioso: si falla, la tarjeta queda con el error y el botón de reintento.
+      return null
     }
   }
 
@@ -347,11 +350,14 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     },
 
     cancel: () => {
-      const { activity } = get()
+      const { activity, current } = get()
       if (activity !== 'generating' && activity !== 'modifying') return
+      const projectId = activity === 'generating' ? current?.projectId : modifyBase?.projectId
+      // Id de la versión vigente ANTES de cancelar (undefined al generar desde cero).
+      const priorId = activity === 'modifying' ? modifyBase?.id ?? undefined : undefined
       // Aborta el fetch (el backend cierra el LLM) e invalida callbacks tardíos.
       abortActiveStream()
-      activeStream += 1
+      const streamId = ++activeStream
       set({
         activity: 'idle',
         error: null,
@@ -363,6 +369,21 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         // versión vigente, que nunca se tocó.
         current: activity === 'generating' ? null : modifyBase,
       })
+
+      // "Cancelar" solo deja de esperar: si el servidor ya estaba guardando cuando
+      // el usuario pulsó (el botón desaparece cuando LLEGA `saving`, no cuando
+      // empieza), la iteración puede haberse confirmado igual. El backend intenta
+      // evitarlo (cancel_event antes del commit), pero aquí se resincroniza
+      // siempre con la BD para no mostrar un estado distinto del real (p. ej.
+      // "Generar propuesta" con una iteración ya gastada).
+      if (projectId) {
+        void rehydrateLatest(streamId, projectId).then((saved) => {
+          // La cancelación llegó tarde: no afirmar "cancelada" si se guardó algo nuevo.
+          if (saved && saved.id !== priorId && get().cancelled && get().activity === 'idle') {
+            set({ cancelled: false, lastModify: null })
+          }
+        })
+      }
     },
 
     retry: () => {
