@@ -113,6 +113,10 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     proposalsStore.getState().reset()
+    // clearAllMocks no borra implementaciones de tests anteriores: cancel() ahora
+    // resincroniza con /proposals/latest, así que el default es "no hay nada guardado".
+    vi.mocked(api.getLatestProposal).mockResolvedValue(null)
+    vi.mocked(api.getProposalHistory).mockResolvedValue([])
   })
 
   it('guarda el progreso y el instante de inicio mientras genera, y los limpia al terminar', async () => {
@@ -215,6 +219,56 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(state.pendingProposal).toBeNull()
     expect(state.inFlight).toBe('idle')
     expect(state.cancelled).toBe(true)
+  })
+
+  it('cancel() resincroniza con el servidor por si el guardado ya había empezado', async () => {
+    captureStream()
+    await proposalsStore.getState().generate(1)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(1))
+    expect(proposalsStore.getState().currentProposal).toBeNull()
+    expect(proposalsStore.getState().cancelled).toBe(true)
+  })
+
+  it('si la propuesta se guardó antes de que la cancelación llegara, se muestra y no se dice "cancelada"', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(41, 1, 'proposed'))
+    vi.mocked(api.getProposalHistory).mockResolvedValue([out(41, 1, 'proposed')])
+    captureStream()
+    await proposalsStore.getState().generate(1)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(proposalsStore.getState().currentProposal?.id).toBe(41))
+    const state = proposalsStore.getState()
+    expect(state.cancelled).toBe(false)
+    expect(state.inFlight).toBe('idle')
+  })
+
+  it('cancelar una modificación recarga la versión del servidor sin marcar "no cancelada" si no cambió', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(8, 1, 'proposed'))
+    vi.mocked(api.getProposalHistory).mockResolvedValue([out(8, 1, 'proposed')])
+    captureStream()
+    proposalsStore.setState({
+      currentProposal: {
+        id: 8,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Gateway',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+    })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(1))
+    expect(proposalsStore.getState().currentProposal?.id).toBe(8)
+    expect(proposalsStore.getState().cancelled).toBe(true)
   })
 
   it('cancel() sin generación en curso no hace nada', () => {

@@ -62,6 +62,11 @@ def _warn_if_workers_exceed_pool(workers: int, pool_size: int, max_overflow: int
     conexiones posibles (``pool_size + max_overflow``) los hilos sobrantes
     esperan ``DB_POOL_TIMEOUT`` y fallan con ``TimeoutError`` bajo carga.
     Devuelve True si emitio el warning.
+
+    OJO: esta comprobacion solo cubre los hilos de RAG. El executor por defecto
+    de ``asyncio.to_thread`` (carga de contexto, guardado de propuestas, etc.)
+    tambien abre sesiones del mismo pool, y el pool es POR PROCESO: la formula
+    completa esta en ``.env.example``.
     """
     capacity = pool_size + max_overflow
     if workers <= capacity:
@@ -69,7 +74,7 @@ def _warn_if_workers_exceed_pool(workers: int, pool_size: int, max_overflow: int
     logger.warning(
         "RAG_SEARCH_WORKERS=%d supera DB_POOL_SIZE + DB_MAX_OVERFLOW=%d; bajo carga "
         "los hilos de busqueda pueden agotar el pool (timeout). Reduce RAG_SEARCH_WORKERS "
-        "o sube el pool.",
+        "o sube el pool (y recuerda que asyncio.to_thread tambien usa conexiones).",
         workers,
         capacity,
     )
@@ -156,7 +161,11 @@ def _query_embedding(query: str) -> tuple[list[float], float, bool]:
 
     La cache es por proceso y compartida entre usuarios: solo guarda vectores
     (nunca resultados ni datos de usuarios), pero un ``embedding_ms == 0``
-    delata que ese mismo texto ya se consulto antes en este proceso.
+    delata que ese mismo texto ya se consulto antes en este proceso. Por eso la
+    API publica (``app/api/rag.py``) no devuelve ``embedding_ms``, ``total_ms`` ni
+    ``embedding_cached``; solo los usan el log del servidor y el benchmark. Queda
+    un canal lateral por latencia total de la peticion, mucho mas ruidoso; si el
+    modelo de amenaza lo exige, incluir ``user_id`` en la clave.
 
     Si dos hilos calculan a la vez la misma consulta nueva, ambos gastan el
     embedding; el que termina segundo reutiliza el vector ya guardado y devuelve

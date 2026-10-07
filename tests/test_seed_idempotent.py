@@ -45,10 +45,10 @@ def test_seed_patterns_is_idempotent():
 def test_seed_example_is_idempotent():
     conn = connect_db()
     try:
-        project_id_1, user_id_1 = seed_example.seed_example_project(conn)
-        seed_example.verify_end_to_end(conn, project_id_1, user_id_1)
+        project_id_1, user_id_1, session_id_1 = seed_example.seed_example_project(conn)
+        seed_example.verify_end_to_end(conn, project_id_1, user_id_1, session_id_1)
 
-        project_id_2, user_id_2 = seed_example.seed_example_project(conn)
+        project_id_2, user_id_2, session_id_2 = seed_example.seed_example_project(conn)
 
         assert project_id_2 == project_id_1, (
             "una segunda corrida no debe crear un proyecto demo duplicado"
@@ -56,6 +56,9 @@ def test_seed_example_is_idempotent():
         assert user_id_2 == user_id_1, (
             "una segunda corrida no debe crear un usuario demo duplicado"
         )
-        seed_example.verify_end_to_end(conn, project_id_2, user_id_2)
+        assert session_id_2 == session_id_1, (
+            "una segunda corrida no debe crear una sesión demo duplicada"
+        )
+        seed_example.verify_end_to_end(conn, project_id_2, user_id_2, session_id_2)
     finally:
         conn.close()

@@ -32,13 +32,16 @@ def _count_approvals(conn, session_id: int) -> int:
 def test_seed_patterns_is_idempotent():
     conn = connect_db()
     try:
+        # seed_patterns ya no expone PATTERNS: los patrones se leen de data/patterns/*.yaml.
+        expected = len(seed_patterns.load_patterns())
+
         seed_patterns.seed_patterns(conn)
         first_count = _count_patterns(conn)
 
         seed_patterns.seed_patterns(conn)
         second_count = _count_patterns(conn)
 
-        assert first_count == len(seed_patterns.PATTERNS)
+        assert first_count == expected
         assert second_count == first_count, (
             "seed_patterns() no debe insertar duplicados en una segunda corrida"
         )

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import unicodedata
 from contextlib import aclosing
 from time import perf_counter
@@ -111,6 +112,10 @@ class _GenerationTimeout(Exception):
         self.stage = stage
 
 
+class _PersistCancelled(Exception):
+    """El cliente cancelo (o se agoto el tiempo) antes de confirmar el guardado."""
+
+
 _T = TypeVar("_T")
 
 # Tolerancia al comparar relojes: el timer de asyncio puede disparar unos ms
@@ -132,7 +137,9 @@ async def _within_budget(
 
     Con ``asyncio.to_thread`` el hilo no se puede matar: se deja de esperar y
     termina solo. Es seguro para las lecturas (contexto, retrieval); el guardado
-    se acota ademas en la base de datos (ver ``_persist_proposal_and_log``).
+    se acota ademas en la base de datos y recibe un ``threading.Event`` de
+    cancelacion que comprueba justo antes del ``commit`` (ver
+    ``_persist_proposal_and_log``).
     """
     if deadline is None:
         return await awaitable
@@ -562,6 +569,11 @@ class ProposalGenerator:
         # sentencia lleva un statement_timeout con el tiempo que queda, asi una
         # sentencia colgada se aborta en la base (rollback) en vez de guardar
         # despues de que el usuario ya vio el error.
+        # ``cancel_event`` cubre el otro hueco: si el cliente cancela (o se agota
+        # el tiempo) mientras el hilo ya esta guardando, ``await`` deja de esperar
+        # pero el hilo sigue. El evento se marca y el hilo lo comprueba justo antes
+        # del commit: hace rollback en vez de consumir una de PROPOSAL_MAX_ITER.
+        cancel_event = threading.Event()
         statement_timeout_ms = (
             max(int((deadline - perf_counter()) * 1000), 500) if deadline is not None else None
         )
@@ -579,11 +591,15 @@ class ProposalGenerator:
                     citations=citations,
                     feedback=feedback,
                     statement_timeout_ms=statement_timeout_ms,
+                    cancel_event=cancel_event,
                 ),
                 deadline,
                 "saving",
             )
-        except _GenerationTimeout:
+        except (_GenerationTimeout, asyncio.CancelledError):
+            # Cancelacion del cliente o tope de tiempo: que el hilo (que no se
+            # puede matar) no confirme un guardado que nadie va a ver.
+            cancel_event.set()
             raise
         except Exception as exc:
             logger.exception(
@@ -1679,11 +1695,18 @@ def _persist_proposal_and_log(
     citations: list[dict],
     feedback: str | None,
     statement_timeout_ms: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, int, int]:
     """Insert proposal + interaction_log (+ approval for modify) atomically.
 
     ``statement_timeout_ms`` (F19): tope por sentencia solo para esta
     transaccion (``set_config(..., is_local=true)``); ``None`` = el de la BD.
+
+    ``cancel_event`` (F19): lo marca el generador cuando el cliente cancela o se
+    agota el tiempo mientras este hilo ya estaba guardando. Se comprueba justo
+    antes del ``commit``; si esta marcado se hace rollback y se lanza
+    ``_PersistCancelled``, asi no queda una iteracion huerfana. Es best-effort:
+    si el ``commit`` ya empezo no hay forma de deshacerlo desde aqui.
 
     Returns ``(proposal_id, interaction_id, iteration)`` for the SSE done
     payload and the Engram mirror. The preconditions are checked again here to
@@ -1772,8 +1795,20 @@ def _persist_proposal_and_log(
         proposal_id = int(proposal.id)
         interaction_id = int(log.id)
 
+        # Ultima comprobacion posible: despues del commit ya no hay vuelta atras.
+        if cancel_event is not None and cancel_event.is_set():
+            raise _PersistCancelled()
+
         db.commit()
         return proposal_id, interaction_id, int(iteration)
+    except _PersistCancelled:
+        db.rollback()
+        logger.info(
+            "Proposal save cancelled before commit project_id=%s iteration=%s",
+            project_id,
+            iteration,
+        )
+        raise
     except _ProposalDomainError:
         db.rollback()
         raise

@@ -134,7 +134,15 @@ def test_proposal_tuning_uses_configured_values_and_shares_max_iter():
     values = _eval_in_subprocess(
         _RAG_TUNING_EXPR,
         PROPOSAL_RAG_TOP_N="4", PROPOSAL_RAG_CANDIDATE_CHUNKS="60", PROPOSAL_MAX_ITER="7",
-        PROPOSAL_COMPLEXITY_PENALTY="0", SSE_HEARTBEAT_SECONDS="0.2",
+        PROPOSAL_COMPLEXITY_PENALTY="0", SSE_HEARTBEAT_SECONDS="2.5",
     )
-    # PROPOSAL_MAX_ITER es una sola definición; el heartbeat conserva su mínimo de 1 s.
-    assert values == ["4", "60", "7", "7", "0.0", "1.0"]
+    # PROPOSAL_MAX_ITER es una sola definición; el heartbeat acepta valores >= 1 s.
+    assert values == ["4", "60", "7", "7", "0.0", "2.5"]
+
+
+def test_sse_heartbeat_below_the_minimum_returns_to_the_default_not_a_clamp():
+    """Como el resto de env_float: por debajo del mínimo (1 s) vuelve al default (15 s)."""
+    for raw in ("0", "0.2", "-3"):
+        values = _eval_in_subprocess("api.SSE_HEARTBEAT_SECONDS", SSE_HEARTBEAT_SECONDS=raw)
+        assert values == ["15.0"], raw
+    assert _eval_in_subprocess("api.SSE_HEARTBEAT_SECONDS", SSE_HEARTBEAT_SECONDS="1") == ["1.0"]

@@ -57,7 +57,31 @@ class TestRAGApi:
         assert response.results[0].content == "Arquitectura de microservicios"
         assert response.results[0].metadata["source_type"] == "architect_pattern"
         assert response.search_ms == 7.12
-        assert response.total_ms == 25.58
+
+    @patch("app.api.rag.similarity_search")
+    def test_public_response_does_not_leak_embedding_cache_state(self, mock_search):
+        """embedding_ms == 0 (o total_ms - search_ms) delataria un cache hit de otro usuario."""
+        from app.api.rag import RAGSearchRequest, search_rag
+
+        mock_search.return_value = (
+            [],
+            {
+                "search_ms": 7.1,
+                "embedding_ms": 0.0,
+                "total_ms": 7.1,
+                "embedding_cached": True,
+            },
+        )
+
+        response = asyncio.run(
+            search_rag(
+                body=RAGSearchRequest(query="texto que ya consulto otro usuario"),
+                current_user={"user_id": 3, "username": "laura", "jti": None},
+            )
+        )
+
+        fields = getattr(type(response), "model_fields", None) or type(response).__fields__
+        assert set(fields) == {"results", "search_ms"}
 
 
 class TestRAGCoreHelpers:

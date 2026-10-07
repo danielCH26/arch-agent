@@ -1397,3 +1397,125 @@ def test_persist_sets_the_statement_timeout_before_writing_anything():
     with patch.object(gen, "SessionLocal", return_value=db):
         gen._persist_proposal_and_log(**kwargs)
     db.execute.assert_not_called()
+
+
+# --- Review F19 #2: "Cancelar" no debe dejar una iteración guardada ----------
+
+
+def _persist_kwargs():
+    return dict(
+        session_id=1,
+        project_id=1,
+        iteration=1,
+        prior_iteration=0,
+        prior_proposal_id=None,
+        prior_content=None,
+        markdown="m",
+        citations=[],
+        feedback=None,
+    )
+
+
+def test_persist_rolls_back_instead_of_committing_when_cancelled():
+    import threading
+    from unittest.mock import MagicMock, patch
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    db.add.side_effect = lambda obj: setattr(obj, "id", 1)
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with patch.object(gen, "SessionLocal", return_value=db):
+        with pytest.raises(gen._PersistCancelled):
+            gen._persist_proposal_and_log(cancel_event=cancel_event, **_persist_kwargs())
+
+    db.commit.assert_not_called()
+    db.rollback.assert_called_once()
+    db.close.assert_called_once()
+
+
+def test_persist_commits_when_the_cancel_event_is_not_set():
+    import threading
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    db.add.side_effect = lambda obj: setattr(obj, "id", 1)
+
+    with patch.object(gen, "SessionLocal", return_value=db):
+        result = gen._persist_proposal_and_log(
+            cancel_event=threading.Event(), **_persist_kwargs()
+        )
+
+    assert result == (1, 1, 1)
+    db.commit.assert_called_once()
+
+
+def test_cancelling_the_stream_while_saving_marks_the_cancel_event():
+    """El hilo de guardado no se puede matar: debe enterarse por el evento."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    started = threading.Event()
+    seen = {}
+
+    def _persist(**kw):
+        seen["event"] = kw["cancel_event"]
+        started.set()
+        # Simula el hilo ocupado en la BD hasta que el generador lo avisa.
+        kw["cancel_event"].wait(timeout=5)
+        return (7, 8, 1)
+
+    stack, generator, _ = _patched_generator(_FullModel())
+
+    async def _run():
+        async def _consume():
+            async for _ in generator.generate_stream():
+                pass
+
+        task = asyncio.create_task(_consume())
+        await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with stack, patch.object(gen, "_persist_proposal_and_log", side_effect=_persist):
+        asyncio.run(_run())
+
+    assert seen["event"].is_set()
+
+
+def test_saving_timeout_also_marks_the_cancel_event(monkeypatch):
+    import threading
+    import time
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    seen = {}
+    release = threading.Event()
+
+    def _slow_persist(**kw):
+        seen["event"] = kw["cancel_event"]
+        release.wait(timeout=5)
+        time.sleep(0.01)
+        return (7, 8, 1)
+
+    stack, generator, _ = _patched_generator(_FullModel())
+    with stack, patch.object(gen, "_persist_proposal_and_log", side_effect=_slow_persist):
+        events = _drain(generator.generate_stream())
+    release.set()
+
+    assert events[-1][0] == "error"
+    assert seen["event"].is_set()
