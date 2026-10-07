@@ -72,6 +72,11 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
     } finally {
       setBusy(false)
     }
+    // B3 (Soomri round-2 re-review): refresh the project right after a
+    // decision so `phase_ready` flips in the store and the Avanzar
+    // button appears immediately after Aprobar (mirror of the
+    // handleAdvance refresh below).
+    void getProject(projectId).catch(() => undefined)
   }
 
   async function handleAdvance() {
@@ -90,10 +95,12 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
 
   const showAdvance = phaseReady && phase !== 'requerimientos' && phase !== 'final'
 
-  if (!pending) {
-    // No pending decision for this phase: do not render the surface
-    // (REQ-SA-19.2). The store will re-render once `fetchHistory`
-    // populates `pendingByPhase[phase]`.
+  if (!pending && !showAdvance) {
+    // No pending decision and nothing to advance: do not render the
+    // surface (REQ-SA-19.2). B3 (Soomri round-2 re-review): an approved
+    // phase has pending=null under the inverted pending_decision
+    // semantics -- the old `if (!pending) return null` unmounted the
+    // Avanzar button exactly when it was the only way forward.
     return null
   }
 
@@ -102,15 +109,17 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
       data-testid="phase-actions"
       className="mt-3 flex flex-col gap-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"
     >
-      <p className="font-medium">
-        Decisión pendiente para la fase{' '}
-        <span className="font-bold">{phase}</span>
-        {pending.since && (
-          <span className="ml-2 text-xs text-blue-700">
-            desde {new Date(pending.since).toLocaleString()}
-          </span>
-        )}
-      </p>
+      {pending && (
+        <p className="font-medium">
+          Decisión pendiente para la fase{' '}
+          <span className="font-bold">{phase}</span>
+          {pending.since && (
+            <span className="ml-2 text-xs text-blue-700">
+              desde {new Date(pending.since).toLocaleString()}
+            </span>
+          )}
+        </p>
+      )}
 
       {errorMessage && (
         <div
@@ -130,7 +139,8 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
       )}
 
       <div className="flex flex-wrap gap-2">
-        {ACTIONS.filter((a) => allowModify || a.action !== 'modify').map((a) => (
+        {pending &&
+          ACTIONS.filter((a) => allowModify || a.action !== 'modify').map((a) => (
           <button
             key={a.action}
             type="button"
@@ -160,15 +170,17 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
             {advancing ? 'Avanzando...' : 'Avanzar'}
           </button>
         )}
-        <button
-          type="button"
-          disabled={busy}
-          data-testid="phase-action-reject"
-          onClick={() => setShowReject(true)}
-          className="rounded border border-red-300 px-3 py-2 font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-        >
-          Rechazar
-        </button>
+        {pending && (
+          <button
+            type="button"
+            disabled={busy}
+            data-testid="phase-action-reject"
+            onClick={() => setShowReject(true)}
+            className="rounded border border-red-300 px-3 py-2 font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+          >
+            Rechazar
+          </button>
+        )}
       </div>
 
       {showModify && (

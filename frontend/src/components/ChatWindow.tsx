@@ -66,6 +66,9 @@ function shouldMountProposalCard(
 export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory } = chatStore()
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
+  // B3 (Soomri round-2 re-review): the Avanzar surface must mount when the
+  // phase is ready even though pending_decision is null (approved phase).
+  const storePhaseReady = projectsStore((s) => s.currentProject?.phase_ready ?? false)
   const currentPhase = phase ?? storePhase
   const proposalInFlight = proposalsStore((s) => s.inFlight)
   const fetchApprovalsHistory = useApprovalsStore((s) => s.fetchHistory)
@@ -216,11 +219,12 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
             pendingDecision derived server-side via /phases. Independent of
             the SSE `event: phase_locked` consumer so production never
             silently fails to render the surface. */}
-        {!isElicitation && pendingDecision && (
+        {!isElicitation && (pendingDecision || storePhaseReady) && (
           <PhaseActions
             projectId={projectId}
-            phase={currentPhase ?? pendingDecision.phase}
+            phase={currentPhase ?? pendingDecision?.phase ?? ''}
             allowModify={currentPhase !== 'final'}
+            phaseReady={storePhaseReady}
           />
         )}
         {busy && (
