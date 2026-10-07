@@ -601,6 +601,17 @@ class ProposalGenerator:
             # puede matar) no confirme un guardado que nadie va a ver.
             cancel_event.set()
             raise
+        except _ProposalDomainError as exc:
+            # Causa accionable (maximo de iteraciones, iteracion obsoleta por
+            # una carrera...): se muestra tal cual, no el mensaje generico.
+            logger.warning(
+                "Proposal rejected at save project_id=%s user_id=%s: %s",
+                effective_project_id,
+                self.user_id,
+                exc,
+            )
+            yield ("error", str(exc))
+            return
         except Exception as exc:
             logger.exception(
                 "Failed to persist proposal for project_id=%s user_id=%s: %s",
@@ -1597,6 +1608,16 @@ class _ProposalDomainError(Exception):
     """Distinguished from generic exceptions so the SSE error message is clean."""
 
 
+class _ProposalPersistError(Exception):
+    """Fallo tecnico (BD, red) al guardar; NO es un error de dominio.
+
+    Su mensaje puede traer SQL o detalles internos, asi que nunca se muestra al
+    usuario: solo se registra en el log. ``_ProposalDomainError`` (maximo de
+    iteraciones, iteracion obsoleta...) si tiene una causa accionable y se
+    muestra tal cual.
+    """
+
+
 def _load_project_and_session(user_id: int, project_id: int) -> tuple[Project, int]:
     """Load project (ownership-checked) and resolve/create the user's session.
 
@@ -1814,7 +1835,7 @@ def _persist_proposal_and_log(
         raise
     except Exception as exc:
         db.rollback()
-        raise _ProposalDomainError(f"No se pudo persistir la propuesta: {exc}") from exc
+        raise _ProposalPersistError(f"No se pudo persistir la propuesta: {exc}") from exc
     finally:
         db.close()
 

@@ -1,3 +1,5 @@
+import pytest
+
 from app.core.proposal_generator import ProposalGenerator
 
 
@@ -1519,3 +1521,74 @@ def test_saving_timeout_also_marks_the_cancel_event(monkeypatch):
 
     assert events[-1][0] == "error"
     assert seen["event"].is_set()
+
+
+# --- Review PR: errores al guardar --------------------------------------------
+
+
+class _CompleteModel:
+    async def astream(self, _prompt):
+        yield _Chunk(_FULL_PROPOSAL)
+        yield _Chunk("", {"finish_reason": "stop"})
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Has alcanzado el máximo de iteraciones (5)",
+        "La propuesta ya no es la última iteración; recarga antes de modificar.",
+        "La siguiente iteración no es válida; recarga e intenta de nuevo.",
+    ],
+)
+def test_domain_error_while_saving_keeps_its_specific_message(message):
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    stack, generator, _ = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "_persist_proposal_and_log", side_effect=gen._ProposalDomainError(message)
+    ):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1] == ("error", message)
+    assert not any(name == "done" for name, _ in events)
+
+
+def test_technical_error_while_saving_never_leaks_internal_details():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    leak = "No se pudo persistir la propuesta: (psycopg2.OperationalError) SELECT secret FROM x"
+    stack, generator, _ = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "_persist_proposal_and_log", side_effect=gen._ProposalPersistError(leak)
+    ):
+        events = _drain(generator.generate_stream())
+
+    name, message = events[-1]
+    assert name == "error"
+    assert message.startswith("No se pudo guardar la propuesta")
+    assert "psycopg2" not in message and "SELECT" not in message
+
+
+def test_persist_wraps_infrastructure_failures_as_persist_error_not_domain_error():
+    """Un fallo de BD no debe poder confundirse con un error de dominio mostrable."""
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    db.query.side_effect = RuntimeError("connection reset")
+    kwargs = dict(
+        session_id=1, project_id=1, iteration=1, prior_iteration=0,
+        prior_proposal_id=None, prior_content=None, markdown="m",
+        citations=[], feedback=None,
+    )
+    with patch.object(gen, "SessionLocal", return_value=db):
+        with pytest.raises(gen._ProposalPersistError):
+            gen._persist_proposal_and_log(**kwargs)
+
+    assert not issubclass(gen._ProposalPersistError, gen._ProposalDomainError)
+    db.rollback.assert_called()
