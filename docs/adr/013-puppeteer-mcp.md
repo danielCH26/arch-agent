@@ -77,7 +77,17 @@ pre-yield to the agent) via `_wrap_tool_with_byte_cap` in
 `app/core/puppeteer_mcp.py`. The cap bounds what flows into the SSE event
 and what gets persisted/served. It does **not** bound the receive-time
 process memory spike — the bytes are already in the Python process when
-measured. That bound is the sidecar `mem_limit: 512m` (§6).
+measured. That bound is the sidecar `mem_limit: 1g` (§6).
+
+> Note (PR #76 cleanup, 2026-10-07): the original §6.1 below was written
+> for `mem_limit: 512m`. The compose file was later raised to `1g` to
+> accommodate Chromium RSS spikes under load (the prior value triggered
+> silent OOM restarts during the F13 walkthrough). All other references
+> to `512m` in the change artifacts under
+> `openspec/changes/2026-09-07-F13-puppeteer-mcp/` and
+> `openspec/changes/2026-09-20-f13-review-fixes/` are historical and
+> intentionally left as-is (they record the value at the time the
+> decision was made). The compose file is the source of truth.
 
 ### 3. Rate limit per-user (REQ-PMCP-4, SCN-PMCP-6)
 
@@ -128,9 +138,10 @@ measured. That bound is the sidecar `mem_limit: 512m` (§6).
   turno. El entrypoint (`infrastructure/puppeteer-mcp/entrypoint.sh`)
   warmea Chromium una vez al boot (`npx ... --version` durante el build
   del Dockerfile precachea las deps del MCP server).
-- `mem_limit: 512m` en `docker-compose.yml:puppeteer-mcp` — Chromium con
-  un solo tab de Mermaid consume ~200-300MB; 512MB deja headroom para
-  picos sin que un OOM silencioso mate el sidecar.
+- `mem_limit: 1g` en `docker-compose.yml:puppeteer-mcp` — Chromium con
+  un solo tab de Mermaid consume ~200-300MB; 1g deja headroom para
+  picos sin que un OOM silencioso mate el sidecar. (Subido de 512m
+  en el rework de PR #76 tras observar OOM restarts bajo carga.)
 
 ### 7. Storage (JSONB → tabla)
 

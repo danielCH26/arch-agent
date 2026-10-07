@@ -68,7 +68,14 @@ asserts the output is *exactly* `["puppeteer_screenshot"]`.
 ## Risks
 
 - Tool surface leakage → REQ-PMCP-2 positive allow-list + recorded fixture test.
-- Hung Chromium → REQ-PMCP-3 timeout + `mem_limit: 512m` on the sidecar.
+- Hung Chromium → REQ-PMCP-3 timeout + `mem_limit: 1g` on the sidecar.
+
+> Note (PR #76 cleanup, 2026-10-07): the sidecar memory ceiling is `1g`
+> in `docker-compose.yml:puppeteer-mcp`. It was originally `512m`; the
+> raise was driven by Chromium RSS spikes during the F13 walkthrough.
+> Change artifacts under `openspec/changes/2026-09-07-F13-puppeteer-mcp/`
+> still reference `512m` as historical record. Compose is the source of
+> truth.
 - Render abuse → REQ-PMCP-4 rate limit + REQ-PMCP-3 byte cap.
 - Cross-turn scope drift → see "Out of Scope".
 
