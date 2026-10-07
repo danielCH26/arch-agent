@@ -19,6 +19,7 @@ interface ProjectsState {
   fetchProjects: () => Promise<void>
   createProject: (name: string, description?: string) => Promise<Project>
   deleteProject: (id: number) => Promise<void>
+  getProject: (id: number) => Promise<Project | null>
   setCurrentProject: (project: Project | null) => void
   clearError: () => void
 }
@@ -72,9 +73,30 @@ export const projectsStore = create<ProjectsState>((set) => ({
     }
   },
 
+  getProject: async (id: number) => {
+    try {
+      const project = await projectsApi.getProject(id)
+      set((state) => ({
+        currentProject: project,
+        projects: state.projects.map((p) => (p.id === id ? project : p)),
+      }))
+      return project
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch project'
+      set({ status: 'error', error: message })
+      return null
+    }
+  },
+
   setCurrentProject: (project: Project | null) => {
     set({ currentProject: project })
   },
 
   clearError: () => set({ error: null }),
 }))
+
+// Hook-style alias (Soomri round-2 re-review, B1'): PhaseActions imports
+// `useProjectsStore`; without this export the frontend does not compile
+// ("useProjectsStore" is not exported by stores/projectsStore). Mirrors
+// the approvalsStore convention of exposing both names.
+export const useProjectsStore = projectsStore

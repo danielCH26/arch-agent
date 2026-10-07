@@ -120,6 +120,18 @@ class TestRejectRevertsToEnv:
             os.environ.pop("PROPOSAL_REJECT_REVERTS_TO", None)
         else:
             os.environ["PROPOSAL_REJECT_REVERTS_TO"] = self._original
+        # Restore the module constant to match the restored env.
+        # importlib.reload in the tests below leaves the reloaded module
+        # (with the override baked into the constant) in sys.modules, and
+        # that state leaked into every later test in the process -- e.g.
+        # it made the reject-ordering test pass vacuously because the
+        # revert target became "propuesta". Reloading once more with the
+        # restored env puts the module back at its default.
+        import importlib
+
+        import app.api.proposals as proposals_module
+
+        importlib.reload(proposals_module)
 
     def test_default_is_requerimientos(self):
         os.environ.pop("PROPOSAL_REJECT_REVERTS_TO", None)
@@ -287,23 +299,131 @@ class TestDecideIdempotency:
 
 
 class TestLifecycleSideEffects:
-    """Pure-function assertions about the side effects of decide.
+    """Behavioral assertions about the side effects of decide.
 
     The route is exercised end-to-end by the runtime harness (manual smoke
     + later Playwright/Cypress). These tests pin the contract so a careless
     refactor doesn't silently drop the ``phase_ready`` transition.
+
+    Soomri round-2 re-review: the original test in this class asserted on
+    ``inspect.getsource`` text ("phase_ready = True" in source), which
+    broke as soon as the reject/approve paths were routed through
+    ``record_decision``. Behavior over text: these tests invoke the
+    endpoint function directly with mocked collaborators and assert on
+    what it does.
     """
 
-    def test_approve_path_sets_phase_ready_true(self):
-        # Read the source of decide_proposal and confirm the transition is in
-        # the approve branch (not buried in a shared code path that reject
-        # could also trigger). Cheap regression guard.
-        import inspect
+    @staticmethod
+    def _make_proposal_and_project():
+        proposal = MagicMock()
+        proposal.id = 5
+        proposal.project_id = 7
+        proposal.session_id = 1
+        proposal.lifecycle = "proposed"
+        proposal.content = {"secciones": []}
+
+        project = MagicMock()
+        project.id = 7
+        project.current_phase = "propuesta"
+        return proposal, project
+
+    def test_approve_path_routes_decision_to_record_decision(self):
+        """Approve must reach the HU10 writer (record_decision via
+        _apply_project_proposal_decision) with decision="approve" -- that
+        call is what sets phase_ready=True now."""
+        import asyncio
 
         from app.api import proposals as proposals_module
 
-        source = inspect.getsource(proposals_module.decide_proposal)
-        assert "phase_ready = True" in source
-        assert "phase_ready = False" in source
-        # Reject branch must revert current_phase
-        assert "PROPOSAL_REJECT_REVERTS_TO" in source
+        proposal, project = self._make_proposal_and_project()
+        observed = []
+
+        def fake_apply(db, *, user_id, project, decision, feedback, proposal_text):
+            observed.append(decision)
+
+        db = MagicMock()
+        db.get.return_value = proposal
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+        body = proposals_module.DecideRequest(decision="approve", comment="ok")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module, "_apply_project_proposal_decision", side_effect=fake_apply
+        ):
+            response = asyncio.run(
+                proposals_module.decide_proposal(5, body, {"user_id": "1"})
+            )
+
+        assert response["lifecycle"] == "approved"
+        assert observed == ["approve"]
+
+
+# ---------------------------------------------------------------------------
+# Soomri round-2 re-review (B5): reject ordering vs. the HU10 gate
+# ---------------------------------------------------------------------------
+
+
+def test_reject_registers_decision_before_reverting_phase():
+    """Soomri round-2 re-review (B5): ``decide_proposal`` used to revert
+    ``project.current_phase`` BEFORE calling
+    ``_apply_project_proposal_decision`` (which routes through
+    ``record_decision``). ``record_decision``'s gate
+    (``phase == current_phase``) then raised ``PhaseMismatchError``,
+    which the generic ``except Exception`` converted into a 500 with
+    ``str(exc)`` leaked into the detail -- exactly what REQ-SA-34
+    forbids.
+
+    The fix: register the decision first (the gate then sees
+    ``phase == current_phase == "propuesta"``), and revert the phase
+    only afterwards. This test pins the ordering by snapshotting the
+    phase at the moment the decision is applied."""
+    import asyncio
+
+    from app.api import proposals as proposals_module
+
+    proposal = MagicMock()
+    proposal.id = 5
+    proposal.project_id = 7
+    proposal.session_id = 1
+    proposal.lifecycle = "proposed"
+    proposal.content = {"secciones": []}
+
+    project = MagicMock()
+    project.id = 7
+    project.current_phase = "propuesta"
+
+    observed = []
+
+    def fake_apply(db, *, user_id, project, decision, feedback, proposal_text):
+        # Snapshot the phase AT CALL TIME -- this is the whole point.
+        observed.append((decision, project.current_phase))
+
+    db = MagicMock()
+    db.get.return_value = proposal
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    body = proposals_module.DecideRequest(decision="reject", comment="no sirve")
+
+    with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+        proposals_module, "_require_owned_project", return_value=project
+    ), patch.object(
+        proposals_module, "_apply_project_proposal_decision", side_effect=fake_apply
+    ):
+        response = asyncio.run(
+            proposals_module.decide_proposal(5, body, {"user_id": "1"})
+        )
+
+    # The endpoint still succeeds and still reverts the phase in its
+    # response payload.
+    assert response["lifecycle"] == "rejected"
+    assert response["current_phase"] == proposals_module.PROPOSAL_REJECT_REVERTS_TO
+
+    # The decision must be registered while the phase is still "propuesta";
+    # reverting first is what produced the PhaseMismatchError -> 500.
+    assert observed == [("reject", "propuesta")], (
+        "record_decision must run BEFORE the phase revert; reverting first "
+        "trips the phase==current_phase gate (PhaseMismatchError) and the "
+        "generic except turns it into a 500 (Soomri round-2 B5)."
+    )

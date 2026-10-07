@@ -8,12 +8,18 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Configurar entorno antes de importar la app
-os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32ch"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# Configurar entorno antes de importar la app.
+#
+# IMPORTANT: do NOT set DATABASE_URL here. The hard-coded CI URL would
+# defeat the skipif in Postgres-backed tests like
+# ``tests/models/test_approval.py`` and
+# ``tests/core/test_phase_decisions_concurrency.py``. The runner (CI or
+# local) is responsible for setting DATABASE_URL when those tests need
+# to run; otherwise they skip cleanly (HU10 v3 fix).
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32ch")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 @pytest.fixture

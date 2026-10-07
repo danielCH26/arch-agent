@@ -20,6 +20,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
+from app.core.phase_decisions import record_decision
 from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
@@ -214,28 +215,34 @@ def _apply_project_proposal_decision(
             else "Propuesta rechazada."
         )
 
-    approval = record_approval_decision(
+    # Route through record_decision for proper HU10 ownership:
+    #   - FOR UPDATE lock prevents race conditions
+    #   - Phase validation (phase == current_phase)
+    #   - Correct phase_ready flipping (no manual assignment needed)
+    result = record_decision(
         db,
         user_id=user_id,
-        phase=PHASE,
-        decision=decision,
-        feedback=feedback,
         project_id=int(project.id),
+        phase=PHASE,
+        action=decision,
+        feedback=feedback,
     )
+    # The approval row is in result.approval; record_decision already set
+    # project.phase_ready correctly - DO NOT manually set it here.
+
     if session_row is None:
-        session_row = db.query(UserSession).filter(UserSession.id == approval.session_id).first()
+        session_row = db.query(UserSession).filter(UserSession.id == result.approval.session_id).first()
     if session_row is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="No se pudo resolver la sesión del usuario.",
         )
 
-    project.phase_ready = decision == "approve"
     engram_state[_project_key(int(project.id))] = project_state
     session_row.engram_state = engram_state
     flag_modified(session_row, "engram_state")
 
-    return approval, len(snapshot), message
+    return result.approval, len(snapshot), message
 
 
 @router.post("/api/proposals/generate")
@@ -383,7 +390,6 @@ async def decide_proposal(
             )
         else:
             proposal.lifecycle = "rejected"
-            project.current_phase = PROPOSAL_REJECT_REVERTS_TO
             decision_for_hu6 = "reject"
             db.add(
                 ProposalApproval(
@@ -410,10 +416,15 @@ async def decide_proposal(
             feedback=body.comment,
             proposal_text=_content_to_text(proposal.content),
         )
-        if body.decision == "approve":
-            project.phase_ready = True
-        else:
-            project.phase_ready = False
+        # Soomri round-2 re-review (B5): the phase revert MUST happen AFTER
+        # the decision is registered -- record_decision's gate
+        # (phase == current_phase) raises PhaseMismatchError if the phase
+        # was reverted first, and the generic except below converted that
+        # into a 500 with str(exc) leaked into the detail (REQ-SA-34).
+        # Approve leaves the phase untouched; reject reverts it here.
+        if body.decision == "reject":
+            project.current_phase = PROPOSAL_REJECT_REVERTS_TO
+        # phase_ready is now set by record_decision - do NOT manually set it
 
         db.commit()
         db.refresh(proposal)

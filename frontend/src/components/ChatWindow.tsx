@@ -9,6 +9,8 @@ import {
 import { chatStore } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
+import { useApprovalsStore } from '../stores/approvalsStore'
+import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ChatInput } from './ChatInput'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './proposals/ProposalCard'
@@ -64,8 +66,16 @@ function shouldMountProposalCard(
 export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory } = chatStore()
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
+  // B3 (Soomri round-2 re-review): the Avanzar surface must mount when the
+  // phase is ready even though pending_decision is null (approved phase).
+  const storePhaseReady = projectsStore((s) => s.currentProject?.phase_ready ?? false)
   const currentPhase = phase ?? storePhase
   const proposalInFlight = proposalsStore((s) => s.inFlight)
+  const fetchApprovalsHistory = useApprovalsStore((s) => s.fetchHistory)
+  const refreshApprovals = useApprovalsStore((s) => s.refresh)
+  const pendingDecision = useApprovalsStore(
+    (s) => (currentPhase ? s.pendingByPhase[currentPhase] ?? null : null),
+  )
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [loadingElicitation, setLoadingElicitation] = useState(false)
   const [decisionError, setDecisionError] = useState('')
@@ -127,6 +137,19 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
     void state.loadHistory(projectId)
   }, [isElicitation, projectId])
 
+  // HU10 v2 (REQ-SA-26.1): mount `<PhaseActions>` from the `/phases` fetch
+  // path. The store re-derives `pendingDecision` server-side, so even when
+  // the SSE `event: phase_locked` consumer is missed (the v1 production
+  // bug), the surface still mounts on the first render and after every
+  // chat response via the `refresh` call below.
+  useEffect(() => {
+    void fetchApprovalsHistory(projectId)
+  }, [fetchApprovalsHistory, projectId])
+
+  const refreshApprovalsAfterChat = useCallback(() => {
+    void refreshApprovals()
+  }, [refreshApprovals])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isStreaming, loadingElicitation])
@@ -134,6 +157,7 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   const handleSend = async (text: string, displayText?: string) => {
     if (!isElicitation) {
       await chatStore.getState().sendMessage(projectId, text, displayText)
+      refreshApprovalsAfterChat()
       return
     }
     setLoadingElicitation(true)
@@ -160,6 +184,7 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
       setDecisionMessage(result.message)
       setFeedback('')
       setShowModify(false)
+      refreshApprovalsAfterChat()
       if (decision !== 'approve') await loadElicitation()
     } catch (err) {
       setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decisión')
@@ -190,6 +215,18 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
         ))}
         {isElicitation && summary && <SummaryView resumen={summary} />}
         {showProposalCard && <ProposalCard forceMount projectId={projectId} />}
+        {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the
+            pendingDecision derived server-side via /phases. Independent of
+            the SSE `event: phase_locked` consumer so production never
+            silently fails to render the surface. */}
+        {!isElicitation && (pendingDecision || storePhaseReady) && (
+          <PhaseActions
+            projectId={projectId}
+            phase={currentPhase ?? pendingDecision?.phase ?? ''}
+            allowModify={currentPhase !== 'final'}
+            phaseReady={storePhaseReady}
+          />
+        )}
         {busy && (
           <div className="flex justify-start">
             <div className="bg-gray-100 px-4 py-2 rounded-lg">

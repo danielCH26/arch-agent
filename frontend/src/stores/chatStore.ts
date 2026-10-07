@@ -6,6 +6,7 @@ import {
   type ChatHistoryMessage,
   type RagSource,
 } from '../api/chat'
+import { useApprovalsStore } from './approvalsStore'
 
 export interface Message {
   id: string
@@ -147,6 +148,16 @@ export const chatStore = create<ChatState>((set) => ({
       onDone: () => {
         set({ isStreaming: false })
         onComplete?.()
+      },
+      // HU10 v2 (REQ-SA-11 / REQ-SA-26.1): when the backend signals that
+      // the current phase is locked (decision pending), force a fresh
+      // `/phases` fetch so the `<PhaseActions>` surface re-mounts from the
+      // server-truth `pendingByPhase` map. The ChatWindow mount useEffect
+      // also re-runs `fetchApprovalsHistory` on every project change, so
+      // missing this SSE is recoverable; this is the fast path.
+      onPhaseLocked: (data) => {
+        if (projectId == null || data?.phase_ready !== true) return
+        void useApprovalsStore.getState().fetchHistory(projectId)
       },
       onError: (errorMessage: string) => {
         set((state) => ({
