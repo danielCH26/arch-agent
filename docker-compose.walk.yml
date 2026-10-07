@@ -1,0 +1,69 @@
+# =============================================================================
+# Override para el walk E2E de HU10 (scripts/walk_hu10_e2e.py).
+#
+# Stack AISLADO en puertos 18xxx con container names walk-*: los
+# container_name fijos del base (backend, postgres-app) colisionan
+# globalmente en Docker si hay otro stack vivo — esto permite correr el
+# walk sin tocar ese entorno.
+#
+# Servicios: postgres-app + backend unicamente. HU10 no renderiza
+# diagramas (no necesita puppeteer-mcp) y el mirror de Engram es
+# fire-and-forget + el handler de Langfuse resuelve None sin keys, asi
+# que el resto del fleet se omite.
+#
+# Requiere Docker Compose >= 2.24 (tags !reset / !override).
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.walk.yml \
+#     -p walk-hu10 up -d --build postgres-app backend
+#   ... correr scripts/walk_hu10_e2e.py apuntando a localhost:18000 ...
+#   docker compose -f docker-compose.yml -f docker-compose.walk.yml \
+#     -p walk-hu10 down -v
+# =============================================================================
+services:
+  postgres-app:
+    container_name: walk-postgres-app
+    environment: !override
+      POSTGRES_USER: walk
+      POSTGRES_PASSWORD: walk
+      POSTGRES_DB: walk_hu10
+    ports: !override
+      - "18432:5432"
+    # El healthcheck del base interpola ${POSTGRES_USER}/${POSTGRES_DB}
+    # del .env (vacio sin env_file) — rebindeado con las credenciales
+    # literales del walk.
+    healthcheck: !override
+      test: ["CMD-SHELL", "pg_isready -U walk -d walk_hu10"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes: !override
+      - walk_pg_app_data:/var/lib/postgresql/data
+
+  backend:
+    container_name: walk-backend
+    image: arch-agent-backend:walk
+    depends_on: !override
+      postgres-app:
+        condition: service_healthy
+    env_file: !reset []
+    environment: !override
+      DATABASE_URL: postgresql://walk:walk@postgres-app:5432/walk_hu10
+      JWT_SECRET_KEY: walk-secret-key-for-testing-only-32chars
+      ENCRYPTION_KEY: walk-encryption-key-32-chars!!
+      PUPPETEER_MCP_URL: http://walk-puppeteer-mcp-unused:8931/mcp
+      PYTHONUNBUFFERED: "1"
+    ports: !override
+      - "18000:8000"
+    volumes: !override
+      - walk_uploads:/app/uploads
+      - walk_logs:/app/logs
+      - walk_models:/app/.cache
+    # El command del base (init_db + migraciones + uvicorn) se conserva:
+    # el walk necesita el schema aplicado al levantar.
+
+volumes:
+  walk_pg_app_data:
+  walk_uploads:
+  walk_logs:
+  walk_models:
