@@ -47,8 +47,13 @@ def test_verify_returns_false_none_on_expired():
 
     # Sign with a very short TTL
     token = attachment_tokens.sign_attachment_token("att-123", user_id=42, ttl=1)
-    # Wait for it to expire
-    time.sleep(1.5)
+    # Wait for it to expire. itsdangerous stores the timestamp as integer
+    # seconds, so a sleep of just > 1s is racy near a second boundary:
+    # if the test enters sign + sleep straddles a tick, the token can
+    # still validate. 2.1s leaves comfortable margin (2 full integer
+    # seconds of age, which exceeds max_age=1 regardless of tick phase).
+    # lau2413 flagged this in PR #76 review.
+    time.sleep(2.1)
     valid, payload_uid = attachment_tokens.verify_attachment_token(
         token,
         attachment_id="att-123",

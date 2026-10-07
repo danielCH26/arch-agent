@@ -762,24 +762,13 @@ def test_wrap_tool_with_byte_cap_works_on_pydantic_model_with_extra_forbid(monke
     asyncio.run(_drive())
 
 
-def test_rate_limit_handler_in_try_get_puppeteer_tools(monkeypatch):
-    """End-to-end: ``_try_get_puppeteer_tools`` emits a degraded payload
-    with ``source="puppeteer"`` and ``reason="puppeteer_rate_limited"``."""
-    from app.core import puppeteer_mcp
-    import app.core.agent as agent_module
-
-    monkeypatch.setenv("PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE", "1")
-    puppeteer_mcp._RATE_LIMITER.clear()
-
-    async def _drive():
-        # Burn the quota.
-        await agent_module._try_get_puppeteer_tools(user_id=99)
-        return await agent_module._try_get_puppeteer_tools(user_id=99)
-
-    _, degraded = asyncio.run(_drive())
-    assert degraded is not None
-    assert degraded["source"] == "puppeteer"
-    assert degraded["reason"] == "puppeteer_rate_limited"
+# NOTE: ``test_rate_limit_handler_in_try_get_puppeteer_tools`` was removed.
+# lau2413 (PR #76 review): HU6 reemplazó ``agent._try_get_puppeteer_tools``
+# con un render server-side al final del turno, y el reemplazo vive en
+# ``tests/core/test_agent.py``. El test viejo referenciaba un símbolo que
+# ya no existe (``AttributeError: module 'app.core.agent' has no attribute
+# '_try_get_puppeteer_tools'``). No lo migramos acá: la cobertura nueva
+# vive en el archivo de tests de agent, no en el de puppeteer_mcp.
 
 
 # ---------------------------------------------------------------------------
