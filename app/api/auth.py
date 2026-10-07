@@ -92,6 +92,17 @@ async def login(body: LoginRequest):
             detail="Invalid username or password",
         )
 
+    # Seed users (e.g. demo_user) carry a placeholder password_hash that is NOT
+    # a real bcrypt hash; bcrypt.checkpw below would raise ValueError → 500.
+    # Block them up-front so the route returns a clean 401, as documented in
+    # scripts/seed_example.py. The error message intentionally matches the
+    # generic 401 to avoid leaking that demo_user exists.
+    if user.is_demo_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+        )
+
     if not bcrypt.checkpw(body.password.encode(), user.password_hash.encode()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -89,16 +89,10 @@ def sign_attachment_token(
 
 
 def build_attachment_url(attachment_id: str, user_id: int) -> str:
-    """Return a FRESHLY-signed ``/api/chat/attachments/{id}?token=...`` URL.
+    """Return a signed URL for serving an attachment image.
 
-    Bug fix (HU6): the token has a 5 min TTL (see module docstring). Every
-    place that hands an attachment URL to the frontend — the live SSE
-    ``event: attachment`` emit, ``GET /api/chat/history`` (page reload) and
-    ``GET /api/diagrams/history`` (version panel) — must call this at
-    RESPONSE time instead of re-serving whatever ``url`` was persisted on
-    the message row. A URL signed once at generation time and then stored
-    verbatim goes stale after 5 minutes and the ``<img>`` 401s forever,
-    which is what made diagrams "disappear" from the chat.
+    The returned URL includes a query-string token that authenticates
+    the request without an Authorization header (required for <img> tags).
     """
     token = sign_attachment_token(attachment_id, user_id)
     return f"/api/chat/attachments/{attachment_id}?token={token}"
@@ -106,39 +100,50 @@ def build_attachment_url(attachment_id: str, user_id: int) -> str:
 
 def verify_attachment_token(
     token: str,
-    attachment_id: str,
-    user_id: int,
     *,
+    attachment_id: str,
     max_age: int = DEFAULT_TTL_SECONDS,
-) -> bool:
-    """Return ``True`` iff the token is valid AND binds the right pair.
+) -> tuple[bool, int | None]:
+    """Return ``(valid, payload_user_id)``.
 
-    Returns ``False`` (not raises) on every failure mode so the route can
-    map indistinguishably to 401 — this matches the spec's "avoid info
-    leak" posture (REQ-ATT-2).
+    ``payload_user_id`` is the ``uid`` claim from the signed payload when
+    the signature is valid AND the payload is fresh AND the payload's
+    ``aid`` claim matches ``attachment_id``. On ANY failure mode
+    (missing/expired/forged/mismatched aid) the function
+    returns ``(False, None)`` indistinguishably so the route can map
+    every failure to 401 without leaking which check failed.
+
+    The user_id ownership check is the route's job (the route compares
+    the returned ``payload_user_id`` against the attachment row's owner).
+    Doing the check at the route level lets a single signed token authorize
+    reads for the right user without pre-knowledge of the request's user
+    context (REQ-ATT-2: signed URLs that <img> tags can use without
+    Authorization headers).
     """
     if not token:
-        return False
+        return False, None
     serializer = _get_serializer()
     try:
         payload = serializer.loads(token, max_age=max_age)
     except SignatureExpired:
-        _LOGGER.info("attachment_token: expired")
-        return False
+        _LOGGER.debug("attachment_token: expired")
+        return False, None
     except BadSignature:
-        _LOGGER.info("attachment_token: bad signature")
-        return False
+        _LOGGER.debug("attachment_token: bad signature")
+        return False, None
     except Exception as e:  # pragma: no cover — defensive belt-and-braces
-        _LOGGER.warning("attachment_token: unexpected verify error: %s", e)
-        return False
+        _LOGGER.debug("attachment_token: unexpected verify error: %s", e)
+        return False, None
 
     if not isinstance(payload, dict):
-        return False
+        return False, None
     if payload.get("aid") != str(attachment_id):
-        return False
-    if int(payload.get("uid", -1)) != int(user_id):
-        return False
-    return True
+        return False, None
+    try:
+        payload_uid = int(payload.get("uid", -1))
+    except (TypeError, ValueError):
+        return False, None
+    return True, payload_uid
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +169,8 @@ def _ensure_uploads_dir() -> str:
 
 __all__ = [
     "DEFAULT_TTL_SECONDS",
-    "sign_attachment_token",
     "build_attachment_url",
+    "sign_attachment_token",
     "verify_attachment_token",
     "reset_serializer_for_tests",
     "_ensure_uploads_dir",

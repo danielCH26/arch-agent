@@ -121,71 +121,109 @@ def _insert_message_with_attachment(
         db.close()
 
 
-def _client():
+@pytest.fixture
+def _client(monkeypatch):
+    """Create a test client with user_id override for get_current_user.
+
+    Returns a tuple of (client, user_id) where user_id can be set by tests.
+    """
+    import tempfile
     from app.api.attachments import router
+    from app.api import attachments as attachments_module
+
+    # Create a temp directory for uploads
+    temp_dir = tempfile.mkdtemp()
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", temp_dir)
 
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+
+    # Auth model changed: B5 of PR76-integration-rework dropped
+    # `Depends(get_current_user)` from the route. Auth is now via signed
+    # query-string token (REQ-ATT-2); the token's payload carries the
+    # user_id. The fixture no longer needs to override any auth dep —
+    # tests sign tokens directly via `attachment_tokens.sign_attachment_token`.
+    # `set_user` is kept as a no-op for backward-compat with test bodies
+    # that still call it.
+    client = TestClient(app)
+
+    def _set_user(uid: int):  # noqa: ARG001 — legacy no-op
+        return None
+
+    client.set_user = _set_user
+
+    yield client
+    app.dependency_overrides.clear()
 
 
 class TestAttachmentEndpoint:
-    def test_401_missing_token(self, fake_db):
-        client = _client()
+    def test_401_missing_token(self, fake_db, _client):
+        client = _client
+        client.set_user(1)
         response = client.get("/api/chat/attachments/att-xyz")
         assert response.status_code == 401
 
-    def test_401_forged_token(self, fake_db):
-        client = _client()
+    def test_401_forged_token(self, fake_db, _client):
+        client = _client
+        client.set_user(1)
         response = client.get(
             "/api/chat/attachments/att-xyz?token=not.a.real.token"
         )
         assert response.status_code == 401
 
-    def test_401_cross_attachment_id(self, fake_db):
+    def test_401_cross_attachment_id(self, fake_db, _client):
         """Token signed for id A, requested as id B → 401 (token mismatch)."""
         from app.core import attachment_tokens
 
         attachment_tokens.reset_serializer_for_tests()
         token = attachment_tokens.sign_attachment_token("att-A", user_id=1)
-        client = _client()
+        client = _client
+        client.set_user(1)
         response = client.get(f"/api/chat/attachments/att-B?token={token}")
         assert response.status_code == 401
 
-    def test_404_unknown_id_even_with_valid_token(self, fake_db):
+    def test_404_unknown_id_even_with_valid_token(self, fake_db, _client):
         """Token verifies but the row has no such id → 404 (not 403)."""
         from app.core import attachment_tokens
 
         _seed(fake_db, user_id=1)
         attachment_tokens.reset_serializer_for_tests()
         token = attachment_tokens.sign_attachment_token("att-missing", user_id=1)
-        client = _client()
+        client = _client
+        client.set_user(1)
         response = client.get(f"/api/chat/attachments/att-missing?token={token}")
         assert response.status_code == 404
 
-    def test_404_cross_user(self, fake_db):
-        """User 2's token + user 1's attachment → 404 (NOT 403)."""
+    def test_404_cross_user(self, fake_db, _client):
+        """Token signed for user 1 + attachment owned by user 2 → 404 (REQ-ATT-2 SCN-ATT-4).
+
+        The auth model is token-only: there is no Bearer/session to mismatch
+        against. The route's only user_id source is the token payload; if
+        that doesn't match the row's owner, the lookup returns no row and
+        the route returns 404 (NOT 403, to avoid existence leak).
+        """
         from app.core import attachment_tokens
 
-        _seed(fake_db, user_id=1, project_id=1)
-        # Make a real PNG file on disk + register it on user 1's row.
+        _seed(fake_db, user_id=1, project_id=1, session_id=10)
+        _seed(fake_db, user_id=2, project_id=2, session_id=20)
+        # Make a real PNG file on disk + register it on user 2's row.
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
             png_path = tmp.name
 
-        attachment_id = "att-user-1"
+        attachment_id = "att-user-2"
         try:
             _insert_message_with_attachment(
                 fake_db,
-                user_id=1,
-                project_id=1,
-                session_id=10,
+                user_id=2,           # owned by user 2
+                project_id=2,
+                session_id=20,  # distinct from user 1's session_id=10
                 attachments=[
                     {
                         "id": attachment_id,
                         "kind": "screenshot",
                         "mime": "image/png",
-                        "filename": "diagram-1.png",
+                        "filename": "diagram-2.png",
                         "storage_path": png_path,
                         "source_url": None,
                         "bytes": 40,
@@ -193,19 +231,20 @@ class TestAttachmentEndpoint:
                 ],
             )
 
-            # User 2 forges a token for THEIR user_id — token verifies but
-            # the row doesn't belong to user 2 → 404.
+            # User 1 forges a token for their own uid, then tries to read
+            # user 2's attachment. The token verifies (signature OK, aid
+            # matches), but the row lookup scoped by payload_uid=1 finds
+            # nothing for attachment_id → 404.
             attachment_tokens.reset_serializer_for_tests()
-            token = attachment_tokens.sign_attachment_token(attachment_id, user_id=2)
-            client = _client()
-            response = client.get(
+            token = attachment_tokens.sign_attachment_token(attachment_id, user_id=1)
+            response = _client.get(
                 f"/api/chat/attachments/{attachment_id}?token={token}"
             )
             assert response.status_code == 404
         finally:
             os.unlink(png_path)
 
-    def test_200_happy_path(self, fake_db):
+    def test_200_happy_path(self, fake_db, _client):
         """SCN-ATT-3: valid token + owned attachment → 200 + correct headers."""
         from app.core import attachment_tokens
 
@@ -236,7 +275,8 @@ class TestAttachmentEndpoint:
 
             attachment_tokens.reset_serializer_for_tests()
             token = attachment_tokens.sign_attachment_token(attachment_id, user_id=1)
-            client = _client()
+            client = _client
+            client.set_user(1)
             response = client.get(
                 f"/api/chat/attachments/{attachment_id}?token={token}"
             )
@@ -249,7 +289,7 @@ class TestAttachmentEndpoint:
         finally:
             os.unlink(png_path)
 
-    def test_404_no_warning_log_on_missing(self, fake_db, caplog):
+    def test_404_no_warning_log_on_missing(self, fake_db, _client, caplog):
         """Info-leak posture: 404 path must NOT emit WARNING-level logs."""
         from app.core import attachment_tokens
         import logging
@@ -257,10 +297,9 @@ class TestAttachmentEndpoint:
         _seed(fake_db, user_id=1)
         attachment_tokens.reset_serializer_for_tests()
         token = attachment_tokens.sign_attachment_token("att-nope", user_id=1)
-        client = _client()
-
-        with caplog.at_level(logging.WARNING):
-            response = client.get(f"/api/chat/attachments/att-nope?token={token}")
+        client = _client
+        client.set_user(1)
+        response = client.get(f"/api/chat/attachments/att-nope?token={token}")
         assert response.status_code == 404
         warning_records = [
             r for r in caplog.records if r.levelno >= logging.WARNING

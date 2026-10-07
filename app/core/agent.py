@@ -265,6 +265,40 @@ def format_rag_context(rag_documents: list[Any]) -> str:
     return "\n\n".join(blocks)
 
 
+def _format_history_recap(history: list[dict]) -> str:
+    """Format conversation history as a recap for the agent.
+
+    Args:
+        history: List of dicts with 'role' and 'content' keys (and optionally
+            'display_content'). Only includes 'user' and 'assistant' roles.
+
+    Returns:
+        A formatted string to prepend to the system prompt.
+    """
+    if not history:
+        return ""
+
+    # Filter to user/assistant roles only, cap at 5 entries
+    entries = []
+    for msg in history[-5:]:  # already capped at 5 by caller
+        role = msg.get("role", "unknown")
+        if role not in ("user", "assistant"):
+            continue
+        # REQ-EM-DELTA-2: the agent MUST NEVER receive `display_content`.
+        # `display_content` is the user-facing bubble (e.g. short feedback
+        # for "Solicitar cambios" on a Mermaid diagram); the LLM gets the
+        # actual `content` (the prompt + previous Mermaid). Drop the
+        # user-facing key here.
+        content = msg.get("content", "")
+        if content:
+            entries.append(f"{role.upper()}: {content}")
+
+    if not entries:
+        return ""
+
+    return "### Conversation so far\n" + "\n\n".join(entries)
+
+
 def _build_system_prompt(rag_documents: list[Any]) -> str:
     """SIMPLIFICADO: ya no recibe ``puppeteer_available`` -- el DIAGRAM_HINT
     siempre se incluye, porque ya no depende de que exista una tool."""
@@ -712,12 +746,18 @@ async def run_agent(
     rag_documents: list[Any] | None = None,
     user_id: int | None = None,
     project_id: int | None = None,
+    history: list[dict] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive the agent and yield SSE-ready dicts.
 
     SIMPLIFICADO: ``puppeteer_screenshot`` NUNCA se agrega a ``tools``
     (el LLM no la ve). Se usa solo internamente, al final del turno,
     para renderizar el mermaid que el modelo haya escrito.
+
+    Args:
+        history: Optional list of prior conversation messages for context.
+            Each dict should have 'role' and 'content' keys. Capped at 5
+            entries by the caller to bound token cost.
     """
     docs = _coerce_documents(rag_documents)
 
@@ -761,6 +801,12 @@ async def run_agent(
     tools: list[Any] = list(context7_tools)
 
     system_prompt = _build_system_prompt(docs)
+
+    # Prepend conversation history to the system prompt if provided
+    if history:
+        history_recap = _format_history_recap(history)
+        system_prompt = history_recap + "\n\n" + system_prompt
+
     agent = build_agent(model=model, system_prompt=system_prompt, tools=tools)
 
     model_name = getattr(model, "model_name", None) or getattr(model, "name", None)
@@ -847,7 +893,7 @@ async def run_agent(
             try:
                 from app.core.puppeteer_mcp import _check_rate_limit
 
-                _check_rate_limit(user_id)
+                await _check_rate_limit(user_id)
                 puppeteer_available = True
             except Exception as e:
                 puppeteer_available = False

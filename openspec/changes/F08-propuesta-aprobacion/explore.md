@@ -225,7 +225,7 @@ Approach B is rejected on the literal acceptance criterion. Approach C is appeal
 
 - **PR #64 not merged yet**: F08's branch is based on `c75b73c` (PR #64 HEAD). If PR #64 changes after this exploration (e.g., renames `similarity_search` or removes `ArchitectPattern`), F08's import surface breaks. Mitigation: pin our base to `c75b73c`, rebase only when PR #64 actually merges to `development`. Document the assumed import surface in `docs/adr/008-f08-proposal-approval-lifecycle.md`.
 - **Schema drift between docs and live**: `docs/database/schema.sql` is a legacy doc that contradicts the live `schema.sql` (sessions table FK direction, columns). F08 follows the live schema. Any reviewer comments referencing the doc must be reconciled.
-- **Migration numbering collision**: PR #64 HEAD already has `migrations/0007_add_document_chunks_indexes.sql`. F08 must use `0008_*`.
+- **Migration numbering collision**: PR #64 HEAD already has `migrations/0007_add_document_chunks_indexes.sql` (later renumbered to `0012_add_document_chunks_indexes.sql` in PR #76 review fix #4). F08 must use `0008_*`.
 - **`architect_patterns` table availability**: PR #64 removed its own migration. F08 must NOT add one. If a greenfield DB runs `init_db.py` without `run_migrations.py`, `architect_patterns` is still created by `init_db.py` (it has the table definition in the live `schema.sql`). No action needed.
 - **Streaming SSE complexity on FastAPI + reverse proxy**: PR #64 already configures `X-Accel-Buffering: no` on `app/api/chat.py`. F08 replicates the same headers.
 - **Review budget boundary at 800 lines**: Approach A's LoC estimate sits near the preflight's `review_budget_lines: 800`. Use work-unit commits and consider chained PRs only if a single commit exceeds 400 lines.

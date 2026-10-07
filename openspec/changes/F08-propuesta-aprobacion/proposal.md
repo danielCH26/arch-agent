@@ -1,5 +1,16 @@
 # Proposal: F08 — Propuesta + Aprobación
 
+> **Note (PR #76 cleanup, 2026-10-07):** Migration filename renumbered
+> from `0008_proposals_and_logs.sql` → `0014_proposal_approvals_table.sql`
+> to make room for F07 (patterns), F12 (messages) and F13 (attachments)
+> without filename collisions. The SQL DDL is unchanged. References to
+> the old `0008` filename in this and the other files in this change
+> folder are historical and intentionally left as-is (they describe the
+> filename at the time the proposal was written). The
+> `migrations/` directory is the source of truth.
+> See `openspec/specs/proposal-approval/spec.md` REQ-5 for the live
+> reference.
+
 | Field | Value |
 |---|---|
 | Slug | `F08-propuesta-aprobacion` |

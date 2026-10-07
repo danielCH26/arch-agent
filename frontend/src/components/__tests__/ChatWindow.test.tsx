@@ -11,6 +11,7 @@ function resetStores() {
     messages: [],
     isStreaming: false,
     error: null,
+    loadingHistory: false,
   })
   projectsStore.setState({
     projects: [],

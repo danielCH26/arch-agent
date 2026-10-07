@@ -73,7 +73,24 @@ _PUPPETEER_ALLOWED_TOOLS: frozenset = frozenset({"puppeteer_screenshot"})
 # F14 if horizontal scaling arrives (R-SPEC-4 mitigation in ADR-013 §Security).
 _RATE_LIMIT_WINDOW_SECONDS: int = 60
 _RATE_LIMITER: dict[int, list[float]] = {}
-_RATE_LIMIT_LOCK = None  # lazily created; see ``_check_rate_limit``
+_RATE_LIMITER_LAST_SEEN: dict[int, float] = {}  # tracks last activity per user
+_RATE_LIMIT_LOCK = asyncio.Lock()  # guards window mutation; see ``_check_rate_limit``
+_RATE_LIMITER_PURGE_TTL_SECONDS: int = 3600  # 1 hour
+
+# REQ-PMCP-3: byte cap on render results. Hardcoded default mirrors ADR-013 §2 (2 MB).
+# Override via env var for tests / future tuning.
+_DEFAULT_MAX_RENDER_BYTES: int = 2_097_152  # 2 MiB
+
+
+def _max_render_bytes() -> int:
+    """Read ``PUPPETEER_MAX_RENDER_BYTES`` at call-time (test-friendly)."""
+    raw = os.getenv("PUPPETEER_MAX_RENDER_BYTES")
+    if raw is None or not raw.strip():
+        return _DEFAULT_MAX_RENDER_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_MAX_RENDER_BYTES
 
 
 def _rate_limit_per_minute() -> int:
@@ -92,8 +109,31 @@ def _rate_limit_per_minute() -> int:
         return 5
 
 
-def _check_rate_limit(user_id: int | None) -> None:
-    """Sliding-window rate limiter (REQ-PMCP-4).
+def _purge_inactive_users() -> None:
+    """Remove inactive users from rate limiter to prevent memory growth.
+
+    Removes entries older than _RATE_LIMITER_PURGE_TTL_SECONDS (default 1 hour).
+    Called periodically from _check_rate_limit.
+    """
+    now = _time.time()
+    cutoff = now - _RATE_LIMITER_PURGE_TTL_SECONDS
+
+    # Find and remove inactive users
+    inactive_keys = [
+        key for key, last_seen in _RATE_LIMITER_LAST_SEEN.items()
+        if last_seen < cutoff
+    ]
+
+    for key in inactive_keys:
+        _RATE_LIMITER.pop(key, None)
+        _RATE_LIMITER_LAST_SEEN.pop(key, None)
+
+    if inactive_keys:
+        _LOGGER.debug("Purged %d inactive users from rate limiter", len(inactive_keys))
+
+
+async def _check_rate_limit(user_id: int | None) -> None:
+    """Sliding-window rate limiter (REQ-PMCP-4) — async + locked.
 
     Raises ``PuppeteerUnavailable(reason="puppeteer_rate_limited")`` when the
     call would exceed ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE`` within the
@@ -102,6 +142,10 @@ def _check_rate_limit(user_id: int | None) -> None:
 
     On success: appends the current epoch timestamp to the user's window
     AFTER pruning entries older than ``_RATE_LIMIT_WINDOW_SECONDS``.
+
+    The window mutation is guarded by ``_RATE_LIMIT_LOCK`` to prevent a race
+    where two concurrent coroutines both pass the ``len(window) < limit`` check
+    and both append.
     """
     limit = _rate_limit_per_minute()
     if limit <= 0:
@@ -112,28 +156,117 @@ def _check_rate_limit(user_id: int | None) -> None:
     now = _time.time()
     cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
 
-    window = _RATE_LIMITER.get(key)
-    if window is None:
-        window = []
-        _RATE_LIMITER[key] = window
+    async with _RATE_LIMIT_LOCK:
+        window = _RATE_LIMITER.get(key)
+        if window is None:
+            window = []
+            _RATE_LIMITER[key] = window
+            _RATE_LIMITER_LAST_SEEN[key] = now
 
-    # Prune timestamps older than the window.
-    while window and window[0] < cutoff:
-        window.pop(0)
+        # Prune timestamps older than the window.
+        while window and window[0] < cutoff:
+            window.pop(0)
 
-    if len(window) >= limit:
-        _LOGGER.warning(
-            "Puppeteer rate limit hit for user_id=%s (limit=%d / %ds)",
-            key,
-            limit,
-            _RATE_LIMIT_WINDOW_SECONDS,
-        )
-        raise PuppeteerUnavailable(
-            f"Puppeteer render rate limit exceeded ({limit}/{_RATE_LIMIT_WINDOW_SECONDS}s)",
-            reason="puppeteer_rate_limited",
-        )
+        # Update last seen timestamp
+        _RATE_LIMITER_LAST_SEEN[key] = now
 
-    window.append(now)
+        # Periodically purge inactive users (every 10 calls)
+        if len(_RATE_LIMITER) > 0 and sum(1 for w in _RATE_LIMITER.values() if w) % 10 == 0:
+            _purge_inactive_users()
+
+        if len(window) >= limit:
+            _LOGGER.warning(
+                "Puppeteer rate limit hit for user_id=%s (limit=%d / %ds)",
+                key,
+                limit,
+                _RATE_LIMIT_WINDOW_SECONDS,
+            )
+            raise PuppeteerUnavailable(
+                f"Puppeteer render rate limit exceeded ({limit}/{_RATE_LIMIT_WINDOW_SECONDS}s)",
+                reason="puppeteer_rate_limited",
+            )
+
+        window.append(now)
+
+
+def _measure_result_bytes(result: Any) -> int:
+    """Best-effort byte size of a tool result.
+
+    LangChain tool results come back as ``str`` (base64-in-string), ``bytes``,
+    ``list[content-block]``, or sometimes a wrapper dict. We normalize to a
+    single byte count for the cap check.
+    """
+    if isinstance(result, bytes):
+        return len(result)
+    if isinstance(result, str):
+        return len(result.encode("utf-8"))
+    if isinstance(result, list):
+        # Common LangChain content-block shape.
+        total = 0
+        for block in result:
+            if isinstance(block, dict):
+                data = block.get("data") or block.get("text") or ""
+                if isinstance(data, bytes):
+                    total += len(data)
+                else:
+                    total += len(str(data).encode("utf-8"))
+            else:
+                total += len(str(block).encode("utf-8"))
+        return total
+    if isinstance(result, dict):
+        data = result.get("data") or result.get("content") or ""
+        if isinstance(data, bytes):
+            return len(data)
+        return len(str(data).encode("utf-8"))
+    return len(str(result).encode("utf-8"))
+
+
+def _wrap_tool_with_byte_cap(tool: Any) -> Any:
+    """In-place: enforce ``PUPPETEER_MAX_RENDER_BYTES`` on the tool's result.
+
+    Replaces ``tool.ainvoke`` with a wrapper that:
+      1. awaits the original ainvoke,
+      2. measures the result bytes,
+      3. raises ``PuppeteerUnavailable(reason="puppeteer_byte_cap")`` if over.
+
+    Note: ``langchain_core.tools.StructuredTool`` is a Pydantic v2 model
+    with ``model_config = ConfigDict(extra="forbid")``. Normal attribute
+    assignment ``tool.ainvoke = wrapper`` triggers Pydantic validation
+    and raises ``ValidationError: 'StructuredTool' object has no field
+    'ainvoke'`` (PR #76 review finding from @lau2413 — round 5 testing).
+    We bypass the Pydantic ``__setattr__`` via ``object.__setattr__`` so
+    the wrapper installs as a plain instance attribute (shadows the
+    class-level bound method, which is what we want).
+
+    Same fragility budget as ``_make_optional_params_nullable`` from
+    round 3 — see test pinning, especially the Pydantic-BaseModel
+    regression test below.
+    """
+    cap = _max_render_bytes()
+    if cap <= 0:
+        # Cap disabled (env var = 0) — leave tool untouched.
+        return tool
+
+    # Some test tools may not have ainvoke; skip wrapping in that case.
+    if not hasattr(tool, "ainvoke"):
+        _LOGGER.debug("Tool %s has no ainvoke, skipping byte cap", getattr(tool, "name", "<unknown>"))
+        return tool
+
+    original_ainvoke = tool.ainvoke
+
+    async def _capped_ainvoke(*args: Any, **kwargs: Any) -> Any:
+        result = await original_ainvoke(*args, **kwargs)
+        size = _measure_result_bytes(result)
+        if size > cap:
+            raise PuppeteerUnavailable(
+                f"Puppeteer render exceeds byte cap ({size} > {cap})",
+                reason="puppeteer_byte_cap",
+            )
+        return result
+
+    # Bypass Pydantic's __setattr__ (extra="forbid"). See docstring above.
+    object.__setattr__(tool, "ainvoke", _capped_ainvoke)
+    return tool
 
 
 class PuppeteerUnavailable(Exception):
@@ -314,88 +447,94 @@ async def get_puppeteer_tools(client: Any | None = None) -> list[Any]:
             len(dropped),
             dropped,
         )
-    for t in filtered:
-        _allow_null_for_optional_params(t)
+    # PR #76 review fix (round 3, B1): Groq strict-mode / OpenAI strict
+    # function-calling send optional parameters as ``null`` when they are not
+    # needed. The upstream MCP server publishes these as ``{"type": "string"}``
+    # (or similar) with no nullability hint, so strict validation rejects the
+    # call BEFORE the sidecar can see it. Patch each surviving tool's schema
+    # in place so ``tool_call_schema`` (the surface the model provider sees)
+    # advertises ``["string", "null"]`` (or ``anyOf: [<orig>, {type:null}]``)
+    # for every non-required parameter. Required parameters keep their
+    # declared type — the model is not allowed to send null for them anyway.
+    for tool in filtered:
+        _make_optional_params_nullable(tool)
     _LOGGER.info(
         "Puppeteer returned %d raw tool(s); %d allowed after filter: %s",
         len(raw),
         len(filtered),
         [t.name for t in filtered],
     )
+
+    # 2026-09-20-f13-review-fixes / REQ-PMCP-3: wrap each tool's ainvoke
+    # with a byte cap check. The cap bounds what flows into the SSE event
+    # and what gets persisted (see ADR-013 §2.1).
+    for tool in filtered:
+        _wrap_tool_with_byte_cap(tool)
+
     return filtered
 
 
-def _allow_null_for_optional_params(tool: Any) -> None:
-    """Parcha ``tool.args_schema`` in-place para que cada parametro NO
-    requerido acepte ``null`` ademas de su tipo declarado.
+def _make_optional_params_nullable(tool: Any) -> None:
+    """In-place: allow ``null`` for every non-required parameter of ``tool``.
 
-    Bug (visto con ``openai/gpt-oss-120b`` via Groq): el modelo rellena
-    argumentos opcionales que no quiere usar con JSON ``null`` en vez de
-    omitirlos del todo. Groq valida el tool call contra el JSON Schema
-    ANTES de que nuestro codigo (``_wrap_screenshot_tool_for_groq_compat``)
-    llegue a ejecutarse, asi que el saneo de kwargs que ya haciamos ahi
-    (``kwargs.pop("selector", None)``) nunca alcanza a correr — la API
-    rechaza el tool call de entrada con
-    ``.../selector: expected string, but got null`` y el turno entero
-    explota (``openai.APIError`` sin catch en el loop del agente).
+    Operates on the MCP-converted ``StructuredTool``'s ``args_schema`` dict
+    (set by ``langchain-mcp-adapters`` to ``tool.inputSchema``). LangChain's
+    ``tool_call_schema`` property is derived from the same dict, so mutating
+    here propagates to the JSON Schema the LLM provider validates against.
 
-    El fix real va en el schema que le mostramos al modelo, no en el
-    codigo que consume la llamada: si ``selector`` declara
-    ``type: ["string", "null"]`` en vez de ``type: "string"``, Groq acepta
-    ``null`` como valor valido y el tool call pasa la validacion. De ahi
-    en mas, el saneo existente en ``_wrap_screenshot_tool_for_groq_compat``
-    sigue haciendo su trabajo (convierte ``None`` en "sin selector").
+    Required parameters are left untouched — the model is not permitted to
+    send null for them and silently widening them would mask schema bugs.
 
-    No-op defensivo: si ``tool`` no tiene ``args_schema`` como dict con
-    ``properties``, no hace nada (evita romper con tools de otros MCPs).
+    No-op when ``tool.args_schema`` is not a dict (e.g. a Pydantic-derived
+    ``StructuredTool``); those tools already get correct nullability from
+    their declared type hints.
     """
     schema = getattr(tool, "args_schema", None)
     if not isinstance(schema, dict):
         return
+
     properties = schema.get("properties")
-    if not isinstance(properties, dict):
+    if not isinstance(properties, dict) or not properties:
         return
+
     required = set(schema.get("required") or [])
     for name, prop in properties.items():
-        if name in required or not isinstance(prop, dict):
+        if name in required:
             continue
-        prop_type = prop.get("type")
-        if isinstance(prop_type, str) and prop_type != "null":
-            prop["type"] = [prop_type, "null"]
-        elif isinstance(prop_type, list) and "null" not in prop_type:
-            prop["type"] = [*prop_type, "null"]
+        if not isinstance(prop, dict):
+            continue
+        _widen_type_to_accept_null(prop)
 
 
-async def get_puppeteer_navigate_tool(client: Any | None = None) -> Any | None:
-    """Obtiene la tool CRUDA ``puppeteer_navigate`` (SIN pasar por el
-    allow-list) para uso EXCLUSIVAMENTE server-side.
+def _widen_type_to_accept_null(prop: dict) -> None:
+    """Rewrite a single JSON Schema property so ``null`` becomes a valid value.
 
-    El LLM NUNCA ve esta tool (REQ-PMCP-2 sigue intacto: el allow-list de
-    ``get_puppeteer_tools`` no cambia). Se usa solo internamente para
-    cargar la página HTML con el diagrama Mermaid renderizado ANTES de
-    invocar ``puppeteer_screenshot`` -- sin este paso, el screenshot
-    siempre captura la pantalla en blanco por defecto del browser
-    (bug: "diagrama sale en blanco").
+    Handles the three shapes MCP-converted schemas arrive in:
+
+    1. ``{"type": "string"}``         -> ``{"type": ["string", "null"]}``
+    2. ``{"type": ["string", ...]}``  -> append ``"null"`` if absent
+    3. ``{"anyOf": [...]}``           -> append ``{"type": "null"}`` branch
+    4. ``{"$ref": ...}`` / ``oneOf``  -> untouched (too risky to rewrite)
     """
-    if client is None:
-        client = build_puppeteer_client()
-    try:
-        raw = await asyncio.wait_for(
-            client.get_tools(server_name=_SERVER_NAME),
-            timeout=_FETCH_TIMEOUT_SECONDS,
-        )
-    except Exception as e:
-        _LOGGER.warning("No se pudo obtener puppeteer_navigate interno: %s", e)
-        return None
-    for t in raw:
-        if getattr(t, "name", None) == "puppeteer_navigate":
-            return t
-    return None
+    # anyOf-style: append a null branch.
+    if "anyOf" in prop:
+        branches = prop["anyOf"]
+        if isinstance(branches, list):
+            types = [
+                b.get("type")
+                for b in branches
+                if isinstance(b, dict)
+            ]
+            if "null" not in types:
+                prop["anyOf"] = list(branches) + [{"type": "null"}]
+        return
 
-# Hallazgo #12 (revisión feature/hu6-diagrama): `get_puppeteer_tools_and_navigate`
-# vivía acá para el flujo viejo donde el LLM invocaba navigate/screenshot
-# como dos tools separadas. Ese flujo se reemplazó por
-# `agent._render_mermaid_server_side`, que abre su propia sesión MCP cruda
-# (navigate + screenshot en la misma sesión) sin pasar por esta función.
-# No queda ningún caller (ni en producción ni en tests) -- se elimina en
-# vez de dejarla como código muerto.
+    # oneOf + $ref: leave alone — too easy to silently break the contract.
+    if "oneOf" in prop or "$ref" in prop:
+        return
+
+    t = prop.get("type")
+    if isinstance(t, str):
+        prop["type"] = [t, "null"]
+    elif isinstance(t, list) and t and "null" not in t:
+        prop["type"] = list(t) + ["null"]

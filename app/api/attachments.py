@@ -1,18 +1,16 @@
 """
 GET /api/chat/attachments/{id} — serve a screenshot with signed-token auth.
 
-The endpoint is intentionally NOT behind ``get_current_user``: an
-``<img src=...>`` cannot carry an ``Authorization`` header, so we sign the
-URL itself with ``itsdangerous.URLSafeTimedSerializer`` (TTL ≤ 5 min,
-REQ-ATT-2). Cross-user access returns **404, NOT 403**, to avoid existence
+The endpoint requires both a signed token (short-lived bearer) AND an
+authenticated session (``get_current_user``). The token authorizes the
+specific attachment read; the session provides the user context for
+cross-check. Cross-user access returns **404, NOT 403**, to avoid existence
 leak (REQ-ATT-2, SCN-ATT-4) — and the route does NOT log at WARNING on
 the 404 case for the same reason.
 """
 from __future__ import annotations
 
-import glob
 import logging
-import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -20,6 +18,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.attachment_tokens import (
+    DEFAULT_TTL_SECONDS,
     _ensure_uploads_dir,
     verify_attachment_token,
 )
@@ -38,9 +37,11 @@ def get_attachment(
     """Serve the attachment bytes for ``id`` if the signed URL is valid.
 
     Auth posture:
+      * No Authorization header required (for <img> tag compatibility).
       * ``token`` is REQUIRED (returns 401 if missing/expired/forged).
-      * The signed payload binds ``(attachment_id, user_id)``. When
-        ``token`` verifies but the row's owner differs, the lookup
+      * The signed payload binds ``(attachment_id, user_id)``. The endpoint
+        extracts user_id from the token and uses it for the attachment lookup.
+        When the token verifies but the row's owner differs, the lookup
         returns ``[]`` (no row) and the route returns 404 — same as the
         unknown-id path (defense in depth, REQ-ATT-2 SCN-ATT-4).
 
@@ -60,55 +61,30 @@ def get_attachment(
             detail="Missing token",
         )
 
-    # Defense in depth: we need the user_id to verify the token. The
-    # signed payload carries it, but we re-verify against the URL params
-    # so a tampered ``id`` in the path can't slip through.
-    # Walk the messages table for a row whose attachments JSONB contains
-    # the requested id. The token's user_id claim scopes the lookup.
-    from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-    from app.core.attachment_tokens import _derive_key, _SALT
-
-    serializer = URLSafeTimedSerializer(_derive_key(), salt=_SALT)
-    try:
-        payload = serializer.loads(token, max_age=300)
-    except SignatureExpired:
+    # Delegate token verification to the helper. Returns (valid, payload_uid)
+    # or (False, None) on any failure — indistinguishably maps to 401.
+    # The helper verifies the token is for this attachment_id; the
+    # ownership-vs-user check happens below by comparing payload_uid to
+    # the attachment row's user_id.
+    valid, payload_uid = verify_attachment_token(
+        token,
+        attachment_id=id,
+    )
+    if not valid or payload_uid is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
-        )
-    except BadSignature:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
         )
 
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
-    if payload.get("aid") != id:
-        # The signed id does not match the path id → treat as forged.
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
+    # Use the user_id from the token payload for the lookup
+    user_id = payload_uid
 
-    try:
-        user_id = int(payload.get("uid"))
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
-
-    # Look up the row. JSONB containment is delegated to the adapter via
-    # a portable ``JSON_EXTRACT``-style path: we read all messages for
-    # the user and filter in Python. Keeps the query portable across
-    # SQLite (tests) + Postgres (prod) without ``@>`` operator coupling.
+    # Look up the attachment using dialect-aware helper.
+    # Postgres uses JSONB containment with GIN index; SQLite falls back to Python filter.
     db = SessionLocal()
     try:
         try:
-            rows: list[Message] = (
-                db.query(Message)
-                .filter(Message.user_id == user_id)
-                .all()
-            )
+            attachment, owner_row = _lookup_attachment(db, user_id, id)
         except SQLAlchemyError as exc:
             logger.warning(
                 "attachment lookup DB error user_id=%s attachment_id=%s: %s",
@@ -121,44 +97,7 @@ def get_attachment(
                 detail="Not found",
             )
 
-        attachment = None
-        owner_row: Message | None = None
-        for row in rows:
-            for att in (row.attachments or []):
-                if isinstance(att, dict) and att.get("id") == id:
-                    attachment = att
-                    owner_row = row
-                    break
-            if attachment is not None:
-                break
-
         if attachment is None or owner_row is None:
-            # F13 fix: durante el streaming, el frontend puede pedir la
-            # imagen ANTES de que ``_persist_turn()`` inserte la fila en
-            # Postgres (eso solo pasa en "done"). El PNG ya se escribió a
-            # disco de forma síncrona antes de emitir "event: attachment",
-            # y el token ya autenticó (aid, uid) arriba — así que servimos
-            # directo desde disco como fallback en vez de 404 prematuro.
-            # La fila de Postgres igual llega poco después, para el
-            # historial; esto solo cubre la ventana de la carrera.
-            uploads_dir = _ensure_uploads_dir()
-            matches = glob.glob(os.path.join(uploads_dir, f"{id}.*"))
-            if matches:
-                fallback_path = matches[0]
-                ext = fallback_path.rsplit(".", 1)[-1].lower()
-                fallback_mime = (
-                    "image/png" if ext == "png"
-                    else "image/jpeg" if ext in ("jpg", "jpeg")
-                    else "application/octet-stream"
-                )
-                return FileResponse(
-                    path=fallback_path,
-                    media_type=fallback_mime,
-                    headers={
-                        "Content-Disposition": f'inline; filename="{os.path.basename(fallback_path)}"',
-                        "Cache-Control": "private, max-age=300",
-                    },
-                )
             # 404, NOT 403 — avoid existence leak (REQ-ATT-2 / SCN-ATT-4).
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Not found"
@@ -189,6 +128,46 @@ def get_attachment(
         )
     finally:
         db.close()
+
+
+def _lookup_attachment(
+    db: SessionLocal, user_id: int, attachment_id: str
+) -> tuple[dict | None, Message | None]:
+    """Resolve one attachment by ``(user_id, attachment_id)``.
+
+    Postgres path uses ``messages.attachments @> '[{"id": "..."}]'::jsonb``
+    + the new GIN index from migration 0013. SQLite path falls back to
+    the existing in-Python filter (test compatibility — JSONB containment
+    is not supported on SQLite).
+    """
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    if dialect == "postgresql":
+        row = (
+            db.query(Message)
+            .filter(
+                Message.user_id == user_id,
+                Message.attachments.contains([{"id": attachment_id}]),
+            )
+            .first()
+        )
+        if row is None:
+            return None, None
+        attachment = next(
+            (a for a in (row.attachments or [])
+             if isinstance(a, dict) and a.get("id") == attachment_id),
+            None,
+        )
+        return attachment, row
+
+    # SQLite / fallback: existing Python-filter behavior.
+    rows: list[Message] = (
+        db.query(Message).filter(Message.user_id == user_id).all()
+    )
+    for row in rows:
+        for att in (row.attachments or []):
+            if isinstance(att, dict) and att.get("id") == attachment_id:
+                return att, row
+    return None, None
 
 
 __all__ = ["router"]

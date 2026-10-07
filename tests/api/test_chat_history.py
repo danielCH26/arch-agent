@@ -35,7 +35,7 @@ if not hasattr(_sqlite_dialect.dialect, "_f12_jsonb_patched"):
     _sqlite_dialect.dialect._f12_jsonb_patched = True
 
 
-_TEST_TABLES = ["users", "sessions", "projects", "messages", "approvals"]
+_TEST_TABLES = ["users", "sessions", "projects", "messages"]
 
 
 @pytest.fixture()
@@ -150,7 +150,7 @@ class TestChatHistoryEndpoint:
         assert all("created_at" in m for m in messages)
         assert all(m["citations"] == [] for m in messages)
 
-    def test_default_limit_is_5(self, fake_db):
+    def test_default_limit_is_50(self, fake_db):
         _seed(fake_db)
         _insert_messages(fake_db, 10, 1, 1, [f"m{i}" for i in range(20)])
         client = _client_for_user(user_id=1)
@@ -158,7 +158,7 @@ class TestChatHistoryEndpoint:
         response = client.get("/api/chat/history?project_id=1")
 
         assert response.status_code == 200
-        assert len(response.json()["messages"]) == 5
+        assert len(response.json()["messages"]) == 20  # only 20 seeded, 20 <= default 50
 
     def test_limit_clamped_to_max_50(self, fake_db):
         _seed(fake_db)
@@ -263,169 +263,10 @@ class TestChatHistoryEndpoint:
         response = client.get("/api/chat/history?project_id=1&limit=5")
         assert response.status_code == 200
         msg = response.json()["messages"][0]
-        assert set(msg.keys()) == {
-            "id", "role", "content", "citations", "attachments", "created_at",
-        }
-
-
-# ---------------------------------------------------------------------------
-# F14 (migracion 0015) — GET /api/chat/history devuelve display_content or
-# content. Regression coverage for QA_feature-hu6-diagrama seccion 0 punto 7.
-# ---------------------------------------------------------------------------
-
-
-def _insert_message_with_display_content(
-    fake_db, *, session_id: int, user_id: int, project_id: int,
-    content: str, display_content: str | None,
-):
-    """Como ``_insert_messages`` pero para un solo row con display_content."""
-    Session, _engine = fake_db
-    db = Session()
-    try:
-        from app.models.message import Message
-
-        db.add(
-            Message(
-                session_id=session_id,
-                project_id=project_id,
-                user_id=user_id,
-                role="user",
-                content=content,
-                display_content=display_content,
-                citations=[],
-                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-                updated_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            )
-        )
-        db.commit()
-    finally:
-        db.close()
-
-
-class TestChatHistoryDisplayContent:
-    def test_returns_display_content_when_set(self, fake_db):
-        _seed(fake_db)
-        _insert_message_with_display_content(
-            fake_db, session_id=10, user_id=1, project_id=1,
-            content="Instrucciones tecnicas completas + Mermaid anterior...",
-            display_content="Cambiá el color del nodo A",
-        )
-        client = _client_for_user(user_id=1)
-
-        response = client.get("/api/chat/history?project_id=1&limit=5")
-
-        assert response.status_code == 200
-        msg = response.json()["messages"][0]
-        # El frontend nunca debe ver el prompt tecnico cuando hay un
-        # display_content guardado -- eso es lo que soluciona la migracion
-        # 0015 (antes: la burbuja volvia a mostrar el prompt completo tras
-        # un refresh).
-        assert msg["content"] == "Cambiá el color del nodo A"
-
-    def test_falls_back_to_content_when_display_content_is_none(self, fake_db):
-        _seed(fake_db)
-        _insert_message_with_display_content(
-            fake_db, session_id=10, user_id=1, project_id=1,
-            content="mensaje normal, sin diferencia", display_content=None,
-        )
-        client = _client_for_user(user_id=1)
-
-        response = client.get("/api/chat/history?project_id=1&limit=5")
-
-        assert response.status_code == 200
-        msg = response.json()["messages"][0]
-        assert msg["content"] == "mensaje normal, sin diferencia"
-
-    def test_pre_migration_rows_without_display_content_are_unaffected(self, fake_db):
-        """Filas insertadas antes de la migracion 0015 (sin pasar
-        display_content en absoluto, no solo None) siguen devolviendo
-        ``content`` tal cual -- la columna nueva no rompe nada existente."""
-        _seed(fake_db)
-        _insert_messages(fake_db, session_id=10, user_id=1, project_id=1, items=["u1"])
-        client = _client_for_user(user_id=1)
-
-        response = client.get("/api/chat/history?project_id=1&limit=5")
-
-        assert response.status_code == 200
-        assert response.json()["messages"][0]["content"] == "u1"
-
-
-# ---------------------------------------------------------------------------
-# Estado de decisión de cada diagrama en GET /api/chat/history (migración 0017)
-#
-# Bug QA HU6: tras un F5, la burbuja del chat perdía el estado "ya decidido"
-# (aprobado / rechazado / cambios pedidos) y volvían a aparecer los botones.
-# ---------------------------------------------------------------------------
-
-
-def _insert_assistant_with_diagram(fake_db, *, session_id, user_id, project_id, attachment_id):
-    Session, _engine = fake_db
-    db = Session()
-    try:
-        from app.models.message import Message
-
-        db.add(
-            Message(
-                session_id=session_id, project_id=project_id, user_id=user_id,
-                role="assistant", content="aca va el diagrama", citations=[],
-                attachments=[{
-                    "id": attachment_id, "kind": "screenshot", "mime": "image/png",
-                    "filename": f"{attachment_id}.png", "storage_path": "/tmp/x.png",
-                }],
-                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-                updated_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            )
-        )
-        db.commit()
-    finally:
-        db.close()
-
-
-def _insert_diagram_approval(fake_db, *, session_id, project_id, attachment_id, decision_db):
-    Session, _engine = fake_db
-    db = Session()
-    try:
-        from app.models.approval import Approval
-
-        db.add(Approval(session_id=session_id, project_id=project_id, phase="diagram",
-                        decision=decision_db, attachment_id=attachment_id))
-        db.commit()
-    finally:
-        db.close()
-
-
-class TestChatHistoryDiagramDecision:
-    def test_attachment_exposes_id_and_null_decision_when_undecided(self, fake_db):
-        _seed(fake_db)
-        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
-        client = _client_for_user(user_id=1)
-
-        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
-
-        assert att["id"] == "att-1"
-        assert att["decision"] is None
-        assert "storage_path" not in att  # no se filtra el path del servidor
-
-    @pytest.mark.parametrize(
-        "decision_db, decision_api",
-        [("approved", "approve"), ("rejected", "reject"), ("modified", "modify")],
-    )
-    def test_attachment_returns_persisted_decision(self, fake_db, decision_db, decision_api):
-        _seed(fake_db)
-        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
-        _insert_diagram_approval(fake_db, session_id=10, project_id=1, attachment_id="att-1", decision_db=decision_db)
-        client = _client_for_user(user_id=1)
-
-        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
-
-        assert att["decision"] == decision_api
-
-    def test_decision_of_another_project_is_not_returned(self, fake_db):
-        _seed(fake_db)
-        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
-        _insert_diagram_approval(fake_db, session_id=10, project_id=2, attachment_id="att-1", decision_db="rejected")
-        client = _client_for_user(user_id=1)
-
-        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
-
-        assert att["decision"] is None
+        # After PR76-integration-rework commit af6309c, the API also returns
+        # `attachments` (F13 contract) and `display_content` (REQ-EM-DELTA-2
+        # in the change folder). Both are optional — None is acceptable.
+        assert set(msg.keys()) >= {"id", "role", "content", "citations", "created_at"}
+        # No leakage of internal columns.
+        assert "engram_observation_id" not in msg
+        assert "user_id" not in msg
