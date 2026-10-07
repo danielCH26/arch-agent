@@ -214,6 +214,63 @@ class TestNextStepFailOpenPreguntaCompuesta:
         assert len(model.calls) == 2
         assert "compuesta" in caplog.text.lower()
 
+    def test_reintento_json_sin_clave_done_devuelve_original_con_warning(self, caplog):
+        # Soomri review (round 2, A corregir 2): este caso faltaba
+        # testear. Si el reintento devuelve JSON parseable pero sin la
+        # clave 'done', se devuelve la original con warning.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                '{"question": "¿algo granular?", "reason": "sin done"}',
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
+            decision = next_step(model, history=HISTORY_5)
+        assert decision.question == PREGUNTA_COMPUESTA
+        assert len(model.calls) == 2
+        assert "sin la clave" in caplog.text or "'done'" in caplog.text
+
+    def test_reintento_con_done_true_devuelve_original_con_warning(self, caplog):
+        # Soomri review (round 2, A corregir 2): este caso faltaba
+        # testear. Si el reintento devuelve done=true, no nos sirve como
+        # pregunta a mostrar -- se devuelve la original con warning.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                '{"done": true, "question": null, "reason": "listo"}',
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
+            decision = next_step(model, history=HISTORY_5)
+        assert decision.question == PREGUNTA_COMPUESTA
+        assert decision.done is False
+        assert len(model.calls) == 2
+        assert "pese al reintento" in caplog.text.lower()
+
+    def test_reintento_con_error_de_invocacion_devuelve_original_con_warning(self, caplog):
+        # Soomri review (round 2, A corregir 2): el test existente
+        # ('reintento_no_parseable') cubre error de PARSEO de JSON, pero
+        # el caso real de 429 / timeout del LLM viaja como
+        # ElicitationLLMError (subclase de ElicitationAgentError), y ese
+        # camino no estaba testeado. _invoke_json traduce cualquier
+        # excepción del modelo en ElicitationLLMError, y el except del
+        # guardarraíl (ElicitationAgentError) la captura por ser
+        # subclase -- devolviendo la original con warning.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                RuntimeError("Error code: 429 - rate_limit_exceeded"),
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
+            decision = next_step(model, history=HISTORY_5)
+        assert decision.question == PREGUNTA_COMPUESTA
+        assert len(model.calls) == 2
+        assert (
+            "falló al invocar" in caplog.text.lower()
+            or "compuesta" in caplog.text.lower()
+        )
+
 
 class TestNextStepSinReintento:
     """Regresión (Issue #100): el guardarraíl no debe agregar llamadas al
@@ -261,6 +318,33 @@ class TestNextStepFirstQuestion:
         assert decision.done is False
         assert decision.question == FIRST_QUESTION
         assert model.calls == []
+
+    def test_first_question_is_one_dimension_not_compound(self):
+        # Soomri review (round 2, A corregir 1): FIRST_QUESTION es la
+        # primera pregunta que el usuario ve y NO pasa por el guardarraíl
+        # de preguntas compuestas (next_step retorna antes de invocar al
+        # LLM cuando history está vacía), así que debe ser una sola
+        # dimensión. Si combina 'problema' con 'usuarios' (unidos con 'y'
+        # o con un 'para quién es' implícito), el detector
+        # _es_pregunta_compuesta() no la atrapa porque solo cuenta '?'.
+        # Esta es una prueba de intención: la pregunta no debe nombrar
+        # dos categorías del prompt al mismo tiempo.
+        pregunta_lower = FIRST_QUESTION.lower()
+        menciona_problema = "problema" in pregunta_lower
+        # 'usuarios' aparece literal, o como 'para quién' / 'quienes
+        # son' (que implican la categoría). Heurística conservadora a
+        # propósito: preferimos falsos negativos a romper reformulaciones
+        # legítimas del LLM en turnos posteriores.
+        menciona_usuarios = (
+            "usuarios" in pregunta_lower
+            or "para quién" in pregunta_lower
+            or "quienes son" in pregunta_lower
+        )
+        assert not (menciona_problema and menciona_usuarios), (
+            f"FIRST_QUESTION no debe combinar 'problema' y 'usuarios' en "
+            f"la misma pregunta (Issue #100, Soomri round 2): "
+            f"{FIRST_QUESTION!r}"
+        )
 
 
 class TestNextStepHardRules:
