@@ -94,3 +94,9 @@ export const projectsStore = create<ProjectsState>((set) => ({
 
   clearError: () => set({ error: null }),
 }))
+
+// Hook-style alias (Soomri round-2 re-review, B1'): PhaseActions imports
+// `useProjectsStore`; without this export the frontend does not compile
+// ("useProjectsStore" is not exported by stores/projectsStore). Mirrors
+// the approvalsStore convention of exposing both names.
+export const useProjectsStore = projectsStore
