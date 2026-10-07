@@ -1,0 +1,53 @@
+# =============================================================================
+# Railway Deploy — arch-agent backend
+#
+# Required GitHub Secret:
+#   RAILWAY_TOKEN  — Token personal de Railway.
+#
+#   Cómo obtenerlo:
+#     1. Ir a https://railway.app/account/tokens
+#     2. Click "Create Token", nombrarlo (ej: "arch-agent-deploy")
+#     3. Copiar el token (Railway lo muestra UNA sola vez)
+#     4. En GitHub: Settings → Secrets and variables → Actions
+#        → New repository secret → name: RAILWAY_TOKEN, value: <token>
+#     5. El proyecto Railway debe estar linkeado al repo:
+#        railway.app → Project → Settings → GitHub Repo → conectar.
+#
+# Trigger: SOLO cuando se pushea un tag semver v*.*.* (ej: v0.1.0).
+#   Merge a main NO dispara deploy — solo tag.
+#   `railway up --detach` devuelve control sin esperar al rollout completo.
+# =============================================================================
+
+name: Deploy to Railway
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --detach
