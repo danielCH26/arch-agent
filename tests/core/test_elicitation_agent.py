@@ -15,12 +15,12 @@ from app.core.elicitation_agent import (
     ElicitationAgentError,
     ElicitationLLMError,
     FIRST_QUESTION,
+    NEXT_STEP_SYSTEM_PROMPT,
     _es_pregunta_compuesta,
     _extract_json_object,
     _strip_json_fences,
     generate_summary,
     next_step,
-    NEXT_STEP_SYSTEM_PROMPT,
 )
 
 
