@@ -35,6 +35,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Los tests Postgres-backed (concurrency de HU10, FK de approvals)
+      # necesitan el schema aplicado; los demas tests crean sus tablas via
+      # Base.metadata. El runner aplica por nombre de archivo con
+      # IF NOT EXISTS en cada paso, asi que es idempotente.
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+        run: PYTHONPATH=. python migrations/run_migrations.py
+
       - name: Run tests
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
