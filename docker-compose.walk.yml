@@ -1,0 +1,143 @@
+# =============================================================================
+# docker-compose.walk.yml — ISOLATED stack for the F13 E2E walk (PR #104)
+#
+# Merge on top of the base file — NEVER run this file alone. NOTE the
+# explicit service list: `up` without it would also start the base file's
+# observability fleet (engram/langfuse/clickhouse/...), whose fixed
+# container_name entries would collide with a live default-port stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.walk.yml \
+#       -p walk-f13 up -d --build postgres-app backend puppeteer-mcp
+#
+#   WALK_BASE_URL=http://localhost:18000 \
+#   WALK_USERNAME=walk_user WALK_PASSWORD='WalkF13!pass' \
+#   WALK_LLM_API_KEY=gsk_... python3 scripts/walk_f13_e2e.py
+#
+#   docker compose -f docker-compose.yml -f docker-compose.walk.yml \
+#       -p walk-f13 down
+#
+# Why every override below exists:
+#   - container_name is GLOBAL in Docker: the base file pins `backend`,
+#     `postgres-app`, `puppeteer-mcp`, which collide with a live default-port
+#     stack from another checkout. Walk containers get a `walk-` prefix.
+#   - Host ports move to the 18xxx range (postgres 18432, backend 18000,
+#     puppeteer 18931) so the walk stack never fights for 5432/8000.
+#   - `!override` / `!reset` (compose spec tags) drop base keys that would
+#     drag production-only services in: backend.depends_on loses `engram`
+#     and `langfuse-web` (both are REQUIRED services in the base file but
+#     OPTIONAL at runtime — the Engram mirror is fire-and-forget in
+#     app/core/message_store.py and the Langfuse handler resolves to None
+#     without env keys, app/core/langfuse_tracer.py), and env_file loses the
+#     mandatory .env so the walk stack is self-contained.
+#   - Images are re-tagged `:walk` so `--build` never clobbers the live
+#     stack's `:latest` images.
+#   - Volumes are walk-prefixed so walk data never mixes with the live
+#     stack's Postgres/uploads.
+#
+# The only services a diagram walk needs: postgres-app (app DB), backend
+# (FastAPI), puppeteer-mcp (F13 sidecar). spa/langfuse/engram are skipped:
+# the walk drives the API directly and both integrations degrade gracefully.
+#
+# LLM credentials are NOT stored here — configure them at runtime via the
+# wizard endpoints (scripts/walk_f13_e2e.py does it from WALK_LLM_* env vars).
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # APP DATABASE — isolated data + host port 18432
+  # ---------------------------------------------------------------------------
+  postgres-app:
+    container_name: walk-postgres-app
+    # Base healthcheck interpolates ${POSTGRES_USER}/${POSTGRES_DB}, which are
+    # empty without .env — rebind it to the walk credentials.
+    healthcheck: !override
+      test: ["CMD-SHELL", "pg_isready -U ${WALK_POSTGRES_USER:-walk} -d ${WALK_POSTGRES_DB:-walk_f13}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    environment: !override
+      POSTGRES_USER: ${WALK_POSTGRES_USER:-walk}
+      POSTGRES_PASSWORD: ${WALK_POSTGRES_PASSWORD:-walk}
+      POSTGRES_DB: ${WALK_POSTGRES_DB:-walk_f13}
+    ports: !override
+      - "18432:5432"
+    volumes: !override
+      - walk_pg_app_data:/var/lib/postgresql/data
+
+  # ---------------------------------------------------------------------------
+  # BACKEND — host port 18000, in-network names unchanged
+  # ---------------------------------------------------------------------------
+  backend:
+    container_name: walk-backend
+    image: arch-agent-backend:walk
+    # Drop the mandatory base .env: the walk stack sets everything it needs
+    # explicitly below (safe dev defaults, overridden via WALK_* host vars).
+    env_file: !reset null
+    # Base depends_on requires engram + langfuse-web containers to exist.
+    # Both tolerate absence at runtime; keep only what the walk really uses.
+    depends_on: !override
+      postgres-app:
+        condition: service_healthy
+      puppeteer-mcp:
+        condition: service_started
+    ports: !override
+      - "18000:8000"
+    volumes: !override
+      - walk_backend_uploads:/app/uploads
+      - walk_backend_logs:/app/logs
+      - walk_backend_models:/app/.cache
+      - ./fuentes:/app/fuentes:ro
+    environment:
+      # In-network service names are unchanged, so the in-network URLs below
+      # are identical to production; only host-side ports move.
+      DATABASE_URL: postgresql://${WALK_POSTGRES_USER:-walk}:${WALK_POSTGRES_PASSWORD:-walk}@postgres-app:5432/${WALK_POSTGRES_DB:-walk_f13}
+
+      # Dev-only defaults; override with WALK_JWT_SECRET_KEY / WALK_ENCRYPTION_KEY.
+      # JWT_SECRET_KEY signs both user JWTs and the F13 attachment signed
+      # tokens (SHA-256-derived, app/core/attachment_tokens.py).
+      JWT_SECRET_KEY: ${WALK_JWT_SECRET_KEY:-walk-only-jwt-secret-not-for-prod}
+      # Fernet key (scripts/generate_encryption_key.py format) for wizard
+      # api_key storage (app/core/encryption.py).
+      ENCRYPTION_KEY: ${WALK_ENCRYPTION_KEY:-AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=}
+
+      # User-level LLM config happens at runtime via the wizard endpoints
+      # (scripts/walk_f13_e2e.py step 3); these are just boot defaults.
+      LLM_BASE_URL: ${WALK_LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${WALK_LLM_MODEL:-openai/gpt-oss-120b}
+
+      # F13 sidecar: same service name as base -> same in-network URL.
+      PUPPETEER_MCP_URL: http://puppeteer-mcp:8931/mcp
+      PUPPETEER_RENDER_TIMEOUT_SECONDS: "15"
+      PUPPETEER_MAX_RENDER_BYTES: "2097152"
+      PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE: "5"
+
+      # Engram service is NOT part of the walk stack; the chat-turn mirror is
+      # fire-and-forget and logs-and-continues when unreachable.
+      ENGRAM_PROJECT: ${WALK_ENGRAM_PROJECT:-walk-f13}
+      ENGRAM_URL: http://engram:7437
+
+      # Empty keys -> Langfuse handler resolves to None (optional at runtime).
+      LANGFUSE_PUBLIC_KEY: ""
+      LANGFUSE_SECRET_KEY: ""
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+
+      PYTHONUNBUFFERED: "1"
+    # `command` is inherited from the base file: init_db.py + migrations +
+    # uvicorn on 8000 (container-internal port unchanged).
+
+  # ---------------------------------------------------------------------------
+  # PUPPETEER MCP — F13 sidecar, host port 18931 for debugging only
+  # ---------------------------------------------------------------------------
+  puppeteer-mcp:
+    container_name: walk-puppeteer-mcp
+    image: arch-agent-puppeteer-mcp:walk
+    ports:
+      - "18931:8931"  # host debug access; the backend uses the in-network URL
+
+# Walk-only named volumes (pinned so data is isolated from any live stack
+# regardless of the compose project name used).
+volumes:
+  walk_pg_app_data:
+  walk_backend_uploads:
+  walk_backend_logs:
+  walk_backend_models:
