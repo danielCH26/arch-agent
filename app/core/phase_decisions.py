@@ -251,6 +251,14 @@ def record_decision(
         )
     if action == "modify" and not (feedback and feedback.strip()):
         raise InvalidActionError("'modify' requires non-empty feedback")
+    if phase == "final" and action == "modify":
+        # REQ-SA-8 (Soomri round-2 re-review, I3): no modifications on the
+        # final phase. The UI hides the button via ``allowModify``; this
+        # core-layer gate enforces the same rule server-side so every
+        # caller gets it.
+        raise InvalidActionError(
+            "'modify' is not allowed on the final phase (REQ-SA-8)"
+        )
 
     # ---- 2. Project lookup with FOR UPDATE (REQ-SA-31) ----
     project = db.execute(
@@ -381,41 +389,34 @@ def get_pending_decision(
     if project.current_phase in F05_OWNED_PHASES:
         return None
 
-    # Check if there's an approved decision for this phase
-    approved = db.execute(
+    # Soomri round-2 re-review (B4): the pending surface depends on the
+    # LAST decision for the phase -- NOT on the existence of any
+    # historical approved row. ``approve -> reject`` on the same phase
+    # must yield pending again; gating on "an approved row exists"
+    # stranded the user (no action buttons, and /advance 400s because
+    # phase_ready is False).
+    last = db.execute(
         select(Approval)
         .where(
             Approval.project_id == project_id,
             Approval.phase == project.current_phase,
-            Approval.decision == "approved",
         )
         .order_by(Approval.created_at.desc(), Approval.id.desc())
         .limit(1)
     ).scalar_one_or_none()
 
-    # Already approved: no pending surface needed
-    if approved is not None:
+    # Last decision is approved: no pending surface needed
+    if last is not None and last.decision == "approved":
         return None
 
-    # Get the most recent decision (if any) for this phase
-    recent = db.execute(
-        select(Approval)
-        .where(
-            Approval.project_id == project_id,
-            Approval.phase == project.current_phase,
-        )
-        .order_by(Approval.created_at.desc(), Approval.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
     # Return pending with since = decision timestamp, or utcnow if none exist yet
-    since = recent.created_at if recent else datetime.now(tz=timezone.utc)
+    since = last.created_at if last else datetime.now(tz=timezone.utc)
 
     return PendingDecision(
         phase=project.current_phase,
         since=since,
-        last_decision=recent.decision if recent else None,
-        last_decided_at=recent.created_at if recent else since,
+        last_decision=last.decision if last else None,
+        last_decided_at=last.created_at if last else since,
     )
 
 

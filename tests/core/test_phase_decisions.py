@@ -395,25 +395,42 @@ def test_record_decision_modify_requires_feedback():
         )
 
 
+def test_modify_not_allowed_on_final_phase():
+    """REQ-SA-8 (Soomri round-2 re-review, I3): the UI hides Modificar on
+    ``final`` via ``allowModify=false``, but ``record_decision`` accepted
+    it server-side. The gate must live in the core layer so every caller
+    (UI, API, future CLI) gets the same rule."""
+    db = MagicMock()
+    with pytest.raises(InvalidActionError, match="final"):
+        record_decision(
+            db,
+            user_id=1,
+            project_id=7,
+            phase="final",
+            action="modify",
+            feedback="un cambio más",
+        )
+
+
 # ---------------------------------------------------------------------------
 # get_pending_decision (REQ-SA-12)
 # ---------------------------------------------------------------------------
 
 
 def test_get_pending_decision_returns_pending_with_rejected_decision():
-    """SCN-SA-12.1: pending when there's a non-approved decision (e.g., rejected)."""
+    """SCN-SA-12.1: pending when the LAST decision is non-approved (e.g., rejected)."""
     db = MagicMock()
     project = MagicMock()
     project.current_phase = "refinamiento"
 
     # First call: project lookup
-    # Second call: approved check (returns None - no approval yet)
-    # Third call: recent decision check (returns a rejected decision)
+    # Second call: last-decision lookup (single query since the B4 fix --
+    # the helper reads the most recent decision regardless of its kind).
     recent = MagicMock()
     recent.created_at = datetime(2026, 9, 27, 22, 0, 0)
     recent.decision = "rejected"
 
-    executions = iter([project, None, recent])
+    executions = iter([project, recent])
 
     def execute_side_effect(*_args, **_kwargs):
         result = MagicMock()
@@ -496,6 +513,51 @@ def test_get_pending_decision_returns_none_for_requerimientos():
 
     pending = get_pending_decision(db, project_id=7)
     assert pending is None
+
+
+def test_get_pending_decision_after_approve_then_reject_is_pending():
+    """Soomri round-2 re-review (B4): a historical approved decision
+    does NOT suppress pending when a more recent decision exists for
+    the same phase. Concretely: user clicks Aprobar, then Rechazar on
+    the same phase. The latest decision is "rejected", so
+    ``get_pending_decision`` MUST return non-null so the UI can show
+    the action buttons again (otherwise the user is stuck with no
+    path forward and ``/advance`` returns 400 because ``phase_ready``
+    is False)."""
+    from datetime import datetime, timezone
+
+    db = MagicMock()
+    project = MagicMock()
+    project.current_phase = "refinamiento"
+
+    # Most recent decision: rejected
+    recent = MagicMock()
+    recent.decision = "rejected"
+    recent.created_at = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    # First call: project lookup
+    # Second call: last-decision lookup (single query, both "approved
+    # check" and "recent check" are replaced by one "last decision" query
+    # per the Soomri fix -- the GREEN step collapses these into a single
+    # SELECT ordered by created_at desc; for now we model the RED as
+    # the same single-call shape that the GREEN will keep).
+    executions = iter([project, recent])
+
+    def execute_side_effect(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.side_effect = lambda: next(executions, None)
+        return result
+
+    db.execute.side_effect = execute_side_effect
+
+    pending = get_pending_decision(db, project_id=7)
+    assert pending is not None, (
+        "After approve -> reject, the most recent decision is rejected; "
+        "the user must see the action buttons again so they can act."
+    )
+    assert pending.phase == "refinamiento"
+    assert pending.last_decision == "rejected"
+    assert pending.last_decided_at == recent.created_at
 
 
 # ---------------------------------------------------------------------------

@@ -390,7 +390,6 @@ async def decide_proposal(
             )
         else:
             proposal.lifecycle = "rejected"
-            project.current_phase = PROPOSAL_REJECT_REVERTS_TO
             decision_for_hu6 = "reject"
             db.add(
                 ProposalApproval(
@@ -417,6 +416,14 @@ async def decide_proposal(
             feedback=body.comment,
             proposal_text=_content_to_text(proposal.content),
         )
+        # Soomri round-2 re-review (B5): the phase revert MUST happen AFTER
+        # the decision is registered -- record_decision's gate
+        # (phase == current_phase) raises PhaseMismatchError if the phase
+        # was reverted first, and the generic except below converted that
+        # into a 500 with str(exc) leaked into the detail (REQ-SA-34).
+        # Approve leaves the phase untouched; reject reverts it here.
+        if body.decision == "reject":
+            project.current_phase = PROPOSAL_REJECT_REVERTS_TO
         # phase_ready is now set by record_decision - do NOT manually set it
 
         db.commit()
