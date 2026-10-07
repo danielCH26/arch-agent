@@ -223,7 +223,7 @@ arch-agent/
 | `GET` | `/api/documents` | Sí | Lista documentos del proyecto |
 | `POST` | `/api/documents` | Sí | Upload PDF/MD |
 | `POST` | `/api/chat` (SSE) | Sí | Chat con el agente (streaming) |
-| `POST` | `/api/proposals/generate` (SSE) | Sí | Genera la propuesta de arquitectura. Eventos: `progress`, `sources`, `token`, `done`, `error`. Tope de tiempo `PROPOSAL_MAX_SECONDS`; cerrar la conexión cancela y no guarda nada |
+| `POST` | `/api/proposals/generate` (SSE) | Sí | Genera la propuesta de arquitectura. Eventos: `progress`, `sources`, `token`, `done`, `error`. Tope de tiempo `PROPOSAL_MAX_SECONDS`; heartbeat `: ping` cada `SSE_HEARTBEAT_SECONDS` (15 s) sin eventos; cerrar la conexión cancela y no guarda nada |
 | `POST` | `/api/proposals/{id}/modify` (SSE) | Sí | Nueva iteración con feedback (mismos eventos y tope que `generate`) |
 | `POST` | `/api/proposals/{id}/decide` | Sí | Aprobar / rechazar una propuesta |
 | `GET` | `/api/proposals/{id}` | Sí | Una propuesta |

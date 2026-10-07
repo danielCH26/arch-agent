@@ -397,3 +397,103 @@ class TestSSEStreamCancellation:
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(run())
+
+
+# --- Review PR: el generador debe correr siempre en el mismo contexto ---------
+
+
+class TestSSEStreamKeepsOneContext:
+    """LangChain/Langfuse fijan ``contextvars`` dentro del generador del LLM.
+
+    Si cada paso corre en una Task distinta, un valor fijado en un paso no se
+    ve en el siguiente y ``ContextVar.reset(token)`` falla con "created in a
+    different Context". Estos tests lo reproducen sin necesitar un LLM real.
+    """
+
+    def test_context_var_set_in_one_step_is_visible_in_the_next(self):
+        import contextvars
+
+        from app.api.proposals import _sse_stream
+
+        var = contextvars.ContextVar("trace_id", default=None)
+        seen = []
+
+        async def inner():
+            var.set("run-1")
+            yield "token", "a"
+            seen.append(var.get())
+            yield "token", "b"
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        asyncio.run(run())
+
+        assert seen == ["run-1"]
+
+    def test_context_var_token_can_be_reset_after_several_yields(self):
+        import contextvars
+
+        from app.api.proposals import _sse_stream
+
+        var = contextvars.ContextVar("callback_manager", default=None)
+
+        async def inner():
+            token = var.set("active")
+            try:
+                yield "token", "a"
+                await asyncio.sleep(0)
+                yield "token", "b"
+            finally:
+                var.reset(token)  # ValueError si cambio de contexto
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        frames = asyncio.run(run())
+
+        assert len(frames) == 2
+
+    def test_all_events_are_delivered_in_order_and_stream_ends(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            for i in range(50):
+                yield "token", f"t{i}"
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        frames = asyncio.run(run())
+
+        assert [json.loads(f.split("data: ", 1)[1]) for f in frames] == [f"t{i}" for i in range(50)]
+
+    def test_exception_from_the_generator_reaches_the_consumer(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            yield "token", "a"
+            raise RuntimeError("boom")
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(run())
+
+    def test_no_background_task_is_left_running_after_the_stream_closes(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            for i in range(1000):
+                yield "token", f"t{i}"
+                await asyncio.sleep(0)
+
+        async def run():
+            stream = _sse_stream(inner())
+            await stream.__anext__()
+            await stream.aclose()
+            await asyncio.sleep(0)
+            return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+        assert asyncio.run(run()) == []

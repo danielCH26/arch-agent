@@ -371,7 +371,7 @@ curl http://localhost:8000/health
 
 | Métrica | Target | Validación |
 |---------|--------|------------|
-| Tiempo de propuesta | < 5 min | HU9, F19: tope `PROPOSAL_MAX_SECONDS` (300 s) sobre todo el flujo; `elapsed_ms` en el evento SSE `done` y `latency_ms` en logs |
+| Tiempo de propuesta | < 5 min | HU9, F19: tope `PROPOSAL_MAX_SECONDS` (300 s) sobre todo el flujo; `elapsed_ms` en el evento SSE `done` y `latency_ms` en logs; `SSE_HEARTBEAT_SECONDS` (15 s) mantiene viva la conexión tras proxies con idle timeout (nginx: 330 s) |
 | Tiempo de respuesta promedio | < 3 min | KR4 Santiago |
 | Embeddings de 100 chunks | ~5 seg | Bench local |
 | Búsqueda RAG k=5 (10k vectores por tabla) | `search_ms` < 100 ms | PGVector (patrones con IVFFLAT; documentos con índice por `document_id` y orden exacto, ver limitaciones); F19 midió p95 de 14 a 17 ms en corpus sintético (ver `docs/BENCHMARK_F19.md`) |
