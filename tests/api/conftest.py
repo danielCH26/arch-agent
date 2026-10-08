@@ -8,12 +8,15 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Configurar entorno antes de importar la app
-os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32ch"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# Configurar entorno antes de importar la app.
+# Usar setdefault para no pisar el DATABASE_URL del CI (PR #102 round 2, Laura).
+# Si la env var ya esta seteada (por el CI workflow o por un test runner
+# externo), se respeta; si no, usamos el default local de Postgres.
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32ch")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 @pytest.fixture
@@ -67,6 +70,5 @@ def auth_headers(auth_token):
     return {"Authorization": f"Bearer {auth_token}"}
 
 # F18: silence pydantic deprecation warnings
-filterwarnings = [
-    "ignore::DeprecationWarning:pydantic.*",
-]
+# (anteriormente filterwarnings = [...] que no hacia nada como variable
+# Python; ahora esto se hace via pytest.ini, ver #FIX-6 en el PR #102).
