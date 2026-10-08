@@ -8,12 +8,13 @@ Los imports de app.api.* se hacen DENTRO de cada test.
 import pytest
 import os
 
-# Configurar entorno antes de cualquier import de app
-os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# Configurar entorno antes de cualquier import de app.
+# setdefault respeta el valor del CI sin pisarlo (PR #102 round 2, Laura).
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 class TestGetUserByLogin:
@@ -160,3 +161,241 @@ class TestJWTTokens:
 
         # Cleanup
         JWT_REVOKED.discard("test-jti-123")
+
+
+class TestRegisterEndpoint:
+    """Integration tests for POST /api/auth/register."""
+
+    def test_register_success(self):
+        from unittest.mock import MagicMock, patch
+
+        mock_user = MagicMock()
+        mock_user.id = 7
+        mock_user.username = "newuser"
+
+        with (
+            patch("app.api.auth._register_user", return_value=mock_user),
+            patch("app.api.auth.create_access_token", return_value="tok-abc"),
+        ):
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/register",
+                json={"username": "newuser", "email": "new@test.com", "password": "Test@1234"},
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["user_id"] == 7
+        assert body["username"] == "newuser"
+        assert body["token"] == "tok-abc"
+
+    def test_register_validation_error_returns_409(self):
+        from unittest.mock import patch
+        from app.auth.validators import ValidationError
+
+        with patch(
+            "app.api.auth._register_user",
+            side_effect=ValidationError("username already exists"),
+        ):
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/register",
+                json={"username": "dup", "email": "dup@test.com", "password": "Test@1234"},
+            )
+
+        assert resp.status_code == 409
+        assert "username already exists" in resp.json()["detail"]
+
+
+class TestLoginEndpoint:
+    """Integration tests for POST /api/auth/login."""
+
+    def test_login_success_with_username(self):
+        from unittest.mock import MagicMock, patch
+        import bcrypt as _bcrypt
+
+        mock_user = MagicMock()
+        mock_user.id = 5
+        mock_user.username = "testuser"
+        # Real bcrypt hash of "Test@1234" so the same password in the request matches
+        mock_user.password_hash = _bcrypt.hashpw(b"Test@1234", _bcrypt.gensalt()).decode()
+
+        with (
+            patch("app.api.auth._get_user_by_login", return_value=mock_user),
+            patch("app.api.auth.create_access_token", return_value="tok-xyz"),
+        ):
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/login",
+                json={"username": "testuser", "password": "Test@1234"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user_id"] == 5
+        assert body["token"] == "tok-xyz"
+
+    def test_login_unknown_user_returns_401(self):
+        from unittest.mock import patch
+
+        with patch("app.api.auth._get_user_by_login", return_value=None):
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/login",
+                json={"username": "nobody", "password": "wrong"},
+            )
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Invalid username or password"
+
+    def test_login_wrong_password_returns_401(self):
+        from unittest.mock import MagicMock, patch
+
+        mock_user = MagicMock()
+        mock_user.id = 5
+        mock_user.username = "testuser"
+        # Real bcrypt hash of "correct-password" — wrong-password won't match
+        import bcrypt as _bcrypt
+        mock_user.password_hash = _bcrypt.hashpw(b"correct-password", _bcrypt.gensalt()).decode()
+
+        with patch("app.api.auth._get_user_by_login", return_value=mock_user):
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/login",
+                json={"username": "testuser", "password": "WRONG-password"},
+            )
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Invalid username or password"
+
+
+class TestLogoutEndpoint:
+    """Integration tests for POST /api/auth/logout."""
+
+    def test_logout_with_jti_revokes_token(self):
+        from unittest.mock import patch
+        from app.api.dependencies import JWT_REVOKED
+        from app.core.jwt import create_access_token
+
+        token = create_access_token(
+            user_id=1, username="laura", extra_claims={"jti": "logout-test-jti"}
+        )
+        assert "logout-test-jti" not in JWT_REVOKED
+
+        with patch("app.api.dependencies.get_current_user") as mock_dep:
+            mock_dep.return_value = {"user_id": 1, "username": "laura", "jti": "logout-test-jti"}
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Logged out successfully"
+        assert "logout-test-jti" in JWT_REVOKED
+        JWT_REVOKED.discard("logout-test-jti")  # cleanup
+
+    def test_logout_without_jti_still_succeeds(self):
+        """Tokens without jti can't be revoked but logout should still 200."""
+        from unittest.mock import patch
+        from app.core.jwt import create_access_token
+
+        token = create_access_token(user_id=1, username="laura")  # no jti
+
+        with patch("app.api.dependencies.get_current_user") as mock_dep:
+            mock_dep.return_value = {"user_id": 1, "username": "laura", "jti": None}
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post(
+                "/api/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert resp.status_code == 200
+
+
+class TestMeEndpoint:
+    """Integration tests for GET /api/auth/me."""
+
+    def test_me_returns_user_profile(self):
+        from unittest.mock import MagicMock, patch
+        from app.core.jwt import create_access_token
+
+        mock_user = MagicMock()
+        mock_user.id = 42
+        mock_user.username = "laura"
+        mock_user.email = "laura@test.com"
+
+        token = create_access_token(user_id=42, username="laura")
+
+        with (
+            patch("app.api.dependencies.get_current_user") as mock_dep,
+            patch("app.api.auth.SessionLocal") as mock_session,
+        ):
+            mock_dep.return_value = {"user_id": 42, "username": "laura", "jti": None}
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.first.return_value = mock_user
+            mock_session.return_value = mock_db
+
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == 42
+        assert body["username"] == "laura"
+        assert body["email"] == "laura@test.com"
+
+    def test_me_returns_404_when_user_not_in_db(self):
+        """Token references a user_id that no longer exists in the DB."""
+        from unittest.mock import MagicMock, patch
+        from app.core.jwt import create_access_token
+
+        token = create_access_token(user_id=999, username="ghost")
+
+        with (
+            patch("app.api.dependencies.get_current_user") as mock_dep,
+            patch("app.api.auth.SessionLocal") as mock_session,
+        ):
+            mock_dep.return_value = {"user_id": 999, "username": "ghost", "jti": None}
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.first.return_value = None
+            mock_session.return_value = mock_db
+
+            from fastapi.testclient import TestClient
+            from server import app
+
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "User not found"

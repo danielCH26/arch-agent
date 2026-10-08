@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user
@@ -18,6 +18,7 @@ from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
+from app.core.error_handlers import handle_llm_errors
 from app.core.rag import similarity_search
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
@@ -219,7 +220,7 @@ def _is_near_miss(doc) -> bool:
 
 class ChatRequest(BaseModel):
     project_id: int | None = None
-    message: str
+    message: str = Field(min_length=1, description="Mensaje del usuario (no vacio)")
     # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
     # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
     # el prompt de "Solicitar cambios" sobre un diagrama, que agrega
@@ -232,7 +233,15 @@ class ChatRequest(BaseModel):
 
 # --- Route -----------------------------------------------------------------
 
-@router.post("")
+@router.post(
+    "",
+    responses={
+        429: {"description": "LLM rate limit exceeded"},
+        502: {"description": "Invalid LLM response"},
+        504: {"description": "LLM timeout"},
+    },
+)
+@handle_llm_errors
 async def chat(
     body: ChatRequest,
     current_user: dict = Depends(get_current_user),
@@ -274,8 +283,8 @@ async def chat(
     the SSE handler yields ``event: done``; fire-and-forget Engram mirror fires
     AFTER the commit. Either store degrades gracefully when the other is down.
     """
-    if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacΓö£┬ío")
+    if not body.message.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacio")
 
     user_id = current_user["user_id"]
 
@@ -578,11 +587,79 @@ async def chat(
             if not emitted_done:
                 # Defensive: if ``run_agent`` returned without yielding
                 # ``done`` or ``error``, fire ``done`` to keep the FE
-                # contract stable (design.md Γö¼┬║9).
+                # contract stable (design.md §9).
                 yield format_done_event()
         except Exception as e:
+            # Translate low-level LLM/HTTP errors to our typed hierarchy so
+            # the SSE consumer sees a structured message instead of a raw
+            # exception text. The ``code`` field lets the FE pick a UX.
+            try:
+                import httpx
+            except ImportError:
+                httpx = None  # type: ignore[assignment]
+
+            try:
+                import openai
+            except ImportError:
+                openai = None  # type: ignore[assignment]
+
+            from app.core.exceptions import (
+                LLMInvalidResponseError,
+                LLMRateLimitError,
+                LLMTimeoutError,
+            )
+
+            translated: Exception = e
+            code = "internal_error"
+            # Order matters: HTTPError (specific) before URLError (parent)
+            if httpx is not None and isinstance(e, httpx.TimeoutException):
+                translated = LLMTimeoutError(f"LLM timeout: {e}")
+                code = "llm_timeout"
+            elif httpx is not None and isinstance(e, httpx.HTTPStatusError):
+                status = getattr(e, "response", None)
+                status_code = getattr(status, "status_code", None) if status else None
+                if status_code == 429:
+                    translated = LLMRateLimitError(f"LLM 429: {e}")
+                    code = "llm_rate_limit"
+                else:
+                    translated = LLMInvalidResponseError(f"LLM HTTP {status_code}: {e}")
+                    code = "llm_invalid_response"
+            elif httpx is not None and isinstance(e, httpx.RequestError):
+                translated = LLMTimeoutError(f"LLM connection error: {e}")
+                code = "llm_timeout"
+            elif openai is not None and isinstance(e, openai.APITimeoutError):
+                translated = LLMTimeoutError(f"OpenAI timeout: {e}")
+                code = "llm_timeout"
+            elif openai is not None and isinstance(e, openai.RateLimitError):
+                translated = LLMRateLimitError(f"OpenAI 429: {e}")
+                code = "llm_rate_limit"
+            elif openai is not None and isinstance(e, openai.APIError):
+                translated = LLMInvalidResponseError(f"OpenAI error: {e}")
+                code = "llm_invalid_response"
+
             logger.exception("event_generator failed: %s", e)
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+            # Map the typed code to a Spanish user-facing message. The
+            # internal exception text (``str(e)``) can include the provider
+            # URL, response body, or stack details — never expose that to
+            # the client. PR #85 round 3 (Soomri): replace ``str(e)`` with
+            # a fixed message keyed by ``code``.
+            user_messages = {
+                "llm_timeout": "El modelo de IA está tardando más de lo esperado. "
+                                "Por favor, intenta de nuevo en unos segundos.",
+                "llm_rate_limit": "Estás haciendo muchas solicitudes al modelo. "
+                                  "Espera un minuto e intenta de nuevo.",
+                "llm_invalid_response": "El modelo de IA devolvió una respuesta inválida. "
+                                        "Por favor, intenta de nuevo o cambia de modelo.",
+            }
+            detail = user_messages.get(
+                code,
+                "Ocurrió un error inesperado. Intenta de nuevo.",
+            )
+            payload = {
+                "code": code,
+                "detail": detail,
+            }
+            yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         finally:
             # F14: exporta la traza de inmediato en vez de depender solo del
             # ciclo en segundo plano del SDK de Langfuse (PR #79 review).

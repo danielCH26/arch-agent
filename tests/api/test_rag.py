@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import asyncio
 import pytest
+from fastapi import HTTPException
 from langchain_core.documents import Document
 
 
@@ -76,3 +77,93 @@ class TestRAGCoreHelpers:
         _validate_embedding([0.1] * 384)
         with pytest.raises(RAGSearchError, match="384 dimensiones"):
             _validate_embedding([0.1] * 383)
+
+
+class TestRAGEmptyEmbedding:
+    def test_validate_embedding_provider_raises_when_embedding_is_empty(self):
+        from app.core.exceptions import RAGEmbeddingError
+        from app.core.rag import _validate_embedding_provider
+
+        with pytest.raises(RAGEmbeddingError, match="proveedor de embeddings"):
+            _validate_embedding_provider([])
+
+    def test_similarity_search_empty_results_return_empty_list(self):
+        """Empty results are returned as ``([], metrics)`` -- not raised.
+
+        PR #85 round 2: callers were logging empty branches as warnings
+        anyway, so the typed exception added noise without signal.
+        """
+        from app.core.rag import similarity_search
+
+        with (
+            patch("app.core.rag.get_embeddings") as embeddings,
+            patch("app.core.rag.similarity_search_patterns_by_vector") as patterns,
+            patch("app.core.rag.similarity_search_document_chunks_by_vector") as docs,
+        ):
+            embeddings.return_value.embed_query.return_value = [0.1] * 384
+            patterns.return_value = ([], 1.0)
+            docs.return_value = ([], 1.0)
+
+            results, metrics = similarity_search(
+                query="consulta sin resultados",
+                user_id=1,
+                scope="all",
+            )
+
+        assert results == []
+        assert "embedding_ms" in metrics
+        assert "search_ms" in metrics
+        assert "total_ms" in metrics
+
+
+class TestRAGApiEmptyAndProviderFailure:
+    @patch("app.api.rag.similarity_search")
+    def test_search_rag_returns_empty_response_when_no_matches(self, mock_search):
+        """Empty results: ``similarity_search`` returns ``([], metrics)``
+        directly now, no exception. The endpoint forwards that as a 200
+        with empty results and the same metrics the caller passed in.
+        """
+        from app.api.rag import RAGSearchRequest, search_rag
+
+        # New contract: empty list is returned, not raised
+        mock_search.return_value = (
+            [],
+            {"search_ms": 0.0, "embedding_ms": 0.0, "total_ms": 0.0},
+        )
+
+        response = asyncio.run(
+            search_rag(
+                body=RAGSearchRequest(query="consulta vacia"),
+                current_user={"user_id": 1, "username": "laura", "jti": None},
+            )
+        )
+
+        # search_rag returns the RAGSearchResponse model directly (FastAPI
+        # serializes it with 200). Verify the empty payload.
+        assert response.results == []
+        assert response.search_ms == 0.0
+        assert response.embedding_ms == 0.0
+        assert response.total_ms == 0.0
+
+    @patch("app.api.rag.similarity_search")
+    def test_search_rag_translates_embedding_provider_failure_to_503(self, mock_search):
+        from app.core.exceptions import RAGEmbeddingError
+
+        from app.api.rag import RAGSearchRequest, search_rag
+
+        mock_search.side_effect = RAGEmbeddingError("provider down")
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                search_rag(
+                    body=RAGSearchRequest(query="consulta con provider caido"),
+                    current_user={"user_id": 1, "username": "laura", "jti": None},
+                )
+            )
+
+        assert exc.value.status_code == 503
+        # Internal exception text goes to logs (security: don't leak
+        # provider URLs / stack info to the client). The user-facing
+        # message is the generic Spanish string.
+        assert "provider down" not in str(exc.value.detail)
+        assert "Verifica tu conexion" in str(exc.value.detail)

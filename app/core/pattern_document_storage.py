@@ -49,6 +49,10 @@ def save_pattern_chunks(
             f"Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings"
         )
 
+    # Short-circuit empty input: no DB roundtrip needed.
+    if not chunks:
+        return 0
+
     db = SessionLocal()
     try:
         pattern_exists = db.query(ArchitectPattern.id).filter(
