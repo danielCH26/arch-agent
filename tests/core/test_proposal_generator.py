@@ -727,8 +727,11 @@ def _drain(gen_iter):
     return asyncio.run(_run())
 
 
-def _stream_with(monkeypatch_target, markdown, finish_reason=None):
-    """Corre generate_stream con un modelo falso; devuelve (eventos, persist_calls)."""
+def _stream_with(monkeypatch_target, markdown, finish_reason=None, prompts=None):
+    """Corre generate_stream con un modelo falso; devuelve (eventos, persist_calls).
+
+    Si se pasa ``prompts`` (lista), ahi se guarda el prompt que recibio el modelo.
+    """
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -740,7 +743,9 @@ def _stream_with(monkeypatch_target, markdown, finish_reason=None):
             self.response_metadata = metadata or {}
 
     class _Model:
-        async def astream(self, _prompt):
+        async def astream(self, prompt):
+            if prompts is not None:
+                prompts.append(prompt)
             yield _Chunk(markdown)
             yield _Chunk("", {"finish_reason": finish_reason} if finish_reason else {})
 
@@ -787,6 +792,54 @@ def test_complete_proposal_is_persisted_and_done_is_emitted():
 
     assert len(persisted) == 1
     assert events[-1][0] == "done"
+
+
+def test_persisted_prompt_is_the_exact_prompt_sent_to_the_model():
+    prompts = []
+
+    events, persisted = _stream_with(
+        None, _FULL_PROPOSAL, finish_reason="stop", prompts=prompts
+    )
+
+    assert events[-1][0] == "done"
+    assert len(prompts) == 1 and len(persisted) == 1
+    assert persisted[0]["prompt"] == prompts[0]
+    # El log reconstruido antes usaba project_name="" y no llevaba la
+    # descripcion: el prompt real si los trae.
+    assert "Biblioteca" in persisted[0]["prompt"]
+
+
+def test_persist_stores_the_given_prompt_in_the_interaction_log():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    fake_proposal = MagicMock(side_effect=lambda **kw: SimpleNamespace(id=3, **kw))
+    fake_log = MagicMock(side_effect=lambda **kw: SimpleNamespace(id=9, **kw))
+    long_prompt = "x" * 70000
+
+    with patch.object(gen, "SessionLocal", return_value=db), \
+        patch.object(gen, "Proposal", fake_proposal), \
+        patch.object(gen, "InteractionLog", fake_log):
+        result = gen._persist_proposal_and_log(
+            session_id=1,
+            project_id=1,
+            iteration=1,
+            prior_iteration=0,
+            prior_proposal_id=None,
+            prior_content=None,
+            markdown=_FULL_PROPOSAL,
+            citations=[],
+            feedback=None,
+            prompt=long_prompt,
+        )
+
+    assert result == (3, 9, 1)
+    stored = fake_log.call_args.kwargs["prompt"]
+    assert stored == long_prompt[:65000]
+    assert len(stored) == 65000
 
 
 # --- F10: validador de la tabla de trade-offs (robustez) --------------------
@@ -1513,3 +1566,18 @@ def test_section_error_does_not_blame_the_token_limit():
     assert persisted == []
     assert events[-1][0] == "error"
     assert "límite de tokens" not in events[-1][1]
+
+def test_feedback_rules_tell_the_model_to_update_the_tradeoffs_section_too():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "Arquitectura en capas (Layered)", "source_role": "primary"}],
+        prior_content=_FULL_PROPOSAL,
+        feedback="cambia a capas",
+        project_name="P",
+    )
+
+    # El cambio debe reflejarse tambien en la tabla y en la Recomendacion, no solo
+    # en Componentes/Tecnologias/Patrones/Justificacion.
+    assert "Trade-offs y decisión: la tabla y la Recomendación deben reflejar el cambio" in prompt
+    assert "Justificacion y la Recomendacion de Trade-offs para el patron nuevo" in prompt

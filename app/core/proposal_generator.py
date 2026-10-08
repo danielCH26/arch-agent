@@ -41,20 +41,13 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
-# RAG_MIN_SIMILARITY is re-declared here (and again in ``app/api/proposals.py``)
-# to avoid a circular import that would happen if this module imported it from
-# ``app/api/chat.py``. ``design.md`` §9 calls for hoisting this constant to
-# ``app/core/rag_config.py`` as a follow-up refactor; until then, all three
-# sites MUST stay in lock-step (chat.py, proposal_generator.py, proposals.py).
-# See ``docs/adr/009-sse-pattern-reuse.md`` for the rationale.
-RAG_MIN_SIMILARITY = 0.85
-
-# En la fase de propuesta YA NO se usa RAG_MIN_SIMILARITY como corte. La
+# En la fase de propuesta no hay umbral fijo de similitud (el piso de 0.85,
+# RAG_MIN_SIMILARITY, vive solo en ``app/api/chat.py``). La
 # consulta se arma con el nombre/descripcion/requerimientos del proyecto, asi
 # que siempre esta dentro del dominio: en vez de descartar candidatos por un
 # umbral fijo (que con multilingual-e5-small dejaba la lista vacia), se trae
 # de la base los PROPOSAL_RAG_TOP_N patrones mas cercanos. El umbral sigue
-# vigente en el chat (app/api/chat.py), donde si hay preguntas fuera de tema.
+# vigente en el chat, donde si hay preguntas fuera de tema.
 #   PROPOSAL_RAG_TOP_N           patrones distintos que se citan (default 3)
 #   PROPOSAL_RAG_CANDIDATE_CHUNKS chunks que se piden a PGVector antes de
 #                                agrupar por patron (default 40)
@@ -387,6 +380,7 @@ class ProposalGenerator:
                 markdown=full_markdown,
                 citations=citations,
                 feedback=feedback,
+                prompt=prompt,
             )
         except Exception as exc:
             logger.exception(
@@ -1677,7 +1671,9 @@ def _build_prompt(
             "- Parte de la propuesta previa y conserva tal cual todo lo que el "
             "usuario no pidio cambiar.\n"
             "- Aplica cada cambio de forma literal y en TODAS las secciones donde "
-            "corresponda (Componentes, Tecnologias, Patrones y Justificación).\n"
+            "corresponda (Componentes, Tecnologias, Patrones, Justificación y "
+            "Trade-offs y decisión: la tabla y la Recomendación deben reflejar "
+            "el cambio).\n"
             "- Si el usuario dice que quiere \"solo\" ciertas tecnologias, o pide "
             "reemplazar una por otra, ELIMINA las demas de ese aspecto; no las "
             "dejes junto a las nuevas.\n"
@@ -1685,7 +1681,8 @@ def _build_prompt(
             "- Si el usuario pide CAMBIAR el estilo o patron arquitectonico (por "
             "ejemplo de CQRS a capas), el patron nuevo pasa a ser el principal "
             "aunque los patrones candidatos digan otra cosa: reescribe Componentes, "
-            "Patrones y Justificacion para el patron nuevo y ELIMINA los "
+            "Patrones, Justificacion y la Recomendacion de Trade-offs para el "
+            "patron nuevo y ELIMINA los "
             "componentes que solo existian por el anterior (p. ej. el Read Model "
             "de CQRS). La regla de FUENTES Y REFERENCIAS no aplica a ese cambio.\n"
         )
@@ -1999,8 +1996,14 @@ def _persist_proposal_and_log(
     markdown: str,
     citations: list[dict],
     feedback: str | None,
+    prompt: str,
 ) -> tuple[int, int, int]:
     """Insert proposal + interaction_log (+ approval for modify) atomically.
+
+    ``prompt`` es el texto EXACTO que se envio al modelo (con descripcion,
+    requerimientos y documentos del proyecto): el log de auditoria debe poder
+    explicar la respuesta que produjo, y reconstruirlo sin esos campos lo
+    dejaba sin los datos que mas la moldean.
 
     Returns ``(proposal_id, interaction_id, iteration)`` for the SSE done
     payload and the Engram mirror. Idempotency on (project_id, iteration) is delegated
@@ -2055,12 +2058,7 @@ def _persist_proposal_and_log(
             phase="propuesta",
             action_type=action_type,
             comment=feedback,
-            prompt=_build_prompt(
-                citations=citations,
-                prior_content=prior_content,
-                feedback=feedback,
-                project_name="",  # we don't store the project name in the log
-            )[:65000],
+            prompt=prompt[:65000],
             response=markdown[:65000],
             latency_ms=None,
             tokens_used=None,

@@ -144,17 +144,22 @@ class TestRejectRevertsToEnv:
 # --- RAG constant sync ----------------------------------------------------
 
 
-class TestRAGConstantSync:
-    def test_proposals_router_keeps_rag_min_similarity_in_sync(self):
-        # Per ADR-009 / design §9 -- if these drift, retrieval silently changes
-        # behaviour between chat and proposals. Lock the constant at 0.85.
+class TestRAGConstants:
+    def test_chat_keeps_its_rag_min_similarity_floor(self):
+        # El piso de 0.85 solo gobierna el chat (preguntas fuera de tema). La
+        # fase de propuesta NO lo usa: trae los PROPOSAL_RAG_TOP_N patrones mas
+        # cercanos sin piso; ese comportamiento se prueba en
+        # TestCitationSelection y en tests/core/test_proposal_generator.py.
         from app.api import chat as chat_module
+
+        assert chat_module.RAG_MIN_SIMILARITY == 0.85
+
+    def test_proposal_modules_do_not_expose_a_similarity_floor_they_do_not_use(self):
         from app.api import proposals as proposals_module
         from app.core import proposal_generator as generator_module
 
-        assert proposals_module.RAG_MIN_SIMILARITY == 0.85
-        assert generator_module.RAG_MIN_SIMILARITY == 0.85
-        assert chat_module.RAG_MIN_SIMILARITY == 0.85
+        assert not hasattr(proposals_module, "RAG_MIN_SIMILARITY")
+        assert not hasattr(generator_module, "RAG_MIN_SIMILARITY")
 
 
 # --- Filter citations helper (unit) --------------------------------------
@@ -253,6 +258,63 @@ class TestEngramResilience:
                     markdown="ignored",
                 )
             )
+
+
+# --- Tope de iteraciones antes de generar ---------------------------------
+
+
+class TestGenerateIterationCap:
+    """``/generate`` debe fallar con 409 ANTES de gastar una generacion."""
+
+    @staticmethod
+    def _call_generate(latest_iteration):
+        from app.api import proposals as mod
+
+        db = MagicMock()
+        latest = MagicMock(iteration=latest_iteration) if latest_iteration else None
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = latest
+
+        with patch.object(mod, "SessionLocal", return_value=db), \
+            patch.object(mod, "_require_owned_project", return_value=MagicMock()), \
+            patch.object(mod, "PROPOSAL_MAX_ITER", 5), \
+            patch.object(mod, "ProposalGenerator") as generator_cls:
+            try:
+                response = asyncio.run(
+                    mod.generate_proposal(
+                        body=mod.GenerateRequest(project_id=1),
+                        current_user={"user_id": 1},
+                    )
+                )
+                return response, generator_cls, None
+            except Exception as exc:  # HTTPException
+                return None, generator_cls, exc
+
+    def test_returns_409_without_starting_a_generation_at_the_cap(self):
+        from fastapi import HTTPException
+
+        response, generator_cls, error = self._call_generate(latest_iteration=5)
+
+        assert isinstance(error, HTTPException)
+        assert error.status_code == 409
+        assert "máximo de iteraciones (5)" in error.detail
+        generator_cls.assert_not_called()
+
+    def test_a_rejected_proposal_at_the_cap_also_blocks_a_new_generation(self):
+        # La cuenta es max(iteration)+1 sobre todas las propuestas, rechazadas
+        # incluidas: tras rechazar la 5, "Generar propuesta" no puede gastar
+        # una generacion para recibir el 409 al final.
+        _, generator_cls, error = self._call_generate(latest_iteration=5)
+
+        assert error is not None and error.status_code == 409
+        generator_cls.assert_not_called()
+
+    def test_generates_when_there_is_room_or_no_proposal_yet(self):
+        for latest in (None, 4):
+            response, generator_cls, error = self._call_generate(latest_iteration=latest)
+
+            assert error is None
+            assert response.media_type == "text/event-stream"
+            generator_cls.assert_called_once()
 
 
 # --- StreamingResponse wiring ---------------------------------------------
