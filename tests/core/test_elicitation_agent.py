@@ -317,3 +317,29 @@ class TestViabilityRuleGating:
             history.append({"pregunta": decision.question, "respuesta": "no sé"})
         assert decision.done is True
         assert len(history) == MAX_QUESTIONS
+
+
+# --- Re-revisión: palabras del dominio y montos pegados a la moneda ---------
+
+class TestViabilityRereview:
+    def test_domain_words_do_not_cover_budget_or_team(self):
+        description = "App para gestionar entregas de pedidos y equipos de gimnasio, reducir costos de envío"
+        assert _missing([], description) == ["presupuesto", "equipo", "plazo"]
+
+    def test_amount_glued_to_currency_counts_as_budget(self):
+        for answer in ("5000usd", "20000cop", "USD 5000", "$20.000", "10 mil pesos", "5k usd"):
+            history = [{"pregunta": "p", "respuesta": answer}]
+            assert "presupuesto" not in _missing(history), answer
+
+    def test_headcount_answers_count_as_team(self):
+        for answer in ("somos 3", "somos tres", "un solo desarrollador", "3 desarrolladores", "desarrolladores senior"):
+            history = [{"pregunta": "p", "respuesta": answer}]
+            assert "equipo" not in _missing(history), answer
+
+    def test_user_counts_are_not_a_team_size(self):
+        history = [{"pregunta": "p", "respuesta": "500 personas usarán el sistema"}]
+        assert "equipo" in _missing(history)
+
+    def test_own_llm_team_question_answered_with_headcount_is_not_asked_again(self):
+        history = [{"pregunta": "¿Cuántos devs son?", "respuesta": "somos 3"}]
+        assert "equipo" not in _missing(history)
