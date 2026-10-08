@@ -58,9 +58,3 @@ def reset_puppeteer_state():
     puppeteer_mcp.reset_client_for_tests()
     yield
     puppeteer_mcp.reset_client_for_tests()
-
-# F18: silence pydantic deprecation warnings that
-# fail otherwise-OK tests because of -W default.
-filterwarnings = [
-    "ignore::DeprecationWarning:pydantic.*",
-]
