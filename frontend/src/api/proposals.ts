@@ -79,14 +79,49 @@ export interface ProposalProgress {
   chars?: number
 }
 
+/**
+ * Metadatos estructurados del evento SSE `error` (F19).
+ *
+ * El backend emite `{ message, code, retryable }`. La UI decide el reintento
+ * con `retryable` / `code`, NUNCA leyendo `message`: ese texto es para humanos
+ * y puede cambiar de redacción sin avisar. `code` es un string abierto para que
+ * el backend pueda añadir códigos nuevos sin romper un front viejo.
+ */
+export interface ProposalErrorInfo {
+  /** p. ej. `timeout`, `save_timeout`, `llm_stream_failed`, `rejected`. */
+  code: string
+  /** true solo si repetir la misma petición tiene sentido (corte transitorio). */
+  retryable: boolean
+}
+
 interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
   /** Opcional: un front/consumidor que no muestre progreso puede omitirlo. */
   onProgress?: (progress: ProposalProgress) => void
   onDone: (proposalId: number, citations: ProposalCitation[]) => void
-  // `status`: código HTTP cuando el error viene de la respuesta (p. ej. 409).
-  onError: (message: string, status?: number) => void
+  /**
+   * `status`: código HTTP cuando el error viene de la respuesta (p. ej. 409).
+   * `info` solo llega si el error vino del evento SSE `error` estructurado.
+   * Errores del cliente (HTTP, red, stream cortado) llegan sin `info`: no se
+   * ofrece reintento automático porque no sabemos si la propuesta se guardó.
+   */
+  onError: (message: string, status?: number, info?: ProposalErrorInfo) => void
+}
+
+/**
+ * Extrae `code`/`retryable` del payload del evento `error`. Un string suelto
+ * (backend viejo / otro productor) no trae `info`, así que nunca habilita el
+ * reintento: antes se adivinaba con un regex sobre el texto y cualquier cambio
+ * de redacción lo rompía en silencio.
+ */
+function parseErrorInfo(payload: unknown): ProposalErrorInfo | undefined {
+  if (payload === null || typeof payload !== 'object') return undefined
+  const { code, retryable } = payload as Record<string, unknown>
+  return {
+    code: typeof code === 'string' && code ? code : 'unknown',
+    retryable: retryable === true,
+  }
 }
 
 function parseEvent(rawEvent: string, callbacks: ProposalStreamCallbacks): boolean {
@@ -127,7 +162,7 @@ function parseEvent(rawEvent: string, callbacks: ProposalStreamCallbacks): boole
   if (name === 'error') {
     let parsed: unknown = payload
     try { parsed = JSON.parse(payload) } catch { /* texto plano */ }
-    callbacks.onError(streamErrorMessage(parsed, 'No se pudo generar la propuesta.'))
+    callbacks.onError(streamErrorMessage(parsed, 'No se pudo generar la propuesta.'), undefined, parseErrorInfo(parsed))
     return true
   }
   return false
@@ -137,8 +172,9 @@ function parseEvent(rawEvent: string, callbacks: ProposalStreamCallbacks): boole
  * Abre el stream SSE de generar o modificar.
  *
  * Devuelve una función que ABORTA el fetch (F19, "Cancelar"): al cerrarse la
- * conexión el backend deja de escribir, cierra el stream del LLM y no persiste
- * nada. Un abort es silencioso: no dispara `onError`.
+ * conexión el backend deja de escribir y cierra el stream del LLM. Si ya estaba
+ * guardando, la propuesta puede quedar guardada igualmente (el hilo de la BD no
+ * se aborta a la fuerza). Un abort es silencioso: no dispara `onError`.
  */
 export function createProposalStream(
   mode: 'generate' | 'modify',

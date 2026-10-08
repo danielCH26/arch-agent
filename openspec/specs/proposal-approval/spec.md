@@ -132,12 +132,15 @@ The proposal stream MUST emit SSE `progress` `{stage, percent, message, elapsed_
 - THEN the LLM stream MUST be closed and no `proposals` row MUST be written.
 
 ### REQ-13 (F19 · HU9)
-`PROPOSAL_MAX_SECONDS` (default 300, `0` disables) MUST bound ALL stages (context, retrieval, LLM, saving). Work stages MUST finish before `PROPOSAL_MAX_SECONDS - PROPOSAL_SAVE_RESERVE_S` (reserve capped at 20 % of the limit); saving uses the reserve and its statements carry a DB `statement_timeout`. On expiry the stream MUST emit a single `error`, MUST NOT emit `done` and MUST NOT persist.
+`PROPOSAL_MAX_SECONDS` (default 300, `0` disables) MUST bound ALL stages (context, retrieval, LLM, saving). Work stages MUST finish before `PROPOSAL_MAX_SECONDS - PROPOSAL_SAVE_RESERVE_S` (reserve capped at 20 % of the limit); saving uses the reserve and its statements carry a DB `statement_timeout`. On expiry the stream MUST emit a single `error` and MUST NOT emit `done`. If it expires in a work stage (context, retrieval, LLM) nothing MUST be persisted (`code=timeout`). If it expires while saving the DB thread cannot be aborted and the per-statement `statement_timeout` has a 500 ms floor, so the row MAY still commit after the user saw the error: the stream MUST emit `code=save_timeout` and the message MUST ask the user to reload to verify.
 
 #### SCN-18: A hung stage is cut and the user can retry
 - GIVEN `PROPOSAL_MAX_SECONDS=0.5` and a retrieval that takes longer
 - WHEN the stream runs
 - THEN the last event MUST be `error`, the LLM MUST NOT be called and nothing MUST be persisted; for a modification, the UI MUST offer "Reintentar" with the same feedback.
+
+### REQ-14 (F19 · HU9)
+The SSE `error` event payload MUST be structured: `{"message": str, "code": str, "retryable": bool}`. `message` is for humans and MAY change wording; clients MUST decide whether to offer "Reintentar" from `retryable` / `code` and MUST NOT parse `message`. `retryable` MUST be true only for transient cuts where repeating the same request makes sense (`timeout`, `save_timeout`, `llm_stream_failed`). Permanent causes (`rejected`, `llm_config`, `incomplete_proposal`, `llm_empty`, `save_failed`, `invalid_request`) MUST be `retryable=false`. A client that receives a bare string payload MUST show it and MUST NOT offer a retry.
 
 ## Data model
 

@@ -11,6 +11,7 @@ import {
   type ProposalCitation,
   type ProposalDecision,
   type ProposalDecisionResponse,
+  type ProposalErrorInfo,
   type ProposalLifecycle,
   type ProposalOut,
   type ProposalProgress,
@@ -34,6 +35,12 @@ interface ProposalsState {
   projectState: ProjectProposalState | null
   activity: ProposalActivity
   error: string | null
+  /**
+   * El backend marcó el último error como reintentable (`retryable` del evento
+   * SSE `error`). Solo tiene sentido si `error !== null`; se fija SIEMPRE junto
+   * con `error`, nunca se deduce del texto del mensaje.
+   */
+  errorRetryable: boolean
   /** Última etapa reportada por el backend (F19); null fuera de una generación. */
   progress: ProposalProgress | null
   /** Date.now() cuando arrancó la generación en curso; base del cronómetro. */
@@ -134,7 +141,7 @@ const IDLE_PROGRESS = { progress: null, startedAt: null } as const
 interface FailureDetails {
   /** Código HTTP cuando el error viene de la respuesta (p. ej. 409). */
   status?: number
-  /** El tope de tiempo se agotó mientras se guardaba: la fila pudo quedar escrita. */
+  /** El tope se agotó guardando (`code=save_timeout`): la fila pudo quedar escrita. */
   savingTimedOut: boolean
 }
 
@@ -191,12 +198,13 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         // El backend guarda la iteración definitiva; sincronizamos número y contenido.
         void get().refresh(id)
       },
-      onError: (error: string, status?: number) => {
+      onError: (error: string, status?: number, info?: ProposalErrorInfo) => {
         release()
         if (streamId !== activeStream) return
-        // Se lee antes de limpiar el progreso: decide si el corte fue guardando.
-        const savingTimedOut = get().progress?.stage === 'saving' && /tiempo máximo/i.test(error)
-        set(IDLE_PROGRESS)
+        // El tope se agotó guardando: la fila pudo quedar escrita (código
+        // estructurado del backend, no el texto del mensaje).
+        const savingTimedOut = info?.code === 'save_timeout'
+        set({ ...IDLE_PROGRESS, errorRetryable: info?.retryable === true })
         onFailure(error, { status, savingTimedOut })
       },
     }
@@ -237,6 +245,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     projectState: null,
     activity: 'idle',
     error: null,
+    errorRetryable: false,
     progress: null,
     startedAt: null,
     cancelled: false,
@@ -248,11 +257,11 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       if (pending) {
         // Una generación de este proyecto sigue en curso tras salir de la
         // página: se muestra como tal y se recarga cuando termine.
-        set({ current: null, iterations: [], projectState: null, activity: 'generating', error: null })
+        set({ current: null, iterations: [], projectState: null, activity: 'generating', error: null, errorRetryable: false })
         await pending
         if (streamId !== activeStream) return
       }
-      set({ current: null, iterations: [], projectState: null, activity: 'loading', error: null, cancelled: false, ...IDLE_PROGRESS })
+      set({ current: null, iterations: [], projectState: null, activity: 'loading', error: null, errorRetryable: false, cancelled: false, ...IDLE_PROGRESS })
       const proposalId = recalledProposal(projectId)
       const [proposal, projectState] = await Promise.all([
         proposalId
@@ -281,6 +290,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         iterations: [],
         activity: 'generating',
         error: null,
+        errorRetryable: false,
         cancelled: false,
         lastModify: null,
         progress: null,
@@ -312,6 +322,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         current: draft,
         activity: 'modifying',
         error: null,
+        errorRetryable: false,
         cancelled: false,
         lastModify: { proposalId, feedback },
         progress: null,
@@ -344,6 +355,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       set({
         activity: 'idle',
         error: null,
+        errorRetryable: false,
         cancelled: true,
         ...IDLE_PROGRESS,
         // Generar desde cero: el borrador parcial no se conserva y la tarjeta
@@ -360,7 +372,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
     },
 
     decide: async (proposalId, decision, comment) => {
-      set({ activity: 'deciding', error: null, cancelled: false, lastModify: null })
+      set({ activity: 'deciding', error: null, errorRetryable: false, cancelled: false, lastModify: null })
       try {
         const result = await decideProposal(proposalId, decision, comment)
         set((state) => ({
@@ -376,7 +388,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         return result
       } catch (error) {
         const message = error instanceof Error ? error.message : 'No se pudo registrar la decisión.'
-        set({ activity: 'idle', error: message })
+        set({ activity: 'idle', error: message, errorRetryable: false })
         // 409: la propuesta cambió de estado en otra pestaña; re-sincronizamos.
         if (error instanceof ApiError && error.status === 409) await get().refresh(proposalId)
         throw error
@@ -403,7 +415,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       activeAbort = null
       modifyBase = null
       activeStream += 1
-      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null, cancelled: false, lastModify: null, ...IDLE_PROGRESS })
+      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null, errorRetryable: false, cancelled: false, lastModify: null, ...IDLE_PROGRESS })
     },
   }
 })

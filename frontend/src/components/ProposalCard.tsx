@@ -23,7 +23,7 @@ const lifecycleLabel = {
 }
 
 export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
-  const { current, iterations, projectState, activity, error, cancelled, lastModify, load, generate, modify, retry, decide, reset } = proposalsStore()
+  const { current, iterations, projectState, activity, error, errorRetryable, cancelled, lastModify, load, generate, modify, retry, decide, reset } = proposalsStore()
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [comment, setComment] = useState('')
@@ -50,7 +50,9 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   // feedback ya no está en el formulario: "Reintentar" lo reenvía.
   // Reintentar solo sirve para cortes transitorios. Un 4xx, el límite de
   // iteraciones o una configuración LLM inválida requieren una acción distinta.
-  const retryableError = error !== null && /tiempo máximo|timed out|stream failed/i.test(error)
+  // Lo decide el backend con el campo estructurado `retryable` del evento SSE
+  // `error`; el texto del mensaje es solo para mostrarlo y no se interpreta.
+  const retryableError = error !== null && errorRetryable
   // Además, el feedback pendiente debe ser de ESTA propuesta: si la vigente ya
   // cambió (se rehidrató tras un corte al guardar), el `proposalId` viejo daría 409.
   const canRetry =

@@ -226,7 +226,7 @@ describe('ProposalCard', () => {
       await user.click(screen.getByTestId('proposal-modify'))
       await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
       await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
-      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)'))
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true }))
 
       expect(await screen.findByTestId('proposal-retry-feedback')).toHaveTextContent('agrega caché')
       await user.click(screen.getByTestId('proposal-retry'))
@@ -244,7 +244,7 @@ describe('ProposalCard', () => {
       await user.click(screen.getByTestId('proposal-modify'))
       await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'x')
       await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
-      act(() => streams[0].onError('Has alcanzado el máximo de iteraciones (5)'))
+      act(() => streams[0].onError('Has alcanzado el máximo de iteraciones (5)', undefined, { code: 'rejected', retryable: false }))
 
       expect(await screen.findByRole('alert')).toHaveTextContent('máximo de iteraciones')
       expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
@@ -254,8 +254,30 @@ describe('ProposalCard', () => {
       await renderWithProposal(proposalOut())
       act(() => proposalsStore.setState({
         error: 'La generación superó el tiempo máximo (5 min)',
+        errorRetryable: true,
         lastModify: { proposalId: 40, feedback: 'agrega caché' },
       }))
+
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('el reintento lo decide `retryable`, no la redacción del mensaje', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      // El texto suena a timeout, pero el backend lo marca como permanente.
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'rejected', retryable: false }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('tiempo máximo')
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('un flag reintentable huérfano (sin error) no muestra el reintento', async () => {
+      await renderWithProposal(proposalOut())
+      act(() => proposalsStore.setState({ error: null, errorRetryable: true, lastModify: { proposalId: 41, feedback: 'x' } }))
 
       expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
     })

@@ -122,4 +122,94 @@ describe('createProposalStream (F19)', () => {
     expect(cb.onError).not.toHaveBeenCalled()
     expect(cb.onDone).not.toHaveBeenCalled()
   })
+
+  describe('evento error estructurado', () => {
+    async function runWith(errorFrame: string) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, body: sseBody([errorFrame]) }),
+      )
+      const cb = callbacks()
+      createProposalStream('generate', { projectId: 1 }, cb)
+      await vi.waitFor(() => expect(cb.onError).toHaveBeenCalled())
+      return cb
+    }
+
+    it('entrega mensaje y metadatos {code, retryable} sin tocar el texto', async () => {
+      const payload = { message: 'Superó el tiempo máximo', code: 'timeout', retryable: true }
+
+      const cb = await runWith(`event: error\ndata: ${JSON.stringify(payload)}\n\n`)
+
+      expect(cb.onError).toHaveBeenCalledTimes(1)
+      expect(cb.onError).toHaveBeenCalledWith('Superó el tiempo máximo', undefined, {
+        code: 'timeout',
+        retryable: true,
+      })
+    })
+
+    it('un error permanente llega con retryable=false', async () => {
+      const payload = { message: 'Máximo de iteraciones', code: 'rejected', retryable: false }
+
+      const cb = await runWith(`event: error\ndata: ${JSON.stringify(payload)}\n\n`)
+
+      expect(cb.onError).toHaveBeenCalledWith('Máximo de iteraciones', undefined, {
+        code: 'rejected',
+        retryable: false,
+      })
+    })
+
+    it('retryable solo cuenta si es exactamente true (un "true" en texto no habilita el reintento)', async () => {
+      const payload = { message: 'x', code: 'timeout', retryable: 'true' }
+
+      const cb = await runWith(`event: error\ndata: ${JSON.stringify(payload)}\n\n`)
+
+      expect(cb.onError).toHaveBeenCalledWith('x', undefined, { code: 'timeout', retryable: false })
+    })
+
+    it('un objeto sin code se acepta como no reintentable', async () => {
+      const cb = await runWith('event: error\ndata: {"message":"algo falló"}\n\n')
+
+      expect(cb.onError).toHaveBeenCalledWith('algo falló', undefined, { code: 'unknown', retryable: false })
+    })
+
+    it('un objeto sin message usa el texto genérico en vez de "undefined"', async () => {
+      const cb = await runWith('event: error\ndata: {"code":"timeout","retryable":true}\n\n')
+
+      expect(cb.onError).toHaveBeenCalledWith('No se pudo generar la propuesta.', undefined, { code: 'timeout', retryable: true })
+    })
+
+    it('un payload string (backend viejo) se muestra pero NUNCA habilita el reintento', async () => {
+      const cb = await runWith(
+        'event: error\ndata: "La generación superó el tiempo máximo (5 min)"\n\n',
+      )
+
+      expect(cb.onError).toHaveBeenCalledTimes(1)
+      expect(cb.onError).toHaveBeenCalledWith('La generación superó el tiempo máximo (5 min)', undefined, undefined)
+    })
+
+    it('un payload que no es JSON se muestra como texto plano, sin metadatos', async () => {
+      const cb = await runWith('event: error\ndata: fallo sin comillas\n\n')
+
+      expect(cb.onError).toHaveBeenCalledWith('fallo sin comillas', undefined, undefined)
+    })
+
+    it('corta el stream tras el error (no procesa eventos posteriores)', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          body: sseBody([
+            'event: error\ndata: {"message":"m","code":"timeout","retryable":true}\n\n',
+            'event: done\ndata: {"proposal_id": 1, "citations": []}\n\n',
+          ]),
+        }),
+      )
+      const cb = callbacks()
+
+      createProposalStream('generate', { projectId: 1 }, cb)
+      await vi.waitFor(() => expect(cb.onError).toHaveBeenCalled())
+
+      expect(cb.onDone).not.toHaveBeenCalled()
+    })
+  })
 })

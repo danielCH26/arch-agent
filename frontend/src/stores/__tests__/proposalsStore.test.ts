@@ -296,7 +296,7 @@ describe('proposalsStore corte por tiempo al guardar (F19)', () => {
     proposalsStore.getState().generate(PROJECT_ID)
     streams[0].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
 
-    streams[0].onError('La generación superó el tiempo máximo (5 min)')
+    streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'save_timeout', retryable: true })
 
     await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(12))
     expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID)
@@ -308,7 +308,7 @@ describe('proposalsStore corte por tiempo al guardar (F19)', () => {
     proposalsStore.getState().generate(PROJECT_ID)
     streams[0].onProgress?.(progress)
 
-    streams[0].onError('La generación superó el tiempo máximo (5 min)')
+    streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true })
 
     expect(api.getLatestProposal).not.toHaveBeenCalled()
     expect(proposalsStore.getState().current).toBeNull()
@@ -322,7 +322,7 @@ describe('proposalsStore: timeout durante el guardado al modificar (review PR)',
     proposalsStore.getState().modify(5, 'agrega caché')
     streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
 
-    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'save_timeout', retryable: true })
 
     expect(proposalsStore.getState().lastModify).toBeNull()
     await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(6))
@@ -335,7 +335,7 @@ describe('proposalsStore: timeout durante el guardado al modificar (review PR)',
     proposalsStore.getState().modify(5, 'agrega caché')
     streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
 
-    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'save_timeout', retryable: true })
     await Promise.resolve()
 
     const state = proposalsStore.getState()
@@ -349,9 +349,93 @@ describe('proposalsStore: timeout durante el guardado al modificar (review PR)',
     proposalsStore.getState().modify(5, 'agrega caché')
     streams[1].onProgress?.(progress)
 
-    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true })
 
     expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
     expect(api.getLatestProposal).not.toHaveBeenCalled()
+  })
+})
+
+describe('proposalsStore: errorRetryable viene del backend, no del texto', () => {
+  it('un error con retryable=true lo deja marcado como reintentable (modificar)', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('Se cortó la conexión con el modelo', undefined, { code: 'llm_stream_failed', retryable: true })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+  })
+
+  it('un error con retryable=false no es reintentable aunque el texto diga "tiempo máximo"', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'rejected', retryable: false })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('un error sin metadatos (cliente/red/backend viejo) no es reintentable', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('No se pudo conectar con el servidor.')
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('también aplica al generar desde cero', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onError('Superó el tiempo máximo', undefined, { code: 'timeout', retryable: true })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+  })
+
+  it('decide por el CÓDIGO: un corte "guardando" sin save_timeout no rehidrata ni olvida el feedback', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true })
+
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+  })
+
+  it('save_timeout se detecta aunque el backend cambie la redacción del mensaje', () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(null)
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('Recarga para verificar si se guardó', undefined, { code: 'save_timeout', retryable: true })
+
+    expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID)
+    expect(proposalsStore.getState().lastModify).toBeNull()
+  })
+
+  it('un error posterior que no viene del stream (decide) no hereda el flag anterior', async () => {
+    vi.mocked(api.decideProposal).mockRejectedValue(new Error('No se pudo registrar la decisión.'))
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('m', undefined, { code: 'timeout', retryable: true })
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+
+    await expect(proposalsStore.getState().decide(5, 'approve')).rejects.toThrow()
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('reset() limpia el flag', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onError('m', undefined, { code: 'timeout', retryable: true })
+
+    proposalsStore.getState().reset()
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('una nueva generación arranca sin error ni flag residual', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onError('m', undefined, { code: 'timeout', retryable: true })
+
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    expect(proposalsStore.getState().error).toBeNull()
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
   })
 })
