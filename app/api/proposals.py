@@ -35,7 +35,17 @@ logger = logging.getLogger(__name__)
 # app/core/proposal_generator.py until the rag_config refactor lands.
 RAG_MIN_SIMILARITY = RAG_MIN_SIMILARITY
 
-PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
+def _proposal_reject_reverts_to() -> str:
+    """Read the env var at call time so tests don't need to reload the module.
+
+    F18 (PR #102): this used to be a module-level constant read once at
+    import time, which forced tests to do ``importlib.reload(proposals)``
+    to pick up changes to ``PROPOSAL_REJECT_REVERTS_TO``. The reload
+    redefined the ``ProposalOut`` class and broke ``isinstance`` checks
+    in ``test_proposals_endpoints.py``. Reading the env var on each call
+    keeps the same semantics without the reload footgun.
+    """
+    return os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
 PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
 PHASE = AVAILABLE_PHASES[1]  # "propuesta"
 MAX_SNAPSHOT_CHARS = 20_000
@@ -385,7 +395,7 @@ async def decide_proposal(
             )
         else:
             proposal.lifecycle = "rejected"
-            project.current_phase = PROPOSAL_REJECT_REVERTS_TO
+            project.current_phase = _proposal_reject_reverts_to()
             decision_for_hu6 = "reject"
             db.add(
                 ProposalApproval(

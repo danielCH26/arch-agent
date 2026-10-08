@@ -123,22 +123,15 @@ class TestRejectRevertsToEnv:
 
     def test_default_is_requerimientos(self):
         os.environ.pop("PROPOSAL_REJECT_REVERTS_TO", None)
-        # Re-import the module so the module-level constant is recomputed.
-        import importlib
+        from app.api.proposals import _proposal_reject_reverts_to
 
-        import app.api.proposals as proposals_module
-
-        importlib.reload(proposals_module)
-        assert proposals_module.PROPOSAL_REJECT_REVERTS_TO == "requerimientos"
+        assert _proposal_reject_reverts_to() == "requerimientos"
 
     def test_env_override_takes_effect(self):
         os.environ["PROPOSAL_REJECT_REVERTS_TO"] = "propuesta"
-        import importlib
+        from app.api.proposals import _proposal_reject_reverts_to
 
-        import app.api.proposals as proposals_module
-
-        importlib.reload(proposals_module)
-        assert proposals_module.PROPOSAL_REJECT_REVERTS_TO == "propuesta"
+        assert _proposal_reject_reverts_to() == "propuesta"
 
 
 # --- RAG constant sync ----------------------------------------------------
@@ -306,4 +299,4 @@ class TestLifecycleSideEffects:
         assert "phase_ready = True" in source
         assert "phase_ready = False" in source
         # Reject branch must revert current_phase
-        assert "PROPOSAL_REJECT_REVERTS_TO" in source
+        assert "_proposal_reject_reverts_to" in source
