@@ -250,4 +250,55 @@ describe('ProposalCard', () => {
     )
     expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
   })
+
+  it('keeps the error and the retry trigger when a stream fails midway with partial markdown', async () => {
+    // Backend no persiste propuestas truncadas: queda texto parcial con id null.
+    proposalsStore.setState({
+      currentProposal: {
+        id: null,
+        project_id: 7,
+        iteration: 0,
+        content_markdown: '## Componentes\n- API (cortado',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+      error: 'El modelo dejó la propuesta incompleta',
+    })
+    const spy = vi
+      .spyOn(proposalsApi, 'createProposalStream')
+      .mockImplementation(() => undefined)
+
+    render(<ProposalCard forceMount projectId={7} />)
+
+    expect(screen.getByTestId('proposal-generate-error')).toHaveTextContent(
+      'El modelo dejó la propuesta incompleta',
+    )
+    fireEvent.click(screen.getByTestId('proposal-generate'))
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith('generate', { project_id: 7 }, expect.anything())
+    })
+  })
+
+  it('does not offer the trigger for partial markdown while the stream is still running', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: null,
+        project_id: 7,
+        iteration: 0,
+        content_markdown: '## Componentes\n- API',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'generating',
+    })
+
+    render(<ProposalCard forceMount projectId={7} />)
+
+    expect(screen.queryByTestId('proposal-generate')).not.toBeInTheDocument()
+  })
 })

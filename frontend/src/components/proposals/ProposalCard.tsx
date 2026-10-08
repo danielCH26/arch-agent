@@ -79,8 +79,12 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
       {/* Explicit generation trigger (proposal.md decision #5): when the
           stream is idle and nothing has been produced yet, offer the
           "Generar propuesta" action. It also serves as the retry affordance
-          after a failed generation (store error surfaced inline). */}
-      {projectId != null && inFlight === 'idle' && !currentProposal?.content_markdown && (
+          after a failed generation (store error surfaced inline). A stream
+          that fails midway leaves partial markdown with `id: null`; that
+          draft was never persisted, so the trigger must stay available. */}
+      {projectId != null &&
+        inFlight === 'idle' &&
+        (!currentProposal?.content_markdown || currentProposal.id == null) && (
         <div className="mt-3 flex flex-col gap-2">
           {error && (
             <p className="text-xs text-red-600" data-testid="proposal-generate-error">
