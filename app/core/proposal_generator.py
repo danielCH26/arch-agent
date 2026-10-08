@@ -168,6 +168,34 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes} min" if secs == 0 else f"{minutes} min {secs} s"
 
 
+# --- Contrato del evento SSE ``error`` ----------------------------------------
+# Payload estructurado: ``{"message": str, "code": str, "retryable": bool}``.
+# El frontend decide si ofrece "Reintentar" por ``retryable`` / ``code`` y NUNCA
+# por el texto de ``message`` (que es para humanos y puede cambiar de redaccion).
+# Los codigos son estables: agregar nuevos esta bien, renombrarlos rompe al front.
+ERR_INVALID_REQUEST = "invalid_request"  # falta project_id / user_id
+ERR_REJECTED = "rejected"  # _ProposalDomainError: causa accionable (max. iteraciones, 409...)
+ERR_LLM_CONFIG = "llm_config"  # configuracion LLM invalida o ausente
+ERR_LLM_STREAM = "llm_stream_failed"  # el proveedor fallo (incluye su propio timeout)
+ERR_LLM_EMPTY = "llm_empty"  # el modelo no devolvio contenido
+ERR_INCOMPLETE = "incomplete_proposal"  # cortada por tokens o sin secciones obligatorias
+ERR_TIMEOUT = "timeout"  # tope total agotado ANTES de guardar: no se guardo nada
+ERR_SAVE_TIMEOUT = "save_timeout"  # tope agotado GUARDANDO: la fila pudo quedar guardada
+ERR_SAVE_FAILED = "save_failed"  # fallo tecnico al guardar
+
+
+def _error_event(
+    message: str, code: str, *, retryable: bool = False
+) -> tuple[str, dict[str, Any]]:
+    """Evento SSE ``error`` estructurado.
+
+    ``retryable`` solo es True para cortes transitorios en los que repetir la
+    misma peticion tiene sentido. Un 409, el limite de iteraciones o una
+    configuracion LLM invalida requieren otra accion del usuario.
+    """
+    return ("error", {"message": message, "code": code, "retryable": retryable})
+
+
 def _progress_event(
     stage: str,
     started_at: float,
@@ -261,7 +289,9 @@ class ProposalGenerator:
              ``elapsed_ms`` es el tiempo total (F19).
 
         On any unrecoverable failure during streaming the generator yields
-        ``("error", str)`` exactly once and stops. The DB write is skipped
+        ``("error", {"message": str, "code": str, "retryable": bool})`` exactly
+        once and stops (ver ``_error_event``: el front NO debe interpretar
+        ``message``, solo ``code`` / ``retryable``). The DB write is skipped
         so the user can retry without leaving orphan ``proposed`` rows.
 
         F19 -- tiempo maximo: ``PROPOSAL_MAX_SECONDS`` es un presupuesto unico
@@ -274,10 +304,10 @@ class ProposalGenerator:
         """
         effective_project_id = project_id if project_id is not None else self.project_id
         if effective_project_id is None:
-            yield ("error", "project_id is required")
+            yield _error_event("project_id is required", ERR_INVALID_REQUEST)
             return
         if self.user_id is None:
-            yield ("error", "user_id is required to generate proposals")
+            yield _error_event("user_id is required to generate proposals", ERR_INVALID_REQUEST)
             return
 
         started_at = perf_counter()
@@ -303,16 +333,18 @@ class ProposalGenerator:
             if exc.stage == "saving":
                 # El hilo de la BD no se puede abortar a la fuerza: en un caso
                 # extremo la fila podria llegar a guardarse despues del corte.
-                yield (
-                    "error",
+                yield _error_event(
                     f"El guardado superó el tiempo máximo ({limit}). Recarga para ver si la "
                     "propuesta quedó guardada; si no aparece, intenta de nuevo.",
+                    ERR_SAVE_TIMEOUT,
+                    retryable=True,
                 )
             else:
-                yield (
-                    "error",
+                yield _error_event(
                     f"La generación superó el tiempo máximo ({limit}) y se canceló. No se "
                     "guardó nada; intenta de nuevo o prueba con un modelo más rápido.",
+                    ERR_TIMEOUT,
+                    retryable=True,
                 )
 
     async def _run_pipeline(
@@ -339,7 +371,7 @@ class ProposalGenerator:
                 "context",
             )
         except _ProposalDomainError as exc:
-            yield ("error", str(exc))
+            yield _error_event(str(exc), ERR_REJECTED)
             return
 
         # 2. Resolve prior proposal (only for modify path).
@@ -355,7 +387,7 @@ class ProposalGenerator:
                     "context",
                 )
             except _ProposalDomainError as exc:
-                yield ("error", str(exc))
+                yield _error_event(str(exc), ERR_REJECTED)
                 return
 
         next_iteration = prior_iteration + 1 if prior_iteration else None
@@ -471,7 +503,7 @@ class ProposalGenerator:
                 "generating",
             )
         except LLMConfigError as exc:
-            yield ("error", str(exc))
+            yield _error_event(str(exc), ERR_LLM_CONFIG)
             return
 
         # 6. Stream LLM tokens + accumulate the full markdown.
@@ -518,7 +550,7 @@ class ProposalGenerator:
                 self.user_id,
                 exc,
             )
-            yield ("error", f"LLM stream failed: {exc}")
+            yield _error_event(f"LLM stream failed: {exc}", ERR_LLM_STREAM, retryable=True)
             return
         finally:
             # Cancelacion del usuario (cliente desconectado), timeout o error:
@@ -535,7 +567,7 @@ class ProposalGenerator:
             # LLM emitted nothing useful -- treat as a hard error so the
             # frontend can show a banner and the user can retry without an
             # empty ``proposed`` row confusing the lifecycle.
-            yield ("error", "LLM returned no content")
+            yield _error_event("LLM returned no content", ERR_LLM_EMPTY)
             return
 
         # Una propuesta cortada a la mitad (limite de tokens del modelo, stream
@@ -551,7 +583,10 @@ class ProposalGenerator:
                 missing_sections,
                 len(full_markdown),
             )
-            yield ("error", _incomplete_proposal_message(finish_reason, missing_sections))
+            yield _error_event(
+                _incomplete_proposal_message(finish_reason, missing_sections),
+                ERR_INCOMPLETE,
+            )
             return
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
@@ -559,7 +594,11 @@ class ProposalGenerator:
         # El hilo de la BD no se puede matar: ademas del tope de espera, cada
         # sentencia lleva un statement_timeout con el tiempo que queda, asi una
         # sentencia colgada se aborta en la base (rollback) en vez de guardar
-        # despues de que el usuario ya vio el error.
+        # despues de que el usuario ya vio el error. OJO: el piso de 500 ms evita
+        # un timeout de 0 (= sin limite en Postgres) pero implica que, con el
+        # presupuesto casi agotado, la sentencia aun puede commitear hasta 500 ms
+        # despues del corte: la garantia es "no se guarda nada" solo para las
+        # etapas de trabajo; guardando es "puede haberse guardado" (save_timeout).
         statement_timeout_ms = (
             max(int((deadline - perf_counter()) * 1000), 500) if deadline is not None else None
         )
@@ -592,7 +631,7 @@ class ProposalGenerator:
                 self.user_id,
                 exc,
             )
-            yield ("error", str(exc))
+            yield _error_event(str(exc), ERR_REJECTED)
             return
         except Exception as exc:
             logger.exception(
@@ -603,7 +642,10 @@ class ProposalGenerator:
             )
             # El detalle tecnico queda en el log; no se mezcla SQL ni wrappers
             # internos con el mensaje accionable de la interfaz.
-            yield ("error", "No se pudo guardar la propuesta. Recarga para comprobar el estado e intenta de nuevo.")
+            yield _error_event(
+                "No se pudo guardar la propuesta. Recarga para comprobar el estado e intenta de nuevo.",
+                ERR_SAVE_FAILED,
+            )
             return
 
         # 8. Engram es estrictamente secundario: conservar una referencia fuerte

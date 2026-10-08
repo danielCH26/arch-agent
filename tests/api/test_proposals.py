@@ -65,6 +65,24 @@ class TestSSEEmit:
         assert frame.startswith("event: error\ndata: ")
         assert '"boom"' in frame
 
+    def test_emit_sse_serializes_the_structured_error_payload(self):
+        """El front lee `message`/`code`/`retryable`; `ensure_ascii=False` mantiene los acentos."""
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse(
+            "error",
+            {"message": "Superó el tiempo máximo", "code": "timeout", "retryable": True},
+        )
+
+        assert frame.startswith("event: error\ndata: ")
+        body = frame.split("data: ", 1)[1].rsplit("\n\n", 1)[0]
+        assert json.loads(body) == {
+            "message": "Superó el tiempo máximo",
+            "code": "timeout",
+            "retryable": True,
+        }
+        assert "máximo" in frame  # sin escapar
+
     def test_emit_sse_preserves_unicode(self):
         from app.api.proposals import _emit_sse
 

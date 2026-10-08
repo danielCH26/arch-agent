@@ -400,6 +400,8 @@ describe('proposalsStore: timeout durante el guardado (review PR)', () => {
     budget_s: 300,
   }
   const MSG = 'El guardado superó el tiempo máximo (5 min). Recarga para ver si la propuesta se guardó.'
+  // Lo que emite el backend (ERR_SAVE_TIMEOUT): el store decide por el código.
+  const SAVE_TIMEOUT = { code: 'save_timeout', retryable: true }
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -414,7 +416,7 @@ describe('proposalsStore: timeout durante el guardado (review PR)', () => {
     await proposalsStore.getState().modify(8, 'agrega caché')
     cb().onProgress?.(SAVING)
 
-    cb().onError(MSG)
+    cb().onError(MSG, SAVE_TIMEOUT)
 
     // Inmediatamente (loadLatest todavía en curso): ya no hay qué reintentar.
     expect(proposalsStore.getState().lastModify).toBeNull()
@@ -434,7 +436,7 @@ describe('proposalsStore: timeout durante el guardado (review PR)', () => {
     await proposalsStore.getState().modify(8, 'agrega caché')
     cb().onProgress?.(SAVING)
 
-    cb().onError(MSG)
+    cb().onError(MSG, SAVE_TIMEOUT)
     await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalled())
 
     expect(proposalsStore.getState().lastModify).toBeNull()
@@ -447,7 +449,7 @@ describe('proposalsStore: timeout durante el guardado (review PR)', () => {
     await proposalsStore.getState().generate(1)
     cb().onProgress?.(SAVING)
 
-    cb().onError(MSG)
+    cb().onError(MSG, SAVE_TIMEOUT)
     await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalled())
     await flushAsync() // deja terminar loadLatest antes de comprobar
 
@@ -462,10 +464,38 @@ describe('proposalsStore: timeout durante el guardado (review PR)', () => {
     await proposalsStore.getState().modify(8, 'agrega caché')
     cb().onProgress?.({ ...SAVING, stage: 'generating', percent: 60 })
 
-    cb().onError('La generación superó el tiempo máximo (5 min)')
+    cb().onError('La generación superó el tiempo máximo (5 min)', {
+      code: 'timeout',
+      retryable: true,
+    })
 
     expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 8, feedback: 'agrega caché' })
     expect(api.getLatestProposal).not.toHaveBeenCalled()
+  })
+
+  it('decide por el CÓDIGO: el mismo texto de "guardado" sin save_timeout no rehidrata ni olvida el feedback', async () => {
+    const { cb } = captureStream()
+    proposalsStore.setState({ currentProposal: proposalFromOutForTest(out(8, 1, 'proposed')) })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onProgress?.(SAVING)
+
+    // Antes (regex sobre el texto + etapa) esto se confundía con un corte guardando.
+    cb().onError(MSG, { code: 'timeout', retryable: true })
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 8, feedback: 'agrega caché' })
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+  })
+
+  it('save_timeout se detecta aunque el backend cambie la redacción del mensaje', async () => {
+    const { cb } = captureStream()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(8, 1, 'proposed'))
+    proposalsStore.setState({ currentProposal: proposalFromOutForTest(out(8, 1, 'proposed')) })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+
+    cb().onError('Texto totalmente distinto, sin las palabras de siempre', SAVE_TIMEOUT)
+
+    expect(proposalsStore.getState().lastModify).toBeNull()
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(1))
   })
 
   it('loadLatest sin force sí limpia el error (comportamiento normal al entrar a la fase)', async () => {
@@ -493,3 +523,83 @@ function proposalFromOutForTest(o: ReturnType<typeof out>) {
     created_at: o.created_at,
   }
 }
+
+// --- Review PR: reintento decidido por el backend (campo estructurado) --------
+
+describe('proposalsStore: errorRetryable viene del backend, no del texto', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    proposalsStore.getState().reset()
+  })
+
+  it('un error con retryable=true lo deja marcado como reintentable (modificar)', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+
+    cb().onError('cualquier texto', { code: 'llm_stream_failed', retryable: true })
+
+    expect(proposalsStore.getState().error).toBe('cualquier texto')
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+  })
+
+  it('un error con retryable=false no es reintentable aunque el texto diga "tiempo máximo"', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+
+    cb().onError('Superó el tiempo máximo', { code: 'rejected', retryable: false })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('un error sin metadatos (cliente/red/backend viejo) no es reintentable', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().generate(1)
+
+    cb().onError('La generación superó el tiempo máximo (5 min)')
+
+    expect(proposalsStore.getState().error).toContain('tiempo máximo')
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('también aplica al generar desde cero', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().generate(1)
+
+    cb().onError('x', { code: 'timeout', retryable: true })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+  })
+
+  it('un error posterior que no viene del stream (decide) no hereda el flag anterior', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().modify(8, 'agrega caché')
+    cb().onError('corte', { code: 'timeout', retryable: true })
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+    vi.mocked(api.decideProposal).mockRejectedValue(new Error('409 conflicto'))
+
+    await expect(proposalsStore.getState().decide(8, 'approve')).rejects.toThrow()
+
+    expect(proposalsStore.getState().error).toBe('409 conflicto')
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('reset() limpia el flag', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().generate(1)
+    cb().onError('x', { code: 'timeout', retryable: true })
+
+    proposalsStore.getState().reset()
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('una nueva generación arranca sin error ni flag residual', async () => {
+    const { cb } = captureStream()
+    await proposalsStore.getState().generate(1)
+    cb().onError('x', { code: 'timeout', retryable: true })
+
+    await proposalsStore.getState().generate(1)
+
+    expect(proposalsStore.getState().error).toBeNull()
+  })
+})

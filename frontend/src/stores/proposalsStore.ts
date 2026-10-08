@@ -3,6 +3,7 @@ import {
   type ProposalCitation,
   type ProposalDecision,
   type ProposalDecisionResponse,
+  type ProposalErrorInfo,
   type ProposalOut,
   type ProposalProgress,
   createProposalStream,
@@ -40,6 +41,12 @@ interface ProposalsState {
   iterations: Proposal[]
   inFlight: InFlightStatus
   error: string | null
+  /**
+   * El backend marcó el último error como reintentable (`retryable` del evento
+   * SSE `error`). Solo tiene sentido si `error !== null`; lo fijan SIEMPRE
+   * `errorState()` / `onError`, nunca se deduce del texto del mensaje.
+   */
+  errorRetryable: boolean
   /** Última etapa reportada por el backend (F19); null fuera de una generación. */
   progress: ProposalProgress | null
   /** Date.now() cuando arrancó la generación en curso; base del cronómetro. */
@@ -131,12 +138,23 @@ function trackAbort(run: number, abort: unknown, isBusy: boolean) {
 
 const IDLE_PROGRESS = { progress: null, startedAt: null } as const
 
+/** Fija `error` y su flag de reintento a la vez: no pueden quedar desfasados. */
+function errorState(message: string, info?: ProposalErrorInfo) {
+  return { error: message, errorRetryable: info?.retryable === true }
+}
+
+/** El tope se agotó guardando: la fila pudo quedar escrita (código estructurado). */
+function isSaveTimeout(info?: ProposalErrorInfo): boolean {
+  return info?.code === 'save_timeout'
+}
+
 export const proposalsStore = create<ProposalsState>((set, get) => ({
   currentProposal: null,
   pendingProposal: null,
   iterations: [],
   inFlight: 'idle',
   error: null,
+  errorRetryable: false,
   progress: null,
   startedAt: null,
   cancelled: false,
@@ -208,13 +226,13 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             }
           })
         },
-        onError: (message) => {
+        onError: (message, info) => {
           if (run !== activeRun) return
-          const savingTimedOut = get().progress?.stage === 'saving' && /tiempo máximo/i.test(message)
+          const savingTimedOut = isSaveTimeout(info)
           abortActive = null
           set({
             inFlight: 'idle',
-            error: message,
+            ...errorState(message, info),
             pendingProposal: null,
             // El borrador a medias (p. ej. cortado por el tope de tiempo) no es
             // una propuesta válida: se descarta para que la tarjeta muestre el
@@ -306,13 +324,13 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
             }
           })
         },
-        onError: (message) => {
+        onError: (message, info) => {
           if (run !== activeRun) return
-          const savingTimedOut = get().progress?.stage === 'saving' && /tiempo máximo/i.test(message)
+          const savingTimedOut = isSaveTimeout(info)
           abortActive = null
           set({
             inFlight: 'idle',
-            error: message,
+            ...errorState(message, info),
             pendingProposal: null,
             ...IDLE_PROGRESS,
             // Si el corte fue GUARDANDO, la iteración pudo quedar en la base: un
@@ -383,7 +401,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to record decision'
-      set({ inFlight: 'idle', error: message })
+      set({ inFlight: 'idle', ...errorState(message) })
       throw err
     }
   },
@@ -404,7 +422,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to refresh proposal'
-      set({ error: message })
+      set(errorState(message))
     }
   },
 
@@ -458,6 +476,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       iterations: [],
       inFlight: 'idle',
       error: null,
+      errorRetryable: false,
       cancelled: false,
       lastModify: null,
       ...IDLE_PROGRESS,

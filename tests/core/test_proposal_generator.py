@@ -628,6 +628,15 @@ def test_missing_sections_detects_a_cut_inside_the_justification():
     assert _missing_sections(cut) == ["Riesgo o costo"]
 
 
+def _error_meta(events):
+    """(code, retryable) del ultimo evento, que debe ser un ``error`` estructurado."""
+    name, payload = events[-1]
+    assert name == "error"
+    assert set(payload) == {"message", "code", "retryable"}
+    assert isinstance(payload["message"], str) and payload["message"]
+    return payload["code"], payload["retryable"]
+
+
 def _drain(gen_iter):
     import asyncio
 
@@ -681,7 +690,8 @@ def test_truncated_proposal_is_not_persisted_and_yields_error():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "incompleta" in events[-1][1]
+    assert "incompleta" in events[-1][1]["message"]
+    assert _error_meta(events) == ("incomplete_proposal", False)
     assert not any(name == "done" for name, _ in events)
 
 
@@ -967,7 +977,7 @@ def test_section_error_does_not_blame_the_token_limit():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "límite de tokens" not in events[-1][1]
+    assert "límite de tokens" not in events[-1][1]["message"]
 
 
 # --- F19: progreso, tope de tiempo y cancelacion (HU primera propuesta < 5 min) ---
@@ -1086,7 +1096,8 @@ def test_generation_over_budget_yields_error_and_does_not_persist(monkeypatch):
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "tiempo máximo" in events[-1][1]
+    assert "tiempo máximo" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
     assert not any(name == "done" for name, _ in events)
     assert closed == [True]  # el stream del LLM se cerro
 
@@ -1103,8 +1114,10 @@ def test_timeout_of_the_llm_client_is_not_reported_as_our_budget():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "LLM stream failed" in events[-1][1]
-    assert "tiempo máximo" not in events[-1][1]
+    assert "LLM stream failed" in events[-1][1]["message"]
+    assert "tiempo máximo" not in events[-1][1]["message"]
+    # Un fallo del proveedor es reintentable, pero NO es nuestro tope de tiempo.
+    assert _error_meta(events) == ("llm_stream_failed", True)
 
 
 def test_budget_zero_disables_the_deadline(monkeypatch):
@@ -1282,7 +1295,8 @@ def test_context_loading_over_budget_yields_error_and_never_calls_the_llm(monkey
         events = _drain(generator.generate_stream())
 
     assert events[-1][0] == "error"
-    assert "tiempo máximo" in events[-1][1]
+    assert "tiempo máximo" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
     assert calls == [] and persisted == []
     assert not any(name in {"token", "done"} for name, _ in events)
 
@@ -1299,7 +1313,8 @@ def test_retrieval_over_budget_yields_error_instead_of_continuing_without_contex
         events = _drain(generator.generate_stream())
 
     assert events[-1][0] == "error"
-    assert "tiempo máximo" in events[-1][1]
+    assert "tiempo máximo" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
     assert calls == [] and persisted == []
     # Se avisó que se estaba buscando, pero nunca se llegó a redactar.
     stages = [p["stage"] for n, p in events if n == "progress"]
@@ -1323,7 +1338,9 @@ def test_saving_over_budget_yields_a_specific_error_and_no_done(monkeypatch):
         events = _drain(generator.generate_stream())
 
     assert events[-1][0] == "error"
-    assert "guardado" in events[-1][1]
+    assert "guardado" in events[-1][1]["message"]
+    # Guardando, la fila pudo quedar escrita: codigo propio (el front rehidrata).
+    assert _error_meta(events) == ("save_timeout", True)
     assert not any(name == "done" for name, _ in events)
 
 
@@ -1344,8 +1361,8 @@ def test_timeout_message_shows_the_configured_limit_in_readable_form(monkeypatch
         events = _drain(generator.generate_stream())
 
     assert events[-1][0] == "error"
-    assert f"({gen._format_duration(0.5)})" in events[-1][1]
-    assert "0 min" not in events[-1][1]
+    assert f"({gen._format_duration(0.5)})" in events[-1][1]["message"]
+    assert "0 min" not in events[-1][1]["message"]
 
 
 def test_persist_gets_a_statement_timeout_that_fits_in_the_budget():
@@ -1429,7 +1446,10 @@ def test_domain_error_while_saving_keeps_its_specific_message(message):
     ):
         events = _drain(generator.generate_stream())
 
-    assert events[-1] == ("error", message)
+    assert events[-1] == (
+        "error",
+        {"message": message, "code": "rejected", "retryable": False},
+    )
     assert not any(name == "done" for name, _ in events)
 
 
@@ -1445,8 +1465,10 @@ def test_technical_error_while_saving_never_leaks_internal_details():
     ):
         events = _drain(generator.generate_stream())
 
-    name, message = events[-1]
+    name, payload = events[-1]
+    message = payload["message"]
     assert name == "error"
+    assert (payload["code"], payload["retryable"]) == ("save_failed", False)
     assert message.startswith("No se pudo guardar la propuesta")
     assert "psycopg2" not in message and "SELECT" not in message
 
@@ -1470,3 +1492,111 @@ def test_persist_wraps_infrastructure_failures_as_persist_error_not_domain_error
 
     assert not issubclass(gen._ProposalPersistError, gen._ProposalDomainError)
     db.rollback.assert_called()
+
+
+# --- Contrato del evento `error` estructurado (review PR) ----------------------
+# El front decide el reintento por `retryable`/`code`, nunca por el texto.
+
+
+def test_error_event_helper_builds_the_documented_payload():
+    from app.core import proposal_generator as gen
+
+    assert gen._error_event("boom", gen.ERR_TIMEOUT, retryable=True) == (
+        "error",
+        {"message": "boom", "code": "timeout", "retryable": True},
+    )
+    # Por defecto NO es reintentable: hay que optar explicitamente.
+    assert gen._error_event("x", gen.ERR_REJECTED)[1]["retryable"] is False
+
+
+def test_missing_ids_are_invalid_request_and_not_retryable():
+    from app.core import proposal_generator as gen
+
+    no_project = _drain(gen.ProposalGenerator(user_id=1).generate_stream())
+    no_user = _drain(gen.ProposalGenerator(project_id=1).generate_stream())
+
+    assert _error_meta(no_project) == ("invalid_request", False)
+    assert _error_meta(no_user) == ("invalid_request", False)
+
+
+def test_invalid_llm_config_is_not_retryable():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.llm_loader import LLMConfigError
+
+    stack, generator, persisted = _patched_generator(_CompleteModel())
+    with stack, patch.object(gen, "build_langchain_model", side_effect=LLMConfigError("sin API key")):
+        events = _drain(generator.generate_stream())
+
+    assert _error_meta(events) == ("llm_config", False)
+    assert events[-1][1]["message"] == "sin API key"
+    assert persisted == []
+
+
+def test_empty_llm_output_is_a_distinct_non_retryable_code():
+    class _Empty:
+        async def astream(self, _prompt):
+            yield _Chunk("")
+
+    stack, generator, persisted = _patched_generator(_Empty())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert _error_meta(events) == ("llm_empty", False)
+    assert persisted == []
+
+
+def test_domain_error_while_loading_context_is_rejected_and_not_retryable():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    stack, generator, persisted = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "_load_project_and_session", side_effect=gen._ProposalDomainError("Proyecto no encontrado")
+    ):
+        events = _drain(generator.generate_stream())
+
+    assert _error_meta(events) == ("rejected", False)
+    assert events[-1][1]["message"] == "Proyecto no encontrado"
+    assert persisted == []
+
+
+def test_retryable_never_depends_on_the_wording_of_the_message(monkeypatch):
+    """Mismo codigo aunque el texto cambie: el front no puede (ni debe) leerlo."""
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "_format_duration", lambda _s: "SEIS MINUTOS")
+
+    class _Hangs:
+        async def astream(self, _prompt):
+            import asyncio
+
+            await asyncio.sleep(60)
+            yield _Chunk("nunca")
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    stack, generator, _ = _patched_generator(_Hangs())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert "SEIS MINUTOS" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
+
+
+def test_only_transient_codes_are_retryable():
+    """Guarda el contrato de la spec (REQ-13): lista cerrada de codigos reintentables."""
+    from app.core import proposal_generator as gen
+
+    transient = {gen.ERR_TIMEOUT, gen.ERR_SAVE_TIMEOUT, gen.ERR_LLM_STREAM}
+    permanent = {
+        gen.ERR_INVALID_REQUEST,
+        gen.ERR_REJECTED,
+        gen.ERR_LLM_CONFIG,
+        gen.ERR_LLM_EMPTY,
+        gen.ERR_INCOMPLETE,
+        gen.ERR_SAVE_FAILED,
+    }
+    assert transient.isdisjoint(permanent)
+    assert len(transient | permanent) == 9  # un codigo nuevo obliga a clasificarlo aqui
