@@ -32,13 +32,12 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
-# RAG_MIN_SIMILARITY is re-declared here (and again in ``app/api/proposals.py``)
-# to avoid a circular import that would happen if this module imported it from
-# ``app/api/chat.py``. ``design.md`` §9 calls for hoisting this constant to
-# ``app/core/rag_config.py`` as a follow-up refactor; until then, all three
-# sites MUST stay in lock-step (chat.py, proposal_generator.py, proposals.py).
-# See ``docs/adr/009-sse-pattern-reuse.md`` for the rationale.
-RAG_MIN_SIMILARITY = 0.85
+# RAG_MIN_SIMILARITY se importa desde app/core/rag_config.py, que es su unico
+# lugar de definicion. Antes vivia duplicado aqui y en app/api/chat.py, con un
+# re-export en app/api/proposals.py, y nada mas que un comentario los mantenia
+# en lock-step. Ver docs/adr/009-sse-pattern-reuse.md para el porque del
+# refactor.
+from app.core.rag_config import RAG_MIN_SIMILARITY
 
 # Default maximum number of iterations per project. Mirrors the design
 # (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
@@ -349,7 +348,7 @@ def _build_prompt(
         "\nFormato OBLIGATORIO (responde exactamente con estas tres secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
-        "## Tecnologias\n- ...\n\n"
+        "## Tecnologías\n- ...\n\n"
         "## Patrones\n- ...\n\n"
         "Patrones candidatos (usa solo los que apliquen; cita el numero entre "
         "corchetes donde corresponda):\n"
