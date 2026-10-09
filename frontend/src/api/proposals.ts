@@ -28,6 +28,9 @@ export interface ProjectProposalState {
   approval_id: number | null
   proposal_snapshot_chars: number
   last_decision: string | null
+  // Tope de iteraciones del backend (PROPOSAL_MAX_ITER). Opcional: un backend
+  // anterior no lo envía y entonces el límite solo se aplica en el servidor.
+  max_iterations?: number
 }
 
 export interface ProjectProposalDecisionResponse {

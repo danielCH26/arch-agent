@@ -9,9 +9,6 @@ interface ProposalCardProps {
   onPhaseChanged?: () => void | Promise<void>
 }
 
-// Debe coincidir con PROPOSAL_MAX_ITER del backend (default 5).
-const MAX_ITERATIONS = 5
-
 const lifecycleStyle = {
   proposed: 'bg-sky-100 text-sky-700',
   approved: 'bg-emerald-100 text-emerald-700',
@@ -29,6 +26,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [comment, setComment] = useState('')
+  const [confirmingReject, setConfirmingReject] = useState(false)
 
   useEffect(() => {
     // Si ya hay una propuesta de este proyecto en curso, no se recarga:
@@ -43,7 +41,10 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   const streaming = activity === 'generating' || activity === 'modifying'
   const busy = activity !== 'idle'
   const approvedWithoutContent = !proposal && projectState?.approved
-  const iterationLimitReached = (proposal?.iteration ?? 0) >= MAX_ITERATIONS
+  // El tope lo define el backend (PROPOSAL_MAX_ITER). Si no lo informa, no se
+  // bloquea en el cliente: el servidor rechaza la iteración de más con su mensaje.
+  const maxIterations = projectState?.max_iterations ?? null
+  const iterationLimitReached = maxIterations !== null && (proposal?.iteration ?? 0) >= maxIterations
 
   const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!proposal?.id) return
@@ -51,6 +52,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
       await decide(proposal.id, decision, comment.trim() || undefined)
       setComment('')
       setShowFeedback(false)
+      setConfirmingReject(false)
       await onPhaseChanged?.()
     } catch {
       // El store ya expone el error en la tarjeta.
@@ -118,17 +120,30 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
             <button
               type="button"
               disabled={busy || iterationLimitReached}
-              onClick={() => setShowFeedback((open) => !open)}
-              title={iterationLimitReached ? `Máximo de ${MAX_ITERATIONS} iteraciones alcanzado` : undefined}
+              onClick={() => { setConfirmingReject(false); setShowFeedback((open) => !open) }}
+              title={iterationLimitReached ? `Máximo de ${maxIterations} iteraciones alcanzado` : undefined}
               data-testid="proposal-modify"
               className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
             >
               Modificar
             </button>
-            <button type="button" disabled={busy} onClick={() => void handleDecision('reject')} data-testid="proposal-reject" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">Rechazar</button>
+            <button type="button" disabled={busy || confirmingReject} onClick={() => { setShowFeedback(false); setConfirmingReject(true) }} data-testid="proposal-reject" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">Rechazar</button>
             <input value={comment} disabled={busy} onChange={(event) => setComment(event.target.value)} maxLength={2000} className="min-w-40 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="Comentario opcional" aria-label="Comentario opcional sobre la decisión" />
           </div>
           <p className="mt-2 text-xs text-gray-500">Aprobar deja la fase lista para avanzar. Rechazar devuelve el proyecto a requerimientos.</p>
+
+          {/* Rechazar revierte la fase y cierra las iteraciones: se confirma en línea, igual que en ApprovalPanel. */}
+          {confirmingReject && (
+            <div role="alertdialog" aria-labelledby="proposal-reject-confirm-text" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3" data-testid="proposal-reject-confirm">
+              <p id="proposal-reject-confirm-text" className="text-sm text-red-700">
+                ¿Seguro que quieres rechazar la propuesta? El proyecto vuelve a requerimientos y no se podrán generar más iteraciones de esta propuesta.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" autoFocus disabled={busy} onClick={() => setConfirmingReject(false)} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancelar</button>
+                <button type="button" disabled={busy} onClick={() => void handleDecision('reject')} data-testid="proposal-reject-confirm-button" className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 dark:hover:bg-solid-red-700 disabled:opacity-50">Sí, rechazar</button>
+              </div>
+            </div>
+          )}
 
           {showFeedback && (
             <div className="mt-3 space-y-2">
@@ -137,7 +152,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
               <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
             </div>
           )}
-          {iterationLimitReached && <p className="mt-2 text-xs text-amber-700">Se alcanzó el máximo de {MAX_ITERATIONS} iteraciones: aprueba o rechaza la propuesta.</p>}
+          {iterationLimitReached && <p className="mt-2 text-xs text-amber-700">Se alcanzó el máximo de {maxIterations} iteraciones: aprueba o rechaza la propuesta.</p>}
         </div>
       )}
 
