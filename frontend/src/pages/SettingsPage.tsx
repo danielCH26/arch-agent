@@ -43,7 +43,7 @@ export function SettingsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">
+      <h1 className="font-display text-2xl font-bold text-gray-900 mb-6">
         Configuración Global del LLM
       </h1>
       <p className="text-gray-600 mb-6">

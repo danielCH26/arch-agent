@@ -1,3 +1,95 @@
 @tailwind base;
+
+@layer base {
+  body {
+    @apply bg-gray-100 text-gray-900;
+  }
+}
 @tailwind components;
 @tailwind utilities;
+
+@keyframes robot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-14px);
+  }
+}
+
+.animate-robot-float {
+  animation: robot-float 3.6s ease-in-out infinite;
+}
+
+/* Movimiento reducido (preferencia del sistema): sin animaciones ni
+   transiciones decorativas (robot, esqueletos, puntos de "escribiendo",
+   menú deslizable). Los indicadores de carga giratorios se mantienen, más
+   lentos, porque informan que algo está pasando. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-spin {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* Edge agrega su propio botón para revelar contraseñas; usamos el nuestro. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+
+/* Contorno visible al navegar con teclado (no aparece al hacer clic). Los
+   campos con `focus:outline-none` usan su propio anillo de foco. */
+@layer base {
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid #0e54ce;
+    outline-offset: 2px;
+  }
+  /* En modo oscuro el azul de marca no llega a 3:1 sobre el fondo. */
+  .dark :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline-color: #60a5fa;
+  }
+}
+
+/* Modo oscuro: `bg-white` es la superficie de tarjetas y paneles. El resto
+   de colores cambia vía variables (ver tailwind.config.js). `text-white`
+   no cambia: se usa sobre botones de color. */
+.dark .bg-white {
+  background-color: rgb(var(--surface));
+}
+.dark .bg-white\/70 {
+  background-color: rgb(var(--surface) / 0.7);
+}
+
+/* Controles que solo se revelan al pasar el ratón (p. ej. eliminar proyecto).
+   En dispositivos sin hover (celular, tablet) quedan siempre visibles. */
+@media (hover: hover) {
+  .reveal-on-hover {
+    opacity: 0;
+  }
+  .group:hover .reveal-on-hover,
+  .group:focus-within .reveal-on-hover,
+  .reveal-on-hover:focus-visible {
+    opacity: 1;
+  }
+}
+
+/* iOS Safari hace zoom al enfocar campos con texto menor a 16 px: en
+   pantallas táctiles los campos usan 16 px aunque tengan `text-sm`. */
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='file']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

@@ -1,3 +1,5 @@
+import { useDialog } from '../hooks/useDialog'
+
 interface DuplicateModalProps {
   filename: string
   existingVersion: number
@@ -15,26 +17,37 @@ export function DuplicateModal({
   onCancel,
   loading = false,
 }: DuplicateModalProps) {
+  const dialogRef = useDialog({ open: true, onClose: onCancel, preventClose: loading })
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black bg-opacity-50"
-        onClick={onCancel}
+        onClick={() => {
+          if (!loading) onCancel()
+        }}
       ></div>
-      <div className="relative bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
-        <h3 className="text-lg font-semibold text-gray-900">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="duplicate-title"
+        aria-describedby="duplicate-desc"
+        className="relative bg-white rounded-lg shadow-xl p-6 max-w-md w-full"
+      >
+        <h3 id="duplicate-title" className="text-lg font-semibold text-gray-900">
           Archivo duplicado
         </h3>
-        <p className="mt-2 text-sm text-gray-600">
+        <p id="duplicate-desc" className="mt-2 text-sm text-gray-600">
           El archivo <strong>{filename}</strong> ya existe en este proyecto como{' '}
-          <strong>v{existingVersion}</strong>. Elegí cómo continuar.
+          <strong>v{existingVersion}</strong>. Elige cómo continuar.
         </p>
         <div className="mt-5 flex flex-col gap-2">
           <button
             type="button"
             onClick={onReplace}
             disabled={loading}
-            className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Reemplazar
           </button>

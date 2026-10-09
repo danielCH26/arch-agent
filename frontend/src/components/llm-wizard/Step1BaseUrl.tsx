@@ -12,7 +12,7 @@ export function Step1BaseUrl({ baseUrl, onChange, onNext, loading, error }: Step
   return (
     <div>
       {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
+        <div role="alert" className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
       )}
 
       <div className="space-y-4">
@@ -41,7 +41,7 @@ export function Step1BaseUrl({ baseUrl, onChange, onNext, loading, error }: Step
           type="button"
           onClick={onNext}
           disabled={!isValid || loading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'Validando...' : 'Continuar'}
         </button>

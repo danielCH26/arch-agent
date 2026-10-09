@@ -15,68 +15,69 @@ export interface Message {
   // mientras no ha llegado el evento 'sources'; [] si llego pero no hubo
   // match relevante.
   sources?: RagSource[]
-  // F13 (REQ-PMCP-1 / REQ-ATT-3): uno o mas attachments inline (PNG de
-  // un diagrama Mermaid renderizado). El backend emite ``event: attachment``
-  // despues del ultimo token; el callback los apendea aqui para que el
-  // componente MessageBubble los renderice bajo el bloque de markdown.
   attachments?: Attachment[]
+  // Avisos del backend (evento `degraded`) sobre el diagrama de esta respuesta.
+  notices?: string[]
 }
 
 interface ChatState {
   messages: Message[]
   isStreaming: boolean
   error: string | null
-  // F12 (REQ-8): true while loadHistory is in flight so the mount-time
-  // useEffect can avoid double-firing under React StrictMode.
   loadingHistory: boolean
+  activeProjectId: number | null
+  // true si el historial cargado llegó al límite de la API (50 mensajes):
+  // puede haber mensajes anteriores que no se muestran.
+  historyTruncated: boolean
 
-  sendMessage: (
-    projectId: number | null,
-    text: string,
-    displayText?: string,
-    onComplete?: () => void,
-  ) => Promise<void>
+  // `displayText`: lo que escribió el usuario cuando `text` es un prompt más
+  // largo para el agente. Se muestra en la burbuja y se persiste en el backend.
+  // Devuelve false si no se envió (ya hay una respuesta en curso).
+  sendMessage: (projectId: number | null, text: string, displayText?: string) => Promise<boolean>
   addUserMessage: (content: string) => void
   addSystemMessage: (content: string) => void
   addAssistantMessage: (content: string) => void
   appendToLastAssistantMessage: (content: string) => void
   clearMessages: () => void
   setError: (error: string | null) => void
-  // F12 (REQ-8): replaces messages atomically with the backend history.
   loadHistory: (projectId: number, limit?: number) => Promise<void>
 }
 
-export const chatStore = create<ChatState>((set) => ({
+let latestHistoryRequest = 0
+// Límite de mensajes por consulta de GET /api/chat/history.
+export const HISTORY_LIMIT = 50
+
+// Proyectos con una respuesta en curso. Si la persona cambia de proyecto, el
+// stream sigue en segundo plano (el backend guarda el turno al terminar): al
+// volver a ese proyecto se muestra "escribiendo…" y, cuando termina, se
+// recarga el historial.
+const runningStreams = new Set<number | null>()
+
+export const chatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   error: null,
   loadingHistory: false,
+  activeProjectId: null,
+  historyTruncated: false,
 
-  sendMessage: async (
-    projectId: number | null,
-    text: string,
-    displayText?: string,
-    onComplete?: () => void,
-  ) => {
-    // `text` es lo que se manda al backend (POST /api/chat); `displayText`
-    // es lo que se muestra en la burbuja del usuario. Por defecto son lo
-    // mismo (mensajes tipeados a mano). Ver "Solicitar cambios" en
-    // MessageBubble.tsx: ahi se arma un prompt largo con instrucciones +
-    // el Mermaid anterior para que el agente lo use, pero el usuario solo
-    // escribio su feedback -- eso es lo unico que deberia ver en su propia
-    // burbuja, no el prompt entero. F14 (migracion 0015): `displayText`
-    // tambien viaja al backend (ver createChatStream mas abajo) y se
-    // persiste en Message.display_content, asi que ya sobrevive a un
-    // refresh — GET /api/chat/history devuelve display_content or content.
+  sendMessage: async (projectId: number | null, text: string, displayText?: string) => {
+    // Una respuesta a la vez: evita dos streams simultáneos (p. ej. al
+    // decidir sobre un diagrama mientras el agente aún responde).
+    if (get().isStreaming || runningStreams.has(projectId)) return false
+    runningStreams.add(projectId)
+
+    // Add user message
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: displayText ?? text,
+      content: displayText || text,
     }
     set((state) => ({
       messages: [...state.messages, userMessage],
       isStreaming: true,
       error: null,
+      activeProjectId: projectId,
     }))
 
     // Create placeholder for assistant response
@@ -91,13 +92,24 @@ export const chatStore = create<ChatState>((set) => ({
     // Start streaming
     let fullResponse = ''
 
+    // Fin del stream: si mientras tanto se recargó el historial de este
+    // proyecto (se salió y se volvió), el mensaje provisional ya no está y se
+    // vuelve a pedir el historial, que ya incluye la respuesta guardada.
+    const finish = () => {
+      runningStreams.delete(projectId)
+      if (get().activeProjectId !== projectId) return false
+      if (!get().messages.some((msg) => msg.id === assistantMessageId)) {
+        set({ isStreaming: false })
+        if (projectId !== null) void get().loadHistory(projectId)
+        return false
+      }
+      return true
+    }
+
     // Start the stream - cleanup is handled internally
-    // F14 (migracion 0015): `displayText` (cuando viene) tambien se manda
-    // al backend como `display_message` para que quede persistido en
-    // Message.display_content — antes solo se usaba para la burbuja local
-    // de arriba, y se perdia en cualquier refresh.
     createChatStream(text, projectId, {
       onSources: (sources) => {
+        if (get().activeProjectId !== projectId) return
         set((state) => ({
           messages: state.messages.map((msg) =>
             msg.id === assistantMessageId ? { ...msg, sources } : msg
@@ -105,6 +117,7 @@ export const chatStore = create<ChatState>((set) => ({
         }))
       },
       onToken: (token: string) => {
+        if (get().activeProjectId !== projectId) return
         fullResponse += token
         set((state) => ({
           messages: state.messages.map((msg) =>
@@ -114,41 +127,32 @@ export const chatStore = create<ChatState>((set) => ({
           ),
         }))
       },
-      // F13: append each `` event: attachment`` payload to the in-flight
-    // assistant message's ``attachments`` list. The order in which the
-    // events arrive is preserved so the UI can stack the screenshots
-    // chronologically under the source code.
-    onAttachment: (attachment: Attachment) => {
-      set((state) => ({
-        messages: state.messages.map((msg) =>
-          msg.id === assistantMessageId
-            ? {
-                ...msg,
-                attachments: [...(msg.attachments ?? []), attachment],
-              }
-            : msg
-        ),
-      }))
-    },
-      // HU6 bug fix: antes esto no existia y una falla de Mermaid
-      // (validacion o render) dejaba al usuario sin diagrama y sin
-      // ninguna pista de que paso. Lo agregamos como una nota al final
-      // del mensaje del asistente, en la misma burbuja.
-      onDiagramIssue: (message: string) => {
-        fullResponse += `\n\n⚠️ ${message}`
+      onAttachment: (attachment) => {
+        if (get().activeProjectId !== projectId) return
         set((state) => ({
           messages: state.messages.map((msg) =>
             msg.id === assistantMessageId
-              ? { ...msg, content: fullResponse }
+              ? { ...msg, attachments: [...(msg.attachments ?? []), attachment] }
+              : msg
+          ),
+        }))
+      },
+      onNotice: (notice) => {
+        if (get().activeProjectId !== projectId) return
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, notices: [...(msg.notices ?? []), notice] }
               : msg
           ),
         }))
       },
       onDone: () => {
+        if (!finish()) return
         set({ isStreaming: false })
-        onComplete?.()
       },
       onError: (errorMessage: string) => {
+        if (!finish()) return
         set((state) => ({
           isStreaming: false,
           error: errorMessage,
@@ -161,9 +165,7 @@ export const chatStore = create<ChatState>((set) => ({
       },
     }, displayText)
 
-    // Store cleanup function for potential cancellation
-    // Note: We don't expose cancellation in this implementation
-    // but the stream can be aborted by component unmount
+    return true
   },
 
   addUserMessage: (content: string) => {
@@ -214,36 +216,50 @@ export const chatStore = create<ChatState>((set) => ({
   },
 
   clearMessages: () => {
-    set({ messages: [], error: null })
+    set({ messages: [], error: null, activeProjectId: null })
   },
 
   setError: (error: string | null) => {
     set({ error })
   },
 
-  // F12 (REQ-8): fetch history for (user, project) and replace messages
-  // atomically. On error: leave messages untouched and clear the flag.
-  loadHistory: async (projectId: number, limit: number = 5) => {
-    set({ loadingHistory: true })
+  loadHistory: async (projectId: number, limit: number = HISTORY_LIMIT) => {
+    const requestId = ++latestHistoryRequest
+
+    // Nunca mostramos la conversación de otro proyecto mientras llega esta
+    // respuesta. Esto también produce el estado de carga del diseño actual.
+    set({
+      messages: [],
+      error: null,
+      loadingHistory: true,
+      // Los callbacks de un stream de otro proyecto se ignoran por
+      // activeProjectId. Si este proyecto tiene uno en curso, el input queda
+      // bloqueado hasta que termine (ver runningStreams).
+      isStreaming: runningStreams.has(projectId),
+      activeProjectId: projectId,
+      historyTruncated: false,
+    })
+
     try {
       const rows = await fetchChatHistory(projectId, limit)
-      // The backend returns rows newest-first; the chat UI shows them in
-      // chronological order so the conversation reads top-to-bottom.
-      const ordered = [...rows].reverse()
-      const messages: Message[] = ordered.map((row: ChatHistoryMessage) => ({
+      if (requestId !== latestHistoryRequest) return
+
+      // La API entrega los más recientes primero; el chat se lee de arriba
+      // hacia abajo en orden cronológico.
+      const messages: Message[] = [...rows].reverse().map((row: ChatHistoryMessage) => ({
         id: `history-${row.id}`,
         role: row.role,
         content: row.content,
         sources: row.citations,
         attachments: row.attachments,
       }))
-      // Atomic replacement: do not interleave with in-flight streaming
-      // tokens (REQ-9 guards in ChatWindow ensure this is a no-op while
-      // a stream is active).
-      set({ messages, loadingHistory: false })
-    } catch {
-      // Per REQ-8: on error, clear loadingHistory and leave messages untouched.
-      set({ loadingHistory: false })
+      set({ messages, loadingHistory: false, historyTruncated: rows.length >= HISTORY_LIMIT })
+    } catch (err) {
+      if (requestId !== latestHistoryRequest) return
+      set({
+        loadingHistory: false,
+        error: err instanceof Error ? err.message : 'No se pudo cargar el historial del chat',
+      })
     }
   },
 }))
