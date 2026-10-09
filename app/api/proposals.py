@@ -20,7 +20,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
-from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
+from app.core.proposal_generator import ProposalGenerator
+from app.core.rag_config import RAG_MIN_SIMILARITY
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
 from app.models.approval import Approval
@@ -30,10 +31,10 @@ from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
 
-# Re-declared to avoid the circular import (see app/core/proposal_generator.py
-# docstring + design.md section 9). MUST stay in sync with app/api/chat.py and
-# app/core/proposal_generator.py until the rag_config refactor lands.
-RAG_MIN_SIMILARITY = RAG_MIN_SIMILARITY
+# RAG_MIN_SIMILARITY se importa desde app/core/rag_config.py (arriba), igual que
+# los otros dos consumidores. Antes este modulo hacia un re-export de la constante
+# para mantener los tres sitios en lock-step; con un unico lugar de definicion,
+# el import alcanza y el re-export sobra.
 
 PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
 PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
