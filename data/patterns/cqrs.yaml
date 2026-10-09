@@ -1,5 +1,6 @@
 pattern_name: "CQRS (Command Query Responsibility Segregation)"
 category: "Patrón de datos"
+complexity: "alta"
 description: >
   Separa el modelo de escritura (comandos) del modelo de lectura (consultas),
   permitiendo optimizar cada uno de forma independiente.

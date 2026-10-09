@@ -1,5 +1,6 @@
 pattern_name: "Clean Architecture"
 category: "Monolítica"
+complexity: "media"
 description: >
   Organiza la aplicación alrededor de reglas de negocio y casos de uso en el
   centro, haciendo que las dependencias del código apunten hacia adentro. La UI,

@@ -7,9 +7,13 @@ import * as proposalsApi from '../../../api/proposals'
 function resetStore() {
   proposalsStore.setState({
     currentProposal: null,
+    pendingProposal: null,
     iterations: [],
     inFlight: 'idle',
     error: null,
+    errorRetryable: false,
+    cancelled: false,
+    lastModify: null,
   })
 }
 
@@ -46,6 +50,37 @@ describe('ProposalCard', () => {
     expect(screen.getByTestId('lifecycle-chip-proposed')).toBeInTheDocument()
   })
 
+  it('keeps the previous content visible while feedback streams a new iteration', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 8,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Gateway existente',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      pendingProposal: {
+        id: null,
+        project_id: 1,
+        iteration: 0,
+        content_markdown: '## Componentes\n- Gateway actualizado',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'modifying',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    expect(screen.getByText(/Gateway existente/)).toBeInTheDocument()
+    expect(screen.getByTestId('proposal-preserved-during-feedback')).toBeInTheDocument()
+  })
+
   it('renders three section headings (Componentes, Tecnologías, Patrones) and shows the proposal id once done', () => {
     proposalsStore.setState({
       currentProposal: {
@@ -53,7 +88,7 @@ describe('ProposalCard', () => {
         project_id: 1,
         iteration: 1,
         content_markdown:
-          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal',
+          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal\n\n## Justificación del patrón principal\n- Separa el dominio de los adaptadores para facilitar las pruebas.',
         citations: [
           { pattern_id: 1, pattern_name: 'Hexagonal', similarity: 0.91 },
         ],
@@ -86,6 +121,9 @@ describe('ProposalCard', () => {
     ).toBeInTheDocument()
     expect(
       screen.getByRole('heading', { name: 'Patrones' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: 'Justificación del patrón principal' }),
     ).toBeInTheDocument()
     expect(screen.getByText(/Servicio de autenticación/)).toBeInTheDocument()
     // CitationList mounted -- the pattern name appears twice (once in the
@@ -215,5 +253,69 @@ describe('ProposalCard', () => {
       'SSE stream failed',
     )
     expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
+  })
+
+  describe('cancelación (F19)', () => {
+    const CURRENT = {
+      id: 8,
+      project_id: 7,
+      iteration: 1,
+      content_markdown: '## Componentes\n- Gateway existente',
+      citations: [],
+      lifecycle: 'proposed' as const,
+      feedback: null,
+      created_at: null,
+    }
+
+    it('al cancelar una generación desde cero avisa que no se guardó nada y ofrece volver a generar', () => {
+      proposalsStore.setState({ cancelled: true })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.getByTestId('proposal-cancelled')).toHaveTextContent(
+        'Generación cancelada. No se guardó nada',
+      )
+      expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-modify-cancelled')).not.toBeInTheDocument()
+    })
+
+    it('si hubo un error real, se muestra el error y no el aviso de cancelado', () => {
+      proposalsStore.setState({ cancelled: true, error: 'La generación superó el tiempo máximo' })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.getByTestId('proposal-generate-error')).toHaveTextContent('tiempo máximo')
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+    })
+
+    it('al cancelar una modificación conserva la versión vigente y lo avisa', () => {
+      proposalsStore.setState({ currentProposal: CURRENT, cancelled: true })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.getByTestId('proposal-modify-cancelled')).toHaveTextContent(
+        'Se conserva la versión actual',
+      )
+      expect(screen.getByText(/Gateway existente/)).toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-generate')).not.toBeInTheDocument()
+    })
+
+    it('sin cancelación no aparece ningún aviso de cancelado', () => {
+      proposalsStore.setState({ currentProposal: CURRENT })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('proposal-modify-cancelled')).not.toBeInTheDocument()
+    })
+
+    it('mientras se genera no se muestra el aviso de cancelado de un intento anterior', () => {
+      proposalsStore.setState({ cancelled: true, inFlight: 'generating' })
+
+      render(<ProposalCard forceMount projectId={7} />)
+
+      expect(screen.queryByTestId('proposal-cancelled')).not.toBeInTheDocument()
+    })
   })
 })

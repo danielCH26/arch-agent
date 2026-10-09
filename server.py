@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import threading
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 from app.auth.register import register_user
@@ -12,7 +14,20 @@ from app.auth.validators import ValidationError
 load_dotenv()
 
 templates = Jinja2Templates(directory="templates")
-app = FastAPI(title="Arch Agent API", version="1.0.0")
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    """Warm embeddings once at startup without coupling production to pytest."""
+    from app.core.embeddings import warmup_embeddings, warmup_enabled
+
+    if warmup_enabled():
+        threading.Thread(
+            target=warmup_embeddings, name="embeddings-warmup", daemon=True
+        ).start()
+    yield
+
+app = FastAPI(title="Arch Agent API", version="1.0.0", lifespan=_lifespan)
 
 # CORS — allow SPA frontend to call this API
 app.add_middleware(
@@ -100,3 +115,4 @@ async def vendor_mermaid_js():
 SPA_DIST = Path(__file__).parent / "frontend" / "dist"
 if SPA_DIST.exists():
     app.mount("/", StaticFiles(directory=str(SPA_DIST), html=True), name="spa")
+
