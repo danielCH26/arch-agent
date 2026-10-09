@@ -120,6 +120,12 @@ let abortActive: (() => void) | null = null
 // Proyecto del stream activo: lo necesita cancel() para resincronizar con el servidor.
 let activeProjectId = 0
 
+// Espera (ms) antes de la SEGUNDA resincronización de cancel(). La primera se
+// lanza justo tras el abort, cuando el servidor quizá aún no detectó la
+// desconexión: si el commit ya estaba en marcha, esa lectura puede llegar antes
+// de que termine. Esta segunda lectura, un poco después, lo recoge.
+export const CANCEL_RESYNC_DELAY_MS = 2000
+
 function startRun(): number {
   // Si todavía había un stream vivo se ABORTA (no solo se invalida): sin esto el
   // fetch anterior seguía abierto y el backend siguiendo gastando tokens de una
@@ -388,16 +394,26 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     // con la BD, igual que en el timeout de `saving`, para no mostrar un estado
     // distinto del real (p. ej. "Generar propuesta" con una iteración ya gastada).
     if (projectId) {
-      void get()
-        .loadLatest(projectId, true)
-        .then(() => {
-          if (run !== activeRun) return
-          const s = get()
-          const savedAnyway =
-            s.currentProposal?.id != null && s.currentProposal.id !== priorId
-          // La cancelación llegó tarde: no afirmar "cancelada" si se guardó algo nuevo.
-          if (s.cancelled && s.inFlight === 'idle' && savedAnyway) set({ cancelled: false })
-        })
+      const resync = () =>
+        get()
+          .loadLatest(projectId, true)
+          .then(() => {
+            if (run !== activeRun) return
+            const s = get()
+            const savedAnyway =
+              s.currentProposal?.id != null && s.currentProposal.id !== priorId
+            // La cancelación llegó tarde: no afirmar "cancelada" si se guardó algo nuevo.
+            if (s.cancelled && s.inFlight === 'idle' && savedAnyway) set({ cancelled: false })
+          })
+      void resync()
+      // Segunda lectura diferida (ver CANCEL_RESYNC_DELAY_MS): cubre el caso en que
+      // el commit ya había empezado y terminó después de la primera lectura. Si
+      // mientras tanto hubo otra acción (generar, modificar, reset...), `run` ya no
+      // es el activo y no se hace nada.
+      setTimeout(() => {
+        if (run !== activeRun) return
+        void resync()
+      }, CANCEL_RESYNC_DELAY_MS)
     }
   },
 

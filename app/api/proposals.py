@@ -326,8 +326,8 @@ _MODIFY_RESPONSES = {
     status.HTTP_409_CONFLICT: {
         "description": (
             "Antes de abrir el stream SSE: la propuesta no está en estado "
-            "`proposed`, alcanzó PROPOSAL_MAX_ITER, ya no es la última iteración "
-            "o ya existe una iteración posterior."
+            "`proposed`, alcanzó PROPOSAL_MAX_ITER o ya no es la última "
+            "iteración del proyecto (existe una posterior)."
         ),
     },
 }
