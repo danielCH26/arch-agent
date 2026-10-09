@@ -251,3 +251,144 @@ class TestRAGCoreHelpers:
             assert rag._warn_if_workers_exceed_pool(30, 10, 20) is False
             assert rag._warn_if_workers_exceed_pool(16, 10, 20) is False
         assert caplog.text == ""
+
+
+class TestRAGParallelBranchErrors:
+    """Si una rama de scope=all falla, la otra no puede quedar sin consumir."""
+
+    @staticmethod
+    def _embedder(monkeypatch):
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(
+            rag, "get_embeddings", lambda: type("E", (), {"embed_query": lambda *_: [0.1] * 384})()
+        )
+        return rag
+
+    def test_pattern_error_waits_for_document_branch(self, monkeypatch):
+        rag = self._embedder(monkeypatch)
+        document_branch_finished = threading.Event()
+
+        def patterns(*_args, **_kwargs):
+            raise rag.RAGSearchError("fallo en patrones")
+
+        def documents(*_args, **_kwargs):
+            time.sleep(0.15)
+            document_branch_finished.set()
+            return [], 5.0
+
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", patterns)
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", documents)
+
+        with pytest.raises(rag.RAGSearchError, match="fallo en patrones"):
+            rag.similarity_search("consulta", user_id=1, scope="all")
+        # La excepcion solo sale cuando la rama de documentos ya termino: no queda
+        # un hilo huerfano ocupando una conexion del pool.
+        assert document_branch_finished.is_set()
+
+    def test_document_error_waits_for_pattern_branch(self, monkeypatch):
+        """Caso simetrico: falla la segunda rama mientras la primera sigue corriendo."""
+        rag = self._embedder(monkeypatch)
+        pattern_branch_finished = threading.Event()
+
+        def patterns(*_args, **_kwargs):
+            time.sleep(0.15)
+            pattern_branch_finished.set()
+            return [], 5.0
+
+        def documents(*_args, **_kwargs):
+            raise RuntimeError("fallo en documentos")
+
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", patterns)
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", documents)
+
+        with pytest.raises(RuntimeError, match="fallo en documentos"):
+            rag.similarity_search("consulta", user_id=1, scope="all")
+        assert pattern_branch_finished.is_set()
+
+    def test_both_branches_failing_raises_first_and_logs_the_other(self, monkeypatch, caplog):
+        rag = self._embedder(monkeypatch)
+
+        def patterns(*_args, **_kwargs):
+            raise rag.RAGSearchError("causa raiz en patrones")
+
+        def documents(*_args, **_kwargs):
+            raise RuntimeError("fallo secundario en documentos")
+
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", patterns)
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", documents)
+
+        with caplog.at_level("ERROR", logger="app.core.rag"):
+            with pytest.raises(rag.RAGSearchError, match="causa raiz en patrones"):
+                rag.similarity_search("consulta", user_id=1, scope="all")
+        assert "fallo secundario en documentos" in caplog.text
+
+    def test_successful_branches_keep_working(self, monkeypatch):
+        rag = self._embedder(monkeypatch)
+        monkeypatch.setattr(rag, "similarity_search_patterns_by_vector", lambda *_a, **_k: ([], 1.0))
+        monkeypatch.setattr(rag, "similarity_search_document_chunks_by_vector", lambda *_a, **_k: ([], 2.0))
+
+        docs, metrics = rag.similarity_search("consulta", user_id=1, scope="all")
+
+        assert docs == []
+        assert metrics["search_ms"] >= 0
+
+
+class TestRAGQueryLengthLimit:
+    def test_api_accepts_query_at_the_limit_and_rejects_longer(self):
+        from app.api.rag import RAGSearchRequest
+        from app.core.rag import MAX_QUERY_CHARS
+
+        assert RAGSearchRequest(query="a" * MAX_QUERY_CHARS).query
+        with pytest.raises(ValueError):
+            RAGSearchRequest(query="a" * (MAX_QUERY_CHARS + 1))
+
+    def test_long_queries_are_embedded_but_never_cached(self, monkeypatch):
+        """Un llamador interno (chat, propuestas) tampoco puede inflar la cache."""
+        from app.core import rag
+
+        rag.clear_embedding_cache()
+        monkeypatch.setattr(rag, "_EMBEDDING_CACHE_SIZE", 4)
+        calls = []
+        monkeypatch.setattr(
+            rag, "get_embeddings",
+            lambda: type("E", (), {"embed_query": lambda _, key: calls.append(key) or [0.1] * 384})(),
+        )
+        long_query = "x" * (rag.MAX_QUERY_CHARS + 1)
+
+        _, _, first_cached = rag._query_embedding(long_query)
+        _, _, second_cached = rag._query_embedding(long_query)
+
+        assert (first_cached, second_cached) == (False, False)
+        assert len(calls) == 2
+        assert len(rag._embedding_cache) == 0
+
+        rag._query_embedding("x" * rag.MAX_QUERY_CHARS)  # en el limite si se guarda
+        assert len(rag._embedding_cache) == 1
+        rag.clear_embedding_cache()
+
+    def test_get_endpoints_reject_oversized_query_parameter(self):
+        """Los GET comparten la cache con el POST: mismo tope de largo en `q`."""
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+
+        from app.api.dependencies import get_current_user
+        from app.api.rag import router
+        from app.core.rag import MAX_QUERY_CHARS
+
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_current_user] = lambda: {"user_id": 1}
+        client = TestClient(app)
+
+        with patch("app.api.rag.similarity_search", return_value=([], {"search_ms": 1.0})):
+            ok = client.get("/api/rag/patterns/search", params={"q": "a" * MAX_QUERY_CHARS})
+            too_long_patterns = client.get("/api/rag/patterns/search", params={"q": "a" * (MAX_QUERY_CHARS + 1)})
+            too_long_documents = client.get("/api/rag/documents/search", params={"q": "a" * (MAX_QUERY_CHARS + 1)})
+            too_long_post = client.post("/api/rag/search", json={"query": "a" * (MAX_QUERY_CHARS + 1)})
+
+        assert ok.status_code == 200
+        assert too_long_patterns.status_code == 422
+        assert too_long_documents.status_code == 422
+        assert too_long_post.status_code == 422
