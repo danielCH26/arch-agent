@@ -216,4 +216,33 @@ describe('ProposalCard', () => {
     )
     expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
   })
+
+  it('renders [n] references in the markdown as links to the cited source (HU8)', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 5,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Patrones\n- **Hexagonal**: aísla el dominio [1, 2]',
+        citations: [
+          { index: 1, pattern_id: 1, pattern_name: 'Hexagonal', similarity: 0.9, cited: true },
+          { index: 2, pattern_id: 2, pattern_name: 'BFF', similarity: 0.88, cited: true },
+        ],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    expect(screen.getByTestId('citation-ref-1').getAttribute('href')).toBe(
+      '#proposal-cite-1',
+    )
+    expect(screen.getByTestId('citation-ref-2').getAttribute('href')).toBe(
+      '#proposal-cite-2',
+    )
+    expect(document.getElementById('proposal-cite-2')).not.toBeNull()
+  })
 })

@@ -20,6 +20,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
+from app.core.pattern_justification import analyze_justification, summarize_citation_rate
 from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
@@ -87,6 +88,21 @@ class ProposalOut(BaseModel):
     feedback: Optional[str]
     lifecycle: str
     created_at: str
+    justification: dict
+
+
+class JustificationStatsOut(BaseModel):
+    """HU8 KR: share of proposals whose decisions cite RAG patterns."""
+
+    project_id: Optional[int]
+    proposals_total: int
+    proposals_citing_patterns: int
+    citation_rate: float
+    decisions_total: int
+    decisions_cited: int
+    decision_coverage: float
+    target_rate: float
+    meets_target: bool
 
 
 def _emit_sse(event: str, data) -> str:
@@ -439,6 +455,44 @@ async def decide_proposal(
         db.close()
 
 
+@router.get("/api/proposals/justification-stats", response_model=JustificationStatsOut)
+async def get_justification_stats(
+    project_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """HU8 KR (≥80% de propuestas citan patrones) over the user's proposals.
+
+    Declared BEFORE ``/api/proposals/{proposal_id}``: otherwise the path
+    parameter route captures ``justification-stats`` and answers 422.
+    """
+    user_id = int(current_user["user_id"])
+
+    db = SessionLocal()
+    try:
+        query = (
+            db.query(Proposal)
+            .join(Project, Project.id == Proposal.project_id)
+            .filter(Project.user_id == user_id)
+        )
+        if project_id is not None:
+            _require_owned_project(db, user_id=user_id, project_id=project_id)
+            query = query.filter(Proposal.project_id == project_id)
+
+        analyses = [
+            analyze_justification(
+                _content_to_text(row.content),
+                [dict(c) for c in (row.citations or []) if isinstance(c, dict)],
+            )
+            for row in query.all()
+        ]
+        return JustificationStatsOut(
+            project_id=project_id,
+            **summarize_citation_rate(analyses),
+        )
+    finally:
+        db.close()
+
+
 @router.get("/api/proposals/{proposal_id}", response_model=ProposalOut)
 async def get_proposal(
     proposal_id: int,
@@ -456,16 +510,22 @@ async def get_proposal(
             )
         _require_owned_project(db, user_id=user_id, project_id=int(proposal.project_id))
         created_at = proposal.created_at.isoformat() if proposal.created_at else ""
+        content = _content_to_text(proposal.content)
+        # Recomputed on read so proposals persisted before HU8 also expose
+        # the justification analysis (and their citations get ``cited``).
+        citations = [dict(c) for c in (proposal.citations or []) if isinstance(c, dict)]
+        justification = analyze_justification(content, citations)
 
         return ProposalOut(
             id=int(proposal.id),
             project_id=int(proposal.project_id),
             iteration=int(proposal.iteration),
-            content=_content_to_text(proposal.content),
-            citations=list(proposal.citations or []),
+            content=content,
+            citations=citations,
             feedback=proposal.feedback,
             lifecycle=proposal.lifecycle,
             created_at=created_at,
+            justification=justification,
         )
     finally:
         db.close()
