@@ -5,6 +5,7 @@ export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
   similarity: number | null
+  source_role?: 'primary' | 'consulted_not_cited'
   // Backend caps the snippet to 240 chars; useful for tooltips in CitationList.
   snippet?: string | null
 }
@@ -34,7 +35,11 @@ export type ProposalDecision = 'approve' | 'modify' | 'reject'
 interface ProposalStreamCallbacks {
   onToken: (token: string) => void
   onSources: (citations: ProposalCitation[]) => void
-  onDone: (proposalId: number, citations: ProposalCitation[]) => void
+  onDone: (
+    proposalId: number,
+    citations: ProposalCitation[],
+    iteration?: number,
+  ) => void
   onError: (error: string) => void
 }
 
@@ -89,8 +94,9 @@ function dispatchProposalSSE(
       const parsed = JSON.parse(rawData) as {
         proposal_id: number
         citations: ProposalCitation[]
+        iteration?: number
       }
-      callbacks.onDone(parsed.proposal_id, parsed.citations ?? [])
+      callbacks.onDone(parsed.proposal_id, parsed.citations ?? [], parsed.iteration)
     } catch {
       callbacks.onError('Malformed SSE done payload')
     }
@@ -238,4 +244,18 @@ export async function decideProposal(
 
 export async function getProposal(proposalId: number): Promise<ProposalOut> {
   return apiFetch<ProposalOut>(`/api/proposals/${proposalId}`)
+}
+
+/**
+ * Última propuesta viva (proposed/approved) del proyecto, o null si no hay.
+ * Sirve para rehidratar la tarjeta al recargar / volver a entrar a la fase:
+ * antes la propuesta solo vivía en memoria del front.
+ */
+export async function getLatestProposal(projectId: number): Promise<ProposalOut | null> {
+  return apiFetch<ProposalOut | null>(`/api/projects/${projectId}/proposals/latest`)
+}
+
+/** Todas las versiones persistidas, de más reciente a más antigua. */
+export async function getProposalHistory(projectId: number): Promise<ProposalOut[]> {
+  return apiFetch<ProposalOut[]>(`/api/projects/${projectId}/proposals`)
 }

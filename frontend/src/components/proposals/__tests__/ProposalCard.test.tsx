@@ -46,6 +46,37 @@ describe('ProposalCard', () => {
     expect(screen.getByTestId('lifecycle-chip-proposed')).toBeInTheDocument()
   })
 
+  it('keeps the previous content visible while feedback streams a new iteration', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: 8,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Gateway existente',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      pendingProposal: {
+        id: null,
+        project_id: 1,
+        iteration: 0,
+        content_markdown: '## Componentes\n- Gateway actualizado',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'modifying',
+    })
+
+    render(<ProposalCard forceMount />)
+
+    expect(screen.getByText(/Gateway existente/)).toBeInTheDocument()
+    expect(screen.getByTestId('proposal-preserved-during-feedback')).toBeInTheDocument()
+  })
+
   it('renders three section headings (Componentes, Tecnologías, Patrones) and shows the proposal id once done', () => {
     proposalsStore.setState({
       currentProposal: {
@@ -53,7 +84,7 @@ describe('ProposalCard', () => {
         project_id: 1,
         iteration: 1,
         content_markdown:
-          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal',
+          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal\n\n## Justificación del patrón principal\n- Separa el dominio de los adaptadores para facilitar las pruebas.',
         citations: [
           { pattern_id: 1, pattern_name: 'Hexagonal', similarity: 0.91 },
         ],
@@ -86,6 +117,9 @@ describe('ProposalCard', () => {
     ).toBeInTheDocument()
     expect(
       screen.getByRole('heading', { name: 'Patrones' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: 'Justificación del patrón principal' }),
     ).toBeInTheDocument()
     expect(screen.getByText(/Servicio de autenticación/)).toBeInTheDocument()
     // CitationList mounted -- the pattern name appears twice (once in the
@@ -215,5 +249,56 @@ describe('ProposalCard', () => {
       'SSE stream failed',
     )
     expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
+  })
+
+  it('keeps the error and the retry trigger when a stream fails midway with partial markdown', async () => {
+    // Backend no persiste propuestas truncadas: queda texto parcial con id null.
+    proposalsStore.setState({
+      currentProposal: {
+        id: null,
+        project_id: 7,
+        iteration: 0,
+        content_markdown: '## Componentes\n- API (cortado',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+      error: 'El modelo dejó la propuesta incompleta',
+    })
+    const spy = vi
+      .spyOn(proposalsApi, 'createProposalStream')
+      .mockImplementation(() => undefined)
+
+    render(<ProposalCard forceMount projectId={7} />)
+
+    expect(screen.getByTestId('proposal-generate-error')).toHaveTextContent(
+      'El modelo dejó la propuesta incompleta',
+    )
+    fireEvent.click(screen.getByTestId('proposal-generate'))
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith('generate', { project_id: 7 }, expect.anything())
+    })
+  })
+
+  it('does not offer the trigger for partial markdown while the stream is still running', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: null,
+        project_id: 7,
+        iteration: 0,
+        content_markdown: '## Componentes\n- API',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'generating',
+    })
+
+    render(<ProposalCard forceMount projectId={7} />)
+
+    expect(screen.queryByTestId('proposal-generate')).not.toBeInTheDocument()
   })
 })

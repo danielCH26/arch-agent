@@ -7,6 +7,9 @@ interface ChatInputProps {
   projectId: number
   onSend: (text: string) => void
   disabled?: boolean
+  // Permite adjuntar PDF/MD aunque el texto esté bloqueado (ej. resumen de
+  // requerimientos pendiente de decisión). Por defecto sigue a `disabled`.
+  attachDisabled?: boolean
 }
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.md']
@@ -16,7 +19,9 @@ export function ChatInput({
   projectId,
   onSend,
   disabled = false,
+  attachDisabled,
 }: ChatInputProps) {
+  const attachBlocked = attachDisabled ?? disabled
   const [text, setText] = useState('')
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -96,7 +101,7 @@ export function ChatInput({
   }
 
   const handleAttach = async (file: File) => {
-    if (uploading || disabled) return
+    if (uploading || attachBlocked) return
     const validationError = validateFile(file)
     if (validationError) {
       setUploadError(validationError)
@@ -153,7 +158,7 @@ const handleCancelDuplicate = () => {
         <button
           type="button"
           onClick={handleClipClick}
-          disabled={uploading || disabled}
+          disabled={uploading || attachBlocked}
           title="Adjuntar archivo (PDF o MD)"
           className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >

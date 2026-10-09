@@ -4,7 +4,7 @@ import { CitationList } from '../CitationList'
 import type { ProposalCitation } from '../../../api/proposals'
 
 describe('CitationList', () => {
-  it('renders a row per citation with similarity as percentage', () => {
+  it('shows one primary pattern and labels secondary references as not cited', () => {
     const citations: ProposalCitation[] = [
       { pattern_id: 7, pattern_name: 'Hexagonal', similarity: 0.91 },
       { pattern_id: 11, pattern_name: 'BFF', similarity: 0.88 },
@@ -13,9 +13,9 @@ describe('CitationList', () => {
     render(<CitationList citations={citations} />)
 
     expect(screen.getByText(/Hexagonal/)).toBeInTheDocument()
-    expect(screen.getByText(/similitud 91%/)).toBeInTheDocument()
+    expect(screen.getByText('Patrón principal:')).toBeInTheDocument()
     expect(screen.getByText(/BFF/)).toBeInTheDocument()
-    expect(screen.getByText(/similitud 88%/)).toBeInTheDocument()
+    expect(screen.getByText('Consultados no citados:')).toBeInTheDocument()
   })
 
   it('omits the similarity percentage when similarity is missing', () => {
@@ -25,8 +25,7 @@ describe('CitationList', () => {
 
     render(<CitationList citations={citations} />)
 
-    const row = screen.getByText(/Event Sourcing/)
-    expect(row.textContent).not.toContain('similitud')
+    expect(screen.getByText(/Event Sourcing/)).toBeInTheDocument()
   })
 
   it('shows the empty-state message when no citations pass the threshold', () => {
@@ -60,8 +59,8 @@ describe('CitationList', () => {
 
     render(<CitationList citations={citations} />)
 
-    const li = screen.getByText(/Saga/).closest('li')
-    expect(li?.getAttribute('title')).toBe(
+    const pattern = screen.getByText(/Saga/)
+    expect(pattern.getAttribute('title')).toBe(
       'Orquesta transacciones distribuidas',
     )
   })

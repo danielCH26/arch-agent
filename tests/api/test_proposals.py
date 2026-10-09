@@ -160,42 +160,66 @@ class TestRAGConstantSync:
 # --- Filter citations helper (unit) --------------------------------------
 
 
-class TestCitationFilter:
-    def test_filter_drops_below_threshold_and_keeps_above(self):
-        from app.core.proposal_generator import _filter_citations
+class TestCitationSelection:
+    """La fase de propuesta trae los N patrones mas relevantes, sin umbral."""
+
+    @staticmethod
+    def _doc(pattern_id, name, similarity, body="body"):
         from langchain_core.documents import Document
 
+        metadata = {"pattern_id": pattern_id, "pattern_name": name}
+        if similarity is not None:
+            metadata["similarity"] = similarity
+        return Document(page_content=body, metadata=metadata)
+
+    def test_keeps_best_patterns_even_below_old_threshold(self):
+        from app.core.proposal_generator import _select_citations
+
         docs = [
-            Document(
-                page_content="above threshold body",
-                metadata={
-                        "pattern_id": 7,
-                        "pattern_name": "Hexagonal",
-                        "similarity": 0.91,
-                    },
-            ),
-            Document(
-                page_content="below threshold body",
-                metadata={
-                        "pattern_id": 11,
-                        "pattern_name": "Spaghetti",
-                        "similarity": 0.83,
-                    },
-            ),
-            Document(
-                page_content="missing similarity",
-                metadata={
-                        "pattern_id": 99,
-                        "pattern_name": "Ghost",
-                    },
-            ),
+            self._doc(7, "Hexagonal", 0.83, "hex body"),
+            self._doc(11, "CQRS", 0.79),
         ]
-        citations = _filter_citations(docs)
-        # only the 0.91 entry clears the threshold; missing similarity defaults to 0
-        assert len(citations) == 1
-        assert citations[0]["pattern_id"] == 7
-        assert citations[0]["similarity"] == 0.91
-        assert "above threshold body" in citations[0]["snippet"]
+        citations = _select_citations(docs)
+        # Con el umbral viejo (0.85) esto devolvia [] y la propuesta salia
+        # "sin patrones relevantes".
+        assert [c["pattern_id"] for c in citations] == [7, 11]
+        assert "hex body" in citations[0]["snippet"]
+
+    def test_orders_by_similarity_and_limits_to_top_n(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [
+            self._doc(1, "A", 0.60),
+            self._doc(2, "B", 0.90),
+            self._doc(3, "C", 0.75),
+            self._doc(4, "D", 0.80),
+        ]
+        citations = _select_citations(docs, top_n=2)
+        assert [c["pattern_id"] for c in citations] == [2, 4]
+
+    def test_dedupes_chunks_of_the_same_pattern(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [
+            self._doc(5, "Microservicios", 0.88, "mejor chunk"),
+            self._doc(5, "Microservicios", 0.86, "otro chunk"),
+            self._doc(6, "Event-driven", 0.80),
+        ]
+        citations = _select_citations(docs, top_n=3)
+        assert [c["pattern_id"] for c in citations] == [5, 6]
+        assert citations[0]["snippet"] == "mejor chunk"
+
+    def test_optional_floor_still_available(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [self._doc(1, "A", 0.90), self._doc(2, "B", 0.50)]
+        citations = _select_citations(docs, top_n=5, min_similarity=0.70)
+        assert [c["pattern_id"] for c in citations] == [1]
+
+    def test_empty_when_database_returns_nothing(self):
+        from app.core.proposal_generator import _select_citations
+
+        assert _select_citations([]) == []
 
 
 # --- Engram outage never blocks (SCN-10) ----------------------------------

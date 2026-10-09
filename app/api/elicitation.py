@@ -11,6 +11,7 @@ from app.core import elicitation_agent
 from app.core.database import SessionLocal
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.project_context import load_documents_text
 from app.core.session_store import load_session_state, record_approval_decision, save_session_state
 from app.models.project import Project
 from app.models.session import UserSession
@@ -156,6 +157,28 @@ async def send_elicitation_message(
             )
         history = history + [{"pregunta": pending_question, "respuesta": body.answer.strip()}]
         pending_question = None
+        # Se persiste la respuesta YA, antes de llamar al LLM para la
+        # siguiente pregunta. Antes, si esa llamada fallaba (ver los
+        # "except" de más abajo), la función salía sin guardar nada: la
+        # respuesta se perdía y, al recargar, "/elicitation" devolvía otra
+        # vez la pregunta vieja como si no se hubiera contestado. Guardarla
+        # aquí hace que, ante un fallo del LLM, quede sin pregunta pendiente
+        # ni resumen -- el reintento automático del frontend (ChatWindow:
+        # "if (!state.done && !state.question)") hace que la próxima carga
+        # pida la siguiente pregunta usando este historial ya completo, sin
+        # que el usuario tenga que volver a escribir su respuesta.
+        engram_state = _set_phase_data(
+            engram_state,
+            project_id,
+            {
+                "preguntas_respuestas": history,
+                "pending_question": None,
+                "resumen": None,
+            },
+        )
+        save_session_state(
+            user_id, project_id=project.id, active_phase=PHASE, engram_state=engram_state
+        )
     elif pending_question is not None:
         # Ya se había hecho esta pregunta y no llegó una respuesta nueva:
         # se re-devuelve tal cual, sin gastar otra llamada al LLM.
@@ -175,13 +198,18 @@ async def send_elicitation_message(
     langfuse_handler = get_langfuse_handler()
     callbacks = [langfuse_handler] if langfuse_handler is not None else None
 
+    # PDF/MD que el usuario subió al proyecto: se le pasan al agente para que
+    # no repregunte lo que ya está en los documentos y el resumen los refleje.
+    documents_text, _names = load_documents_text(user_id, project_id)
+    doc_kwargs = {"documents_context": documents_text} if documents_text else {}
+
     try:
         decision = elicitation_agent.next_step(
-            model, history, project.description or "", callbacks=callbacks
+            model, history, project.description or "", callbacks=callbacks, **doc_kwargs
         )
         if decision.done:
             resumen = elicitation_agent.generate_summary(
-                model, history, project.description or "", callbacks=callbacks
+                model, history, project.description or "", callbacks=callbacks, **doc_kwargs
             )
         else:
             resumen = None
