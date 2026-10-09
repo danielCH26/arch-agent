@@ -1,0 +1,106 @@
+# CI: corre las suites de backend (pytest) y frontend (vitest + build con tsc) en
+# cada PR y en cada push a main. Sin esto los "N tests en verde" del PR eran solo
+# reportados a mano y nada impedía que un cambio posterior los rompiera.
+#
+# `pull_request` SIN filtro de rama a propósito: los PR encadenados (que apuntan a
+# otra rama de feature, no a main) también deben pasar por aquí.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      # Hay tests de integración con Postgres real (tests/test_document_storage.py).
+      # Credenciales = las que fijan tests/api/conftest.py y tests/api/test_auth.py
+      # al importarse (os.environ["DATABASE_URL"] = ...test:test@localhost:5432/test),
+      # que en una corrida completa pisan el DATABASE_URL de tests/conftest.py.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Mismo criterio que backend/Dockerfile: wheels de torch SOLO CPU. Sin esto
+      # sentence-transformers descarga torch+CUDA (varios GB) y el job tarda de más.
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      # No cargar el modelo real de embeddings al importar la app.
+      EMBEDDINGS_WARMUP: "off"
+      DATABASE_URL: postgresql://test:test@localhost:5432/test
+      JWT_SECRET_KEY: test-secret-key-for-testing-only-32chars
+      # Cache del modelo de embeddings (un test lo descarga de HuggingFace, ~470 MB).
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # igual que backend/Dockerfile (asyncio.timeout requiere >= 3.11)
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .hf-cache
+          key: hf-${{ runner.os }}-multilingual-e5-small
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Habilitar pgvector
+        # Los modelos usan Vector(384) y Base.metadata.create_all NO crea la extensión.
+        run: PGPASSWORD=test psql -h localhost -U test -d test -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: pytest
+        # tests/test_seed_idempotent.py se excluye porque necesita el schema
+        # completo (schema.sql + migraciones) y descargar el modelo de embeddings
+        # para sembrar; se activará cuando el CI cargue las migraciones.
+        run: python -m pytest -q tests --ignore=tests/test_seed_idempotent.py
+
+  frontend:
+    name: Frontend (vitest + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: vitest
+        run: npm run test:run
+
+      - name: Build (incluye `tsc`)
+        run: npm run build

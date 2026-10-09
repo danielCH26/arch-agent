@@ -25,6 +25,7 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
   const decide = proposalsStore((s) => s.decide)
   const modify = proposalsStore((s) => s.modify)
   const error = proposalsStore((s) => s.error)
+  const errorRetryable = proposalsStore((s) => s.errorRetryable)
   const cancelled = proposalsStore((s) => s.cancelled)
   const lastModify = proposalsStore((s) => s.lastModify)
   const retry = proposalsStore((s) => s.retry)
@@ -37,7 +38,9 @@ export function ProposalActions({ proposalId, disabled }: ProposalActionsProps) 
   const isBusy = inFlight !== 'idle'
   // Reintentar solo sirve para cortes transitorios. Un 4xx, el limite de
   // iteraciones o una configuracion LLM invalida requieren una accion distinta.
-  const retryableError = error !== null && /tiempo máximo|timed out|stream failed/i.test(error)
+  // Lo decide el backend con el campo estructurado `retryable` del evento SSE
+  // `error`; el texto del mensaje es solo para mostrarlo y no se interpreta.
+  const retryableError = error !== null && errorRetryable
   // Además, el feedback pendiente debe ser de ESTA propuesta: si la vigente ya
   // cambió (se rehidrató tras un corte al guardar), el `proposalId` viejo daría 409.
   const canRetry =

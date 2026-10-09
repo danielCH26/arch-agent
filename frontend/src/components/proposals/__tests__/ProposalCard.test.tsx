@@ -11,6 +11,7 @@ function resetStore() {
     iterations: [],
     inFlight: 'idle',
     error: null,
+    errorRetryable: false,
     cancelled: false,
     lastModify: null,
   })

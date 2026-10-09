@@ -51,6 +51,18 @@ def _set_jwt_secret(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-for-attachments")
 
 
+@pytest.fixture(autouse=True)
+def _uploads_dir(monkeypatch, tmp_path):
+    """Redirigir el directorio de uploads a un tmp_path.
+
+    ``_ensure_uploads_dir()`` hace ``os.makedirs`` sobre ``/app/uploads``
+    (default de producción/Docker). Fuera del contenedor, ``/app`` no
+    existe o no es escribible y el endpoint revienta con
+    ``PermissionError: [Errno 13]``. El test no debe depender del FS real.
+    """
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", str(tmp_path / "uploads"))
+
+
 @pytest.fixture()
 def fake_db():
     """Spin up an in-memory SQLite + patch the production SessionLocal."""

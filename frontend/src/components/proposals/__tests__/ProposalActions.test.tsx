@@ -10,6 +10,7 @@ function resetStore() {
     iterations: [],
     inFlight: 'idle',
     error: null,
+    errorRetryable: false,
     cancelled: false,
     lastModify: null,
   })
@@ -123,6 +124,7 @@ describe('ProposalActions', () => {
     const retry = vi.fn()
     proposalsStore.setState({
       error: 'La generación superó el tiempo máximo (5 min)',
+      errorRetryable: true,
       lastModify: { proposalId: 101, feedback: 'agrega caché' },
       retry,
     })
@@ -147,6 +149,47 @@ describe('ProposalActions', () => {
   it('no ofrece reintentar ante un error permanente', () => {
     proposalsStore.setState({
       error: 'Has alcanzado el máximo de iteraciones (5)',
+      errorRetryable: false,
+      cancelled: false,
+      lastModify: { proposalId: 101, feedback: 'x' },
+    })
+    render(<ProposalActions proposalId={101} />)
+
+    expect(screen.queryByTestId('proposal-retry')).toBeNull()
+  })
+
+  it('el reintento lo decide `retryable`, no la redacción del mensaje', () => {
+    // Texto que el antiguo regex habría tomado por reintentable ("tiempo máximo",
+    // "timed out", "stream failed") pero que el backend marcó como permanente.
+    for (const error of ['Superó el tiempo máximo', 'request timed out', 'SSE stream failed']) {
+      proposalsStore.setState({
+        error,
+        errorRetryable: false,
+        cancelled: false,
+        lastModify: { proposalId: 101, feedback: 'x' },
+      })
+      const { unmount } = render(<ProposalActions proposalId={101} />)
+      expect(screen.queryByTestId('proposal-retry')).toBeNull()
+      unmount()
+    }
+  })
+
+  it('ofrece reintentar ante un error marcado reintentable aunque el texto no diga nada típico', () => {
+    proposalsStore.setState({
+      error: 'Mensaje con otra redacción',
+      errorRetryable: true,
+      cancelled: false,
+      lastModify: { proposalId: 101, feedback: 'x' },
+    })
+    render(<ProposalActions proposalId={101} />)
+
+    expect(screen.getByTestId('proposal-retry')).toBeInTheDocument()
+  })
+
+  it('un flag reintentable huérfano (sin error) no muestra el reintento', () => {
+    proposalsStore.setState({
+      error: null,
+      errorRetryable: true,
       cancelled: false,
       lastModify: { proposalId: 101, feedback: 'x' },
     })
@@ -174,6 +217,7 @@ describe('ProposalActions: reintento solo para la propuesta vigente (review PR)'
   it('no ofrece reintentar si el feedback pendiente es de otra propuesta (id viejo)', () => {
     proposalsStore.setState({
       error: 'La generación superó el tiempo máximo (5 min)',
+      errorRetryable: true,
       lastModify: { proposalId: 101, feedback: 'agrega caché' },
     })
     // La vigente ya es la 102: reintentar con 101 daría 409.
