@@ -368,6 +368,10 @@ class ProposalGenerator:
             return
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
+        # Latencia de la generacion (perfil + RAG + reordenamiento + redaccion),
+        # medida antes de persistir y guardada en interaction_logs.latency_ms
+        # para poder medir percentiles con SQL.
+        generation_latency_ms = int((perf_counter() - started_at) * 1000)
         try:
             proposal_id, interaction_id, saved_iteration = await asyncio.to_thread(
                 _persist_proposal_and_log,
@@ -381,6 +385,7 @@ class ProposalGenerator:
                 citations=citations,
                 feedback=feedback,
                 prompt=prompt,
+                latency_ms=generation_latency_ms,
             )
         except Exception as exc:
             logger.exception(
@@ -1997,6 +2002,7 @@ def _persist_proposal_and_log(
     citations: list[dict],
     feedback: str | None,
     prompt: str,
+    latency_ms: int | None = None,
 ) -> tuple[int, int, int]:
     """Insert proposal + interaction_log (+ approval for modify) atomically.
 
@@ -2060,7 +2066,7 @@ def _persist_proposal_and_log(
             comment=feedback,
             prompt=prompt[:65000],
             response=markdown[:65000],
-            latency_ms=None,
+            latency_ms=latency_ms,
             tokens_used=None,
         )
         db.add(log)

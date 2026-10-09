@@ -1,0 +1,68 @@
+diff --git a/app/core/proposal_generator.py b/app/core/proposal_generator.py
+index 52c6852..74b8372 100644
+--- a/app/core/proposal_generator.py
++++ b/app/core/proposal_generator.py
+@@ -368,6 +368,10 @@ class ProposalGenerator:
+             return
+ 
+         # 7. Persist the proposal + interaction log + (if modify) approval.
++        # Latencia de la generacion (perfil + RAG + reordenamiento + redaccion),
++        # medida antes de persistir y guardada en interaction_logs.latency_ms
++        # para poder medir percentiles con SQL.
++        generation_latency_ms = int((perf_counter() - started_at) * 1000)
+         try:
+             proposal_id, interaction_id, saved_iteration = await asyncio.to_thread(
+                 _persist_proposal_and_log,
+@@ -381,6 +385,7 @@ class ProposalGenerator:
+                 citations=citations,
+                 feedback=feedback,
+                 prompt=prompt,
++                latency_ms=generation_latency_ms,
+             )
+         except Exception as exc:
+             logger.exception(
+@@ -1997,6 +2002,7 @@ def _persist_proposal_and_log(
+     citations: list[dict],
+     feedback: str | None,
+     prompt: str,
++    latency_ms: int | None = None,
+ ) -> tuple[int, int, int]:
+     """Insert proposal + interaction_log (+ approval for modify) atomically.
+ 
+@@ -2060,7 +2066,7 @@ def _persist_proposal_and_log(
+             comment=feedback,
+             prompt=prompt[:65000],
+             response=markdown[:65000],
+-            latency_ms=None,
++            latency_ms=latency_ms,
+             tokens_used=None,
+         )
+         db.add(log)
+diff --git a/tests/core/test_proposal_generator.py b/tests/core/test_proposal_generator.py
+index 883f986..080c623 100644
+--- a/tests/core/test_proposal_generator.py
++++ b/tests/core/test_proposal_generator.py
+@@ -804,6 +804,8 @@ def test_persisted_prompt_is_the_exact_prompt_sent_to_the_model():
+     assert events[-1][0] == "done"
+     assert len(prompts) == 1 and len(persisted) == 1
+     assert persisted[0]["prompt"] == prompts[0]
++    # La latencia medida se guarda en el log (antes quedaba siempre en NULL).
++    assert isinstance(persisted[0]["latency_ms"], int) and persisted[0]["latency_ms"] >= 0
+     # El log reconstruido antes usaba project_name="" y no llevaba la
+     # descripcion: el prompt real si los trae.
+     assert "Biblioteca" in persisted[0]["prompt"]
+@@ -834,12 +836,14 @@ def test_persist_stores_the_given_prompt_in_the_interaction_log():
+             citations=[],
+             feedback=None,
+             prompt=long_prompt,
++            latency_ms=1234,
+         )
+ 
+     assert result == (3, 9, 1)
+     stored = fake_log.call_args.kwargs["prompt"]
+     assert stored == long_prompt[:65000]
+     assert len(stored) == 65000
++    assert fake_log.call_args.kwargs["latency_ms"] == 1234
+ 
+ 
+ # --- F10: validador de la tabla de trade-offs (robustez) --------------------

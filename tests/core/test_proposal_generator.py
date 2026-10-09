@@ -804,6 +804,8 @@ def test_persisted_prompt_is_the_exact_prompt_sent_to_the_model():
     assert events[-1][0] == "done"
     assert len(prompts) == 1 and len(persisted) == 1
     assert persisted[0]["prompt"] == prompts[0]
+    # La latencia medida se guarda en el log (antes quedaba siempre en NULL).
+    assert isinstance(persisted[0]["latency_ms"], int) and persisted[0]["latency_ms"] >= 0
     # El log reconstruido antes usaba project_name="" y no llevaba la
     # descripcion: el prompt real si los trae.
     assert "Biblioteca" in persisted[0]["prompt"]
@@ -834,12 +836,14 @@ def test_persist_stores_the_given_prompt_in_the_interaction_log():
             citations=[],
             feedback=None,
             prompt=long_prompt,
+            latency_ms=1234,
         )
 
     assert result == (3, 9, 1)
     stored = fake_log.call_args.kwargs["prompt"]
     assert stored == long_prompt[:65000]
     assert len(stored) == 65000
+    assert fake_log.call_args.kwargs["latency_ms"] == 1234
 
 
 # --- F10: validador de la tabla de trade-offs (robustez) --------------------
