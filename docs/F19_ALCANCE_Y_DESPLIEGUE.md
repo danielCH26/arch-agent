@@ -13,6 +13,11 @@ queda documentado aquí.
 | Complejidad de patrones | `migrations/0018_add_pattern_complexity.sql`, `complexity` en los 10 YAML de `data/patterns/`, `PROPOSAL_COMPLEXITY_PENALTY` y la descalificación dura de patrones de complejidad alta en proyectos pequeños |
 | Contexto del proyecto | `app/core/project_context.py` y cambios en `elicitation_agent.py` |
 | Endpoints nuevos | `GET /api/projects/{id}/proposals` (historial) y `GET /api/projects/{id}/proposals/latest` (vigente, excluye rechazadas) |
+| CI | `.github/workflows/ci.yml`: pytest (con `pgvector/pgvector:pg16`) y vitest + build del frontend en cada PR y en cada push a `main` |
+| Proxy del frontend | `frontend/nginx.conf`: `proxy_read_timeout` de 300 s a 330 s (tope de `PROPOSAL_MAX_SECONDS` + margen) |
+| UI de fases | `frontend/src/api/phases.ts` (fases y etiquetas), `ChatWindow` y `PhaseBadge` (cada fase tiene su pantalla y el letrero muestra el nombre real); el PR también toca `Layout` |
+| Prompts del agente | `app/core/agent.py`: ajustes del prompt de sistema (persona y *hints* de librerías y diagramas) |
+| Elicitación | `app/api/elicitation.py`: la respuesta del usuario se guarda **antes** de pedirle la siguiente pregunta al LLM, así un fallo del LLM ya no la pierde |
 | Limpieza | borrado de `resolve-merge-conflicts.patch` |
 
 ## Cambios de contrato de la API (no son "sin modificar contratos")
@@ -21,9 +26,11 @@ queda documentado aquí.
   SSE (se alcanzó `PROPOSAL_MAX_ITER`). Es una respuesta JSON normal con `detail`,
   no un evento `error` del stream. Un cliente que solo esperaba `text/event-stream`
   debe tratar el 409.
-- `POST /api/proposals/{id}/modify` añade dos 409 nuevos: la propuesta ya no es la
-  última iteración, o ya existe una posterior (además de los 409 previos de estado
-  y de máximo de iteraciones).
+- `POST /api/proposals/{id}/modify` añade **un** 409 nuevo: la propuesta ya no es la
+  última iteración del proyecto (es decir, existe una posterior; es una sola
+  comprobación, `latest.id != prior.id`). Se suma a los 409 previos de estado y de
+  máximo de iteraciones. El mensaje "La siguiente iteración no es válida" **no** es
+  un 409: llega como evento SSE `error` desde el guardado, ya con el stream abierto.
 - Nuevo evento SSE `progress` (aditivo: un cliente viejo lo ignora) y campo
   `elapsed_ms` en el evento `done`.
 - `POST /api/rag/search`, `GET /api/rag/patterns/search` y
@@ -40,6 +47,22 @@ queda documentado aquí.
 
 Los 409 aparecen documentados en OpenAPI (`/docs`) con el prefijo "antes de abrir el
 stream".
+
+## Pruebas y CI
+
+- `pytest` y `vitest` + build corren en CI (`.github/workflows/ci.yml`); los
+  números de tests de la descripción del PR deben salir de ese run, no de una
+  corrida local.
+- `tests/test_seed_idempotent.py` (2 tests) **se excluye del CI** con
+  `--ignore=tests/test_seed_idempotent.py`: necesita el esquema completo
+  (`schema.sql` + migraciones) y descargar el modelo de embeddings para sembrar.
+  Hoy nada lo ejecuta automáticamente; se puede activar cuando el CI cargue las
+  migraciones. Corre a mano con `python -m pytest tests/test_seed_idempotent.py`.
+  El antiguo `scripts/test_seed_idempotent.py` ya no existe.
+- Los tests de integración de cancelación durante el guardado
+  (`tests/core/test_proposal_cancel_integration.py`) usan el Postgres real del CI.
+  Documentan el límite best-effort: si el `commit` ya empezó cuando llega la
+  cancelación, la propuesta queda guardada.
 
 ## Pasos obligatorios de despliegue
 

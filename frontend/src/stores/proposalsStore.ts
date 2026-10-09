@@ -138,6 +138,12 @@ function abortActiveStream() {
 
 const IDLE_PROGRESS = { progress: null, startedAt: null } as const
 
+// Espera (ms) antes de la SEGUNDA resincronización de cancel(). La primera se
+// lanza justo tras el abort, cuando el servidor quizá aún no detectó la
+// desconexión: si el commit ya estaba en marcha, esa lectura puede llegar antes
+// de que termine. Esta segunda lectura, un poco después, lo recoge.
+export const CANCEL_RESYNC_DELAY_MS = 2000
+
 interface FailureDetails {
   /** Código HTTP cuando el error viene de la respuesta (p. ej. 409). */
   status?: number
@@ -377,12 +383,22 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       // siempre con la BD para no mostrar un estado distinto del real (p. ej.
       // "Generar propuesta" con una iteración ya gastada).
       if (projectId) {
-        void rehydrateLatest(streamId, projectId).then((saved) => {
-          // La cancelación llegó tarde: no afirmar "cancelada" si se guardó algo nuevo.
-          if (saved && saved.id !== priorId && get().cancelled && get().activity === 'idle') {
-            set({ cancelled: false, lastModify: null })
-          }
-        })
+        const resync = () =>
+          rehydrateLatest(streamId, projectId).then((saved) => {
+            // La cancelación llegó tarde: no afirmar "cancelada" si se guardó algo nuevo.
+            if (saved && saved.id !== priorId && get().cancelled && get().activity === 'idle') {
+              set({ cancelled: false, lastModify: null })
+            }
+          })
+        void resync()
+        // Segunda lectura diferida (ver CANCEL_RESYNC_DELAY_MS): cubre el caso en
+        // que el commit ya había empezado y terminó después de la primera lectura.
+        // Si mientras tanto hubo otra acción (generar, modificar, reset...), el
+        // stream activo ya es otro y no se hace nada.
+        setTimeout(() => {
+          if (streamId !== activeStream) return
+          void resync()
+        }, CANCEL_RESYNC_DELAY_MS)
       }
     },
 

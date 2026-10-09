@@ -9,7 +9,7 @@ vi.mock('../../api/proposals', () => ({
 }))
 
 import * as api from '../../api/proposals'
-import { proposalsStore } from '../proposalsStore'
+import { CANCEL_RESYNC_DELAY_MS, proposalsStore } from '../proposalsStore'
 
 type Callbacks = Parameters<typeof api.createProposalStream>[2]
 
@@ -165,6 +165,53 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     const state = proposalsStore.getState()
     expect(state.cancelled).toBe(false)
     expect(state.activity).toBe('idle')
+  })
+
+  it('si el commit termina DESPUÉS de la primera resincronización, la segunda lectura lo recoge', async () => {
+    vi.useFakeTimers()
+    try {
+      // 1.ª lectura (justo tras abortar): aún no hay nada. 2.ª (tras el retraso): ya está.
+      vi.mocked(api.getLatestProposal)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(out(41, 1))
+      proposalsStore.getState().generate(PROJECT_ID)
+
+      proposalsStore.getState().cancel()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Primera lectura: sigue "cancelada" y sin propuesta (el commit no terminó).
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+      expect(proposalsStore.getState().cancelled).toBe(true)
+      expect(proposalsStore.getState().current).toBeNull()
+
+      await vi.advanceTimersByTimeAsync(CANCEL_RESYNC_DELAY_MS)
+
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(2)
+      const state = proposalsStore.getState()
+      expect(state.current?.id).toBe(41)
+      expect(state.cancelled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('la segunda resincronización no actúa si el usuario ya empezó otra acción', async () => {
+    vi.useFakeTimers()
+    try {
+      proposalsStore.getState().generate(PROJECT_ID)
+
+      proposalsStore.getState().cancel()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+
+      // Cambio de proyecto / logout: invalida la cancelación.
+      proposalsStore.getState().reset()
+      await vi.advanceTimersByTimeAsync(CANCEL_RESYNC_DELAY_MS * 2)
+
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('cancelar una modificación recarga la versión del servidor y sigue "cancelada" si no cambió', async () => {
