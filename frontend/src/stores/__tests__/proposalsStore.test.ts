@@ -9,7 +9,7 @@ vi.mock('../../api/proposals', () => ({
 }))
 
 import * as api from '../../api/proposals'
-import { proposalsStore } from '../proposalsStore'
+import { CANCEL_RESYNC_DELAY_MS, proposalsStore } from '../proposalsStore'
 
 type Lifecycle = 'proposed' | 'approved' | 'rejected'
 
@@ -113,6 +113,10 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     proposalsStore.getState().reset()
+    // clearAllMocks no borra implementaciones de tests anteriores: cancel() ahora
+    // resincroniza con /proposals/latest, así que el default es "no hay nada guardado".
+    vi.mocked(api.getLatestProposal).mockResolvedValue(null)
+    vi.mocked(api.getProposalHistory).mockResolvedValue([])
   })
 
   it('guarda el progreso y el instante de inicio mientras genera, y los limpia al terminar', async () => {
@@ -215,6 +219,106 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
     expect(state.pendingProposal).toBeNull()
     expect(state.inFlight).toBe('idle')
     expect(state.cancelled).toBe(true)
+  })
+
+  it('cancel() resincroniza con el servidor por si el guardado ya había empezado', async () => {
+    captureStream()
+    await proposalsStore.getState().generate(1)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(1))
+    expect(proposalsStore.getState().currentProposal).toBeNull()
+    expect(proposalsStore.getState().cancelled).toBe(true)
+  })
+
+  it('si la propuesta se guardó antes de que la cancelación llegara, se muestra y no se dice "cancelada"', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(41, 1, 'proposed'))
+    vi.mocked(api.getProposalHistory).mockResolvedValue([out(41, 1, 'proposed')])
+    captureStream()
+    await proposalsStore.getState().generate(1)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(proposalsStore.getState().currentProposal?.id).toBe(41))
+    const state = proposalsStore.getState()
+    expect(state.cancelled).toBe(false)
+    expect(state.inFlight).toBe('idle')
+  })
+
+  it('si el commit termina DESPUÉS de la primera resincronización, la segunda lectura lo recoge', async () => {
+    vi.useFakeTimers()
+    try {
+      // 1.ª lectura (justo tras abortar): aún no hay nada. 2.ª (tras el retraso): ya está.
+      vi.mocked(api.getLatestProposal)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(out(41, 1, 'proposed'))
+      vi.mocked(api.getProposalHistory).mockResolvedValue([out(41, 1, 'proposed')])
+      captureStream()
+      await proposalsStore.getState().generate(1)
+
+      proposalsStore.getState().cancel()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Primera lectura: sigue "cancelada" y sin propuesta (el commit no terminó).
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+      expect(proposalsStore.getState().cancelled).toBe(true)
+      expect(proposalsStore.getState().currentProposal).toBeNull()
+
+      await vi.advanceTimersByTimeAsync(CANCEL_RESYNC_DELAY_MS)
+
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(2)
+      const state = proposalsStore.getState()
+      expect(state.currentProposal?.id).toBe(41)
+      expect(state.cancelled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('la segunda resincronización no actúa si el usuario ya empezó otra acción', async () => {
+    vi.useFakeTimers()
+    try {
+      captureStream()
+      await proposalsStore.getState().generate(1)
+
+      proposalsStore.getState().cancel()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+
+      // Cambio de proyecto / logout: invalida el run de la cancelación.
+      proposalsStore.getState().reset()
+      await vi.advanceTimersByTimeAsync(CANCEL_RESYNC_DELAY_MS * 2)
+
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancelar una modificación recarga la versión del servidor sin marcar "no cancelada" si no cambió', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(8, 1, 'proposed'))
+    vi.mocked(api.getProposalHistory).mockResolvedValue([out(8, 1, 'proposed')])
+    captureStream()
+    proposalsStore.setState({
+      currentProposal: {
+        id: 8,
+        project_id: 1,
+        iteration: 1,
+        content_markdown: '## Componentes\n- Gateway',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+    })
+    await proposalsStore.getState().modify(8, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(1))
+    expect(proposalsStore.getState().currentProposal?.id).toBe(8)
+    expect(proposalsStore.getState().cancelled).toBe(true)
   })
 
   it('cancel() sin generación en curso no hace nada', () => {

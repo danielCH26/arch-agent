@@ -117,6 +117,14 @@ function proposalFromOut(out: ProposalOut): Proposal {
 // cancelado o reemplazado: aunque llegue un evento tardío, no toca el estado.
 let activeRun = 0
 let abortActive: (() => void) | null = null
+// Proyecto del stream activo: lo necesita cancel() para resincronizar con el servidor.
+let activeProjectId = 0
+
+// Espera (ms) antes de la SEGUNDA resincronización de cancel(). La primera se
+// lanza justo tras el abort, cuando el servidor quizá aún no detectó la
+// desconexión: si el commit ya estaba en marcha, esa lectura puede llegar antes
+// de que termine. Esta segunda lectura, un poco después, lo recoge.
+export const CANCEL_RESYNC_DELAY_MS = 2000
 
 function startRun(): number {
   // Si todavía había un stream vivo se ABORTA (no solo se invalida): sin esto el
@@ -162,6 +170,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
 
   generate: async (projectId: number) => {
     const run = startRun()
+    activeProjectId = projectId
     set({
       inFlight: 'generating',
       error: null,
@@ -259,6 +268,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       get().iterations.find((p) => p.id === proposalId) ??
       (current?.id === proposalId ? current : undefined)
     const run = startRun()
+    activeProjectId = prior?.project_id ?? 0
     set({
       inFlight: 'modifying',
       error: null,
@@ -360,7 +370,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
     if (inFlight !== 'generating' && inFlight !== 'modifying') return
 
     // Aborta el fetch (el backend cierra el LLM) e invalida callbacks tardíos.
-    startRun()
+    const run = startRun()
+    const projectId = activeProjectId
+    // Id de la versión vigente ANTES de cancelar (undefined al generar desde cero).
+    const priorId = inFlight === 'modifying' ? currentProposal?.id : undefined
 
     set({
       inFlight: 'idle',
@@ -373,6 +386,35 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
       // vigente nunca se tocó.
       currentProposal: inFlight === 'generating' ? null : currentProposal,
     })
+
+    // "Cancelar" solo deja de esperar: si el servidor ya estaba guardando cuando
+    // el usuario pulsó (el botón desaparece cuando LLEGA `saving`, no cuando
+    // empieza), la iteración puede haberse confirmado igual. El backend intenta
+    // evitarlo (cancel_event antes del commit), pero aquí se resincroniza siempre
+    // con la BD, igual que en el timeout de `saving`, para no mostrar un estado
+    // distinto del real (p. ej. "Generar propuesta" con una iteración ya gastada).
+    if (projectId) {
+      const resync = () =>
+        get()
+          .loadLatest(projectId, true)
+          .then(() => {
+            if (run !== activeRun) return
+            const s = get()
+            const savedAnyway =
+              s.currentProposal?.id != null && s.currentProposal.id !== priorId
+            // La cancelación llegó tarde: no afirmar "cancelada" si se guardó algo nuevo.
+            if (s.cancelled && s.inFlight === 'idle' && savedAnyway) set({ cancelled: false })
+          })
+      void resync()
+      // Segunda lectura diferida (ver CANCEL_RESYNC_DELAY_MS): cubre el caso en que
+      // el commit ya había empezado y terminó después de la primera lectura. Si
+      // mientras tanto hubo otra acción (generar, modificar, reset...), `run` ya no
+      // es el activo y no se hace nada.
+      setTimeout(() => {
+        if (run !== activeRun) return
+        void resync()
+      }, CANCEL_RESYNC_DELAY_MS)
+    }
   },
 
   decide: async (proposalId, decision, comment) => {

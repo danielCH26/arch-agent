@@ -20,6 +20,7 @@ import logging
 import os
 
 from app.core.database import SessionLocal
+from app.core.env import env_int
 from app.models.session import UserSession
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
 
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Tope total de caracteres de documentos que se inyectan en un prompt. Se
 # puede ajustar por env: modelos con límite bajo de tokens por minuto (ej.
 # Groq) fallan con 429 si el prompt crece demasiado.
-DOCS_MAX_CHARS = int(os.getenv("PROJECT_DOCS_MAX_CHARS", "12000"))
+DOCS_MAX_CHARS = env_int("PROJECT_DOCS_MAX_CHARS", 12000, minimum=0)
 
 _REQ_PHASE = "requerimientos"
 

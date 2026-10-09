@@ -22,7 +22,12 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
-from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
+from app.core.env import env_float
+from app.core.proposal_generator import (
+    PROPOSAL_MAX_ITER,
+    ProposalGenerator,
+    RAG_MIN_SIMILARITY,
+)
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
 from app.models.approval import Approval
@@ -31,8 +36,10 @@ from app.models.project import Project
 from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
-# El mínimo evita un bucle de comentarios si se configura accidentalmente 0.
-SSE_HEARTBEAT_SECONDS = max(1.0, float(os.getenv("SSE_HEARTBEAT_SECONDS", "15")))
+# Mínimo 1 s: con 0 (o negativo) el heartbeat sería un bucle de comentarios. Como
+# el resto de ``env_float``, un valor por debajo del mínimo vuelve al default (15 s)
+# con un warning, en lugar de recortarse en silencio.
+SSE_HEARTBEAT_SECONDS = env_float("SSE_HEARTBEAT_SECONDS", 15.0, minimum=1.0)
 
 # Re-declared to avoid the circular import (see app/core/proposal_generator.py
 # docstring + design.md section 9). MUST stay in sync with app/api/chat.py and
@@ -40,7 +47,7 @@ SSE_HEARTBEAT_SECONDS = max(1.0, float(os.getenv("SSE_HEARTBEAT_SECONDS", "15"))
 RAG_MIN_SIMILARITY = RAG_MIN_SIMILARITY
 
 PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
-PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
+# PROPOSAL_MAX_ITER se importa de proposal_generator (una sola definicion).
 PHASE = AVAILABLE_PHASES[1]  # "propuesta"
 MAX_SNAPSHOT_CHARS = 20_000
 
@@ -307,7 +314,26 @@ def _apply_project_proposal_decision(
     return approval, len(snapshot), message
 
 
-@router.post("/api/proposals/generate")
+_GENERATE_RESPONSES = {
+    status.HTTP_409_CONFLICT: {
+        "description": (
+            "Se alcanzó PROPOSAL_MAX_ITER. Se responde ANTES de abrir el stream "
+            "SSE, como JSON normal (`detail`), no como evento `error`."
+        ),
+    },
+}
+_MODIFY_RESPONSES = {
+    status.HTTP_409_CONFLICT: {
+        "description": (
+            "Antes de abrir el stream SSE: la propuesta no está en estado "
+            "`proposed`, alcanzó PROPOSAL_MAX_ITER o ya no es la última "
+            "iteración del proyecto (existe una posterior)."
+        ),
+    },
+}
+
+
+@router.post("/api/proposals/generate", responses=_GENERATE_RESPONSES)
 async def generate_proposal(
     body: GenerateRequest,
     current_user: dict = Depends(get_current_user),
@@ -347,7 +373,7 @@ async def generate_proposal(
     )
 
 
-@router.post("/api/proposals/{proposal_id}/modify")
+@router.post("/api/proposals/{proposal_id}/modify", responses=_MODIFY_RESPONSES)
 async def modify_proposal(
     proposal_id: int,
     body: ModifyRequest,

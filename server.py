@@ -4,22 +4,42 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-from app.auth.register import register_user
-from app.auth.validators import ValidationError
-
+# load_dotenv() va ANTES de importar app.*: app.core.database lee DB_POOL_* al
+# importarse, asi que fuera de Docker (sin env_file) el .env debe estar cargado.
 load_dotenv()
 
+from app.auth.register import register_user  # noqa: E402
+from app.auth.validators import ValidationError  # noqa: E402
+
+logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="templates")
 
 
 @asynccontextmanager
-async def _lifespan(_: FastAPI):
-    """Warm embeddings once at startup without coupling production to pytest."""
+async def _lifespan(app: FastAPI):
+    """Warm embeddings once at startup without coupling production to pytest.
+
+    OJO: con ``lifespan`` Starlette IGNORA los handlers registrados con
+    ``@app.on_event("startup"/"shutdown")``. Todo arranque/cierre nuevo debe ir
+    aqui; el chequeo de abajo avisa si alguien registra uno por la via vieja.
+    """
     from app.core.embeddings import warmup_embeddings, warmup_enabled
+
+    ignored = list(getattr(app.router, "on_startup", [])) + list(
+        getattr(app.router, "on_shutdown", [])
+    )
+    if ignored:
+        logger.warning(
+            "Hay %d handler(s) on_event(startup/shutdown) que NO se ejecutaran porque "
+            "la app usa lifespan (server._lifespan): muevelos ahi.",
+            len(ignored),
+        )
 
     if warmup_enabled():
         threading.Thread(

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import unicodedata
 from contextlib import aclosing
 from time import perf_counter
@@ -28,6 +29,7 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
+from app.core.env import env_float, env_int
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.rag import similarity_search
@@ -55,31 +57,32 @@ RAG_MIN_SIMILARITY = 0.85
 #   PROPOSAL_RAG_CANDIDATE_CHUNKS chunks que se piden a PGVector antes de
 #                                agrupar por patron (default 40)
 #   PROPOSAL_RAG_MIN_SIMILARITY  piso opcional; 0.0 = sin piso (default)
-PROPOSAL_RAG_TOP_N = int(os.getenv("PROPOSAL_RAG_TOP_N", "3"))
-PROPOSAL_RAG_CANDIDATE_CHUNKS = int(os.getenv("PROPOSAL_RAG_CANDIDATE_CHUNKS", "40"))
-PROPOSAL_RAG_MIN_SIMILARITY = float(os.getenv("PROPOSAL_RAG_MIN_SIMILARITY", "0.0"))
+PROPOSAL_RAG_TOP_N = env_int("PROPOSAL_RAG_TOP_N", 3, minimum=1)
+PROPOSAL_RAG_CANDIDATE_CHUNKS = env_int("PROPOSAL_RAG_CANDIDATE_CHUNKS", 40, minimum=1)
+PROPOSAL_RAG_MIN_SIMILARITY = env_float("PROPOSAL_RAG_MIN_SIMILARITY", 0.0, minimum=-1.0)
 
 # Tope de caracteres de la propuesta previa que se le pasa al LLM al iterar.
 # Antes eran 1500: una propuesta completa mide 5000+, asi que el modelo nunca
 # veia la parte donde estaba lo que el usuario queria cambiar.
-PRIOR_PROPOSAL_MAX_CHARS = int(os.getenv("PROPOSAL_PRIOR_MAX_CHARS", "12000"))
+PRIOR_PROPOSAL_MAX_CHARS = env_int("PROPOSAL_PRIOR_MAX_CHARS", 12000, minimum=0)
 
 # F19 (HU: primera propuesta en < 5 min). Presupuesto total desde que el
 # usuario pide la propuesta hasta que se guarda. Aplica a TODAS las etapas
 # (contexto, retrieval, LLM y guardado): si se agota, la generacion se corta con
 # un error claro y NO se persiste (el usuario puede reintentar).
-# PROPOSAL_MAX_SECONDS=0 lo desactiva.
-PROPOSAL_MAX_SECONDS = float(os.getenv("PROPOSAL_MAX_SECONDS", "300"))
+# PROPOSAL_MAX_SECONDS=0 lo desactiva; un valor vacío, no numérico o negativo
+# vuelve al default (300) con un warning en vez de impedir el arranque.
+PROPOSAL_MAX_SECONDS = env_float("PROPOSAL_MAX_SECONDS", 300.0, minimum=0.0)
 # Parte del final del presupuesto reservada para guardar. Las etapas de trabajo
 # (contexto, retrieval, LLM) deben terminar antes de ``MAX - reserva``: asi una
 # propuesta ya completa no se pierde por unos segundos de guardado y el total
 # sigue sin pasar del tope. Nunca supera el 20 % del tope.
-PROPOSAL_SAVE_RESERVE_S = float(os.getenv("PROPOSAL_SAVE_RESERVE_S", "10"))
+PROPOSAL_SAVE_RESERVE_S = env_float("PROPOSAL_SAVE_RESERVE_S", 10.0, minimum=0.0)
 # Longitud tipica (caracteres) de una propuesta completa: solo se usa para
 # estimar el porcentaje del evento ``progress`` mientras llegan tokens.
-PROPOSAL_EXPECTED_CHARS = int(os.getenv("PROPOSAL_EXPECTED_CHARS", "6000"))
+PROPOSAL_EXPECTED_CHARS = env_int("PROPOSAL_EXPECTED_CHARS", 6000, minimum=0)
 # Separacion minima entre eventos ``progress`` durante el streaming de tokens.
-PROPOSAL_PROGRESS_INTERVAL_S = float(os.getenv("PROPOSAL_PROGRESS_INTERVAL_S", "1.0"))
+PROPOSAL_PROGRESS_INTERVAL_S = env_float("PROPOSAL_PROGRESS_INTERVAL_S", 1.0, minimum=0.0)
 
 # Porcentaje al inicio de cada etapa. La etapa "generating" avanza de
 # _GEN_START a _GEN_END segun los caracteres recibidos.
@@ -94,7 +97,7 @@ _GEN_START, _GEN_END = 20, 92
 # Default maximum number of iterations per project. Mirrors the design
 # (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
 # at request time so ops can tune it without code changes.
-PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
+PROPOSAL_MAX_ITER = env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
 
 # Engram port per ADR-008: the memory mirror is best-effort, never blocking
 # (REQ-9 / SCN-10). Override for tests/dev with ENGRAM_URL.
@@ -107,6 +110,10 @@ class _GenerationTimeout(Exception):
     def __init__(self, stage: str = "") -> None:
         super().__init__(stage)
         self.stage = stage
+
+
+class _PersistCancelled(Exception):
+    """El cliente cancelo (o se agoto el tiempo) antes de confirmar el guardado."""
 
 
 _T = TypeVar("_T")
@@ -130,7 +137,9 @@ async def _within_budget(
 
     Con ``asyncio.to_thread`` el hilo no se puede matar: se deja de esperar y
     termina solo. Es seguro para las lecturas (contexto, retrieval); el guardado
-    se acota ademas en la base de datos (ver ``_persist_proposal_and_log``).
+    se acota ademas en la base de datos y recibe un ``threading.Event`` de
+    cancelacion que comprueba justo antes del ``commit`` (ver
+    ``_persist_proposal_and_log``).
     """
     if deadline is None:
         return await awaitable
@@ -599,6 +608,11 @@ class ProposalGenerator:
         # presupuesto casi agotado, la sentencia aun puede commitear hasta 500 ms
         # despues del corte: la garantia es "no se guarda nada" solo para las
         # etapas de trabajo; guardando es "puede haberse guardado" (save_timeout).
+        # ``cancel_event`` cubre el otro hueco: si el cliente cancela (o se agota
+        # el tiempo) mientras el hilo ya esta guardando, ``await`` deja de esperar
+        # pero el hilo sigue. El evento se marca y el hilo lo comprueba justo antes
+        # del commit: hace rollback en vez de consumir una de PROPOSAL_MAX_ITER.
+        cancel_event = threading.Event()
         statement_timeout_ms = (
             max(int((deadline - perf_counter()) * 1000), 500) if deadline is not None else None
         )
@@ -616,11 +630,15 @@ class ProposalGenerator:
                     citations=citations,
                     feedback=feedback,
                     statement_timeout_ms=statement_timeout_ms,
+                    cancel_event=cancel_event,
                 ),
                 deadline,
                 "saving",
             )
-        except _GenerationTimeout:
+        except (_GenerationTimeout, asyncio.CancelledError):
+            # Cancelacion del cliente o tope de tiempo: que el hilo (que no se
+            # puede matar) no confirme un guardado que nadie va a ver.
+            cancel_event.set()
             raise
         except _ProposalDomainError as exc:
             # Causa accionable (maximo de iteraciones, iteracion obsoleta por
@@ -703,7 +721,7 @@ class ProposalGenerator:
 # estrecha (~0.80-0.90), asi que 0.03 por nivel no alcanzaba para bajar a
 # CQRS/microservicios en un proyecto chico: 0.08 (alta = 0.16) si, y un patron
 # pesado con muchisima mas similitud, o nombrado por el usuario, aun puede ganar.
-PROPOSAL_COMPLEXITY_PENALTY = float(os.getenv("PROPOSAL_COMPLEXITY_PENALTY", "0.08"))
+PROPOSAL_COMPLEXITY_PENALTY = env_float("PROPOSAL_COMPLEXITY_PENALTY", 0.08, minimum=0.0)
 _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 
 # La penalizacion de arriba es un empate SUAVE (ver comentario de arriba: "un
@@ -717,8 +735,8 @@ _COMPLEXITY_LEVEL = {"baja": 0, "media": 1, "alta": 2}
 # patron de complejidad "alta" no puede ser el principal salvo que el usuario
 # lo pida por nombre (ver _explicitly_requested) -- sin importar cuanta mas
 # similitud tenga.
-PROPOSAL_SMALL_TEAM_MAX = int(os.getenv("PROPOSAL_SMALL_TEAM_MAX", "4"))
-PROPOSAL_SMALL_BUDGET_USD = float(os.getenv("PROPOSAL_SMALL_BUDGET_USD", "20000"))
+PROPOSAL_SMALL_TEAM_MAX = env_int("PROPOSAL_SMALL_TEAM_MAX", 4, minimum=0)
+PROPOSAL_SMALL_BUDGET_USD = env_float("PROPOSAL_SMALL_BUDGET_USD", 20000.0, minimum=0.0)
 
 _TEAM_SIZE_RE = re.compile(
     r"equipo\s+(?:de\s+)?(\d+)\s*"
@@ -1740,11 +1758,18 @@ def _persist_proposal_and_log(
     citations: list[dict],
     feedback: str | None,
     statement_timeout_ms: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, int, int]:
     """Insert proposal + interaction_log (+ approval for modify) atomically.
 
     ``statement_timeout_ms`` (F19): tope por sentencia solo para esta
     transaccion (``set_config(..., is_local=true)``); ``None`` = el de la BD.
+
+    ``cancel_event`` (F19): lo marca el generador cuando el cliente cancela o se
+    agota el tiempo mientras este hilo ya estaba guardando. Se comprueba justo
+    antes del ``commit``; si esta marcado se hace rollback y se lanza
+    ``_PersistCancelled``, asi no queda una iteracion huerfana. Es best-effort:
+    si el ``commit`` ya empezo no hay forma de deshacerlo desde aqui.
 
     Returns ``(proposal_id, interaction_id, iteration)`` for the SSE done
     payload and the Engram mirror. The preconditions are checked again here to
@@ -1833,8 +1858,20 @@ def _persist_proposal_and_log(
         proposal_id = int(proposal.id)
         interaction_id = int(log.id)
 
+        # Ultima comprobacion posible: despues del commit ya no hay vuelta atras.
+        if cancel_event is not None and cancel_event.is_set():
+            raise _PersistCancelled()
+
         db.commit()
         return proposal_id, interaction_id, int(iteration)
+    except _PersistCancelled:
+        db.rollback()
+        logger.info(
+            "Proposal save cancelled before commit project_id=%s iteration=%s",
+            project_id,
+            iteration,
+        )
+        raise
     except _ProposalDomainError:
         db.rollback()
         raise
