@@ -23,7 +23,7 @@ tabla y sin executor) no son comparables 1:1 con search_ms de scope="all".
 from __future__ import annotations
 
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 import logging
 import threading
 from time import perf_counter
@@ -53,6 +53,14 @@ _embedding_cache_lock = threading.Lock()
 # asi que con pocos workers las requests concurrentes se encolan entre si. El
 # default (16) queda por debajo de DB_POOL_SIZE + DB_MAX_OVERFLOW (30).
 _SEARCH_WORKERS = env_int("RAG_SEARCH_WORKERS", 16, minimum=2)
+
+# Largo maximo (en caracteres) de una consulta. multilingual-e5-small trunca a 512
+# tokens (~2000 caracteres), asi que el texto sobrante no cambia el embedding.
+# Se usa en dos sitios: la API publica lo valida (HTTP 422) y la cache de
+# embeddings NO guarda consultas mas largas (las calcula igual, sin retenerlas),
+# de modo que ningun llamador interno (chat, propuestas) puede inflar la memoria
+# longeva del proceso con claves arbitrariamente grandes.
+MAX_QUERY_CHARS = 2000
 
 
 def _warn_if_workers_exceed_pool(workers: int, pool_size: int, max_overflow: int) -> bool:
@@ -159,6 +167,12 @@ def _query_embedding(query: str) -> tuple[list[float], float, bool]:
     la consulta (con el prefijo ``query: `` de E5): no se normaliza mayusculas ni
     espacios. Con ``RAG_EMBEDDING_CACHE_SIZE=0`` la cache esta desactivada.
 
+    Las consultas de mas de ``MAX_QUERY_CHARS`` caracteres se calculan pero no se
+    guardan: la cache vive todo el proceso y no debe retener claves arbitrarias.
+    Aun asi, el tope real de memoria lo marca el vector (384 floats de Python,
+    ~12 KB por entrada), no la clave: con 512 entradas son del orden de 6 MB por
+    proceso.
+
     La cache es por proceso y compartida entre usuarios: solo guarda vectores
     (nunca resultados ni datos de usuarios), pero un ``embedding_ms == 0``
     delata que ese mismo texto ya se consulto antes en este proceso. Por eso la
@@ -173,7 +187,8 @@ def _query_embedding(query: str) -> tuple[list[float], float, bool]:
     acotada de ``embedding_ms`` solo en esa carrera.
     """
     cache_key = f"query: {query}"
-    if _EMBEDDING_CACHE_SIZE:
+    use_cache = bool(_EMBEDDING_CACHE_SIZE) and len(query) <= MAX_QUERY_CHARS
+    if use_cache:
         with _embedding_cache_lock:
             cached = _embedding_cache.get(cache_key)
             if cached is not None:
@@ -185,7 +200,7 @@ def _query_embedding(query: str) -> tuple[list[float], float, bool]:
     elapsed_ms = (perf_counter() - started) * 1000
     _validate_embedding(embedding)
 
-    if _EMBEDDING_CACHE_SIZE:
+    if use_cache:
         with _embedding_cache_lock:
             # Otro request puede haber terminado la misma consulta durante el
             # cálculo. Reusamos su vector y conservamos un LRU acotado.
@@ -297,6 +312,36 @@ def _merge_by_distance(result_groups: Iterable[tuple[list[Document], float]]) ->
     )
 
 
+def _collect_parallel_results(*futures) -> list[tuple[list[Document], float]]:
+    """Espera TODAS las ramas y recien despues propaga el primer error.
+
+    Llamar ``.result()`` en cadena deja la segunda rama sin consumir si la primera
+    lanza: su error (o resultado) se pierde y, peor, su hilo sigue usando una
+    conexion del pool despues de que la peticion ya fallo. Aqui se espera a que
+    todas terminen, se propaga el error de la primera rama que fallo (en el orden
+    recibido, con su tipo original: ``RAGSearchError`` sigue mapeandose a HTTP 400)
+    y los errores de las demas se registran en el log para no taparlos.
+    """
+    wait(futures)
+    results: list[tuple[list[Document], float]] = []
+    first_error: BaseException | None = None
+    for index, future in enumerate(futures):
+        error = future.exception()
+        if error is None:
+            results.append(future.result())
+        elif first_error is None:
+            first_error = error
+        else:
+            logger.error(
+                "Fallo adicional en la rama %d de la busqueda paralela",
+                index,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+    if first_error is not None:
+        raise first_error
+    return results
+
+
 def similarity_search(
     query: str,
     user_id: Optional[int] = None,
@@ -314,6 +359,12 @@ def similarity_search(
         de busqueda (encolado + ejecucion + join de las ramas paralelas con
         scope="all"); es el numero que se compara con el criterio < 100 ms con
         10k vectores por tabla. ``embedding_ms`` queda fuera de ``search_ms``.
+
+    Raises:
+        RAGSearchError: scope/usuario invalidos o embedding invalido.
+        Exception: con scope="all", si falla una rama se propaga su error solo
+            despues de que la otra termine (ver ``_collect_parallel_results``);
+            si fallan ambas, se propaga la de patrones y la de documentos se loguea.
     """
     if scope not in {"all", "patterns", "documents"}:
         raise RAGSearchError("scope debe ser 'all', 'patterns' o 'documents'")
@@ -334,7 +385,7 @@ def similarity_search(
             similarity_search_document_chunks_by_vector,
             query_embedding, int(user_id), project_id, k,
         )
-        groups.extend((pattern_future.result(), document_future.result()))
+        groups.extend(_collect_parallel_results(pattern_future, document_future))
     elif scope == "patterns":
         groups.append(similarity_search_patterns_by_vector(query_embedding, k=k, category=category))
     elif scope == "documents":

@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_current_user
-from app.core.rag import RAGSearchError, similarity_search
+from app.core.rag import MAX_QUERY_CHARS, RAGSearchError, similarity_search
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/rag", tags=["rag"])
 
 
 class RAGSearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_CHARS)
     project_id: Optional[int] = None
     k: int = Field(default=5, ge=1, le=20)
     scope: Literal["all", "patterns", "documents"] = "all"
@@ -80,7 +80,7 @@ async def search_rag(
 
 @router.get("/patterns/search", response_model=RAGSearchResponse)
 async def search_patterns(
-    q: str = Query(..., min_length=1),
+    q: str = Query(..., min_length=1, max_length=MAX_QUERY_CHARS),
     k: int = Query(default=5, ge=1, le=20),
     category: Optional[str] = Query(default=None),
     current_user: dict = Depends(get_current_user),
@@ -102,7 +102,7 @@ async def search_patterns(
 
 @router.get("/documents/search", response_model=RAGSearchResponse)
 async def search_documents(
-    q: str = Query(..., min_length=1),
+    q: str = Query(..., min_length=1, max_length=MAX_QUERY_CHARS),
     project_id: Optional[int] = Query(default=None),
     k: int = Query(default=5, ge=1, le=20),
     current_user: dict = Depends(get_current_user),

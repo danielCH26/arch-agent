@@ -31,6 +31,12 @@ queda documentado aquí.
   `total_ms` (solo `results` y `search_ms`). Motivo: la caché de embeddings es
   compartida y esos campos revelan si otro usuario consultó el mismo texto. No hay
   consumidores en el frontend; los benchmarks usan `rag.similarity_search()`.
+- `POST /api/rag/search` (`query`) y los dos `GET` (`q`) ahora rechazan con 422
+  consultas de más de 2000 caracteres (`MAX_QUERY_CHARS` en `app/core/rag.py`):
+  `multilingual-e5-small` trunca a 512 tokens (~2000 caracteres), así que el texto
+  sobrante no cambiaba el resultado. La caché de embeddings además no guarda
+  consultas más largas que ese límite aunque lleguen desde el chat o desde la
+  generación de propuestas.
 
 Los 409 aparecen documentados en OpenAPI (`/docs`) con el prefijo "antes de abrir el
 stream".
