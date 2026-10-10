@@ -110,4 +110,7 @@ def test_render_hint_mentions_label_and_grounding_rule():
     hint = render_template_hint(template_for_pattern_name("Pipeline de MLOps"))
     assert "Pipeline de MLOps" in hint
     assert "Usa solo los componentes que nombra la propuesta" in hint
+    assert "Conecta cada servicio externo desde el componente que lo usa" in hint
+    assert "conectalo con el modulo que ejecuta la tarea" in hint
+    assert "dibuja solo la primera" in hint
     assert render_template_hint(None) == ""

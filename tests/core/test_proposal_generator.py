@@ -607,6 +607,32 @@ def test_prompt_requires_technology_justification_and_motivating_requirement():
     assert "no una ventaja genérica" in prompt
 
 
+def test_prompt_technology_table_forbids_alternatives_and_category_labels():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+
+    assert "UNA sola tecnología por fila" in prompt
+    assert "nunca 'X/Y' ni 'X o Y'" in prompt
+    assert "no la categoría ('Requisitos obligatorios'" in prompt
+
+
+def test_prompt_uses_real_project_figures_not_rule_thresholds():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[],
+        prior_content=None,
+        feedback=None,
+        project_name="Clinica",
+        requirements_text="Equipo de 3 desarrolladores, plazo de 4 meses, presupuesto bajo",
+    )
+
+    assert "CIFRAS REALES" in prompt
+    assert "copia las cifras exactas de los requerimientos" in prompt
+    assert "son criterios internos de decisión" in prompt
+
+
 def test_tight_mvp_prohibits_distributed_patterns_as_the_primary_choice():
     from app.core.proposal_generator import _select_citations
 

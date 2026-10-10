@@ -316,7 +316,12 @@ def render_template_hint(template: DiagramTemplate | None) -> str:
         f"PLANTILLA DEL PATRON PRINCIPAL APROBADO ({template.label}): "
         f"{template.skeleton} Usa solo los componentes que nombra la propuesta "
         "aprobada; si la plantilla menciona un nodo que la propuesta no "
-        "incluye, omitelo."
+        "incluye, omitelo. Conecta cada servicio externo desde el componente "
+        "que lo usa segun la propuesta (por ejemplo Notificaciones --> "
+        "servicio de correo), no desde el punto de entrada; si hay un "
+        "planificador o tareas programadas, conectalo con el modulo que "
+        "ejecuta la tarea. Si la propuesta nombra alternativas ('X/Y'), "
+        "dibuja solo la primera."
     )
 
 
