@@ -2,16 +2,17 @@
  * Proposal-specific markdown renderer.
  *
  * Proposals (per REQ-1 + the generator's prompt) are produced with a fixed
- * shape: three `## <Section>` headings followed by bullet lists, plus a
- * possible paragraph or two of context. We deliberately keep this renderer
- * narrower than `MessageBubble`'s full markdown so we don't have to lift
- * 150+ LoC of table-parsing logic out of MessageBubble (which is slice-1
- * territory and OUT of scope here).
+ * shape: five `## <Section>` headings (Componentes, Tecnologias, Patrones,
+ * Justificación del patrón principal, Trade-offs y decisión) followed by
+ * bullet lists, plus a possible paragraph or two of context. F10 added the
+ * trade-offs table, so this renderer handles pipe tables (header + separator
+ * + rows) and turns the `<br>` the model uses inside cells into real line
+ * breaks. We deliberately keep it narrower than `MessageBubble`'s full
+ * markdown: no HTML blocks or nested ordered lists.
  *
- * If a future proposal stream starts producing tables / HTML blocks /
- * nested ordered lists, we'll migrate to importing MessageBubble's
- * `renderMarkdownBlocks` (extract it into `frontend/src/lib/markdown.ts`
- * first, then update both call sites).
+ * If a future proposal stream needs more, we'll migrate to importing
+ * MessageBubble's `renderMarkdownBlocks` (extract it into
+ * `frontend/src/lib/markdown.ts` first, then update both call sites).
  */
 
 import type React from 'react'
@@ -46,10 +47,26 @@ function parseInline(content: string): InlineToken[] {
   return tokens
 }
 
+/**
+ * El modelo separa los efectos de una celda con `<br>` (una tabla markdown no
+ * admite saltos de linea). Se convierten a <br/> reales, sin HTML crudo, tambien
+ * cuando el `<br>` queda dentro de un token en negrita. En codigo en linea
+ * (`` `<br>` ``) NO se convierte: es el unico modo de mostrar la etiqueta como
+ * texto literal.
+ */
+function renderWithBreaks(value: string): React.ReactNode {
+  return value.split(/<br\s*\/?>/gi).map((part, partIndex) => (
+    <span key={partIndex}>
+      {partIndex > 0 && <br />}
+      {part}
+    </span>
+  ))
+}
+
 function renderInline(content: string): React.ReactNode {
   return parseInline(content).map((token, index) => {
     if (token.type === 'strong') {
-      return <strong key={index}>{token.value}</strong>
+      return <strong key={index}>{renderWithBreaks(token.value)}</strong>
     }
     if (token.type === 'code') {
       return (
@@ -61,8 +78,34 @@ function renderInline(content: string): React.ReactNode {
         </code>
       )
     }
-    return <span key={index}>{token.value}</span>
+    return <span key={index}>{renderWithBreaks(token.value)}</span>
   })
+}
+
+/**
+ * Celdas de una fila de tabla. Un `\|` escapado es texto de la celda, no un
+ * separador de columna (misma regla que `_table_cells` en el backend).
+ */
+function splitTableRow(line: string): string[] {
+  let text = line.trim()
+  if (text.startsWith('|')) text = text.slice(1)
+  if (text.endsWith('|') && !text.endsWith('\\|')) text = text.slice(0, -1)
+
+  const cells: string[] = []
+  let current = ''
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\\' && text[i + 1] === '|') {
+      current += '|'
+      i += 1
+    } else if (text[i] === '|') {
+      cells.push(current.trim())
+      current = ''
+    } else {
+      current += text[i]
+    }
+  }
+  cells.push(current.trim())
+  return cells
 }
 
 /**
@@ -106,6 +149,37 @@ export function renderProposalMarkdown(content: string): React.ReactNode {
         <hr key={`hr-${index}`} className="my-4 border-gray-300" />,
       )
       index += 1
+      continue
+    }
+
+    if (
+      line.includes('|') &&
+      index + 1 < lines.length &&
+      /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1])
+    ) {
+      const headers = splitTableRow(line)
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        rows.push(splitTableRow(lines[index]))
+        index += 1
+      }
+      blocks.push(
+        <div key={`table-${index}`} className="my-3 overflow-x-auto" data-testid="proposal-markdown-table">
+          <table className="min-w-full border-collapse text-left text-xs">
+            <thead className="bg-gray-50 text-gray-700">
+              <tr>{headers.map((header, cellIndex) => <th key={cellIndex} className="border border-gray-200 px-2 py-1 font-semibold">{renderInline(header)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex} className="align-top">
+                  {headers.map((_, cellIndex) => <td key={cellIndex} className="border border-gray-200 px-2 py-1">{renderInline(row[cellIndex] ?? '')}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      )
       continue
     }
 

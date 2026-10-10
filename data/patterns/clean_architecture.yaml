@@ -1,5 +1,6 @@
 pattern_name: "Clean Architecture"
 category: "Monolítica"
+complexity: "media"
 description: >
   Organiza la aplicación alrededor de reglas de negocio y casos de uso en el
   centro, haciendo que las dependencias del código apunten hacia adentro. La UI,
@@ -15,11 +16,15 @@ when_not_to_use: >
   estructura de la que el equipo necesita.
 tradeoffs:
   ventajas:
-    - "Aísla la lógica de negocio de frameworks, UI, base de datos y servicios externos"
-    - "Facilita pruebas del núcleo de la aplicación mediante interfaces y dependencias invertidas"
+    - "Independiente de frameworks: el framework es una herramienta en la capa externa y no condiciona el modelo de negocio, así que actualizarlo o cambiarlo afecta solo a esa capa"
+    - "Reglas de negocio testeables sin UI, base de datos ni servidor web, porque las capas internas no conocen a las externas (regla de dependencia)"
+    - "UI y base de datos intercambiables: se puede reemplazar una UI web por una de consola, o un motor SQL por uno NoSQL, tocando solo los adaptadores"
+    - "Casos de uso explícitos: esa capa concentra las reglas propias de la aplicación y orquesta a las entidades, de modo que un cambio operativo se localiza ahí y no se propaga al resto"
   desventajas:
-    - "Añade más capas, proyectos e interfaces que una estructura simple por carpetas"
-    - "Puede solaparse con arquitectura hexagonal si el equipo no define límites claros"
+    - "Más capas, interfaces y conversiones: los datos que cruzan fronteras deben ser estructuras simples (DTO), no entidades ni filas de la base, lo que multiplica clases y mapeos"
+    - "Exige disciplina con la regla de dependencia (las dependencias de código solo apuntan hacia adentro) y usar inversión de dependencias para cruzar límites; una violación puntual rompe la independencia del núcleo"
+    - "Sobreestructura en aplicaciones CRUD pequeñas o prototipos: el costo de entidades, casos de uso y adaptadores supera el beneficio"
+    - "Se solapa con Hexagonal y Onion, variantes con el mismo objetivo: sin acordar límites y nombres en el equipo se mezclan convenciones"
 decision_signals:
   - pregunta: "¿Las reglas de negocio deben probarse sin levantar base de datos, framework web ni servicios externos?"
     señal_patron: "sí -> Clean Architecture"
@@ -27,3 +32,12 @@ decision_signals:
     señal_patron: "sí -> Clean Architecture"
   - pregunta: "¿El dominio tiene suficientes reglas y casos de uso como para justificar capas explícitas?"
     señal_patron: "sí -> Clean Architecture"
+fuentes:
+  - titulo: "The Clean Architecture (Robert C. Martin, 2012)"
+    url: "https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html"
+quality_attributes: [testabilidad, independencia de frameworks, mantenibilidad, claridad del dominio]
+team_fit: "equipo de 3 a 10 personas con producto de larga vida donde el framework y la base de datos pueden cambiar"
+example_scenarios:
+  - "Aplicación móvil y web con la misma lógica de negocio que debe sobrevivir a un cambio de framework en los próximos años"
+  - "Sistema de reservas de larga vida donde casos de uso como 'crear reserva' y 'cancelar reserva' deben ser claros y testeables"
+  - "Backend de una fintech que necesita aislar reglas de negocio del ORM y del framework web"

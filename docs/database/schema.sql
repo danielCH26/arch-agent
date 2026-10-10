@@ -144,6 +144,7 @@ CREATE TABLE architect_patterns (
     tradeoffs JSONB,
     when_not_to_use TEXT,
     decision_signals JSONB,
+    complexity VARCHAR(10),         -- baja | media | alta (complejidad operativa)
     embedding vector(384),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

@@ -12,6 +12,7 @@ La integracion con LangChain se mantiene en dos puntos:
 
 from __future__ import annotations
 
+import os
 from time import perf_counter
 from typing import Iterable, Literal, Optional
 
@@ -26,6 +27,15 @@ from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
 
 SearchScope = Literal["all", "patterns", "documents"]
+
+# El indice ivfflat de architect_pattern_chunks se creo con lists=100, pero la
+# tabla tiene unos cientos de filas: con probes=10 solo se visita ~10% de las
+# listas y el resultado puede omitir chunks relevantes (o devolver menos de k).
+# Para patrones se buscan TODAS las listas (probes >= lists = busqueda exacta);
+# con tan pocos vectores el costo es despreciable. Los documentos del usuario
+# siguen usando probes=10. PATTERN_SEARCH_PROBES=10 restaura el comportamiento
+# anterior.
+PATTERN_SEARCH_PROBES = int(os.getenv("PATTERN_SEARCH_PROBES", "100"))
 
 
 class RAGSearchError(Exception):
@@ -75,6 +85,7 @@ def _pattern_chunk_to_document(
         "pattern_name": pattern.pattern_name,
         "category": pattern.category,
         "tradeoffs": pattern.tradeoffs,
+        "complexity": getattr(pattern, "complexity", None),
         "chunk_type": chunk.chunk_type,
         "distance": float(distance) if distance is not None else None,
         "similarity": _similarity_from_cosine_distance(distance),
@@ -111,10 +122,11 @@ def similarity_search_patterns_by_vector(
     query_embedding: list[float],
     k: int = 5,
     category: Optional[str] = None,
-    probes: int = 10,
+    probes: Optional[int] = None,
 ) -> tuple[list[Document], float]:
     """Busca chunks de patrones de arquitectura por similitud coseno en PGVector."""
     _validate_embedding(query_embedding)
+    probes = PATTERN_SEARCH_PROBES if probes is None else probes
     db = SessionLocal()
     started = perf_counter()
     try:

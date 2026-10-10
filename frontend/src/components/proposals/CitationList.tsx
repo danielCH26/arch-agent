@@ -25,27 +25,19 @@ export function CitationList({ citations }: CitationListProps) {
     )
   }
 
+  const labelFor = (citation: ProposalCitation, index: number) =>
+    citation.pattern_name ?? `Patrón #${citation.pattern_id ?? index}`
+
   return (
     <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">
-      <span className="font-semibold">Patrones citados (PGVector):</span>
-      <ul className="mt-1 space-y-1">
-        {citations.map((citation, index) => {
-          const label =
-            citation.pattern_name ?? `Patrón #${citation.pattern_id ?? index}`
-          const similarity =
-            citation.similarity != null
-              ? ` — similitud ${(citation.similarity * 100).toFixed(0)}%`
-              : ''
-          return (
-            <li
-              key={`${citation.pattern_id ?? 'unknown'}-${index}`}
-              title={citation.snippet ?? undefined}
-            >
-              {label}
-              {similarity}
-            </li>
-          )
-        })}
+      <p className="font-semibold">Fuentes RAG para los trade-offs:</p>
+      {/* Sin numeracion propia: el [n] ya es el numero que cita la tabla. */}
+      <ul className="mt-1 list-none space-y-0.5 pl-0">
+        {citations.map((citation, index) => (
+          <li key={`${citation.pattern_id ?? 'unknown'}-${index}`}>
+            <span title={citation.snippet ?? undefined}>[{index + 1}] {labelFor(citation, index)}</span>
+          </li>
+        ))}
       </ul>
     </div>
   )

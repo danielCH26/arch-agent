@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { authStore } from '../stores/authStore'
 import { projectsStore } from '../stores/projectsStore'
+import { CreateProjectDialog } from './CreateProjectDialog'
 
 export function Layout() {
   const navigate = useNavigate()
@@ -14,6 +15,7 @@ export function Layout() {
   const projectsError = projectsStore((state) => state.error)
 
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [showCreateDialog, setShowCreateDialog] = useState(false)
 
   useEffect(() => {
     fetchProjects()
@@ -161,13 +163,14 @@ export function Layout() {
 
             {/* New project button */}
             <div className="mt-4 pt-4 border-t border-gray-200">
-              <Link
-                to="/projects"
+              <button
+                type="button"
+                onClick={() => setShowCreateDialog(true)}
                 className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors shadow-sm"
               >
                 <span>+</span>
                 <span>Nuevo proyecto</span>
-              </Link>
+              </button>
             </div>
           </div>
 
@@ -203,6 +206,10 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+      <CreateProjectDialog
+        isOpen={showCreateDialog}
+        onClose={() => setShowCreateDialog(false)}
+      />
     </div>
   )
 }
