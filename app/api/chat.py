@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 import re
@@ -20,36 +20,17 @@ from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.error_handlers import handle_llm_errors
 from app.core.rag import similarity_search
+# RAG_MIN_SIMILARITY viene de app/core/rag_config.py, que es su unico lugar de
+# definicion junto con la evidencia que justifica el 0.85.
+from app.core.rag_config import RAG_MIN_SIMILARITY
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
-# Umbral MINIMO de similitud para considerar un chunk/patron "relevante".
-# Sin esto, similarity_search() siempre devuelve los top-k mas cercanos
-# aunque ninguno tenga relacion real con la query.
-#
-# Es un UNICO umbral global (no diferenciado por tipo) -- se intento
-# diferenciar por source_type (patrones vs. documentos) pero la evidencia
-# real termino contradiciendolo: un falso positivo de un documento
-# (PDF de matematicas, en una pregunta de microservicios) salio a 83%,
-# por ENCIMA de un verdadero positivo de otro documento real (PDF de
-# grafos/MapReduce, en su propia pregunta, a 80-81%). Con este modelo de
-# embeddings (multilingual-e5-small), la similitud coseno sola no separa
-# limpiamente relevante/irrelevante en la banda 80-88%; no existe un
-# numero (global o por tipo) que acierte siempre en esa zona gris.
-#
-# 0.85 es un punto intermedio elegido con la evidencia acumulada:
-#   Verdaderos positivos medidos: 88% (patron), 89-92% (documento).
-#   Falsos positivos medidos:     75-78%, 81-83% (ambos tipos).
-# Es una heuristica "best effort", no una garantia -- puede ocasionalmente
-# dejar pasar ruido cerca del limite, o descartar un match debil pero
-# legitimo. Si se necesita precision real en esa zona gris, la solucion
-# correcta es un paso de re-ranking (ej. que el LLM juzgue relevancia
-# real de cada candidato, o un cross-encoder), no seguir ajustando este
-# numero -- quedo fuera del alcance de esta HU, ver docs/QA_criterios_aceptacion_RAG.md.
-RAG_MIN_SIMILARITY = 0.85
+# El umbral de similitud y su justificacion viven en app/core/rag_config.py
+# (importado arriba). Este archivo solo lo usa.
 
 # Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
 # solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
