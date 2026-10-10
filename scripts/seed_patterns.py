@@ -97,14 +97,15 @@ def upsert_pattern(cur, pattern: dict) -> int:
     embedding_text = f"{pattern['description']} {pattern['use_cases']}"
     embedding = to_pgvector_literal(embed_passage(embedding_text))
     decision_signals = json.dumps(pattern.get("decision_signals", []))
+    fuentes = json.dumps(pattern.get("fuentes", []))
 
     if row is None:
         cur.execute(
             """
             INSERT INTO architect_patterns
                 (pattern_name, category, description, use_cases, tradeoffs,
-                 when_not_to_use, decision_signals, complexity, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                 when_not_to_use, decision_signals, complexity, fuentes, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
             RETURNING id
             """,
             (
@@ -116,6 +117,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
                 pattern.get("when_not_to_use"),
                 decision_signals,
                 pattern.get("complexity"),
+                fuentes,
                 embedding,
             ),
         )
@@ -126,7 +128,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
         UPDATE architect_patterns
         SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
             when_not_to_use = %s, decision_signals = %s, complexity = %s,
-            embedding = %s::vector
+            fuentes = %s, embedding = %s::vector
         WHERE id = %s
         """,
         (
@@ -137,6 +139,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
             pattern.get("when_not_to_use"),
             decision_signals,
             pattern.get("complexity"),
+            fuentes,
             embedding,
             row[0],
         ),

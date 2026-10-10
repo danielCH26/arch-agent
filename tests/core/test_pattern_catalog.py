@@ -35,6 +35,15 @@ def test_every_pattern_has_user_like_scenarios_and_fit_fields():
         assert (pattern.get("team_fit") or "").strip(), name
 
 
+def test_every_pattern_has_curated_clickable_sources():
+    for pattern in load_patterns():
+        sources = pattern.get("fuentes") or []
+        assert sources, pattern["pattern_name"]
+        for source in sources:
+            assert source.get("titulo", "").strip(), pattern["pattern_name"]
+            assert source.get("url", "").startswith("https://"), pattern["pattern_name"]
+
+
 def test_build_pattern_chunks_omits_missing_optional_fields():
     minimal = {"pattern_name": "X", "description": "d", "use_cases": "u"}
     assert set(build_pattern_chunks(minimal)) == {"summary"}

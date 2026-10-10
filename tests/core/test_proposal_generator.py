@@ -295,6 +295,21 @@ def _pat(name, pid, similarity, complexity=None, chunk_type="summary"):
     )
 
 
+def test_citations_preserve_curated_sources_for_the_ui():
+    from app.core.proposal_generator import _select_citations
+
+    source = {
+        "titulo": "Hexagonal architecture (Alistair Cockburn)",
+        "url": "https://alistair.cockburn.us/hexagonal-architecture/",
+    }
+    doc = _pat("Arquitectura hexagonal", 7, 0.91)
+    doc.metadata["fuentes"] = [source]
+
+    citations = _select_citations([doc], top_n=1, min_similarity=0.0)
+
+    assert citations[0]["fuentes"] == [source]
+
+
 def test_complexity_penalty_prefers_simple_pattern_on_close_similarity():
     from unittest.mock import patch
 
@@ -581,6 +596,15 @@ def test_prompt_caps_technologies_and_blocks_heavy_primary_patterns():
     assert "Tecnologías: como máximo 6" in prompt
     assert "CI/CD, backups" in prompt
     assert "no son el patrón principal de un proyecto sencillo" in prompt
+
+
+def test_prompt_requires_technology_justification_and_motivating_requirement():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+
+    assert "| Tecnología | Justificación | Requisito que lo motiva |" in prompt
+    assert "no una ventaja genérica" in prompt
 
 
 def test_tight_mvp_prohibits_distributed_patterns_as_the_primary_choice():

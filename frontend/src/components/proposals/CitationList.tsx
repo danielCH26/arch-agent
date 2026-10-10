@@ -36,6 +36,22 @@ export function CitationList({ citations }: CitationListProps) {
         {citations.map((citation, index) => (
           <li key={`${citation.pattern_id ?? 'unknown'}-${index}`}>
             <span title={citation.snippet ?? undefined}>[{index + 1}] {labelFor(citation, index)}</span>
+            {(citation.fuentes?.length ?? 0) > 0 && (
+              <ul className="ml-4 mt-0.5 list-disc space-y-0.5">
+                {citation.fuentes!.map((source) => (
+                  <li key={`${source.titulo}-${source.url}`}>
+                    <a
+                      className="text-blue-700 underline hover:text-blue-900"
+                      href={source.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {source.titulo}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
           </li>
         ))}
       </ul>

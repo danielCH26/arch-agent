@@ -104,6 +104,7 @@ def rank_case(case, patterns, chunk_rows, chunk_vecs, encoder, query_prefix, mod
                 "category": row["pattern"]["category"],
                 "tradeoffs": row["pattern"].get("tradeoffs"),
                 "complexity": row["pattern"].get("complexity"),
+                "fuentes": row["pattern"].get("fuentes", []),
                 "chunk_type": row["chunk_type"],
                 "distance": dist,
                 "similarity": 1.0 - dist,

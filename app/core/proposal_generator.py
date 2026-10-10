@@ -964,6 +964,7 @@ def _select_citations(
                 "similarity": doc.metadata.get("similarity"),
                 "snippet": (doc.page_content or "")[:240],
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
+                "fuentes": doc.metadata.get("fuentes") or [],
             }
         )
         # Solo si NO es el principal: un patron descartado por escala que aun
@@ -1867,7 +1868,14 @@ def _build_prompt(
         "\nFormato OBLIGATORIO (responde exactamente con estas cinco secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
-        "## Tecnologias\n- ...\n\n"
+        "## Tecnologias\n"
+        "Incluye UNA tabla Markdown con una fila por tecnología elegida y las "
+        "columnas `Tecnología`, `Justificación` y `Requisito que lo motiva`. "
+        "La justificación debe explicar el rol técnico y el requisito debe ser "
+        "un requisito concreto del proyecto, no una ventaja genérica.\n"
+        "| Tecnología | Justificación | Requisito que lo motiva |\n"
+        "| --- | --- | --- |\n"
+        "| ... | ... | ... |\n\n"
         "## Patrones\n- ...\n\n"
         "## Justificación del patrón principal\n"
         "- Motivo de elección: explica por qué el patrón principal responde a "

@@ -76,4 +76,23 @@ describe('CitationList', () => {
       'Orquesta transacciones distribuidas',
     )
   })
+
+  it('renders curated pattern sources as safe external links', () => {
+    const citations: ProposalCitation[] = [{
+      pattern_id: 7,
+      pattern_name: 'Hexagonal',
+      similarity: 0.91,
+      fuentes: [{
+        titulo: 'Hexagonal architecture (Alistair Cockburn)',
+        url: 'https://alistair.cockburn.us/hexagonal-architecture/',
+      }],
+    }]
+
+    render(<CitationList citations={citations} />)
+
+    const link = screen.getByRole('link', { name: /Alistair Cockburn/ })
+    expect(link).toHaveAttribute('href', 'https://alistair.cockburn.us/hexagonal-architecture/')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
 })
