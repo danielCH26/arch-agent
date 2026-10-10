@@ -185,8 +185,29 @@ class TestBuildLangchainModel:
             model_provider="openai",
             base_url="https://api.openai.com/v1",
             api_key="sk-test",
+            max_tokens=4096,
         )
         assert result == mock_model
+
+    @patch("app.core.llm_loader.init_chat_model")
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_max_tokens_comes_from_env_and_zero_disables_it(self, mock_load, mock_init, monkeypatch):
+        from app.core.llm_loader import UserLLMConfig, clear_session_cache
+
+        mock_load.return_value = UserLLMConfig(
+            user_id=1, base_url="https://x/v1", model="m", api_key="k"
+        )
+        mock_init.return_value = MagicMock()
+
+        monkeypatch.setenv("LLM_MAX_TOKENS", "8000")
+        clear_session_cache()
+        build_langchain_model(1)
+        assert mock_init.call_args.kwargs["max_tokens"] == 8000
+
+        monkeypatch.setenv("LLM_MAX_TOKENS", "0")
+        clear_session_cache()
+        build_langchain_model(1)
+        assert "max_tokens" not in mock_init.call_args.kwargs
 
     @patch("app.core.llm_loader.init_chat_model")
     @patch("app.core.llm_loader.load_user_llm_config")

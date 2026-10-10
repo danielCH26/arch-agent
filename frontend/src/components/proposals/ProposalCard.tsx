@@ -42,6 +42,15 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
   }
 
   const lifecycle = currentProposal?.lifecycle ?? 'proposed'
+  // El backend no guarda una propuesta cortada (sin `done`, el borrador queda
+  // con id null) y manda `error`. Antes el borrador parcial tapaba el error y
+  // el boton: la tarjeta quedaba a medias, sin acciones ni forma de reintentar.
+  const failedDraft =
+    inFlight === 'idle' &&
+    error != null &&
+    currentProposal != null &&
+    currentProposal.id == null &&
+    Boolean(currentProposal.content_markdown)
 
   return (
     <div
@@ -81,7 +90,7 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
           "Generar propuesta" action. It also serves as the retry affordance
           after a failed generation (store error surfaced inline). */}
       {projectId != null && inFlight === 'idle' && (
-        !currentProposal?.content_markdown || lifecycle === 'rejected'
+        !currentProposal?.content_markdown || lifecycle === 'rejected' || failedDraft
       ) && (
         <div className="mt-3 flex flex-col gap-2">
           {error && (
@@ -95,7 +104,7 @@ export function ProposalCard({ forceMount, projectId }: ProposalCardProps) {
             onClick={() => void generate(projectId)}
             className="self-start rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
           >
-            Generar propuesta
+            {failedDraft ? 'Reintentar propuesta' : 'Generar propuesta'}
           </button>
         </div>
       )}

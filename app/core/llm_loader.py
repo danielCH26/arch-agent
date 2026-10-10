@@ -139,6 +139,27 @@ def build_langchain_model(
     return _init_model(config)
 
 
+DEFAULT_LLM_MAX_TOKENS = 4096
+
+
+def _max_output_tokens() -> int | None:
+    """Tope de tokens de salida (env ``LLM_MAX_TOKENS``).
+
+    Sin un valor explicito cada proveedor aplica su propio default, y algunos
+    son muy bajos: la propuesta de F10 (5 secciones y 2 tablas) se cortaba con
+    ``finish_reason=length`` a los ~760 caracteres y no se guardaba. ``0``
+    vuelve al comportamiento anterior (no se envia ``max_tokens``).
+    """
+    raw = os.environ.get("LLM_MAX_TOKENS", "").strip()
+    if not raw:
+        return DEFAULT_LLM_MAX_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_LLM_MAX_TOKENS
+    return value if value > 0 else None
+
+
 def _init_model(config: UserLLMConfig) -> BaseChatModel:
     """Inicializa el modelo LangChain con la config del usuario."""
     if not config.model:
@@ -148,12 +169,18 @@ def _init_model(config: UserLLMConfig) -> BaseChatModel:
             reason="missing",
         )
 
+    extra: dict = {}
+    max_tokens = _max_output_tokens()
+    if max_tokens is not None:
+        extra["max_tokens"] = max_tokens
+
     try:
         model = init_chat_model(
             model=config.model,
             model_provider="openai",  # Cualquier API OpenAI-compatible
             base_url=config.base_url,
             api_key=config.api_key,
+            **extra,
         )
         return model
     except Exception as e:

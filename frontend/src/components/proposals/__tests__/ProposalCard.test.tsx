@@ -348,4 +348,29 @@ describe('ProposalCard', () => {
     )
     expect(screen.getByTestId('proposal-generate')).toBeInTheDocument()
   })
+
+  it('shows the error and a retry button when the stream fails after partial content', () => {
+    proposalsStore.setState({
+      currentProposal: {
+        id: null,
+        project_id: 7,
+        iteration: 0,
+        content_markdown: '## Componentes\n- API\n\n## Tecnologias\n| Tecnología | Justificación |',
+        citations: [],
+        lifecycle: 'proposed',
+        feedback: null,
+        created_at: null,
+      },
+      inFlight: 'idle',
+      error: 'El modelo se quedó sin tokens de salida y la propuesta quedó incompleta',
+    })
+
+    render(<ProposalCard forceMount projectId={7} />)
+
+    expect(screen.getByTestId('proposal-generate-error')).toHaveTextContent(
+      'sin tokens de salida',
+    )
+    expect(screen.getByTestId('proposal-generate')).toHaveTextContent('Reintentar propuesta')
+    expect(screen.queryByRole('button', { name: /Aprobar/ })).not.toBeInTheDocument()
+  })
 })
