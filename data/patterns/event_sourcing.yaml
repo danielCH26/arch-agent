@@ -33,6 +33,10 @@ fuentes:
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
   - titulo: "Event Sourcing (Martin Fowler)"
     url: "https://martinfowler.com/eaaDev/EventSourcing.html"
+  - titulo: "An Empirical Characterization of Event Sourced Systems and Their Schema Evolution (Overeem et al., JSS 2021)"
+    url: "https://arxiv.org/abs/2104.01146"
+  - titulo: "Decision-making on CQRS with Event Sourcing architectural variations (Lytvynov y Hruzin, TARP 2025)"
+    url: "https://journals.uran.ua/tarp/article/view/337168"
 quality_attributes: [auditabilidad, trazabilidad, reconstrucción histórica del estado]
 team_fit: "equipo de 8 o más personas con experiencia en eventos y requisito legal o de negocio de historial completo e inmutable"
 example_scenarios:

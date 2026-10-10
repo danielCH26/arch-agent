@@ -42,3 +42,5 @@ fuentes:
     url: "https://martinfowler.com/eaaDev/uiArchs.html"
   - titulo: "Model-View-ViewModel (Microsoft Learn)"
     url: "https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm"
+  - titulo: "A Cookbook for Using the Model-View-Controller User Interface Paradigm in Smalltalk-80 (Krasner y Pope, JOOP 1988)"
+    url: "https://ics.uci.edu/~dfredmil/ics227-SQ04/papers/KrasnerPope88.pdf"

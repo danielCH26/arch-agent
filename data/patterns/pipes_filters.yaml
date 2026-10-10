@@ -40,3 +40,9 @@ example_scenarios:
 fuentes:
   - titulo: "Pipes and Filters pattern (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters"
+  - titulo: "An Introduction to Software Architecture (Garlan y Shaw, CMU-CS-94-166, 1994)"
+    url: "https://apps.dtic.mil/sti/tr/pdf/ADA288356.pdf"
+  - titulo: "Refinement of Pipe-and-Filter Architectures (Philipps y Rumpe, FM 1999)"
+    url: "https://arxiv.org/abs/1411.2414"
+  - titulo: "Some Initial Performance Characteristics of Three Architectural Styles (Grahn y Bosch, WOSP 1998)"
+    url: "https://hgr.cse.bth.se/Papers/wosp98.pdf"

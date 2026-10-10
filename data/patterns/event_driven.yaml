@@ -35,6 +35,8 @@ fuentes:
     url: "https://arxiv.org/abs/2308.05270"
   - titulo: "Mecanismos de resiliencia y consistencia de datos en arquitecturas orientadas a eventos: revisión sistemática"
     url: "https://dspace.ups.edu.ec/handle/123456789/33447"
+  - titulo: "An Introduction to Software Architecture (Garlan y Shaw, CMU-CS-94-166, 1994)"
+    url: "https://apps.dtic.mil/sti/tr/pdf/ADA288356.pdf"
 quality_attributes: [desacoplamiento, escalabilidad, tolerancia a picos, procesamiento asíncrono]
 team_fit: "equipo de 6 o más personas con experiencia en brokers de mensajes y observabilidad distribuida"
 example_scenarios:

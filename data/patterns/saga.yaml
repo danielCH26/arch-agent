@@ -43,3 +43,5 @@ fuentes:
     url: "https://microservices.io/patterns/data/saga.html"
   - titulo: "Saga distributed transactions pattern (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/saga"
+  - titulo: "Sagas (Garcia-Molina y Salem, ACM SIGMOD 1987)"
+    url: "https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf"

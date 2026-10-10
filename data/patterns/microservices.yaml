@@ -31,6 +31,14 @@ decision_signals:
 fuentes:
   - titulo: "Microservices architecture style (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/microservices"
+  - titulo: "Microservices: yesterday, today, and tomorrow (Dragoni et al., 2017)"
+    url: "https://arxiv.org/abs/1606.04036"
+  - titulo: "The pains and gains of microservices: a systematic grey literature review (Soldani et al., JSS 2018)"
+    url: "https://research.tue.nl/en/publications/the-pains-and-gains-of-microservices-a-systematic-grey-literature/"
+  - titulo: "Architectural Patterns for Microservices: A Systematic Mapping Study (Taibi, Lenarduzzi y Pahl, CLOSER 2018)"
+    url: "https://www.scitepress.org/Papers/2018/67983/"
+  - titulo: "From Monolith to Microservices: A Classification of Refactoring Approaches (Fritzsch et al., 2019)"
+    url: "https://arxiv.org/abs/1807.10059"
 quality_attributes: [escalabilidad independiente, despliegue independiente, autonomía de equipos, resiliencia]
 team_fit: "varios equipos de 10 o más personas con DevOps maduro, contenedores y presupuesto de operación"
 example_scenarios:

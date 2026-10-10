@@ -95,6 +95,26 @@ def test_diagram_hint_has_pattern_templates_and_keeps_observability_optional():
     assert "No fuerces API Gateway, broker, múltiples servicios ni observabilidad" in DIAGRAM_HINT
 
 
+def test_system_prompt_adds_only_the_approved_principal_pattern_template():
+    from app.core.agent import _build_system_prompt
+
+    proposal = _make_doc(
+        "PROPUESTA APROBADA:\n## Patrones\n- Patrón principal: Monolito modular\n",
+        "approved_proposal",
+        pattern_name="Propuesta aprobada",
+    )
+    prompt = _build_system_prompt([proposal])
+    assert "PLANTILLA DEL PATRON PRINCIPAL APROBADO (Monolito modular)" in prompt
+    assert "PLANTILLA DEL PATRON PRINCIPAL APROBADO (Microservicios)" not in prompt
+
+
+def test_system_prompt_without_approved_proposal_adds_no_pattern_template():
+    from app.core.agent import _build_system_prompt
+
+    rag = _make_doc("Microservicios ...", "architect_pattern", pattern_name="Microservicios")
+    assert "PLANTILLA DEL PATRON PRINCIPAL APROBADO" not in _build_system_prompt([rag])
+
+
 def test_find_ungrounded_mermaid_nodes_warns_on_nodes_absent_from_context():
     from app.core.agent import find_ungrounded_mermaid_nodes
 

@@ -42,3 +42,7 @@ fuentes:
     url: "https://learn.microsoft.com/en-us/azure/architecture/databases/guide/big-data-architectures"
   - titulo: "Lambda architecture (Wikipedia)"
     url: "https://en.wikipedia.org/wiki/Lambda_architecture"
+  - titulo: "Questioning the Lambda Architecture (Jay Kreps, O'Reilly 2014)"
+    url: "https://www.oreilly.com/ideas/questioning-the-lambda-architecture"
+  - titulo: "Lambda Architecture for Cost-Effective Batch and Speed Big Data Processing (Kiran et al., IEEE Big Data 2015)"
+    url: "https://escholarship.org/uc/item/0t36p3hn"

@@ -41,3 +41,7 @@ example_scenarios:
 fuentes:
   - titulo: "What is the medallion lakehouse architecture? (Databricks)"
     url: "https://www.databricks.com/glossary/medallion-architecture"
+  - titulo: "Lakehouse: A New Generation of Open Platforms that Unify Data Warehousing and Advanced Analytics (Armbrust et al., CIDR 2021)"
+    url: "https://www.cidrdb.org/cidr2021/papers/cidr2021_paper17.pdf"
+  - titulo: "Hub Star Modeling 2.0 for Medallion Architecture (Salami, 2025)"
+    url: "https://arxiv.org/abs/2504.08788"

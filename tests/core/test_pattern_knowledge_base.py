@@ -17,6 +17,9 @@ MIN_WORDS_PER_BULLET = 10
 # El chunk 'tradeoffs' se embebe con multilingual-e5-small (max 512 tokens). En
 # espanol ~1.6 tokens/palabra: por encima de ~280 palabras el final se trunca.
 MAX_TRADEOFFS_CHUNK_WORDS = 280
+# Al menos tres fuentes por patron (documentacion oficial + literatura
+# academica) para que la decision no dependa de un solo origen.
+MIN_SOURCES = 3
 
 
 def _patterns():
@@ -52,6 +55,9 @@ def test_every_pattern_declares_verifiable_sources():
     for filename, pattern in _patterns():
         fuentes = pattern.get("fuentes")
         assert fuentes, f"{filename}: sin fuentes"
+        assert len(fuentes) >= MIN_SOURCES, f"{filename}: solo {len(fuentes)} fuentes"
+        urls = [fuente["url"] for fuente in fuentes]
+        assert len(urls) == len(set(urls)), f"{filename}: fuentes duplicadas"
         for fuente in fuentes:
             assert fuente["titulo"].strip(), filename
             assert fuente["url"].startswith("https://"), f"{filename}: {fuente['url']}"

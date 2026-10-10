@@ -32,6 +32,12 @@ decision_signals:
 fuentes:
   - titulo: "Serverless Architectures (Mike Roberts, martinfowler.com, 2018)"
     url: "https://martinfowler.com/articles/serverless.html"
+  - titulo: "Cloud Programming Simplified: A Berkeley View on Serverless Computing (Jonas et al., 2019)"
+    url: "https://arxiv.org/abs/1902.03383"
+  - titulo: "Serverless Applications: Why, When, and How? (Eismann et al., IEEE Software 2020)"
+    url: "https://arxiv.org/abs/2009.08173"
+  - titulo: "Function-as-a-Service Performance Evaluation: A Multivocal Literature Review (Scheuner y Leitner, 2020)"
+    url: "https://arxiv.org/abs/2004.03276"
 quality_attributes: [pago por uso, escalabilidad automática, bajo costo operativo en cargas intermitentes]
 team_fit: "equipo pequeño sin infraestructura dedicada, carga variable o intermitente y tolerancia a arranques en frío"
 example_scenarios:

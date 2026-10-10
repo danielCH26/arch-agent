@@ -29,6 +29,7 @@ import uuid
 from typing import Any, AsyncIterator
 
 from app.core.attachment_tokens import _ensure_uploads_dir, build_attachment_url
+from app.core.diagram_templates import render_template_hint, select_diagram_template
 from app.core.mermaid_validator import (
     extract_mermaid_block,
     sanitize_mermaid,
@@ -288,6 +289,11 @@ def _build_system_prompt(rag_documents: list[Any]) -> str:
     """SIMPLIFICADO: ya no recibe ``puppeteer_available`` -- el DIAGRAM_HINT
     siempre se incluye, porque ya no depende de que exista una tool."""
     hints = f"{LIBRARY_HINT}\n\n{DIAGRAM_HINT}"
+    # Turno de diagrama con propuesta aprobada: agrega solo la plantilla del
+    # patron principal (app/core/diagram_templates.py) en vez de las 19.
+    template_hint = render_template_hint(select_diagram_template(rag_documents))
+    if template_hint:
+        hints = f"{hints}\n\n{template_hint}"
     return (
         f"{ARCHITECT_PERSONA}\n\n"
         f"Contexto RAG recuperado:\n{format_rag_context(rag_documents)}\n\n"

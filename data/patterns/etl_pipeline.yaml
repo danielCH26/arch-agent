@@ -41,3 +41,7 @@ example_scenarios:
 fuentes:
   - titulo: "Extract, transform, and load (ETL) (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/data-guide/relational-data/etl"
+  - titulo: "A Survey of Extract-Transform-Load Technology (Vassiliadis, IJDWM 2009)"
+    url: "https://www.cse.uoi.gr/~pvassil/publications/2009_IJDWM/IJDWM_2009.pdf"
+  - titulo: "Lakehouse: A New Generation of Open Platforms that Unify Data Warehousing and Advanced Analytics (Armbrust et al., CIDR 2021)"
+    url: "https://www.cidrdb.org/cidr2021/papers/cidr2021_paper17.pdf"

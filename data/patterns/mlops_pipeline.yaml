@@ -39,4 +39,8 @@ example_scenarios:
   - "Proyecto de visión por computador cuyo modelo debe monitorearse para detectar pérdida de precisión en producción"
 fuentes:
   - titulo: "MLOps: Continuous delivery and automation pipelines in machine learning (Google Cloud)"
-    url: "https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning"
+    url: "https://docs.cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning"
+  - titulo: "Machine Learning Operations (MLOps): Overview, Definition, and Architecture (Kreuzberger et al., 2022)"
+    url: "https://arxiv.org/abs/2205.02302"
+  - titulo: "Hidden Technical Debt in Machine Learning Systems (Sculley et al., NeurIPS 2015)"
+    url: "https://proceedings.neurips.cc/paper/2015/hash/86df7dcfd896fcaf2674f757a2463eba-Abstract.html"

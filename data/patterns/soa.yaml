@@ -43,3 +43,5 @@ fuentes:
     url: "https://aws.amazon.com/what-is/service-oriented-architecture/"
   - titulo: "Service-oriented architecture (Wikipedia)"
     url: "https://en.wikipedia.org/wiki/Service-oriented_architecture"
+  - titulo: "Service oriented architectures: approaches, technologies and research issues (Papazoglou y van den Heuvel, VLDB Journal 2007)"
+    url: "https://link.springer.com/article/10.1007/s00778-007-0044-3"

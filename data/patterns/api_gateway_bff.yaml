@@ -37,6 +37,12 @@ fuentes:
     url: "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/gateway"
   - titulo: "Pattern: Backends For Frontends (Sam Newman)"
     url: "https://samnewman.io/patterns/architectural/bff/"
+  - titulo: "Architectural Patterns for Microservices: A Systematic Mapping Study (Taibi, Lenarduzzi y Pahl, CLOSER 2018)"
+    url: "https://www.scitepress.org/Papers/2018/67983/"
+  - titulo: "Circuit Breakers, Discovery, and API Gateways in Microservices (Montesi y Weber, 2016)"
+    url: "https://arxiv.org/abs/1609.05830"
+  - titulo: "Introduction to Microservice API Patterns (Zimmermann et al., OASIcs 2020)"
+    url: "https://drops.dagstuhl.de/opus/volltexte/2020/11826/"
 quality_attributes: [adaptación por cliente, seguridad centralizada, reducción de llamadas del cliente]
 team_fit: "equipo de 5 o más personas con varios clientes distintos (web, móvil, terceros) consumiendo varios servicios"
 example_scenarios:

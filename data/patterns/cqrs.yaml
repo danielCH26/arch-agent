@@ -31,6 +31,12 @@ decision_signals:
 fuentes:
   - titulo: "CQRS pattern (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
+  - titulo: "CQRS (Martin Fowler, 2011)"
+    url: "https://martinfowler.com/bliki/CQRS.html"
+  - titulo: "An Empirical Characterization of Event Sourced Systems and Their Schema Evolution (Overeem et al., JSS 2021)"
+    url: "https://arxiv.org/abs/2104.01146"
+  - titulo: "Decision-making on CQRS with Event Sourcing architectural variations (Lytvynov y Hruzin, TARP 2025)"
+    url: "https://journals.uran.ua/tarp/article/view/337168"
 quality_attributes: [rendimiento de lectura, escalabilidad independiente de lecturas y escrituras, auditabilidad]
 team_fit: "equipo de 8 o más personas con experiencia en consistencia eventual y una carga de lectura muy superior a la de escritura"
 example_scenarios:

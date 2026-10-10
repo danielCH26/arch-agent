@@ -35,6 +35,10 @@ decision_signals:
 fuentes:
   - titulo: "The Clean Architecture (Robert C. Martin, 2012)"
     url: "https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html"
+  - titulo: "Common web application architectures: Clean architecture (Microsoft Learn)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures"
+  - titulo: "Repercusión de arquitectura limpia y la norma ISO/IEC 25010 en la mantenibilidad de aplicativos Android (Arias-Orezano et al., TecnoLógicas 2021)"
+    url: "https://www.redalyc.org/journal/3442/344268257016/344268257016.pdf"
 quality_attributes: [testabilidad, independencia de frameworks, mantenibilidad, claridad del dominio]
 team_fit: "equipo de 3 a 10 personas con producto de larga vida donde el framework y la base de datos pueden cambiar"
 example_scenarios:

@@ -42,3 +42,7 @@ fuentes:
     url: "https://www.oreilly.com/library/view/software-architecture-patterns/9781491971437/ch03.html"
   - titulo: "Plug-in (computing) (Wikipedia)"
     url: "https://en.wikipedia.org/wiki/Plug-in_(computing)"
+  - titulo: "Pluggable Systems as Architectural Pattern: An Ecosystemability Perspective (Syeed et al., ECSA Workshops 2015)"
+    url: "https://research.chalmers.se/en/publication/?id=230358"
+  - titulo: "The three-layer architectural pattern applied to plug-in-based architectures: the Eclipse case (Ameller et al., SPE 2013)"
+    url: "https://upcommons.upc.edu/handle/2117/19125"
