@@ -76,6 +76,9 @@ class ProposalStateOut(BaseModel):
     approval_id: Optional[int]
     proposal_snapshot_chars: int
     last_decision: Optional[str]
+    # Tope de iteraciones vigente en este deploy: el frontend lo lee de aquí
+    # en lugar de duplicar el literal.
+    max_iterations: int = PROPOSAL_MAX_ITER
 
 
 class ProposalOut(BaseModel):

@@ -1,110 +1,67 @@
-import type React from 'react'
 import { useState } from 'react'
-import { createPortal } from 'react-dom'
-import type { Message } from '../stores/chatStore'
+import type React from 'react'
 import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
+import { useDialog } from '../hooks/useDialog'
+import type { Message } from '../stores/chatStore'
+import robotAvatar from '../assets/robot-avatar.webp'
 
-// Texto que se muestra cuando un diagrama ya tiene decision. Es el mismo tanto
-// justo despues de decidir como despues de un F5 (la decision se recupera de
-// GET /api/chat/history), asi el estado no depende de la memoria de React.
-const DIAGRAM_DECISION_TEXT: Record<DiagramDecision, string> = {
-  approve: 'Diagrama aprobado.',
-  reject: 'Diagrama rechazado.',
-  modify: 'Se registró tu solicitud de cambios.',
-}
+// Devuelve false (o una promesa que resuelve false) si no se pudo enviar.
+type SendMessage = (text: string, displayText?: string) => unknown
 
 interface MessageBubbleProps {
   message: Message
   projectId?: number
-  onSendMessage?: (text: string, displayText?: string) => void
+  onSendMessage?: SendMessage
+  // Hay una respuesta del agente en curso: no se envían mensajes nuevos.
+  busy?: boolean
 }
 
 type InlineToken =
   | { type: 'text'; value: string }
   | { type: 'code'; value: string }
   | { type: 'strong'; value: string }
+  | { type: 'em'; value: string }
+  | { type: 'link'; value: string; href: string }
+
+// Viñetas (-, *, +) y numeradas (1. o 1)). El marcador debe ir seguido de un
+// espacio, así "**negrita**" al inicio de línea no se toma como lista.
+const listItemPattern = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
+const horizontalRulePattern = /^\s*([-*_])(\s*\1){2,}\s*$/
+// Solo se enlazan URLs seguras; el resto se muestra como texto.
+const safeLinkPattern = /^(https?:\/\/|mailto:)/i
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
+
 const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
 const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
 const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
 
-function splitTableRow(row: string) {
-  return row
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim())
+function extractMermaidBlocks(content: string): string[] {
+  const explicit = [...content.matchAll(new RegExp(explicitMermaidFencePattern.source, 'gi'))]
+    .map((match) => match[1].trim())
+    .filter(Boolean)
+  if (explicit.length > 0) return explicit
+
+  return [...content.matchAll(anyCodeFencePattern)]
+    .map((match) => match[1].trim())
+    .filter((code) => mermaidFirstLinePattern.test(code.split(/\r?\n/)[0] ?? ''))
 }
 
-function parseInline(content: string): InlineToken[] {
-  const tokens: InlineToken[] = []
-  const pattern = /(`([^`]+)`)|(\*\*([^*]+)\*\*)/g
-  let cursor = 0
-  let match: RegExpExecArray | null
-
-  while ((match = pattern.exec(content)) !== null) {
-    if (match.index > cursor) {
-      tokens.push({ type: 'text', value: content.slice(cursor, match.index) })
-    }
-
-    if (match[2]) {
-      tokens.push({ type: 'code', value: match[2] })
-    } else if (match[4]) {
-      tokens.push({ type: 'strong', value: match[4] })
-    }
-
-    cursor = match.index + match[0].length
-  }
-
-  if (cursor < content.length) {
-    tokens.push({ type: 'text', value: content.slice(cursor) })
-  }
-
-  return tokens
+/**
+ * Bloque Mermaid del diagrama `index` de la respuesta. Si la cantidad de
+ * bloques no coincide con la de adjuntos, se usa el último (el más reciente).
+ */
+function mermaidForAttachment(content: string, index: number, attachmentCount: number): string | null {
+  const blocks = extractMermaidBlocks(content)
+  if (blocks.length === 0) return null
+  return blocks.length === attachmentCount ? blocks[index] : blocks[blocks.length - 1]
 }
 
-function renderInline(content: string) {
-  return parseInline(content).map((token, index) => {
-    if (token.type === 'strong') {
-      return <strong key={index}>{token.value}</strong>
-    }
-
-    if (token.type === 'code') {
-      return (
-        <code key={index} className="rounded bg-black/10 px-1 py-0.5 text-[0.9em]">
-          {token.value}
-        </code>
-      )
-    }
-
-    return <span key={index}>{token.value}</span>
-  })
-}
-
-function extractMermaidFromMessage(content: string): string | null {
-  const explicitMatch = content.match(explicitMermaidFencePattern)
-  if (explicitMatch?.[1]?.trim()) {
-    return explicitMatch[1].trim()
-  }
-
-  let match: RegExpExecArray | null
-  anyCodeFencePattern.lastIndex = 0
-  while ((match = anyCodeFencePattern.exec(content)) !== null) {
-    const code = match[1].trim()
-    const firstLine = code.split(/\r?\n/)[0] ?? ''
-    if (mermaidFirstLinePattern.test(firstLine)) {
-      return code
-    }
-  }
-
-  return null
-}
-
+// Prompt que recibe el agente al pedir cambios sobre un diagrama. El usuario
+// solo ve su feedback (se envía como `display_message`).
 function buildDiagramAdjustmentPrompt(feedback: string, previousMermaid: string | null): string {
-  if (!previousMermaid) return feedback
+  if (!previousMermaid) return `Solicito estos ajustes en el diagrama: ${feedback}`
 
   return [
     'Modifica el siguiente diagrama Mermaid usando mi solicitud de cambio.',
@@ -124,6 +81,165 @@ function buildDiagramAdjustmentPrompt(feedback: string, previousMermaid: string 
     previousMermaid,
     '```',
   ].join('\n')
+}
+
+function splitTableRow(row: string) {
+  return row
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+export function parseInline(content: string): InlineToken[] {
+  const tokens: InlineToken[] = []
+  // Orden: código, negrita (** o __), enlace, cursiva (* o _). La cursiva con
+  // _ exige bordes de palabra para no partir identificadores como mi_variable.
+  const pattern =
+    /(`([^`]+)`)|(\*\*([^*]+)\*\*|__([^_]+)__)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w]))/g
+  let cursor = 0
+  let match: RegExpExecArray | null
+
+  while ((match = pattern.exec(content)) !== null) {
+    if (match.index > cursor) {
+      tokens.push({ type: 'text', value: content.slice(cursor, match.index) })
+    }
+
+    if (match[2]) {
+      tokens.push({ type: 'code', value: match[2] })
+    } else if (match[3]) {
+      tokens.push({ type: 'strong', value: match[4] ?? match[5] })
+    } else if (match[6]) {
+      tokens.push(
+        safeLinkPattern.test(match[8])
+          ? { type: 'link', value: match[7], href: match[8] }
+          : { type: 'text', value: match[7] },
+      )
+    } else if (match[9]) {
+      tokens.push({ type: 'em', value: match[10] ?? match[11] })
+    }
+
+    cursor = match.index + match[0].length
+  }
+
+  if (cursor < content.length) {
+    tokens.push({ type: 'text', value: content.slice(cursor) })
+  }
+
+  return tokens
+}
+
+function renderInline(content: string): React.ReactNode[] {
+  return parseInline(content).map((token, index) => {
+    if (token.type === 'strong') {
+      return <strong key={index}>{renderInline(token.value)}</strong>
+    }
+
+    if (token.type === 'em') {
+      return <em key={index}>{renderInline(token.value)}</em>
+    }
+
+    if (token.type === 'link') {
+      return (
+        <a key={index} href={token.href} target="_blank" rel="noopener noreferrer" className="text-blue-700 underline">
+          {renderInline(token.value)}
+        </a>
+      )
+    }
+
+    if (token.type === 'code') {
+      return (
+        <code key={index} className="rounded bg-black/10 px-1 py-0.5 dark:bg-white/10 text-[0.9em]">
+          {token.value}
+        </code>
+      )
+    }
+
+    // Texto plano como string: <strong>texto</strong> en vez de <strong><span>…
+    return token.value
+  })
+}
+
+interface ListNode {
+  text: string
+  ordered: boolean
+  number: number
+  children: ListNode[]
+}
+
+/**
+ * Lee una lista desde `start` (anidada por sangría) y devuelve los ítems de
+ * primer nivel y la línea siguiente a la lista. Las líneas sangradas que no
+ * son ítems continúan el ítem anterior.
+ */
+function parseList(lines: string[], start: number): { items: ListNode[]; next: number } {
+  const root: ListNode[] = []
+  // Niveles abiertos, del más externo al más interno, con su sangría.
+  const stack: { indent: number; items: ListNode[] }[] = []
+  let index = start
+  let lastItem: ListNode | null = null
+
+  const indentOf = (raw: string) => raw.replace(/\t/g, '    ').length
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const item = line.match(listItemPattern)
+
+    if (item && !horizontalRulePattern.test(line)) {
+      const indent = indentOf(item[1])
+      if (stack.length === 0) stack.push({ indent, items: root })
+      // Menos sangría: se cierran las sublistas más internas.
+      while (stack.length > 1 && indent < stack[stack.length - 1].indent) stack.pop()
+      const top = stack[stack.length - 1]
+      // Más sangría que su nivel: sublista del ítem anterior.
+      if (indent > top.indent && top.items.length > 0) {
+        stack.push({ indent, items: top.items[top.items.length - 1].children })
+      }
+      const level = stack[stack.length - 1]
+      const marker = item[2]
+      const node: ListNode = {
+        text: item[3],
+        ordered: /\d/.test(marker),
+        number: /\d/.test(marker) ? parseInt(marker, 10) : 1,
+        children: [],
+      }
+      level.items.push(node)
+      lastItem = node
+      index += 1
+      continue
+    }
+
+    // Continuación sangrada del ítem anterior.
+    if (lastItem && line.trim() && /^\s{2,}/.test(line)) {
+      lastItem.text += ` ${line.trim()}`
+      index += 1
+      continue
+    }
+
+    break
+  }
+
+  return { items: root, next: index }
+}
+
+function renderList(items: ListNode[], key: string): React.ReactNode {
+  const ordered = items[0]?.ordered ?? false
+  const List = ordered ? 'ol' : 'ul'
+  return (
+    <List
+      key={key}
+      start={ordered && items[0].number !== 1 ? items[0].number : undefined}
+      className={`my-2 space-y-1 pl-5 ${ordered ? 'list-decimal' : 'list-disc'}`}
+    >
+      {items.map((item, itemIndex) => (
+        <li key={itemIndex}>
+          {renderInline(item.text)}
+          {item.children.length > 0 && renderList(item.children, `${key}-${itemIndex}`)}
+        </li>
+      ))}
+    </List>
+  )
 }
 
 function parseHtmlTable(tableMarkup: string) {
@@ -237,7 +353,7 @@ function stripFullMessageCodeFence(content: string): string {
   return looksLikeStructuredMarkdown ? inner : content
 }
 
-function renderMarkdownBlocks(content: string) {
+export function renderMarkdownBlocks(content: string) {
   const normalizedContent = stripFullMessageCodeFence(content).replace(/<br\s*\/?>/gi, '\n')
   const parts = normalizedContent.split(htmlTablePattern)
   const htmlTables = normalizedContent.match(htmlTablePattern) ?? []
@@ -267,7 +383,7 @@ function renderMarkdownBlocks(content: string) {
         continue
       }
 
-      if (/^\s*---+\s*$/.test(line)) {
+      if (horizontalRulePattern.test(line)) {
         blocks.push(<hr key={`hr-${partIndex}-${index}`} className="my-4 border-gray-300" />)
         index += 1
         continue
@@ -283,7 +399,7 @@ function renderMarkdownBlocks(content: string) {
         }
 
         blocks.push(
-          <pre key={`code-${partIndex}-${index}`} className="my-3 overflow-x-auto rounded bg-gray-900 p-3 text-gray-50">
+          <pre key={`code-${partIndex}-${index}`} className="my-3 overflow-x-auto rounded bg-gray-900 p-3 text-gray-50 dark:bg-gray-100 dark:text-gray-900">
             <code>{codeLines.join('\n')}</code>
           </pre>,
         )
@@ -304,26 +420,10 @@ function renderMarkdownBlocks(content: string) {
         continue
       }
 
-      if (/^\s*(-|\d+\.)\s+/.test(line)) {
-        const items: string[] = []
-        const ordered = /^\s*\d+\.\s+/.test(line)
-
-        while (index < lines.length && /^\s*(-|\d+\.)\s+/.test(lines[index])) {
-          items.push(lines[index].replace(/^\s*(-|\d+\.)\s+/, ''))
-          index += 1
-        }
-
-        const List = ordered ? 'ol' : 'ul'
-        blocks.push(
-          <List
-            key={`list-${partIndex}-${index}`}
-            className={`my-2 pl-5 ${ordered ? 'list-decimal' : 'list-disc'}`}
-          >
-            {items.map((item, itemIndex) => (
-              <li key={itemIndex}>{renderInline(item)}</li>
-            ))}
-          </List>,
-        )
+      if (listItemPattern.test(line)) {
+        const { items, next } = parseList(lines, index)
+        blocks.push(renderList(items, `list-${partIndex}-${index}`))
+        index = next
         continue
       }
 
@@ -334,7 +434,8 @@ function renderMarkdownBlocks(content: string) {
         index < lines.length &&
         lines[index].trim() &&
         !/^(#{1,6})\s+/.test(lines[index]) &&
-        !/^\s*(-|\d+\.)\s+/.test(lines[index]) &&
+        !listItemPattern.test(lines[index]) &&
+        !horizontalRulePattern.test(lines[index]) &&
         !markdownTableSeparatorPattern.test(lines[index])
       ) {
         paragraphLines.push(lines[index].trim())
@@ -363,7 +464,7 @@ function renderSources(sources: Message['sources']) {
 
   if (sources.length === 0) {
     return (
-      <p className="mt-2 text-xs italic text-gray-400">
+      <p className="mt-2 text-xs italic text-gray-500">
         Sin contexto recuperado de la base vectorial — respuesta basada en conocimiento general del modelo.
       </p>
     )
@@ -371,7 +472,7 @@ function renderSources(sources: Message['sources']) {
 
   return (
     <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">
-      <span className="font-semibold">Fuentes (PGVector):</span>
+      <span className="font-semibold">Fuentes consultadas:</span>
       <ul className="mt-1 space-y-0.5">
         {sources.map((source, index) => (
           <li key={index}>
@@ -384,16 +485,25 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message, projectId, onSendMessage }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage, busy = false }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex items-start gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!isUser && (
+        <img
+          src={robotAvatar}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          className="mt-1 h-9 w-auto shrink-0 select-none"
+        />
+      )}
       <div
-        className={`max-w-[70%] px-4 py-2 rounded-lg break-words ${
+        className={`max-w-[85%] px-4 py-2 break-words md:max-w-[70%] ${
           isUser
-            ? 'whitespace-pre-wrap bg-blue-600 text-white'
-            : 'bg-gray-100 text-gray-900'
+            ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white dark:bg-blue-100'
+            : 'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm'
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
@@ -403,314 +513,272 @@ export function MessageBubble({ message, projectId, onSendMessage }: MessageBubb
             assistantContent={message.content}
             projectId={projectId}
             onSendMessage={onSendMessage}
+            busy={busy}
           />
         )}
+        {!isUser && message.notices?.map((notice, index) => (
+          <p key={index} role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            ⚠️ {notice}
+          </p>
+        ))}
         {!isUser && renderSources(message.sources)}
       </div>
     </div>
   )
 }
 
-// F13 (REQ-PMCP-1 / REQ-ATT-3): renders the inline screenshot(s) the agent
-// emitted via `` event: attachment``. Only fires for assistant messages —
-// user messages never carry attachments. No download button in v1 (see
-// design §8 Q-NEW-DOWNLOAD-PNG). The URL already carries the signed
-// token, so no Authorization header is needed.
-//
-// HU6 (F09): mismo patron que el companero implemento para la fase de
-// requerimientos en ChatWindow.tsx (ver handleDecision + showModify de
-// HU5) pero a nivel de attachment individual:
-//   - "Aprobar" no necesita texto libre -> se registra la decision y se
-//     manda un mensaje de confirmacion fijo al chat (igual que antes).
-//   - "Solicitar cambios" YA NO manda un mensaje a medio escribir apenas
-//     se hace click. Abre un textarea inline (como el de HU5) para que
-//     la persona escriba QUE hay que cambiar; solo al confirmar se
-//     registra la decision (con ese feedback) y se envia ese texto real
-//     al chat para que el agente regenere el diagrama.
-//
-// Zoom del diagrama (pedido de Laura): click en la miniatura abre un
-// overlay fullscreen con la imagen en grande; click en cualquier parte
-// del overlay lo cierra. Estado local `expandedUrl` guarda la URL del
-// attachment actualmente ampliado (null = cerrado).
+// Zoom inicial del visor de diagramas (1 = ancho de la ventana).
+const DEFAULT_DIAGRAM_ZOOM = 2
+
+const decisionLabels: Record<DiagramDecision, string> = {
+  approve: 'Diagrama aprobado.',
+  reject: 'Diagrama rechazado.',
+  modify: 'Se registró tu solicitud de cambios.',
+}
+
 function DiagramAttachments({
   attachments,
   assistantContent,
   projectId,
   onSendMessage,
+  busy,
 }: {
   attachments: Message['attachments']
   assistantContent: string
   projectId?: number
-  onSendMessage?: (text: string, displayText?: string) => void
+  onSendMessage?: SendMessage
+  busy: boolean
 }) {
-  const [openFeedbackFor, setOpenFeedbackFor] = useState<number | null>(null)
-  // Hallazgo #6 (revisión feature/hu6-diagrama): antes era un único
-  // `useState('')` para TODA la burbuja, así que si abrías "Solicitar
-  // cambios" en el adjunto 0, escribías algo, lo cerrabas sin enviar, y
-  // después clickeabas "Rechazar" en el adjunto 1, `handleReject` mandaba
-  // el texto que habías escrito para el adjunto 0. Ahora es un estado por
-  // índice de adjunto.
-  const [feedbackByIndex, setFeedbackByIndex] = useState<Record<number, string>>({})
-  const [decisionError, setDecisionError] = useState('')
-  const [decidedFor, setDecidedFor] = useState<Record<number, string>>({})
+  const [feedbackIndex, setFeedbackIndex] = useState<number | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [status, setStatus] = useState<Record<number, string>>({})
+  const [submitting, setSubmitting] = useState<number | null>(null)
+  const [error, setError] = useState('')
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
-  const [diagramZoom, setDiagramZoom] = useState(2)
+  const [diagramZoom, setDiagramZoom] = useState(DEFAULT_DIAGRAM_ZOOM)
+  // Ajustes ya registrados en esta sesión, para reenviarlos si la respuesta
+  // del agente falló.
+  const [sentAdjustments, setSentAdjustments] = useState<Record<number, { prompt: string; display: string }>>({})
+  const lightboxRef = useDialog({ open: expandedUrl !== null, onClose: () => setExpandedUrl(null) })
 
-  if (!attachments || attachments.length === 0) return null
+  if (!attachments?.length) return null
 
-  const handleApprove = async (index: number) => {
-    setDecisionError('')
-    // Hallazgo #6: antes, si `projectId` faltaba, el `if` de abajo se
-    // saltaba el POST en silencio pero igual se llegaba a
-    // `setDecidedFor(...)` y la burbuja marcaba "Diagrama aprobado." sin
-    // haber persistido nada. Ahora, sin projectId, se corta acá con un
-    // error visible en vez de mostrar un éxito falso.
-    if (!projectId) {
-      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
-      return
+  // Envía el mensaje al chat; false si no se pudo (hay otra respuesta en curso).
+  const send = async (text: string, displayText?: string) => {
+    if (!onSendMessage) return false
+    const result = displayText === undefined ? onSendMessage(text) : onSendMessage(text, displayText)
+    if ((await result) === false) {
+      setError('Hay una respuesta en curso. Inténtalo de nuevo cuando termine.')
+      return false
     }
-    try {
-      await submitDiagramDecision(projectId, 'approve', undefined, attachments[index]?.id)
-    } catch (err) {
-      // HU6: antes el error del backend se perdia (void + sin catch) y la
-      // burbuja marcaba "Diagrama aprobado." aunque el POST hubiera fallado.
-      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
-      return
-    }
-    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.approve }))
-    onSendMessage?.('Apruebo el diagrama, continuemos.')
+    return true
   }
 
-  // HU6: el boton "Rechazar" existia solo en DiagramHistoryPanel, asi que
-  // desde el chat no habia forma de rechazar un diagrama. Mismo endpoint
-  // (POST /api/diagrams/decision, phase="diagram"), decision="reject".
-  // A diferencia de "Solicitar cambios", no manda ningun mensaje al chat:
-  // rechazar corta el flujo, no pide una nueva iteracion.
-  const handleReject = async (index: number) => {
-    setDecisionError('')
+  const recordDecision = async (index: number, decision: DiagramDecision, comment?: string) => {
+    const attachment = attachments[index]
     if (!projectId) {
-      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
+      setError('No se puede registrar la decisión sin un proyecto activo.')
+      return false
+    }
+
+    setSubmitting(index)
+    setError('')
+    try {
+      await submitDiagramDecision(projectId, decision, comment, attachment.id)
+      setStatus((current) => ({ ...current, [index]: decisionLabels[decision] }))
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo registrar la decisión.')
+      return false
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
+  const requestChanges = async (index: number) => {
+    const trimmedFeedback = feedback.trim()
+    if (!trimmedFeedback) {
+      setError('Describe los cambios que necesitas antes de enviarlos.')
       return
     }
-    const feedbackForThisAttachment = (feedbackByIndex[index] ?? '').trim()
-    try {
-      await submitDiagramDecision(
-        projectId,
-        'reject',
-        feedbackForThisAttachment || undefined,
-        attachments[index]?.id,
+    if (await recordDecision(index, 'modify', trimmedFeedback)) {
+      setFeedbackIndex(null)
+      setFeedback('')
+      const prompt = buildDiagramAdjustmentPrompt(
+        trimmedFeedback,
+        mermaidForAttachment(assistantContent, index, attachments.length),
       )
-    } catch (err) {
-      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
-      return
+      setSentAdjustments((current) => ({ ...current, [index]: { prompt, display: trimmedFeedback } }))
+      await send(prompt, trimmedFeedback)
     }
-    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.reject }))
-    setOpenFeedbackFor(null)
-    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
-  }
-
-  const handleSendAdjustment = async (index: number) => {
-    const trimmed = (feedbackByIndex[index] ?? '').trim()
-    if (!trimmed) {
-      setDecisionError('Describe el cambio que necesitas antes de enviarlo.')
-      return
-    }
-    setDecisionError('')
-    if (!projectId) {
-      setDecisionError('No se puede registrar la decisión: falta el proyecto.')
-      return
-    }
-    try {
-      await submitDiagramDecision(projectId, 'modify', trimmed, attachments[index]?.id)
-    } catch (err) {
-      setDecisionError(err instanceof Error ? err.message : 'No se pudo registrar la decision.')
-      return
-    }
-    setDecidedFor((prev) => ({ ...prev, [index]: DIAGRAM_DECISION_TEXT.modify }))
-    // El prompt completo (con instrucciones + Mermaid anterior) es lo que
-    // necesita el agente para regenerar el diagrama, pero el usuario solo
-    // escribió su feedback -- eso es lo que debe verse en su propia
-    // burbuja, no el prompt entero (ver nota en chatStore.sendMessage).
-    onSendMessage?.(
-      buildDiagramAdjustmentPrompt(trimmed, extractMermaidFromMessage(assistantContent)),
-      trimmed,
-    )
-    setOpenFeedbackFor(null)
-    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
-    setDecisionError('')
-  }
-
-  // Decision de este diagrama: la recien tomada en esta sesion (`decidedFor`)
-  // o, tras un F5, la que devuelve el historial del chat (`attachment.decision`).
-  // Si hay una, no se vuelven a ofrecer los botones.
-  const decidedTextFor = (attachment: NonNullable<Message['attachments']>[number], index: number) =>
-    decidedFor[index] ??
-    (attachment.decision ? DIAGRAM_DECISION_TEXT[attachment.decision] : undefined)
-
-  const openExpandedDiagram = (url: string) => {
-    setDiagramZoom(2)
-    setExpandedUrl(url)
   }
 
   return (
-    <div className="mt-2 space-y-2">
-      {attachments.map((attachment, index) => (
-        <div key={`${attachment.url}-${index}`}>
-          <img
-            src={attachment.url}
-            alt={attachment.filename}
-            className="my-2 max-h-[70vh] w-full max-w-3xl rounded-lg object-contain cursor-zoom-in"
-            loading="lazy"
-            title="Click para ampliar"
-            onClick={() => openExpandedDiagram(attachment.url)}
-          />
-          {onSendMessage && !decidedTextFor(attachment, index) && (
-            <>
-              <div className="flex gap-2 mt-1">
-                <button
-                  type="button"
-                  onClick={() => void handleApprove(index)}
-                  className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
-                >
-                  ✅ Aprobar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleReject(index)}
-                  className="text-xs px-2 py-1 rounded bg-red-600 text-white hover:bg-red-700"
-                >
-                  ❌ Rechazar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenFeedbackFor(index)
-                    setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
-                    setDecisionError('')
-                  }}
-                  className="text-xs px-2 py-1 rounded bg-gray-300 text-gray-800 hover:bg-gray-400"
-                >
-                  ✏️ Solicitar cambios
-                </button>
+    <div className="mt-3 space-y-3 border-t border-sky-200 pt-3">
+      {attachments.map((attachment, index) => {
+        const decided = status[index] ?? (attachment.decision ? decisionLabels[attachment.decision] : null)
+        const isSubmitting = submitting === index
+
+        return (
+          <div key={`${attachment.id ?? attachment.url}-${index}`} className="rounded-xl border border-sky-200 bg-white/70 p-2">
+            <button
+              type="button"
+              onClick={() => {
+                setDiagramZoom(DEFAULT_DIAGRAM_ZOOM)
+                setExpandedUrl(attachment.url)
+              }}
+              className="block w-full cursor-zoom-in rounded-lg"
+              aria-label={`Ampliar ${attachment.filename || 'diagrama'}`}
+            >
+              <img
+                src={attachment.url}
+                alt={attachment.filename || 'Diagrama generado'}
+                title="Click para ampliar"
+                className="max-h-[420px] w-full rounded-lg bg-white object-contain"
+                loading="lazy"
+              />
+            </button>
+
+            {decided ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium text-gray-600">{decided}</p>
+                {sentAdjustments[index] && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void send(sentAdjustments[index].prompt, sentAdjustments[index].display)}
+                    className="text-xs font-medium text-blue-700 underline disabled:opacity-50"
+                  >
+                    Volver a enviar el ajuste
+                  </button>
+                )}
               </div>
-              {openFeedbackFor === index && (
-                <div className="mt-2 space-y-2">
-                  <label className="block text-xs font-medium text-gray-700" htmlFor={`diagram-feedback-${index}`}>
-                    ¿Qué debe ajustarse en el diagrama?
-                  </label>
-                  <textarea
-                    id={`diagram-feedback-${index}`}
-                    value={feedbackByIndex[index] ?? ''}
-                    onChange={(event) =>
-                      setFeedbackByIndex((prev) => ({ ...prev, [index]: event.target.value }))
-                    }
-                    rows={3}
-                    className="w-full rounded border border-gray-300 p-2 text-sm text-gray-900"
-                    placeholder="Describe los cambios que necesitas en el diagrama..."
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleSendAdjustment(index)}
-                      className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
-                    >
-                      Enviar ajuste
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenFeedbackFor(null)
-                        setFeedbackByIndex((prev) => ({ ...prev, [index]: '' }))
-                        setDecisionError('')
-                      }}
-                      className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                  {decisionError && <p className="text-xs text-red-700">{decisionError}</p>}
+            ) : onSendMessage ? (
+              <div className="mt-2">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={isSubmitting || busy}
+                    onClick={async () => {
+                      if (await recordDecision(index, 'approve')) await send('Apruebo el diagrama, continuemos.')
+                    }}
+                    className="rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
+                  >
+                    ✅ Aprobar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => void recordDecision(index, 'reject')}
+                    className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+                  >
+                    ❌ Rechazar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmitting || busy}
+                    onClick={() => { setFeedbackIndex(index); setFeedback(''); setError('') }}
+                    className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
+                  >
+                    ✏️ Solicitar cambios
+                  </button>
                 </div>
-              )}
-              {openFeedbackFor !== index && decisionError && (
-                <p className="mt-1 text-xs text-red-700">{decisionError}</p>
-              )}
-            </>
-          )}
-          {decidedTextFor(attachment, index) && (
-            <p className="mt-1 text-xs text-green-700">{decidedTextFor(attachment, index)}</p>
-          )}
-        </div>
-      ))}
-      {expandedUrl &&
-        createPortal(
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Visor de diagrama ampliado"
-            className="fixed inset-0 z-[9999] bg-black/90"
-          >
-            <div className="fixed bottom-4 left-1/2 z-10 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded border border-gray-700 bg-white p-2 text-sm shadow-2xl">
-              <span className="px-2 font-semibold text-gray-800">Controles</span>
-              <button
-                type="button"
-                onClick={() => setDiagramZoom((zoom) => Math.max(1, zoom - 0.5))}
-                className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
-                aria-label="Alejar diagrama"
-              >
-                -
-              </button>
-              <span
-                className="min-w-14 text-center font-medium text-gray-700"
-                role="status"
-                aria-label={`Zoom actual ${Math.round(diagramZoom * 100)}%`}
-              >
-                {Math.round(diagramZoom * 100)}%
-              </span>
-              <button
-                type="button"
-                onClick={() => setDiagramZoom((zoom) => Math.min(6, zoom + 0.5))}
-                className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
-                aria-label="Acercar diagrama"
-              >
-                +
-              </button>
-              <button
-                type="button"
-                onClick={() => setDiagramZoom(2)}
-                className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
-              >
-                200%
-              </button>
-              <a
-                href={expandedUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
-              >
-                Abrir original
-              </a>
-              <button
-                type="button"
-                onClick={() => setExpandedUrl(null)}
-                className="rounded bg-gray-900 px-3 py-1 text-white hover:bg-gray-700"
-                aria-label="Cerrar visor de diagrama"
-              >
-                Cerrar
-              </button>
-            </div>
-            <div className="h-full w-full overflow-auto px-6 pb-24 pt-6">
-              <div className="flex min-h-full min-w-full items-start justify-center">
-                <img
-                  src={expandedUrl}
-                  alt="Diagrama ampliado"
-                  className="h-auto max-w-none rounded bg-white shadow-2xl"
-                  style={{ width: `${diagramZoom * 100}%` }}
-                />
+
+                {feedbackIndex === index && (
+                  <div className="mt-3 space-y-2">
+                    <label htmlFor={`diagram-feedback-${index}`} className="block text-xs font-medium text-gray-700">¿Qué debe ajustarse en el diagrama?</label>
+                    <textarea
+                      id={`diagram-feedback-${index}`}
+                      value={feedback}
+                      onChange={(event) => setFeedback(event.target.value)}
+                      rows={3}
+                      className="w-full rounded-lg border border-sky-200 bg-white p-2 text-sm text-gray-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40"
+                      placeholder="Describe los cambios que necesitas en el diagrama..."
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" disabled={isSubmitting || busy} onClick={() => void requestChanges(index)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Enviar ajuste</button>
+                      <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
+                    </div>
+                  </div>
+                )}
               </div>
+            ) : null}
+          </div>
+        )
+      })}
+
+      {error && <p role="alert" className="rounded-lg bg-red-50 p-2 text-xs text-red-700">{error}</p>}
+
+      {expandedUrl && (
+        <div
+          ref={lightboxRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Visor de diagrama ampliado"
+          className="fixed inset-0 z-50 bg-slate-950/90"
+        >
+          {/* Controles de zoom (Esc también cierra). */}
+          <div className="fixed bottom-4 left-1/2 z-10 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white p-2 text-sm shadow-2xl">
+            <span className="px-2 font-semibold text-gray-800">Controles</span>
+            <button
+              type="button"
+              onClick={() => setDiagramZoom((zoom) => Math.max(1, zoom - 0.5))}
+              className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+              aria-label="Alejar diagrama"
+            >
+              -
+            </button>
+            <span
+              className="min-w-14 text-center font-medium text-gray-700"
+              role="status"
+              aria-label={`Zoom actual ${Math.round(diagramZoom * 100)}%`}
+            >
+              {Math.round(diagramZoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={() => setDiagramZoom((zoom) => Math.min(6, zoom + 0.5))}
+              className="rounded border border-gray-300 px-3 py-1 font-semibold text-gray-800 hover:bg-gray-100"
+              aria-label="Acercar diagrama"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              onClick={() => setDiagramZoom(DEFAULT_DIAGRAM_ZOOM)}
+              className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+            >
+              {DEFAULT_DIAGRAM_ZOOM * 100}%
+            </button>
+            <a
+              href={expandedUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded border border-gray-300 px-3 py-1 text-gray-800 hover:bg-gray-100"
+            >
+              Abrir original
+            </a>
+            <button
+              type="button"
+              onClick={() => setExpandedUrl(null)}
+              className="rounded bg-solid-blue-700 px-3 py-1 font-medium text-white hover:bg-solid-blue-800"
+              aria-label="Cerrar visor de diagrama"
+            >
+              Cerrar
+            </button>
+          </div>
+          <div className="h-full w-full overflow-auto px-6 pb-24 pt-6">
+            <div className="flex min-h-full min-w-full items-start justify-center">
+              <img
+                src={expandedUrl}
+                alt="Diagrama ampliado"
+                className="h-auto max-w-none rounded bg-white shadow-2xl"
+                style={{ width: `${diagramZoom * 100}%` }}
+              />
             </div>
-          </div>,
-          document.body,
-        )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

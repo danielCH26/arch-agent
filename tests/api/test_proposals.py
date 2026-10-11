@@ -307,3 +307,40 @@ class TestLifecycleSideEffects:
         assert "phase_ready = False" in source
         # Reject branch must revert current_phase
         assert "PROPOSAL_REJECT_REVERTS_TO" in source
+
+# --- Iteration cap exposed to the frontend --------------------------------
+
+
+class TestProposalStateMaxIterations:
+    def setup_method(self):
+        self._original = os.environ.get("PROPOSAL_MAX_ITER")
+
+    def teardown_method(self):
+        import importlib
+
+        import app.api.proposals as proposals_module
+
+        if self._original is None:
+            os.environ.pop("PROPOSAL_MAX_ITER", None)
+        else:
+            os.environ["PROPOSAL_MAX_ITER"] = self._original
+        importlib.reload(proposals_module)
+
+    def test_state_exposes_env_iteration_cap(self):
+        # The UI disables "Modificar" from this value, so it must follow the
+        # same env var the backend enforces instead of a frontend literal.
+        os.environ["PROPOSAL_MAX_ITER"] = "3"
+        import importlib
+
+        import app.api.proposals as proposals_module
+
+        importlib.reload(proposals_module)
+        state = proposals_module.ProposalStateOut(
+            approved=False,
+            approved_at=None,
+            approval_id=None,
+            proposal_snapshot_chars=0,
+            last_decision=None,
+        )
+        assert proposals_module.PROPOSAL_MAX_ITER == 3
+        assert state.max_iterations == 3
