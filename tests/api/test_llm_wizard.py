@@ -678,28 +678,35 @@ class TestAvailableModelsEndpoint:
 
     @patch("app.api.llm_config.get_available_models")
     @patch("app.core.llm_loader.SessionLocal")
-    def test_works_for_new_user_without_model_yet(self, mock_session, mock_get_models):
-        """User nuevo que completo step1+step2 pero todavia no modelo.
+    def test_mid_wizard_user_lists_models_with_own_credentials(
+        self, mock_session, mock_get_models
+    ):
+        """User con base_url + api_key pero sin modelo: available-models
+        funciona con las credenciales DEL USUARIO, sin caer al default.
 
-        Repro del bug reportado: un user nuevo que recien configuro URL
-        y API key no tiene llm_model seteado todavia. El endpoint
-        available-models (llamado despues de step2 para mostrar la lista)
-        debe funcionar igual — el model es opcional para listar
-        modelos del provider.
+        Restaura el comportamiento original (regresion introducida por
+        d58d3ca y detectada por Soomri round-2): available-models se llama
+        justo despues de step2 para mostrar la lista de modelos, cuando
+        ``llm_model`` todavia es None. El loader con
+        ``allow_default=False`` debe devolver la config parcial (con
+        model vacio) en vez de levantar ``reason="missing"`` -- ese error
+        es del camino de CHAT (allow_default=True), donde mezclar el
+        endpoint del usuario con un id del default produce un 400
+        silencioso (B3).
 
-        Antes del fix, load_user_llm_config requeria llm_model no vacio,
-        lo cual rompia este caso y el usuario quedaba bloqueado.
+        El pin anti-default queda en dos partes: (1) GROQ_API_KEY esta
+        seteada y el resultado igual viene del provider del usuario;
+        (2) ``test_returns_404_when_no_config`` cubre el caso sin config
+        alguna (404 legitimo).
         """
-        from cryptography.fernet import Fernet
         from app.core.encryption import encrypt
 
-        # User nuevo: tiene URL + api_key pero NO tiene model todavia.
         encrypted_key = encrypt("sk-test-plain-key")
 
         mock_user = MagicMock()
         mock_user.id = 1
         mock_user.llm_base_url = "https://api.openai.com/v1"
-        mock_user.llm_model = None  # todavia no eligio modelo
+        mock_user.llm_model = None  # mid-wizard: todavia no eligio modelo
         mock_user.encrypted_api_key = encrypted_key
 
         mock_db = MagicMock()
@@ -708,13 +715,66 @@ class TestAvailableModelsEndpoint:
 
         mock_get_models.return_value = ["gpt-4o", "gpt-4o-mini"]
 
-        import asyncio
-        from app.api.llm_config import wizard_available_models
+        # GROQ_API_KEY presente: confirma que el loader NO cae al default
+        # aunque el sistema tenga un default disponible.
+        import os
+        os.environ["GROQ_API_KEY"] = "gsk-test-default"
 
-        result = asyncio.run(wizard_available_models(_current_user()))
+        try:
+            import asyncio
+            from app.api.llm_config import wizard_available_models
+
+            result = asyncio.run(wizard_available_models(_current_user()))
+        finally:
+            os.environ.pop("GROQ_API_KEY", None)
 
         assert result.models == ["gpt-4o", "gpt-4o-mini"]
+        # La lista viene del endpoint del usuario, no del default.
         assert result.base_url == "https://api.openai.com/v1"
+        mock_get_models.assert_called_once()
+
+    @patch("app.api.llm_config.update_user_model_only")
+    @patch("app.core.llm_loader.SessionLocal")
+    def test_step3_saves_model_for_mid_wizard_user(
+        self, mock_session, mock_update
+    ):
+        """Soomri round-2 bloqueante: un user con base_url + api_key y
+        ``llm_model=None`` debe poder completar step3. d58d3ca hacia que
+        el loader levantara ``reason="missing"`` para este caso y step3
+        respondia 404 'Completá los pasos 1 y 2 primero' sin persistir
+        nada -- nadie podia terminar el wizard."""
+        from app.core.encryption import encrypt
+
+        encrypted_key = encrypt("sk-test-plain-key")
+
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.llm_base_url = "https://api.openai.com/v1"
+        mock_user.llm_model = None  # mid-wizard
+        mock_user.encrypted_api_key = encrypted_key
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_user
+        mock_session.return_value = mock_db
+
+        import asyncio
+        from app.api.llm_config import wizard_step3
+
+        body = WizardStep3Request(
+            base_url="https://api.openai.com/v1",
+            api_key="sk-body-ignored",
+            model="gpt-4o",
+            allow_unknown_model=False,
+        )
+
+        result = asyncio.run(wizard_step3(body, _current_user()))
+
+        assert result.success is True
+        mock_update.assert_called_once()
+        # El modelo elegido es el que se persiste.
+        assert mock_update.call_args.args[-1] == "gpt-4o" or (
+            mock_update.call_args.kwargs.get("model") == "gpt-4o"
+        )
 
     @patch("app.core.llm_loader.SessionLocal")
     def test_returns_422_when_decryption_fails(self, mock_session):

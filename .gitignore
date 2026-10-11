@@ -61,3 +61,7 @@ frontend/.env.local
 # CodeGraph local index (per-worktree, never shared)
 .codegraph/
 .freebuff/
+
+# Evals: resultados de corridas y cobertura
+evals/results/
+.coverage

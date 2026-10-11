@@ -1,0 +1,230 @@
+# Golden set de propuestas de arquitectura.
+#
+# Corpus hermetico: los `citations` son datos estaticos hardcodeados. El harness
+# NO consulta PGVector ni la base de datos, para poder correr en una laptop con
+# solo una API key.
+#
+# Los `snippet` salen del contenido real de los YAML de `data/patterns/`.
+# Si se edita un patron, actualiza aqui el fragmento correspondiente.
+#
+# Nota sobre `descripcion`: en produccion la descripcion viaja al modelo solo
+# por el camino del RAG (`_build_summary_query` la concatena a la query del
+# recuperador). NO entra al prompt del LLM: la firma de `_build_prompt`
+# recibe 4 argumentos (citations, prior_content, feedback, project_name) y
+# `descripcion` no es uno de ellos. Este campo se conserva en el YAML por
+# valor documental -- el README, seccion "Limitaciones honestas", explica
+# por que el harness no la envia al modelo y como se compensa.
+
+casos:
+  - id: hex-001
+    nombre: "E-commerce con cambios frecuentes de proveedor de pago"
+    project_name: "TiendaOnline"
+    descripcion: >-
+      Tienda online B2C con catálogo, carrito y checkout. Hoy procesamos pagos
+      con una pasarela propia, pero cada seis meses evaluamos cambiar de
+      proveedor porque las comisiones suben. El equipo de negocio exige salir
+      a producción cada dos semanas y los tiempos de entrega del proveedor no
+      están garantizados, así que habría que persistir y conmutar entre dos
+      proveedores distintos sin cortar la operación.
+    citations:
+      - pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
+        snippet: >-
+          Aísla la lógica de negocio del núcleo mediante puertos (interfaces) y
+          adaptadores, de forma que la tecnología externa (DB, UI, APIs) se pueda
+          cambiar sin tocar el dominio. Sistemas donde se anticipan cambios de
+          tecnología externa (DB, proveedor de mensajería) o que requieren alta
+          cobertura de tests unitarios del dominio.
+
+  - id: mono-001
+    nombre: "CRUD interno para un equipo de soporte de cinco personas"
+    project_name: "GestorDeTickets"
+    descripcion: >-
+      Herramienta interna para registrar, clasificar y cerrar tickets de soporte.
+      Es basicamente CRUD: alta de ticket, comentarios, estados y un dashboard
+      simple. La mantiene un equipo de cinco personas, el alcance esta cerrado
+      y no hay proyecciones de crecimiento relevantes. Un unico despliegue.
+    citations:
+      - pattern_name: "Arquitectura en capas (Layered)"
+        snippet: >-
+          Organiza el sistema en capas horizontales (presentación, lógica de
+          negocio, acceso a datos), cada una dependiendo solo de la capa
+          inmediatamente inferior. Aplicaciones CRUD de tamaño pequeño a mediano,
+          equipos pequeños, proyectos con alcance bien definido y bajo requerimiento
+          de escalar módulos por separado.
+      - pattern_name: "Monolito modular (Modular Monolith)"
+        snippet: >-
+          Un único despliegue, pero organizado internamente en módulos con
+          límites explícitos (bounded contexts), como paso intermedio antes de
+          migrar a microservicios. Equipos que quieren orden y límites claros
+          entre dominios sin asumir todavía el costo operativo de microservicios.
+
+  - id: mono-002
+    nombre: "Operacion de transporte con tres dominios y un solo despliegue"
+    project_name: "ControlDeFlota"
+    descripcion: >-
+      Sistema para una empresa de transporte logistico: planificacion de rutas,
+      seguimiento de vehiculos en tiempo real y facturacion. Son tres dominios
+      claramente distintos, pero hoy viven en el mismo monolito. Hay un solo
+      equipo de ocho ingenieros y no hay presupuesto ni expertise para operar
+      infraestructura distribuida. A futuro quieren poder extraer la facturacion
+      a un servicio propio si el negocio crece.
+    citations:
+      - pattern_name: "Monolito modular (Modular Monolith)"
+        snippet: >-
+          Un único despliegue, pero organizado internamente en módulos con
+          límites explícitos (bounded contexts), como paso intermedio antes de
+          migrar a microservicios. Mantiene la simplicidad operativa de un solo
+          despliegue Facilita una futura migración a microservicios si el
+          proyecto crece.
+      - pattern_name: "Clean Architecture"
+        snippet: >-
+          Organiza la aplicación alrededor de reglas de negocio y casos de uso en
+          el centro, haciendo que las dependencias del código apunten hacia
+          adentro. La UI, la base de datos, frameworks y servicios externos
+          quedan como detalles de infraestructura que dependen del núcleo, no al
+          revés.
+
+  - id: micro-001
+    nombre: "Marketplace con varios equipos y necesidades de escalado dispares"
+    project_name: "MarketplaceTurismo"
+    descripcion: >-
+      Plataforma de reserva de Turismo: hotspots, pagos, promociones y
+      notificaciones. Hay tres equipos independientes, cada uno con su roadmap y
+      su release train. Los hotspots reciben picos estacionales enormes en
+      temporada, mientras que el motor de promociones tiene carga baja y estable
+      las 24 horas. El perfilado muestra que el 80% del trafico es de lectura.
+    citations:
+      - pattern_name: "Microservicios"
+        snippet: >-
+          Divide el sistema en servicios pequeños e independientes, cada uno con
+          su propia base de datos y ciclo de despliegue, comunicados por red.
+          Productos con múltiples equipos trabajando en paralelo, módulos con
+          necesidades de escalado muy distintas entre sí.
+      - pattern_name: "API Gateway + Backend for Frontend (BFF)"
+        snippet: >-
+          Un punto de entrada único (API Gateway) enruta y agrega llamadas a
+          servicios internos, con una capa BFF adaptada a las necesidades de cada
+          tipo de cliente (web, móvil). Simplifica el cliente: una sola llamada
+          agrega varios servicios internos.
+
+  - id: evt-001
+    nombre: "Notificaciones en tiempo real y procesamiento diferido"
+    project_name: "PlataformaDeNotificaciones"
+    descripcion: >-
+      El sistema recibe eventos de pedidos, envios y cambios de inventario, y
+      dispara notificaciones por email, push y SMS. No le importa al usuario
+      esperar: si un SMS tarda tres segundos en salir, no hay problema. Los picos
+      son irregulares, con rajadas unpredictables entre las 18 y las 21 horas. Las
+      funciones son cortas y la empresa no quiere administrar servidores.
+    citations:
+      - pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
+        snippet: >-
+          Los componentes se comunican mediante eventos publicados a un bus o
+          cola, en vez de llamadas directas, favoreciendo el bajo acoplamiento
+          temporal. Bajo acoplamiento: los productores no conocen a los
+          consumidores.
+      - pattern_name: "Serverless (Function-as-a-Service)"
+        snippet: >-
+          La lógica se despliega como funciones individuales que ejecuta el
+          proveedor cloud bajo demanda, sin gestionar servidores directamente.
+          Cargas de trabajo intermitentes o impredecibles, equipos sin capacidad
+          de operar infraestructura propia.
+      - pattern_name: "CQRS (Command Query Responsibility Segregation)"
+        snippet: >-
+          Separa el modelo de escritura (comandos) del modelo de lectura
+          (consultas), permitiendo optimizar cada uno de forma independiente.
+          Sistemas con patrones de lectura y escritura muy distintos entre sí.
+
+  - id: cpl-001
+    nombre: "Motor de pagos con exigencia de auditoria y separacion de lecturas"
+    project_name: "CoreBancarioPagos"
+    descripcion: >-
+      Procesamiento de pagos y conciliación bancaria para una entidad financiera
+      regulada. Hay que poder explicar, ante un regulador, exactamente cada
+      centavo que se movió y por qué, y reconstruir el saldo de una cuenta en
+      cualquier fecha pasada. Las escrituras son pocas y siempre validadas; las
+      consultas de conciliación son de lectura y muy pesadas, con un volumen
+      mucho mayor que las escrituras. El equipo acepta consistencia eventual
+      entre el modelo de escritura y el de lectura.
+    citations:
+      - pattern_name: "Event sourcing"
+        snippet: >-
+          Persiste eventos inmutables como fuente de verdad y reconstruye el
+          estado actual reproduciendo esos eventos. Auditoría fuerte, historial
+          completo, dominios financieros o transaccionales.
+      - pattern_name: "CQRS (Command Query Responsibility Segregation)"
+        snippet: >-
+          Separa el modelo de escritura (comandos) del modelo de lectura
+          (consultas), permitiendo optimizar cada uno de forma independiente.
+          Modelos de lectura simplificados, adaptados exactamente a cada vista.
+
+  - id: mob-001
+    nombre: "Aplicacion movil con agregacion de datos de varios backends"
+    project_name: "SaludMovil"
+    descripcion: >-
+      App movil para pacientes de una red de clinicas, con un backend ya
+      dividido en servicios de agenda, laboratorio, recetas y facturacion. Cada
+      pantalla de la app necesita combinar datos de dos o tres de esos servicios
+      y la respuesta no es la misma para un telefono que para el portal web del
+      laboratorio. Hay que centralizar autenticacion y rate limiting.
+    citations:
+      - pattern_name: "API Gateway + Backend for Frontend (BFF)"
+        snippet: >-
+          Un punto de entrada único (API Gateway) enruta y agrega llamadas a
+          servicios internos, con una capa BFF adaptada a las necesidades de cada
+          tipo de cliente (web, móvil). Sistemas con múltiples clientes (web,
+          móvil) que consumen varios servicios backend y necesitan una capa de
+          agregación.
+      - pattern_name: "Microservicios"
+        snippet: >-
+          Divide el sistema en servicios pequeños e independientes, cada uno con
+          su propia base de datos y ciclo de despliegue, comunicados por red.
+
+  # --- Casos con RAG vacio -------------------------------------------------
+  # Miden el comportamiento cuando el recuperador no encuentra nada: el modelo
+  # debe producir las tres secciones igual, sin inventar referencias [N].
+  # Cualquier marcador [N] en la salida hace fallar `citas_validas`.
+
+  - id: vacio-001
+    nombre: "Script interno sin encaje en ningun patron"
+    project_name: "GeneradorDeReportesPDF"
+    descripcion: >-
+      Utilidad interna que corre por cron a las 3 de la madrugada, lee un CSV
+      exportado del ERP, arma un PDF de unas diez páginas y lo sube a un bucket
+      S3. Se ejecuta una sola vez por día. La mantiene una sola persona y vive en
+      un repositorio de treinta archivos. No hay concurrencia, ni usuarios, ni
+      requisitos de disponibilidad.
+    citations: []
+
+  - id: vacio-002
+    nombre: "Prototipo desechable de una sola pantalla"
+    project_name: "PrototipoBuscadorDocs"
+    descripcion: >-
+      Demostradors para un evento interno: un buscador de documentos que indexa
+      unos PDFs de ejemplo y muestra resultados. Se armo en una tarde, se
+      demuestra el jueves y despues se borra. El objetivo es que funcione en la
+      notebook del presentador, sin concurrencia ni despliegue.
+    citations: []
+
+  # --- Caso que no encaja en ningun patron, pero con contexto disponible ---
+  # El modelo tiene citas sobre microservicios y serverless, pero el proyecto no
+  # pide ninguno de los dos. Mide si alucina un patron o dice que no aplica.
+
+  - id: fuera-001
+    nombre: "Ajuste de curva de un motor fisico ya existant"
+    project_name: "TunerDeMotor"
+    descripcion: >-
+      Programa de escritorio de una sola maquina, instalado en los PCs de un
+      taller mecanico, que calcula la curva de admision de un motor a partir de
+      datos de dinamometro. No hay red en el taller, no hay servidor, no hay
+      usuarios concurrentes. Corre en Windows sobre el mismo equipo del mecanico y
+      todo el estado vive en un archivo local. Se entrega como un ejecutable.
+    citations:
+      - pattern_name: "Microservicios"
+        snippet: >-
+          Divide el sistema en servicios pequeños e independientes, cada uno con
+          su propia base de datos y ciclo de despliegue, comunicados por red.
+      - pattern_name: "Serverless (Function-as-a-Service)"
+        snippet: >-
+          La lógica se despliega como funciones individuales que ejecuta el
+          proveedor cloud bajo demanda, sin gestionar servidores directamente.
