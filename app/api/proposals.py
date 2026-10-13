@@ -46,7 +46,21 @@ def _proposal_reject_reverts_to() -> str:
     keeps the same semantics without the reload footgun.
     """
     return os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
-PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
+def _proposal_max_iter() -> int:
+    """Read the iteration cap from env at call time.
+
+    F18 round 3 (rebase conflict): F86 introduced
+    ``TestProposalStateMaxIterations`` with ``importlib.reload`` to
+    re-read the env var. That reload also reloaded the module's
+    ``ProposalOut`` class, breaking the ``isinstance`` checks in
+    ``test_proposals_endpoints.py``. The same fix as
+    ``_proposal_reject_reverts_to`` applies: read the env var at call
+    time so the class identity stays stable across reloads.
+
+    The return type is ``int`` (parsed from the env var); default is 5
+    to match the previous constant.
+    """
+    return int(os.getenv("PROPOSAL_MAX_ITER", "5"))
 PHASE = AVAILABLE_PHASES[1]  # "propuesta"
 MAX_SNAPSHOT_CHARS = 20_000
 
@@ -87,8 +101,9 @@ class ProposalStateOut(BaseModel):
     proposal_snapshot_chars: int
     last_decision: Optional[str]
     # Tope de iteraciones vigente en este deploy: el frontend lo lee de aquí
-    # en lugar de duplicar el literal.
-    max_iterations: int = PROPOSAL_MAX_ITER
+    # en lugar de duplicar el literal. F18 round 3: default_factory porque
+    # ``PROPOSAL_MAX_ITER`` ahora es una funcion getter (``_proposal_max_iter``).
+    max_iterations: int = Field(default_factory=_proposal_max_iter)
 
 
 class ProposalOut(BaseModel):
@@ -304,10 +319,10 @@ async def modify_proposal(
                     "y no se puede modificar."
                 ),
             )
-        if prior.iteration >= PROPOSAL_MAX_ITER:
+        if prior.iteration >= _proposal_max_iter():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})",
+                detail=f"Has alcanzado el máximo de iteraciones ({_proposal_max_iter()})",
             )
         project_id = int(prior.project_id)
     finally:

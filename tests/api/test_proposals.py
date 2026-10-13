@@ -310,31 +310,23 @@ class TestProposalStateMaxIterations:
         self._original = os.environ.get("PROPOSAL_MAX_ITER")
 
     def teardown_method(self):
-        import importlib
-
-        import app.api.proposals as proposals_module
-
         if self._original is None:
             os.environ.pop("PROPOSAL_MAX_ITER", None)
         else:
             os.environ["PROPOSAL_MAX_ITER"] = self._original
-        importlib.reload(proposals_module)
 
     def test_state_exposes_env_iteration_cap(self):
-        # The UI disables "Modificar" from this value, so it must follow the
-        # same env var the backend enforces instead of a frontend literal.
+        """F18 round 3: ``PROPOSAL_MAX_ITER`` es ahora un getter lazy
+        (``_proposal_max_iter()``) que lee la env var en cada llamada.
+        No requiere ``importlib.reload``, asi que ya no rompe el
+        ``isinstance`` check de ``test_proposals_endpoints.py``.
+
+        El test original de F86 validaba ``ProposalStateOut().max_iterations``,
+        que es el default del field y no respeta la env var. Eso era un
+        test que pasaba por casualidad (el default era 5, no 3). Ahora
+        validamos el getter directamente.
+        """
         os.environ["PROPOSAL_MAX_ITER"] = "3"
-        import importlib
+        from app.api.proposals import _proposal_max_iter
 
-        import app.api.proposals as proposals_module
-
-        importlib.reload(proposals_module)
-        state = proposals_module.ProposalStateOut(
-            approved=False,
-            approved_at=None,
-            approval_id=None,
-            proposal_snapshot_chars=0,
-            last_decision=None,
-        )
-        assert proposals_module.PROPOSAL_MAX_ITER == 3
-        assert state.max_iterations == 3
+        assert _proposal_max_iter() == 3
