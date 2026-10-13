@@ -47,16 +47,6 @@ class TestChatRequestModel:
         assert req.project_id is None
         assert req.message == "Hello"
 
-    def test_chat_request_rejects_empty_message_at_model_level(self):
-        """F18: ``Field(min_length=1)`` rejects empty messages at model level.
-        Whitespace-only messages still reach the endpoint and are caught
-        by the route's manual validation (handled separately)."""
-        from pydantic import ValidationError
-        from app.api.chat import ChatRequest
-
-        with pytest.raises(ValidationError):
-            ChatRequest(project_id=None, message="")
-
     def test_chat_request_normal_message(self):
         from app.api.chat import ChatRequest
 

@@ -1,8 +1,12 @@
 """Tests para /api/chat endpoint (``POST /api/chat``).
 
 Validaciones:
-  - 422 cuando el body no cumple el schema de ``ChatRequest``
-    (mensaje vacio o faltante, gracias a ``Field(min_length=1)``).
+  - 400 cuando el mensaje esta vacio o es solo whitespace (chequeo manual
+    en el endpoint, NO Pydantic, porque quitamos ``min_length=1`` en F18
+    round 3 para que el frontend siga asumiendo ``detail`` como string).
+  - 422 cuando el body no cumple el schema de ``ChatRequest`` en lo
+    demas (tipo incorrecto, falta de campos requeridos que no son message,
+    coercion de ``project_id``).
   - El endpoint es ``StreamingResponse`` SSE — la forma del stream se cubre
     en ``test_chat.py`` con mocks de ``run_agent`` + ``similarity_search``.
 """
@@ -32,28 +36,43 @@ def _chat_client(user=None):
 
 
 class TestChatEndpointValidation:
-    """Pydantic validates ChatRequest before the route body runs."""
+    """Manual check for empty/whitespace message; Pydantic for the rest."""
 
-    def test_request_validation_min_message_length(self):
+    def test_request_validation_empty_message_returns_400(self):
+        """Empty message is caught by the route's manual validation, not Pydantic."""
         with _chat_client() as client:
             r = client.post(
                 "/api/chat",
                 json={"project_id": 5, "message": ""},
             )
 
-        # Pydantic Field(min_length=1) -> 422
-        assert r.status_code == 422
+        assert r.status_code == 400
         body = r.json()
         assert "detail" in body
+        # detail is a string (frontend expects this)
+        assert isinstance(body["detail"], str)
 
-    def test_request_validation_requires_message(self):
+    def test_request_validation_whitespace_message_returns_400(self):
+        """Whitespace-only message is also caught by the manual validation."""
+        with _chat_client() as client:
+            r = client.post(
+                "/api/chat",
+                json={"project_id": 5, "message": "   "},
+            )
+
+        assert r.status_code == 400
+        body = r.json()
+        assert isinstance(body["detail"], str)
+
+    def test_request_validation_missing_message_returns_422(self):
+        """Missing message field is rejected by Pydantic (required field)."""
         with _chat_client() as client:
             r = client.post(
                 "/api/chat",
                 json={"project_id": 5},  # missing message
             )
 
-        # Pydantic: missing required field -> 422
+        # Pydantic: required field missing -> 422 (not 400, that's for empty)
         assert r.status_code == 422
         body = r.json()
         assert "detail" in body
