@@ -43,15 +43,16 @@ def save_pattern_chunks(
 
     Guarda filename/source_type en chunk_metadata y retorna la cantidad de
     chunks insertados. No modifica architect_patterns.
+
+    Short-circuit: si ``chunks`` esta vacio, NO validamos que el pattern_id
+    exista (no hay nada que asociar). Si ``chunks`` no esta vacio, validamos
+    el pattern_id antes del short-circuit para que un pattern_id invalido
+    siga levantando PatternStorageError (PR #102 round 3, Laura).
     """
     if len(chunks) != len(embeddings):
         raise PatternStorageError(
             f"Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings"
         )
-
-    # Short-circuit empty input: no DB roundtrip needed.
-    if not chunks:
-        return 0
 
     db = SessionLocal()
     try:
@@ -60,6 +61,12 @@ def save_pattern_chunks(
         ).first()
         if pattern_exists is None:
             raise PatternStorageError(f"pattern_id {pattern_id} no existe")
+
+        # Short-circuit empty input DESPUES de validar pattern_id: si hay
+        # chunks que insertar pero el patron no existe, eso es un error del
+        # caller; si no hay chunks, no hay nada que asociar y devolvemos 0.
+        if not chunks:
+            return 0
 
         metadata = {
             "filename": filename,

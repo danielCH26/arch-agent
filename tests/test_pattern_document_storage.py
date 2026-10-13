@@ -62,16 +62,49 @@ class TestSavePatternChunksValidation:
             )
 
     def test_save_chunks_with_zero_chunks_ok(self):
-        """An empty list is fine: returns 0, no DB writes."""
+        """An empty list with a valid pattern_id: returns 0 after validating pattern_id."""
+        from unittest.mock import patch, MagicMock
+
         from app.core.pattern_document_storage import save_pattern_chunks
 
-        result = save_pattern_chunks(
-            pattern_id=1,
-            chunks=[],
-            embeddings=[],
-            filename="empty.pdf",
-        )
+        # Pattern exists in the DB (mocked)
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.first.return_value = (1,)
+
+        with patch("app.core.pattern_document_storage.SessionLocal", return_value=fake_db):
+            result = save_pattern_chunks(
+                pattern_id=1,
+                chunks=[],
+                embeddings=[],
+                filename="empty.pdf",
+            )
         assert result == 0
+        fake_db.close.assert_called_once()
+
+    def test_save_chunks_with_zero_chunks_invalid_pattern_id_raises(self):
+        """Empty chunks + invalid pattern_id: raises PatternStorageError (PR #102 round 3)."""
+        from unittest.mock import patch, MagicMock
+
+        import pytest
+
+        from app.core.pattern_document_storage import (
+            PatternStorageError,
+            save_pattern_chunks,
+        )
+
+        # Pattern does NOT exist
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.first.return_value = None
+
+        with patch("app.core.pattern_document_storage.SessionLocal", return_value=fake_db):
+            with pytest.raises(PatternStorageError, match="no existe"):
+                save_pattern_chunks(
+                    pattern_id=999,
+                    chunks=[],
+                    embeddings=[],
+                    filename="x.pdf",
+                )
+        fake_db.rollback.assert_called_once()
 
 
 class TestGetPatternSourceChunks:
