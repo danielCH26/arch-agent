@@ -71,7 +71,12 @@ jobs:
       JWT_ALGORITHM: HS256
       JWT_EXPIRES_MINUTES: '60'
       # Encriptación de credenciales LLM por usuario
-      ENCRYPTION_KEY: ci-test-encryption-key-32-chars!!
+      # Encriptación de credenciales LLM por usuario.
+      # Clave Fernet válida (urlsafe base64 de 32 bytes) generada con
+      # Fernet.generate_key(). La anterior "ci-test-encryption-key-32-chars!!"
+      # NO era Fernet-valida; Fernet() fallaba al instanciarse con esa
+      # cadena. PR #102 round 3 (Soomri #10).
+      ENCRYPTION_KEY: z8qBWpVLbd21la-zc2jfeK88IKCWTjVczCHFEZ5gacM=
       # Langfuse deshabilitado en CI (no llama a API externa)
       LANGFUSE_ENABLED: 'false'
       # Forzar CPU para torch/sentence-transformers
