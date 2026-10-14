@@ -1,5 +1,6 @@
 pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
 category: "Monolítica"
+complexity: "media"
 description: >
   Aísla la lógica de negocio del núcleo mediante puertos (interfaces) y
   adaptadores, de forma que la tecnología externa (DB, UI, APIs) se pueda

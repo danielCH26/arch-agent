@@ -1,5 +1,6 @@
 pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
 category: "Distribuida"
+complexity: "alta"
 description: >
   Los componentes se comunican mediante eventos publicados a un bus o cola, en
   vez de llamadas directas, favoreciendo el bajo acoplamiento temporal.

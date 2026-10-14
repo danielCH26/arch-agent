@@ -21,13 +21,24 @@ from seed_common import connect_db, log
 
 PATTERNS_DIR = Path(__file__).parent.parent / "data" / "patterns"
 
+# Complejidad operativa que exige cada patron (campo `complexity` del YAML).
+VALID_COMPLEXITY = ("baja", "media", "alta")
+
 
 def load_patterns() -> list[dict]:
     files = sorted(PATTERNS_DIR.glob("*.yaml"))
     if not files:
         log(f"No se encontraron archivos .yaml en {PATTERNS_DIR}", "ERROR")
         sys.exit(1)
-    return [yaml.safe_load(path.read_text(encoding="utf-8")) for path in files]
+    patterns = [yaml.safe_load(path.read_text(encoding="utf-8")) for path in files]
+    for pattern in patterns:
+        if pattern.get("complexity") not in VALID_COMPLEXITY:
+            log(
+                f"{pattern['pattern_name']}: complexity={pattern.get('complexity')!r} "
+                f"no es una de {VALID_COMPLEXITY}; ese patron no se penalizara al reordenar",
+                "WARN",
+            )
+    return patterns
 
 
 _model = None
@@ -88,8 +99,8 @@ def upsert_pattern(cur, pattern: dict) -> int:
             """
             INSERT INTO architect_patterns
                 (pattern_name, category, description, use_cases, tradeoffs,
-                 when_not_to_use, decision_signals, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
+                 when_not_to_use, decision_signals, complexity, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
             RETURNING id
             """,
             (
@@ -100,6 +111,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
                 json.dumps(pattern["tradeoffs"]),
                 pattern.get("when_not_to_use"),
                 decision_signals,
+                pattern.get("complexity"),
                 embedding,
             ),
         )
@@ -109,7 +121,8 @@ def upsert_pattern(cur, pattern: dict) -> int:
         """
         UPDATE architect_patterns
         SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
-            when_not_to_use = %s, decision_signals = %s, embedding = %s::vector
+            when_not_to_use = %s, decision_signals = %s, complexity = %s,
+            embedding = %s::vector
         WHERE id = %s
         """,
         (
@@ -119,6 +132,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
             json.dumps(pattern["tradeoffs"]),
             pattern.get("when_not_to_use"),
             decision_signals,
+            pattern.get("complexity"),
             embedding,
             row[0],
         ),

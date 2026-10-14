@@ -1,5 +1,6 @@
 pattern_name: "API Gateway + Backend for Frontend (BFF)"
 category: "Distribuida / Integración"
+complexity: "media"
 description: >
   Un punto de entrada único (API Gateway) enruta y agrega llamadas a servicios
   internos, con una capa BFF adaptada a las necesidades de cada tipo de cliente
