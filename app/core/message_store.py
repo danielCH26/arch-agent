@@ -307,17 +307,14 @@ def engram_mirror(
                 content=message.content,
                 session_id=session_id,
                 project=project,
-<<<<<<< HEAD
-                title=f"{message.role}:{message.id or 'pending'}",
-                observation_type="manual",
-=======
-                content=message.content,
-                # Deterministic topic key: role + user + project + message
-                # id, so retries collapse onto the same observation and
-                # retrieval can filter by ``chat_message`` cleanly.
+                # Deterministic title: role + user + project + message id,
+                # so retries collapse onto the same observation. Explicit
+                # ``observation_type="chat_message"`` matches the engram
+                # client default AND overrides the rework's "manual" that
+                # Soomri flagged in PR #104 review #5 (retrieval that
+                # filters by chat_message would otherwise miss these).
                 title=f"{message.role}-user-{user_id}-project-{project_id or 'none'}-{message.id or 'pending'}",
                 observation_type="chat_message",
->>>>>>> b983f9e (fix(engram): restore per-user project scoping (PR #104 review #5))
             )
             observation_id = result.get("id") if isinstance(result, dict) else None
             if observation_id is not None:
