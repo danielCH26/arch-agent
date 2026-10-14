@@ -20,7 +20,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.attachment_tokens import (
-    DEFAULT_TTL_SECONDS,  # noqa: F401  (re-exported for downstream token helpers)
     _ensure_uploads_dir,
     verify_attachment_token,
 )

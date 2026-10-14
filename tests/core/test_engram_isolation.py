@@ -46,10 +46,10 @@ class TestEngramIsolation:
     def test_two_users_target_distinct_projects(self, monkeypatch):
         monkeypatch.delenv("ENGRAM_PROJECT", raising=False)
 
-        captured: list[dict] = []
+        captured: list[tuple] = []
 
-        def fake_save(self, **kwargs):
-            captured.append(kwargs)
+        def fake_save(self, topic_key, content, **kwargs):
+            captured.append((topic_key, kwargs))
             return {"id": 1}
 
         with patch("app.core.engram_client.EngramClient.save", new=fake_save), \
@@ -63,8 +63,10 @@ class TestEngramIsolation:
         # ``project`` string. The previous rework used a single
         # ``ENGRAM_PROJECT`` env for everyone, which re-enabled
         # cross-user bleed via Engram retrieval.
-        project_a = captured[0]["project"]
-        project_b = captured[1]["project"]
+        kwargs_a = captured[0][1]
+        kwargs_b = captured[1][1]
+        project_a = kwargs_a["project"]
+        project_b = kwargs_b["project"]
         assert project_a != project_b, (
             f"Expected per-user project scoping; both mirrors went to "
             f"{project_a!r}. Captured: {captured}"
@@ -78,10 +80,10 @@ class TestEngramIsolation:
         ``chat_message`` and would not see the new mirrors."""
         monkeypatch.delenv("ENGRAM_PROJECT", raising=False)
 
-        captured: list[dict] = []
+        captured: list[tuple] = []
 
-        def fake_save(self, **kwargs):
-            captured.append(kwargs)
+        def fake_save(self, topic_key, content, **kwargs):
+            captured.append((topic_key, kwargs))
             return {"id": 1}
 
         with patch("app.core.engram_client.EngramClient.save", new=fake_save), \
@@ -90,9 +92,10 @@ class TestEngramIsolation:
             engram_mirror(_make_message(), user_id=1, project_id=10)
 
         assert captured, "expected engram_mirror to call save()"
-        assert captured[0]["observation_type"] == "chat_message", (
+        kwargs = captured[0][1]
+        assert kwargs["observation_type"] == "chat_message", (
             f"Expected observation_type='chat_message' so retrieval can "
-            f"filter by chat history; got {captured[0]['observation_type']!r}"
+            f"filter by chat history; got {kwargs['observation_type']!r}"
         )
 
     def test_title_carries_deterministic_topic_key(self, monkeypatch):
@@ -101,10 +104,10 @@ class TestEngramIsolation:
         observation chains correctly across retries."""
         monkeypatch.delenv("ENGRAM_PROJECT", raising=False)
 
-        captured: list[dict] = []
+        captured: list[tuple] = []
 
-        def fake_save(self, **kwargs):
-            captured.append(kwargs)
+        def fake_save(self, topic_key, content, **kwargs):
+            captured.append((topic_key, kwargs))
             return {"id": 1}
 
         with patch("app.core.engram_client.EngramClient.save", new=fake_save), \
@@ -112,7 +115,8 @@ class TestEngramIsolation:
                    return_value=None):
             engram_mirror(_make_message(message_id=42), user_id=1, project_id=10)
 
-        title = captured[0]["title"]
+        kwargs = captured[0][1]
+        title = kwargs["title"]
         # user + project + role + id encoded so the topic key is unique
         # per (user, project, turn) and idempotent across retries.
         for piece in ("user", "1", "10", "42"):
@@ -127,7 +131,7 @@ class TestEngramIsolation:
 
         from app.core.engram_client import EngramError
 
-        def fake_save(self, **kwargs):
+        def fake_save(self, topic_key, content, **kwargs):
             raise EngramError("Engram is down")
 
         with patch("app.core.engram_client.EngramClient.save", new=fake_save), \
