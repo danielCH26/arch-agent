@@ -1585,3 +1585,23 @@ def test_feedback_rules_tell_the_model_to_update_the_tradeoffs_section_too():
     # en Componentes/Tecnologias/Patrones/Justificacion.
     assert "Trade-offs y decisión: la tabla y la Recomendación deben reflejar el cambio" in prompt
     assert "Justificacion y la Recomendacion de Trade-offs para el patron nuevo" in prompt
+
+# --- Re-revisión: una negación previa no debe tapar un pedido positivo ------
+
+def test_negation_before_a_positive_switch_does_not_swallow_the_request():
+    from app.core.proposal_generator import _explicitly_requested, _feedback_stance
+
+    hexagonal = "Arquitectura hexagonal (Puertos y Adaptadores)"
+    assert _feedback_stance("CQRS", "sin CQRS y con hexagonal") == "reject"
+    assert _feedback_stance(hexagonal, "sin CQRS y con hexagonal") == "want"
+    assert _feedback_stance(hexagonal, "no quiero CQRS y usa hexagonal") == "want"
+    assert _explicitly_requested(hexagonal, "Restricciones: sin CQRS y con hexagonal")
+    assert not _explicitly_requested("CQRS", "Restricciones: sin CQRS y con hexagonal")
+
+
+def test_negation_still_covers_a_plain_list_of_patterns():
+    from app.core.proposal_generator import _explicitly_requested, _feedback_stance
+
+    # "y" sin marca positiva NO corta la clausula: la negacion sigue aplicando.
+    assert not _explicitly_requested("Monolito modular", "evitar microservicios y monolito modular")
+    assert _feedback_stance("Monolito modular", "no quiero microservicios y monolito modular") is None

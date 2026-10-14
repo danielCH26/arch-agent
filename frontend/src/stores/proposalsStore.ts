@@ -1,323 +1,254 @@
 import { create } from 'zustand'
+import { ApiError } from '../api/client'
+import { authStore } from './authStore'
 import {
+  createProposalStream,
+  decideProposal,
+  getProjectProposalState,
+  getProposal,
+  type ProjectProposalState,
   type ProposalCitation,
   type ProposalDecision,
   type ProposalDecisionResponse,
+  type ProposalLifecycle,
   type ProposalOut,
-  createProposalStream,
-  decideProposal,
-  getProposalHistory,
-  getLatestProposal,
-  getProposal as fetchProposal,
 } from '../api/proposals'
 
-/**
- * Single-source-of-truth for the currently active proposal.
- *
- * Mirrors `frontend/src/stores/chatStore.ts` (Zustand v5 typed form):
- * `create<State>()((set, get) => ({ ... }))`. Action signatures match
- * design.md §6 so this file is the public contract the UI consumes.
- */
 export interface Proposal {
   id: number | null
-  project_id: number
+  projectId: number
   iteration: number
-  // Streamed markdown accumulator. Promoted to `content` on `done`.
-  content_markdown: string
+  content: string
   citations: ProposalCitation[]
-  lifecycle: 'proposed' | 'approved' | 'rejected' | 'idle'
   feedback: string | null
-  created_at: string | null
+  lifecycle: ProposalLifecycle
 }
 
-export type InFlightStatus = 'idle' | 'generating' | 'modifying' | 'deciding'
+type ProposalActivity = 'idle' | 'loading' | 'generating' | 'modifying' | 'deciding'
 
 interface ProposalsState {
-  currentProposal: Proposal | null
-  /** Draft for the next iteration. The approved/current version stays intact. */
-  pendingProposal: Proposal | null
+  current: Proposal | null
   iterations: Proposal[]
-  inFlight: InFlightStatus
+  projectState: ProjectProposalState | null
+  activity: ProposalActivity
   error: string | null
-
-  // Streaming actions
-  generate: (projectId: number) => Promise<void>
-  modify: (proposalId: number, feedback: string) => Promise<void>
-
-  // Decision action
-  decide: (
-    proposalId: number,
-    decision: Exclude<ProposalDecision, 'modify'>,
-    comment?: string,
-  ) => Promise<ProposalDecisionResponse>
-
-  // Read helper (used to re-sync after a 409, see design §10)
+  load: (projectId: number) => Promise<void>
+  generate: (projectId: number) => void
+  modify: (proposalId: number, feedback: string) => void
+  decide: (proposalId: number, decision: ProposalDecision, comment?: string) => Promise<ProposalDecisionResponse>
   refresh: (proposalId: number) => Promise<void>
-
-  // Rehidrata la propuesta viva del proyecto desde el backend (al recargar o
-  // volver a entrar a la fase). No toca nada si hay un stream en curso.
-  loadLatest: (projectId: number) => Promise<void>
-
-  // Cleanup
   reset: () => void
-  clearError: () => void
 }
 
-function emptyProposal(projectId: number): Proposal {
-  return {
-    id: null,
-    project_id: projectId,
-    iteration: 0,
-    content_markdown: '',
-    citations: [],
-    lifecycle: 'proposed',
-    feedback: null,
-    created_at: null,
+// El backend no expone un listado de propuestas por proyecto, así que se
+// recuerda en el navegador la última propuesta generada para rehidratarla al
+// recargar. La clave incluye el usuario y se borra al cerrar sesión (prefijo
+// `archagent:user:`, ver authStore). En otro navegador no hay forma de
+// recuperarla hasta que el backend ofrezca ese listado.
+const lastProposalKey = (projectId: number) =>
+  `archagent:user:${authStore.getState().user?.id ?? 'anon'}:last-proposal:${projectId}`
+// Clave usada antes del cambio de marca; se migra al leerla.
+const legacyProposalKey = (projectId: number) => `arqagent:last-proposal:${projectId}`
+
+function rememberProposal(projectId: number, proposalId: number) {
+  try { localStorage.setItem(lastProposalKey(projectId), String(proposalId)) } catch { /* sin storage */ }
+}
+
+function recalledProposal(projectId: number): number | null {
+  try {
+    const legacy = localStorage.getItem(legacyProposalKey(projectId))
+    if (legacy !== null) {
+      localStorage.removeItem(legacyProposalKey(projectId))
+      if (localStorage.getItem(lastProposalKey(projectId)) === null) {
+        localStorage.setItem(lastProposalKey(projectId), legacy)
+      }
+    }
+    const value = Number(localStorage.getItem(lastProposalKey(projectId)))
+    return Number.isInteger(value) && value > 0 ? value : null
+  } catch {
+    return null
   }
 }
 
-function proposalFromOut(out: ProposalOut): Proposal {
-  return {
-    id: out.id,
-    project_id: out.project_id,
-    iteration: out.iteration,
-    content_markdown: out.content,
-    citations: out.citations ?? [],
-    lifecycle: out.lifecycle,
-    feedback: out.feedback,
-    created_at: out.created_at,
+function forgetProposal(projectId: number) {
+  try { localStorage.removeItem(lastProposalKey(projectId)) } catch { /* sin storage */ }
+}
+
+const newProposal = (projectId: number): Proposal => ({
+  id: null,
+  projectId,
+  iteration: 1,
+  content: '',
+  citations: [],
+  feedback: null,
+  lifecycle: 'proposed',
+})
+
+const fromOut = (out: ProposalOut): Proposal => ({
+  id: out.id,
+  projectId: out.project_id,
+  iteration: out.iteration,
+  content: out.content,
+  citations: out.citations ?? [],
+  feedback: out.feedback,
+  lifecycle: out.lifecycle,
+})
+
+let activeStream = 0
+
+// Streams que siguen corriendo aunque la tarjeta se haya desmontado (reset()
+// solo deja de reflejarlos en pantalla). Al volver al proyecto, load() espera
+// a que terminen antes de rehidratar, en vez de ofrecer generar de nuevo.
+const backgroundStreams = new Map<number, Promise<void>>()
+
+function trackStream(projectId: number) {
+  let settle = () => {}
+  const pending = new Promise<void>((resolve) => { settle = resolve })
+  backgroundStreams.set(projectId, pending)
+  return () => {
+    if (backgroundStreams.get(projectId) === pending) backgroundStreams.delete(projectId)
+    settle()
   }
 }
 
-export const proposalsStore = create<ProposalsState>((set, get) => ({
-  currentProposal: null,
-  pendingProposal: null,
-  iterations: [],
-  inFlight: 'idle',
-  error: null,
-
-  generate: async (projectId: number) => {
-    set({
-      inFlight: 'generating',
-      error: null,
-      currentProposal: emptyProposal(projectId),
-      pendingProposal: null,
-    })
-
-    createProposalStream(
-      'generate',
-      { project_id: projectId },
-      {
-        onSources: (citations) => {
-          set((state) =>
-            state.currentProposal
-              ? { currentProposal: { ...state.currentProposal, citations } }
-              : {},
-          )
-        },
-        onToken: (token) => {
-          set((state) =>
-            state.currentProposal
-              ? {
-                  currentProposal: {
-                    ...state.currentProposal,
-                    content_markdown:
-                      state.currentProposal.content_markdown + token,
-                  },
-                }
-              : {},
-          )
-        },
-        onDone: (proposalId, citations, iteration) => {
-          set((state) => {
-            const base = state.currentProposal ?? emptyProposal(projectId)
-            const finalized: Proposal = {
-              ...base,
-              id: proposalId,
-              citations,
-              // Iteración real guardada en la DB (antes quedaba en 0 y la
-              // siguiente modificación se mostraba como "iteración 1").
-              iteration: iteration ?? (base.iteration || 1),
-              // lifecycle stays 'proposed' until the user clicks Aprobar/Rechazar.
-            }
-            return {
-              currentProposal: finalized,
-              pendingProposal: null,
-              iterations: [finalized, ...state.iterations],
-              inFlight: 'idle',
-            }
-          })
-        },
-        onError: (message) => {
-          set({ inFlight: 'idle', error: message, pendingProposal: null })
-        },
+export const proposalsStore = create<ProposalsState>((set, get) => {
+  const streamHandlers = (
+    streamId: number,
+    projectId: number,
+    onFailure: (error: string, status?: number) => void,
+  ) => {
+    const settle = trackStream(projectId)
+    return {
+      onSources: (citations: ProposalCitation[]) => {
+        if (streamId !== activeStream) return
+        set((state) => state.current ? { current: { ...state.current, citations } } : {})
       },
-    )
-  },
-
-  modify: async (proposalId: number, feedback: string) => {
-    // Keep the current iteration visible and immutable while the next one is
-    // streamed. Replacing it with an empty draft made feedback appear to erase
-    // the proposal until the request finished.
-    const current = get().currentProposal
-    const prior =
-      get().iterations.find((p) => p.id === proposalId) ??
-      (current?.id === proposalId ? current : undefined)
-    set({
-      inFlight: 'modifying',
-      error: null,
-      pendingProposal: emptyProposal(prior?.project_id ?? 0),
-    })
-
-    createProposalStream(
-      'modify',
-      { project_id: prior?.project_id ?? 0, feedback, proposal_id: proposalId },
-      {
-        onSources: (citations) => {
-          set((state) =>
-            state.pendingProposal
-              ? { pendingProposal: { ...state.pendingProposal, citations } }
-              : {},
-          )
-        },
-        onToken: (token) => {
-          set((state) =>
-            state.pendingProposal
-              ? {
-                  pendingProposal: {
-                    ...state.pendingProposal,
-                    content_markdown:
-                      state.pendingProposal.content_markdown + token,
-                  },
-                }
-              : {},
-          )
-        },
-        onDone: (newProposalId, citations, iteration) => {
-          set((state) => {
-            const base = state.pendingProposal ?? emptyProposal(0)
-            const finalized: Proposal = {
-              ...base,
-              id: newProposalId,
-              citations,
-              feedback,
-              iteration: iteration ?? (prior?.iteration ?? 0) + 1,
-            }
-            return {
-              currentProposal: finalized,
-              pendingProposal: null,
-              iterations: [
-                finalized,
-                ...state.iterations.filter((proposal) => proposal.id !== finalized.id),
-              ],
-              inFlight: 'idle',
-            }
-          })
-        },
-        onError: (message) => {
-          set({ inFlight: 'idle', error: message, pendingProposal: null })
-        },
+      onToken: (token: string) => {
+        if (streamId !== activeStream) return
+        set((state) => state.current ? { current: { ...state.current, content: state.current.content + token } } : {})
       },
-    )
-  },
-
-  decide: async (proposalId, decision, comment) => {
-    set({ inFlight: 'deciding', error: null })
-    try {
-      const response = await decideProposal(proposalId, decision, comment)
-      set((state) => {
-        const updated: Proposal | null = state.currentProposal
-          ? {
-              ...state.currentProposal,
-              id: response.proposal_id,
-              lifecycle: response.lifecycle,
-            }
-          : null
-        return {
-          currentProposal: updated,
-          iterations: state.iterations.map((p) =>
-            p.id === response.proposal_id
-              ? { ...p, lifecycle: response.lifecycle }
-              : p,
-          ),
-          inFlight: 'idle',
-        }
-      })
-      return response
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to record decision'
-      set({ inFlight: 'idle', error: message })
-      throw err
+      onDone: (id: number, citations: ProposalCitation[]) => {
+        // Se recuerda aunque el usuario haya salido: la propuesta ya existe en
+        // el servidor y regenerarla gastaría otra iteración.
+        rememberProposal(projectId, id)
+        settle()
+        if (streamId !== activeStream) return
+        set((state) => {
+          if (!state.current) return { activity: 'idle' }
+          const proposal = { ...state.current, id, citations }
+          return { current: proposal, iterations: [proposal, ...state.iterations], activity: 'idle' }
+        })
+        // El backend guarda la iteración definitiva; sincronizamos número y contenido.
+        void get().refresh(id)
+      },
+      onError: (error: string, status?: number) => {
+        settle()
+        if (streamId === activeStream) onFailure(error, status)
+      },
     }
-  },
+  }
 
-  refresh: async (proposalId) => {
-    try {
-      const out = await fetchProposal(proposalId)
-      const hydrated = proposalFromOut(out)
-      set((state) => ({
-        currentProposal:
-          state.currentProposal?.id === proposalId
-            ? hydrated
-            : state.currentProposal,
-        iterations: state.iterations.some((p) => p.id === proposalId)
-          ? state.iterations.map((p) => (p.id === proposalId ? hydrated : p))
-          : [hydrated, ...state.iterations],
-      }))
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to refresh proposal'
-      set({ error: message })
-    }
-  },
+  return {
+    current: null,
+    iterations: [],
+    projectState: null,
+    activity: 'idle',
+    error: null,
 
-  loadLatest: async (projectId) => {
-    if (get().inFlight !== 'idle') return
-    const current = get().currentProposal
-    // Ya hay una propuesta cargada de ESTE proyecto (y no rechazada): no
-    // pisarla. Una de otro proyecto o una rechazada sí se reemplaza.
-    if (
-      current &&
-      current.id != null &&
-      current.project_id === projectId &&
-      current.lifecycle !== 'rejected'
-    ) {
-      return
-    }
-    try {
-      const [out, history] = await Promise.all([
-        getLatestProposal(projectId),
-        getProposalHistory(projectId).catch(() => []),
+    load: async (projectId) => {
+      const streamId = ++activeStream
+      const pending = backgroundStreams.get(projectId)
+      if (pending) {
+        // Una generación de este proyecto sigue en curso tras salir de la
+        // página: se muestra como tal y se recarga cuando termine.
+        set({ current: null, iterations: [], projectState: null, activity: 'generating', error: null })
+        await pending
+        if (streamId !== activeStream) return
+      }
+      set({ current: null, iterations: [], projectState: null, activity: 'loading', error: null })
+      const proposalId = recalledProposal(projectId)
+      const [proposal, projectState] = await Promise.all([
+        proposalId
+          ? getProposal(proposalId).catch((error) => {
+              if (error instanceof ApiError && [403, 404].includes(error.status)) forgetProposal(projectId)
+              return null
+            })
+          : Promise.resolve(null),
+        getProjectProposalState(projectId).catch(() => null),
       ])
-      if (get().inFlight !== 'idle') return
-      const hydratedHistory = history.map(proposalFromOut)
-      // La vigente sale de /proposals/latest (excluye rechazadas). El
-      // historial incluye rechazadas, así que solo alimenta `iterations`:
-      // si todas están rechazadas, `out` es null y la tarjeta ofrece
-      // "Generar propuesta" en vez de mostrar una versión rechazada.
-      const hydrated = out ? proposalFromOut(out) : null
-      set({
-        currentProposal: hydrated,
-        pendingProposal: null,
-        iterations:
-          hydratedHistory.length > 0 ? hydratedHistory : hydrated ? [hydrated] : [],
-        error: null,
-      })
-    } catch {
-      // Silencioso: si falla, la tarjeta queda con el botón "Generar propuesta".
-    }
-  },
+      if (streamId !== activeStream) return
+      const current = proposal && proposal.project_id === projectId ? fromOut(proposal) : null
+      // Una propuesta rechazada devolvió el proyecto a requerimientos: al volver
+      // a la fase propuesta se empieza de cero.
+      const usable = current && current.lifecycle !== 'rejected' ? current : null
+      set({ current: usable, iterations: usable ? [usable] : [], projectState, activity: 'idle' })
+    },
 
-  reset: () => {
-    set({
-      currentProposal: null,
-      pendingProposal: null,
-      iterations: [],
-      inFlight: 'idle',
-      error: null,
-    })
-  },
+    generate: (projectId) => {
+      const streamId = ++activeStream
+      set({ current: newProposal(projectId), iterations: [], activity: 'generating', error: null })
+      createProposalStream('generate', { projectId }, streamHandlers(streamId, projectId, (error, status) => {
+        set({ current: null, activity: 'idle', error })
+        // 409: el estado cambió en el backend (p. ej. la propuesta ya se aprobó
+        // en otra pestaña); se vuelve a cargar sin perder el mensaje de error.
+        if (status === 409) {
+          void get().load(projectId).then(() => set({ error }))
+        }
+      }))
+    },
 
-  clearError: () => set({ error: null }),
-}))
+    modify: (proposalId, feedback) => {
+      const previous = get().iterations.find((proposal) => proposal.id === proposalId) ?? get().current
+      if (!previous) return
+      const streamId = ++activeStream
+      const draft: Proposal = { ...newProposal(previous.projectId), iteration: previous.iteration + 1, feedback }
+      set({ current: draft, activity: 'modifying', error: null })
+      createProposalStream('modify', { projectId: previous.projectId, proposalId, feedback }, streamHandlers(streamId, previous.projectId, (error) => {
+        // Si la iteración falla, se vuelve a mostrar la propuesta anterior.
+        set({ current: previous, activity: 'idle', error })
+        void get().refresh(proposalId)
+      }))
+    },
+
+    decide: async (proposalId, decision, comment) => {
+      set({ activity: 'deciding', error: null })
+      try {
+        const result = await decideProposal(proposalId, decision, comment)
+        set((state) => ({
+          current: state.current?.id === proposalId ? { ...state.current, lifecycle: result.lifecycle } : state.current,
+          iterations: state.iterations.map((proposal) => proposal.id === proposalId ? { ...proposal, lifecycle: result.lifecycle } : proposal),
+          activity: 'idle',
+        }))
+        const projectId = get().current?.projectId
+        if (projectId) {
+          if (result.lifecycle === 'rejected') forgetProposal(projectId)
+          void getProjectProposalState(projectId).then((projectState) => set({ projectState })).catch(() => undefined)
+        }
+        return result
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'No se pudo registrar la decisión.'
+        set({ activity: 'idle', error: message })
+        // 409: la propuesta cambió de estado en otra pestaña; re-sincronizamos.
+        if (error instanceof ApiError && error.status === 409) await get().refresh(proposalId)
+        throw error
+      }
+    },
+
+    refresh: async (proposalId) => {
+      try {
+        const proposal = fromOut(await getProposal(proposalId))
+        set((state) => ({
+          current: state.current?.id === proposalId ? proposal : state.current,
+          iterations: state.iterations.map((item) => item.id === proposalId ? proposal : item),
+        }))
+      } catch {
+        // El contenido ya está en memoria; un fallo al re-sincronizar no bloquea la UI.
+      }
+    },
+
+    reset: () => {
+      activeStream += 1
+      set({ current: null, iterations: [], projectState: null, activity: 'idle', error: null })
+    },
+  }
+})
