@@ -264,25 +264,37 @@ def engram_mirror(
 
     Best-effort: catches any ``EngramError``, logs WARNING, never raises.
     Imported lazily to keep this module importable without Engram reachable.
+
+    Per-user project scoping (PR #104 review, Soomri 2026-10-09): each
+    ``user_id`` gets its own Engram ``project`` key so retrieval queries
+    cannot leak across users. The base name comes from the
+    ``ENGRAM_PROJECT`` env var (default ``\"arch-agent\"``) and is
+    suffixed with ``-user-{user_id}``. Pre-create the session so the
+    first ``save`` does not 404.
     """
     try:
         from app.core.engram_client import EngramClient, EngramError
 
         client = EngramClient()
-        # The Engram instance is single-project (ENGRAM_PROJECT env), so
-        # all mirrors target THAT project; we scope per-(user, project)
-        # via session_id only. Pre-create the session (404 otherwise).
-        project = os.getenv("ENGRAM_PROJECT") or "arch-agent"
-        session_id = f"{project}-user-{user_id}"
-        if project_id is not None:
-            session_id = f"{session_id}-project-{project_id}-chat"
+        # Per-user project scoping (REQ-5 / SCN-6 + PR #104 review #5):
+        # the previous rework routed every mirror to the same
+        # ``ENGRAM_PROJECT`` env value, which re-enabled cross-user bleed
+        # via Engram's retrieval API. Scope each user to their own
+        # ``project`` key, derived from the configured base name.
+        base_project = os.getenv("ENGRAM_PROJECT") or "arch-agent"
+        project = f"{base_project}-user-{user_id}"
+        session_id = (
+            f"{project}-project-{project_id}-chat"
+            if project_id is not None
+            else f"{project}-chat"
+        )
 
         try:
             try:
                 client.create_session(
                     session_id=session_id,
                     project=project,
-                    directory=os.getenv("ENGRAM_PROJECT", "arch-agent"),
+                    directory=base_project,
                 )
             except EngramError:
                 # Session may already exist (Engram returns 409/400). Safe to ignore.
@@ -295,8 +307,17 @@ def engram_mirror(
                 content=message.content,
                 session_id=session_id,
                 project=project,
+<<<<<<< HEAD
                 title=f"{message.role}:{message.id or 'pending'}",
                 observation_type="manual",
+=======
+                content=message.content,
+                # Deterministic topic key: role + user + project + message
+                # id, so retries collapse onto the same observation and
+                # retrieval can filter by ``chat_message`` cleanly.
+                title=f"{message.role}-user-{user_id}-project-{project_id or 'none'}-{message.id or 'pending'}",
+                observation_type="chat_message",
+>>>>>>> b983f9e (fix(engram): restore per-user project scoping (PR #104 review #5))
             )
             observation_id = result.get("id") if isinstance(result, dict) else None
             if observation_id is not None:
