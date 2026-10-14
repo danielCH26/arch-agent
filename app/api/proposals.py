@@ -20,7 +20,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
-from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
+from app.core.proposal_generator import ProposalGenerator
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
 from app.models.approval import Approval
@@ -29,11 +29,6 @@ from app.models.project import Project
 from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
-
-# Re-declared to avoid the circular import (see app/core/proposal_generator.py
-# docstring + design.md section 9). MUST stay in sync with app/api/chat.py and
-# app/core/proposal_generator.py until the rag_config refactor lands.
-RAG_MIN_SIMILARITY = RAG_MIN_SIMILARITY
 
 PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
 PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
@@ -238,6 +233,28 @@ def _apply_project_proposal_decision(
     return approval, len(snapshot), message
 
 
+def _raise_if_iteration_cap_reached(db: Session, *, project_id: int) -> None:
+    """409 si la siguiente generacion superaria ``PROPOSAL_MAX_ITER``.
+
+    La iteracion que se guardaria es ``max(iteration) + 1`` sobre TODAS las
+    propuestas del proyecto (tambien las rechazadas), la misma cuenta que hace
+    ``_persist_proposal_and_log``. Sin esta comprobacion el usuario paga una
+    generacion completa (perfil + reordenamiento + redaccion) y solo al
+    persistir se entera de que ya no tenia iteraciones.
+    """
+    latest = (
+        db.query(Proposal)
+        .filter(Proposal.project_id == project_id)
+        .order_by(Proposal.iteration.desc())
+        .first()
+    )
+    if latest is not None and int(latest.iteration) >= PROPOSAL_MAX_ITER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})",
+        )
+
+
 @router.post("/api/proposals/generate")
 async def generate_proposal(
     body: GenerateRequest,
@@ -248,6 +265,7 @@ async def generate_proposal(
     db = SessionLocal()
     try:
         _require_owned_project(db, user_id=user_id, project_id=body.project_id)
+        _raise_if_iteration_cap_reached(db, project_id=body.project_id)
     finally:
         db.close()
 

@@ -58,7 +58,7 @@ def test_build_prompt_without_citations_does_not_ask_for_bracket_numbers():
 
     prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
     assert "cita el numero entre corchetes" not in prompt
-    assert "NO uses numeros entre corchetes" in prompt
+    assert "números entre corchetes" in prompt
 
 
 def test_build_prompt_marks_one_primary_pattern_and_secondary_references():
@@ -74,9 +74,12 @@ def test_build_prompt_marks_one_primary_pattern_and_secondary_references():
     )
     assert "[1] CQRS" in prompt
     assert citations[0]["source_role"] == "primary"
-    assert citations[1]["source_role"] == "consulted_not_cited"
+    assert citations[1]["source_role"] == "tradeoff_option"
     assert "Patrón principal: <nombre>" in prompt
-    assert "Consultados no citados: Saga" in prompt
+    # F10: los patrones secundarios ya no van en una linea aparte; cada [n]
+    # recuperado es una fila de la tabla de trade-offs.
+    assert "[2] Saga" in prompt
+    assert "una fila por cada patrón [n] recuperado" in prompt
     assert "cita el numero entre corchetes" not in prompt
 
 
@@ -95,13 +98,13 @@ def test_microservices_prompt_includes_distributed_architecture_baseline():
     assert "base de datos privada por servicio" in prompt
 
 
-def test_build_prompt_tells_the_model_to_decide_instead_of_offering_alternatives():
+def test_build_prompt_requires_comparison_then_a_single_recommendation():
     from app.core.proposal_generator import _build_prompt
 
     prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
     assert "REGLA DE DECISION" in prompt
-    assert "UNA sola opcion" in prompt
-    assert "no le pidas al usuario que elija" in prompt
+    assert "compara alternativas" in prompt
+    assert "UNA sola opción" in prompt
     # La regla va antes del formato de salida para que el modelo la vea primero.
     assert prompt.index("REGLA DE DECISION") < prompt.index("Formato OBLIGATORIO")
 
@@ -145,7 +148,7 @@ def test_secondary_microservices_pattern_does_not_force_distributed_baseline():
     prompt = _build_prompt(
         citations=[
             {"pattern_name": "Arquitectura en capas (Layered)", "source_role": "primary"},
-            {"pattern_name": "Microservicios", "source_role": "consulted_not_cited"},
+            {"pattern_name": "Microservicios", "source_role": "tradeoff_option"},
         ],
         prior_content=None,
         feedback=None,
@@ -580,6 +583,46 @@ def test_prompt_caps_technologies_and_blocks_heavy_primary_patterns():
     assert "no son el patrón principal de un proyecto sencillo" in prompt
 
 
+def test_tight_mvp_prohibits_distributed_patterns_as_the_primary_choice():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Microservicios", 1, 0.98, "alta"),
+        _pat("Monolito modular (Modular Monolith)", 2, 0.80, "baja"),
+        _pat("Arquitectura hexagonal (Puertos y Adaptadores)", 3, 0.79, "media"),
+    ]
+
+    citations = _select_citations(
+        docs,
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text="MVP en 3 meses con equipo de 4 desarrolladores; queremos microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+    assert citations[-1]["pattern_name"] == "Microservicios"
+
+
+def test_prompt_requires_concrete_operational_tradeoffs_and_tight_mvp_guardrail():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[],
+        prior_content=None,
+        feedback=None,
+        project_name="MVP",
+        requirements_text="MVP en 3 meses con equipo de 4 desarrolladores",
+    )
+
+    assert "REGLAS DE TRADE-OFFS REALES" in prompt
+    assert "queda PROHIBIDO recomendar microservicios" in prompt
+    assert "debugging local" in prompt
+    assert "curva de aprendizaje DevOps" in prompt
+    assert "riesgo de consistencia" in prompt
+    assert "sobrecarga de mantenimiento" in prompt
+    assert "seguridad y disponibilidad base" in prompt
+
+
 # --- Propuestas cortadas a la mitad no se guardan --------------------------
 
 _FULL_PROPOSAL = """## Componentes
@@ -597,6 +640,15 @@ _FULL_PROPOSAL = """## Componentes
 - Reflejo en la arquitectura: ...
 - Beneficio esperado: ...
 - Riesgo o costo: ...
+
+## Trade-offs y decisión
+| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+| --- | --- | --- | --- | --- | --- |
+| Capas | Simple | Escala conjunta | Baja | Alto | [1] |
+| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |
+| Microservicios | Escala independiente | Operación compleja | Alta | Bajo | [3] |
+- Recomendación: Capas
+- Punto de decisión: ¿Aprueba los trade-offs?
 """
 
 
@@ -615,6 +667,7 @@ def test_missing_sections_detects_a_proposal_cut_after_components():
         "Tecnologias",
         "Patrones",
         "Justificación del patrón principal",
+        "Trade-offs y decisión",
     ]
 
 
@@ -623,7 +676,46 @@ def test_missing_sections_detects_a_cut_inside_the_justification():
 
     cut = _FULL_PROPOSAL.split("- Beneficio esperado")[0]
 
-    assert _missing_sections(cut) == ["Riesgo o costo"]
+    assert _missing_sections(cut) == ["Trade-offs y decisión", "Riesgo o costo"]
+
+
+def test_build_prompt_requires_a_rag_cited_tradeoff_table_with_three_options():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Capas", "source_role": "primary", "tradeoffs": {}},
+            {"pattern_name": "Monolito modular", "source_role": "tradeoff_option", "tradeoffs": {}},
+            {"pattern_name": "Microservicios", "source_role": "tradeoff_option", "tradeoffs": {}},
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+    )
+
+    assert "## Trade-offs y decisión" in prompt
+    assert "al menos tres filas" in prompt
+    assert "Ventajas, Desventajas y Complejidad/costo" in prompt
+    assert "Fuente RAG" in prompt
+    assert "¿Aprueba los trade-offs?" in prompt
+
+
+def test_missing_sections_rejects_tradeoff_tables_without_three_options_or_criteria():
+    from app.core.proposal_generator import _missing_sections
+
+    incomplete = _FULL_PROPOSAL.replace(
+        "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |\n"
+        "| Microservicios | Escala independiente | Operación compleja | Alta | Bajo | [3] |",
+        "| Opción | Ventajas | Fuente RAG |\n"
+        "| --- | --- | --- |\n"
+        "| Capas | Simple | [1] |\n"
+        "| Modular | Límites claros | [2] |",
+    )
+
+    assert _missing_sections(incomplete) == ["Tabla de trade-offs (3 opciones y 3 criterios)"]
 
 
 def _drain(gen_iter):
@@ -635,8 +727,11 @@ def _drain(gen_iter):
     return asyncio.run(_run())
 
 
-def _stream_with(monkeypatch_target, markdown, finish_reason=None):
-    """Corre generate_stream con un modelo falso; devuelve (eventos, persist_calls)."""
+def _stream_with(monkeypatch_target, markdown, finish_reason=None, prompts=None):
+    """Corre generate_stream con un modelo falso; devuelve (eventos, persist_calls).
+
+    Si se pasa ``prompts`` (lista), ahi se guarda el prompt que recibio el modelo.
+    """
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -648,7 +743,9 @@ def _stream_with(monkeypatch_target, markdown, finish_reason=None):
             self.response_metadata = metadata or {}
 
     class _Model:
-        async def astream(self, _prompt):
+        async def astream(self, prompt):
+            if prompts is not None:
+                prompts.append(prompt)
             yield _Chunk(markdown)
             yield _Chunk("", {"finish_reason": finish_reason} if finish_reason else {})
 
@@ -697,7 +794,506 @@ def test_complete_proposal_is_persisted_and_done_is_emitted():
     assert events[-1][0] == "done"
 
 
-# --- Negaciones en el feedback y en los requerimientos (review #2 y #3) ------
+def test_persisted_prompt_is_the_exact_prompt_sent_to_the_model():
+    prompts = []
+
+    events, persisted = _stream_with(
+        None, _FULL_PROPOSAL, finish_reason="stop", prompts=prompts
+    )
+
+    assert events[-1][0] == "done"
+    assert len(prompts) == 1 and len(persisted) == 1
+    assert persisted[0]["prompt"] == prompts[0]
+    # La latencia medida se guarda en el log (antes quedaba siempre en NULL).
+    assert isinstance(persisted[0]["latency_ms"], int) and persisted[0]["latency_ms"] >= 0
+    # El log reconstruido antes usaba project_name="" y no llevaba la
+    # descripcion: el prompt real si los trae.
+    assert "Biblioteca" in persisted[0]["prompt"]
+
+
+def test_persist_stores_the_given_prompt_in_the_interaction_log():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    fake_proposal = MagicMock(side_effect=lambda **kw: SimpleNamespace(id=3, **kw))
+    fake_log = MagicMock(side_effect=lambda **kw: SimpleNamespace(id=9, **kw))
+    long_prompt = "x" * 70000
+
+    with patch.object(gen, "SessionLocal", return_value=db), \
+        patch.object(gen, "Proposal", fake_proposal), \
+        patch.object(gen, "InteractionLog", fake_log):
+        result = gen._persist_proposal_and_log(
+            session_id=1,
+            project_id=1,
+            iteration=1,
+            prior_iteration=0,
+            prior_proposal_id=None,
+            prior_content=None,
+            markdown=_FULL_PROPOSAL,
+            citations=[],
+            feedback=None,
+            prompt=long_prompt,
+            latency_ms=1234,
+        )
+
+    assert result == (3, 9, 1)
+    stored = fake_log.call_args.kwargs["prompt"]
+    assert stored == long_prompt[:65000]
+    assert len(stored) == 65000
+    assert fake_log.call_args.kwargs["latency_ms"] == 1234
+
+
+# --- F10: validador de la tabla de trade-offs (robustez) --------------------
+
+_TABLE_HEADER = (
+    "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+    "| --- | --- | --- | --- | --- | --- |\n"
+)
+_DECISION_LINES = "- Recomendación: Capas\n- Punto de decisión: ¿Aprueba los trade-offs?\n"
+
+
+def _proposal_with(table: str, tail: str = _DECISION_LINES) -> str:
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    return head + "## Trade-offs y decisión\n" + table + tail
+
+
+_ROWS_WITH_SOURCES = (
+    "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+    "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |\n"
+    "| Microservicios | Escala independiente | Operación compleja | Alta | Bajo | [3] |\n"
+)
+
+
+def test_missing_sections_accepts_header_variants_from_the_llm():
+    from app.core.proposal_generator import _missing_sections
+
+    variants = [
+        "| Opción | **Ventajas** | **Desventajas** | **Complejidad/costo** |\n| --- | --- | --- | --- |\n",
+        "| Opción | Ventajas | Desventajas | Complejidad / costo |\n| --- | --- | --- | --- |\n",
+        "| Opción | Ventajas | Desventajas | Complejidad y costo |\n| --- | --- | --- | --- |\n",
+        "| Opción | Ventajas | Desventajas | Costo |\n|:---|:---:|---:|---|\n",
+    ]
+    rows = (
+        "| Capas | a | b | Baja |\n| Modular | a | b | Media |\n| Micro | a | b | Alta |\n"
+    )
+    for header in variants:
+        assert _missing_sections(_proposal_with(header + rows)) == [], header
+
+
+def test_missing_sections_ignores_empty_rows_and_pipes_in_trailing_text():
+    from app.core.proposal_generator import _missing_sections
+
+    empty_rows = (
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+        "| | | | | | |\n"
+        "| | | | | | |\n"
+    )
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + empty_rows)) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+    # Dos filas reales + una linea de texto con "|" tras la tabla: no es una 3a fila.
+    two_rows = _ROWS_WITH_SOURCES.splitlines(keepends=True)[:2]
+    table = _TABLE_HEADER + "".join(two_rows)
+    tail = "- Recomendación: Capas | Modular\n- Punto de decisión: ¿Aprueba los trade-offs?\n"
+    assert _missing_sections(_proposal_with(table, tail)) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_missing_sections_requires_filled_criteria_cells():
+    from app.core.proposal_generator import _missing_sections
+
+    blank_criteria = (
+        "| Capas | | | | Alto | [1] |\n"
+        "| Modular | | | | Alto | [2] |\n"
+        "| Micro | | | | Bajo | [3] |\n"
+    )
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + blank_criteria)) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_missing_sections_requires_rag_citations_when_sources_were_retrieved():
+    from app.core.proposal_generator import _missing_sections
+
+    uncited = (
+        "| Capas | Simple | Escala conjunta | Baja | Alto | sin fuente |\n"
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | - |\n"
+        "| Micro | Escala independiente | Operación compleja | Alta | Bajo | - |\n"
+    )
+    proposal = _proposal_with(_TABLE_HEADER + uncited)
+
+    # Sin fuentes recuperadas no se exige [n]; con 3 fuentes sí.
+    assert _missing_sections(proposal, source_count=0) == []
+    assert _missing_sections(proposal, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+    # Un [n] fuera de rango (hay 3 fuentes y cita [7]) tampoco vale.
+    out_of_range = uncited.replace("sin fuente", "[7]")
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + out_of_range), 3) != []
+    # Citadas correctamente: ok.
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + _ROWS_WITH_SOURCES), 3) == []
+
+
+def test_missing_sections_accepts_rows_without_source_when_fewer_than_three_sources():
+    from app.core.proposal_generator import _missing_sections
+
+    rows = (
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |\n"
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |\n"
+        "| Hexagonal | Testeable | Más capas | Media | Medio | Sin fuente RAG |\n"
+    )
+    assert _missing_sections(_proposal_with(_TABLE_HEADER + rows), source_count=2) == []
+
+
+def test_missing_sections_requires_recommendation_and_decision_point():
+    from app.core.proposal_generator import _missing_sections
+
+    table = _TABLE_HEADER + _ROWS_WITH_SOURCES
+    assert _missing_sections(_proposal_with(table, tail=""), 3) == [
+        "Recomendación y punto de decisión"
+    ]
+    only_reco = "- Recomendación: Capas\n"
+    assert _missing_sections(_proposal_with(table, tail=only_reco), 3) == [
+        "Recomendación y punto de decisión"
+    ]
+
+
+def test_tradeoff_table_is_not_taken_from_a_later_section():
+    from app.core.proposal_generator import _missing_sections
+
+    # El encabezado existe pero la tabla esta en OTRA seccion posterior.
+    proposal = (
+        _FULL_PROPOSAL.split("| Opción")[0]
+        + "Sin tabla aqui.\n\n## Anexo\n"
+        + _TABLE_HEADER
+        + _ROWS_WITH_SOURCES
+    )
+    assert _missing_sections(proposal) == ["Tabla de trade-offs (3 opciones y 3 criterios)"]
+
+
+# --- F10: reglas de filas del prompt segun el numero de fuentes -------------
+
+
+def _citations(n):
+    return [
+        {
+            "pattern_name": f"Patron {i}",
+            "source_role": "primary" if i == 1 else "tradeoff_option",
+            "tradeoffs": {},
+        }
+        for i in range(1, n + 1)
+    ]
+
+
+def test_prompt_with_three_sources_demands_one_row_per_source_without_filler():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(_citations(3), None, None, "P")
+    assert "Incluye una fila por CADA alternativa [n] recuperada (al menos tres filas)" in prompt
+    assert "| ... | ... | ... | ... | ... | [1] |" in prompt
+    assert "Sin fuente RAG`" not in prompt
+
+
+def test_prompt_with_fewer_than_three_sources_allows_marked_filler_rows():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(_citations(2), None, None, "P")
+    assert "Solo se recuperaron 2 patrón(es)" in prompt
+    assert "`Sin fuente RAG`" in prompt
+    assert "al menos tres filas" in prompt
+    # Ya no se contradice: no prohibe añadir filas sin [n].
+    assert "ni añadas un patrón que no tenga fuente [n]" not in prompt
+
+
+def test_prompt_without_sources_marks_every_row_as_not_from_rag():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt([], None, None, "P")
+    assert "| ... | ... | ... | ... | ... | Sin fuente RAG |" in prompt
+    assert "[1] |" not in prompt
+    assert "No hay fuentes recuperadas" in prompt
+
+
+# --- F10: feedback/requerimientos vs. regla dura de escala ------------------
+
+_TIGHT = "MVP en 3 meses, equipo de 4 personas, presupuesto bajo"
+
+
+def _tight_pool():
+    # Microservicios y Event-Driven ganan por similitud; hay mas de 3 candidatos
+    # validos, como con los 19 patrones de la base.
+    return [
+        _pat("Microservicios", 1, 0.98, "alta"),
+        _pat("Arquitectura orientada a eventos (Event-Driven)", 2, 0.95, "alta"),
+        _pat("Monolito modular (Modular Monolith)", 3, 0.80, "baja"),
+        _pat("Arquitectura en capas (Layered)", 4, 0.79, "baja"),
+        _pat("Arquitectura hexagonal (Puertos y Adaptadores)", 5, 0.78, "media"),
+    ]
+
+
+def _names(citations):
+    return [c["pattern_name"] for c in citations]
+
+
+def test_team_size_regex_accepts_a_bare_number_but_not_durations():
+    from app.core.proposal_generator import _TEAM_SIZE_RE, _normalize_text
+
+    def team(text):
+        match = _TEAM_SIZE_RE.search(_normalize_text(text))
+        return int(match.group(1)) if match else None
+
+    assert team("MVP en 3 meses, equipo de 4, presupuesto bajo") == 4
+    assert team("equipo de 12 personas") == 12
+    assert team("equipo de 4 desarrolladores") == 4
+    assert team("equipo de 12 meses") is None
+    assert team("equipo de 4,5 personas") is None
+
+
+def test_tight_mvp_with_a_bare_team_number_blocks_distributed_primary():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text="MVP en 3 meses, equipo de 4, presupuesto bajo; queremos microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+
+
+def test_requirement_asking_for_microservices_still_gets_a_discarded_row():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text=_TIGHT + "; queremos microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+    assert _names(citations)[-1] == "Microservicios"
+    assert citations[-1]["scale_disqualified"] is True
+    assert "scale_disqualified" not in citations[0]
+    # Event-Driven no se pidio: no se cuela como fila fija.
+    assert "Arquitectura orientada a eventos (Event-Driven)" not in _names(citations)
+
+
+def test_feedback_that_changes_to_microservices_beats_the_tight_mvp_rule():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text=_TIGHT,
+        feedback="cambia a microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Microservicios"
+    assert "scale_disqualified" not in citations[0]
+
+
+def test_feedback_that_compares_keeps_the_light_primary_and_cites_the_other():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(
+        _tight_pool(),
+        top_n=3,
+        min_similarity=0.0,
+        explicit_text=_TIGHT,
+        feedback="comparar monolito modular frente a microservicios",
+    )
+
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+    assert "Microservicios" in _names(citations)
+    assert citations[-1]["pattern_name"] == "Microservicios"
+    assert citations[-1]["scale_disqualified"] is True
+
+
+def test_feedback_without_cqrs_drops_it_even_when_pinning_rows():
+    from app.core.proposal_generator import _select_citations
+
+    pool = _tight_pool() + [_pat("CQRS (Command Query Responsibility Segregation)", 6, 0.97, "alta")]
+    citations = _select_citations(
+        pool, top_n=3, min_similarity=0.0, explicit_text=_TIGHT, feedback="sin CQRS"
+    )
+
+    assert not any("CQRS" in name for name in _names(citations))
+
+
+def test_prompt_marks_scale_discarded_rows_and_documents_the_feedback_exception():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Monolito modular", "source_role": "primary", "tradeoffs": {}},
+            {"pattern_name": "Capas", "source_role": "tradeoff_option", "tradeoffs": {}},
+            {
+                "pattern_name": "Microservicios",
+                "source_role": "tradeoff_option",
+                "tradeoffs": {},
+                "scale_disqualified": True,
+            },
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+        requirements_text="MVP en 3 meses con equipo de 4 personas",
+    )
+
+    block = prompt.split("[3] Microservicios")[1].split("\n\n")[0]
+    assert "Descartado por la escala del proyecto" in block
+    assert "Descartado por la escala" not in prompt.split("[3] Microservicios")[0]
+    assert "si el feedback del usuario pide expresamente cambiar" in prompt
+    assert "Consultados no citados" not in prompt
+
+
+def test_baseline_ignores_microservices_in_requirements_when_primary_is_light():
+    from app.core.proposal_generator import _build_prompt
+
+    light_primary = [{"pattern_name": "Monolito modular (Modular Monolith)", "source_role": "primary"}]
+    prompt = _build_prompt(
+        citations=light_primary,
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+        requirements_text="MVP en 3 meses, equipo de 4 personas; queremos microservicios",
+    )
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in prompt
+
+    compared = _build_prompt(
+        citations=light_primary,
+        prior_content=None,
+        feedback="comparar monolito modular frente a microservicios",
+        project_name="P",
+    )
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" not in compared
+
+    changed = _build_prompt(
+        citations=[{"pattern_name": "Microservicios", "source_role": "primary"}],
+        prior_content=None,
+        feedback="cambia a microservicios",
+        project_name="P",
+    )
+    assert "ESTRUCTURA BASE SELECCIONADA: microservicios" in changed
+
+
+def test_missing_sections_requires_distinct_rag_citations_per_row():
+    from app.core.proposal_generator import _missing_sections
+
+    same_source = _FULL_PROPOSAL.replace("| [2] |", "| [1] |").replace("| [3] |", "| [1] |")
+
+    assert _missing_sections(same_source, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+    assert _missing_sections(_FULL_PROPOSAL, source_count=3) == []
+
+
+def test_missing_sections_reads_the_rag_column_before_other_cells():
+    from app.core.proposal_generator import _missing_sections
+
+    # El [1] en Ventajas no cuenta como cita de la fila si su columna Fuente trae otro.
+    proposal = _FULL_PROPOSAL.replace(
+        "| Modular | Límites claros | Requiere disciplina | Media | Alto | [2] |",
+        "| Modular | Mejor que [1] | Requiere disciplina | Media | Alto | [2] |",
+    )
+
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+# --- F10: encabezados tolerantes, celdas con \| y source_role ---------------
+
+def _with_tradeoff_heading(heading):
+    return _FULL_PROPOSAL.replace("## Trade-offs y decisión", heading)
+
+
+def test_missing_sections_tolerates_decorated_tradeoff_headings():
+    from app.core.proposal_generator import _missing_sections
+
+    for heading in (
+        "## Trade-offs y decisión",
+        "## Trade-offs y decisiones",
+        "## 5. Trade-offs y decisión",
+        "## **Trade-offs y decisión**",
+        "## 5) **Trade-offs y decisión**",
+        "### Trade offs y decisión",
+        "## Tradeoffs y decisión",
+    ):
+        proposal = _with_tradeoff_heading(heading)
+        assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_missing_sections_tolerates_numbered_or_bold_headings_for_every_section():
+    from app.core.proposal_generator import _missing_sections
+
+    proposal = (
+        _FULL_PROPOSAL.replace("## Componentes", "## 1. Componentes")
+        .replace("## Tecnologias", "## **Tecnologías**")
+        .replace("## Patrones", "## 3. Patrones")
+        .replace("## Justificación del patrón principal", "## **4. Justificación del patrón principal**")
+        .replace("## Trade-offs y decisión", "## 5. Trade-offs y decisión")
+    )
+
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_missing_sections_still_detects_a_really_missing_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections
+
+    cut = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+
+    assert _missing_sections(cut, source_count=3) == ["Trade-offs y decisión"]
+    # Un texto con la palabra "trade-offs" que no es encabezado no cuenta.
+    assert _missing_sections(cut + "Hay trade-offs y decisión pendiente.\n") == ["Trade-offs y decisión"]
+
+
+def test_table_cells_keep_an_escaped_pipe_inside_the_cell():
+    from app.core.proposal_generator import _table_cells
+
+    assert _table_cells("| Capas | Simple \\| rápida | Baja |") == ["Capas", "Simple | rápida", "Baja"]
+    assert _table_cells("a | b") == ["a", "b"]
+    assert _table_cells("| a | b \\|") == ["a", "b |"]
+
+
+def test_missing_sections_does_not_shift_columns_when_a_cell_has_an_escaped_pipe():
+    from app.core.proposal_generator import _missing_sections
+
+    proposal = _FULL_PROPOSAL.replace(
+        "| Capas | Simple | Escala conjunta | Baja | Alto | [1] |",
+        "| Capas | Simple \\| rápida | Escala conjunta | Baja | Alto | [1] |",
+    )
+
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_select_citations_marks_non_primary_rows_as_tradeoff_options():
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations(_tight_pool(), top_n=3, min_similarity=0.0, explicit_text=_TIGHT)
+
+    assert [c["source_role"] for c in citations] == ["primary", "tradeoff_option", "tradeoff_option"]
+
+
+# --- Tests que venian de la rama `fixes` (lectura de feedback, baselines por patron, mensajes) ---
+
+def test_build_prompt_tells_the_model_to_decide_instead_of_offering_alternatives():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+    assert "REGLA DE DECISION" in prompt
+    # F10: compara alternativas en la tabla y recomienda UNA sola opcion; las
+    # formulas ambiguas ("X o Y") solo se admiten dentro de la tabla.
+    assert "UNA sola opción" in prompt
+    assert "fuera de la tabla" in prompt
+    # La regla va antes del formato de salida para que el modelo la vea primero.
+    assert prompt.index("REGLA DE DECISION") < prompt.index("Formato OBLIGATORIO")
 
 
 def test_feedback_stance_reads_common_negations_as_reject():
@@ -797,9 +1393,6 @@ def test_requirement_that_avoids_a_pattern_keeps_the_scale_disqualification():
     assert citations[0]["pattern_name"] == "Arquitectura en capas (Layered)"
 
 
-# --- La estructura base sale del patron principal (review #4) ---------------
-
-
 def _baseline_head(primary, requirements_text=None, feedback=None):
     from app.core.proposal_generator import _architecture_baseline
 
@@ -865,9 +1458,10 @@ def test_baseline_covers_every_pattern_in_the_seed_catalog():
 
 
 def test_baseline_for_unknown_primary_does_not_force_another_style():
-    head = _baseline_head("Saga")
+    # Un patron fuera del catalogo (Saga ya tiene su propia base desde F10).
+    head = _baseline_head("Arquitectura basada en espacios (Space-Based)")
 
-    assert "la propia del patron principal (Saga)" in head
+    assert "la propia del patron principal (Arquitectura basada en espacios" in head
     assert "arquitectura en capas" not in head
 
 
@@ -891,7 +1485,9 @@ def test_baseline_fallback_without_primary_ignores_hypothetical_mentions():
     assert "arquitectura en capas" in _base(feedback="no quiero microservicios")
 
 
-# --- Verificacion de propuesta completa (review #7) -------------------------
+# Seccion de trade-offs valida (la quinta seccion que exige F10), tomada de la
+# propuesta completa de los tests de F10.
+_TRADEOFFS_BLOCK = _FULL_PROPOSAL[_FULL_PROPOSAL.index("## Trade-offs y decisión"):]
 
 
 def _proposal_with_risk(label):
@@ -901,7 +1497,7 @@ def _proposal_with_risk(label):
         "## Justificación del patrón principal\n"
         "- Motivo de elección: reduce el riesgo de acoplamiento.\n"
         "- Reflejo en la arquitectura: ...\n- Beneficio esperado: ...\n"
-        f"- {label}: ...\n"
+        f"- {label}: ...\n\n" + _TRADEOFFS_BLOCK
     )
 
 
@@ -923,7 +1519,15 @@ def test_missing_sections_does_not_take_a_risk_word_from_the_motive_bullet():
 
     cut = _proposal_with_risk("Riesgo o costo").split("- Reflejo")[0]
 
-    assert _missing_sections(cut) == ["Riesgo o costo"]
+    # Cortada en la justificacion: faltan el riesgo y (F10) la seccion de trade-offs.
+    assert sorted(_missing_sections(cut)) == ["Riesgo o costo", "Trade-offs y decisión"]
+
+    # Un "Riesgo:" dentro de la tabla de trade-offs tampoco cuenta como el de la
+    # justificacion: el riesgo se busca antes del encabezado de trade-offs.
+    no_risk = _proposal_with_risk("Beneficio extra").replace(
+        "## Trade-offs y decisión", "## Trade-offs y decisión\n- Riesgo: algo\n", 1
+    )
+    assert _missing_sections(no_risk) == ["Riesgo o costo"]
 
 
 def test_missing_sections_tolerates_singular_and_shorter_headings():
@@ -931,7 +1535,7 @@ def test_missing_sections_tolerates_singular_and_shorter_headings():
 
     markdown = (
         "## Componente\n- API\n## Tecnología\n- Python\n## Patrón\n- X\n"
-        "## Justificación\n- Riesgos y costos: ...\n"
+        "## Justificación\n- Riesgos y costos: ...\n\n" + _TRADEOFFS_BLOCK
     )
 
     assert _missing_sections(markdown) == []
@@ -967,6 +1571,20 @@ def test_section_error_does_not_blame_the_token_limit():
     assert events[-1][0] == "error"
     assert "límite de tokens" not in events[-1][1]
 
+def test_feedback_rules_tell_the_model_to_update_the_tradeoffs_section_too():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[{"pattern_name": "Arquitectura en capas (Layered)", "source_role": "primary"}],
+        prior_content=_FULL_PROPOSAL,
+        feedback="cambia a capas",
+        project_name="P",
+    )
+
+    # El cambio debe reflejarse tambien en la tabla y en la Recomendacion, no solo
+    # en Componentes/Tecnologias/Patrones/Justificacion.
+    assert "Trade-offs y decisión: la tabla y la Recomendación deben reflejar el cambio" in prompt
+    assert "Justificacion y la Recomendacion de Trade-offs para el patron nuevo" in prompt
 
 # --- Re-revisión: una negación previa no debe tapar un pedido positivo ------
 

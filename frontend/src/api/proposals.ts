@@ -5,7 +5,13 @@ export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
   similarity: number | null
+  // 'consulted_not_cited' solo existe en propuestas guardadas antes de renombrarlo.
+  source_role?: 'primary' | 'tradeoff_option' | 'consulted_not_cited'
   snippet?: string | null
+  tradeoffs?: {
+    ventajas?: string[]
+    desventajas?: string[]
+  }
 }
 
 export type ProposalLifecycle = 'proposed' | 'approved' | 'rejected'

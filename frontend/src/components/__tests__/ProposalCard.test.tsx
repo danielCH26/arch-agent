@@ -142,4 +142,31 @@ describe('ProposalCard', () => {
     render(<ProposalCard projectId={PROJECT_ID} />)
     await waitFor(() => expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas'))
   })
+
+  it('numera las fuentes RAG como [n] para que coincidan con las citas de la tabla', async () => {
+    await renderWithProposal(proposalOut({
+      citations: [
+        { pattern_id: 7, pattern_name: 'Hexagonal', similarity: 0.91, source_role: 'primary' },
+        { pattern_id: 11, pattern_name: 'BFF', similarity: 0.88, source_role: 'tradeoff_option' },
+      ],
+    }))
+
+    expect(screen.getByText('Fuentes RAG para los trade-offs:')).toBeInTheDocument()
+    expect(screen.getByText(/\[1\] Hexagonal/)).toBeInTheDocument()
+    expect(screen.getByText(/\[2\] BFF/)).toBeInTheDocument()
+    // Sin numeración propia de lista: el [n] ya es el número que cita la tabla.
+    expect(document.querySelector('ol')).toBeNull()
+  })
+
+  it('renderiza la tabla de trade-offs con <br> en las celdas sin partir las filas', async () => {
+    await renderWithProposal(proposalOut({
+      content:
+        '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Hexagonal | 1. Testeable.<br>2. Cambio de proveedor. | 1. Más código.<br />2. Curva de aprendizaje. | Media |\n| Modular | a | b | Baja |\n| Capas | a | b | Baja |',
+    }))
+
+    const table = screen.getByTestId('proposal-content').querySelector('table') as HTMLTableElement
+    expect(table.textContent).not.toMatch(/<br/i)
+    expect(table.querySelectorAll('br')).toHaveLength(2)
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(3)
+  })
 })
