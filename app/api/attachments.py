@@ -15,10 +15,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
+from sqlalchemy import type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.attachment_tokens import (
-    DEFAULT_TTL_SECONDS,
+    DEFAULT_TTL_SECONDS,  # noqa: F401  (re-exported for downstream token helpers)
     _ensure_uploads_dir,
     verify_attachment_token,
 )
@@ -142,11 +144,24 @@ def _lookup_attachment(
     """
     dialect = db.bind.dialect.name if db.bind is not None else ""
     if dialect == "postgresql":
+        # ``Message.attachments`` is declared as ``JSON().with_variant(JSONB(),
+        # "postgresql")``. ``Column.contains(...)`` is resolved against the
+        # declared (generic JSON) type and emits
+        # ``messages.attachments LIKE '%%' || x::JSONB || '%%'`` on Postgres,
+        # which crashes with "invalid input syntax for type json — Token '%'
+        # is invalid" and gets swallowed by ``SQLAlchemyError`` as a 404
+        # for ANY attachment (PR #104 review blocker C3). Wrap the column
+        # in ``type_coerce(..., JSONB)`` so ``.contains`` compiles to the
+        # JSONB containment operator ``@>``, which the 0013 GIN index
+        # supports. ``tests/api/test_attachments_postgres_lookup.py`` pins
+        # the operator choice.
         row = (
             db.query(Message)
             .filter(
                 Message.user_id == user_id,
-                Message.attachments.contains([{"id": attachment_id}]),
+                type_coerce(Message.attachments, JSONB).contains(
+                    [{"id": attachment_id}]
+                ),
             )
             .first()
         )
