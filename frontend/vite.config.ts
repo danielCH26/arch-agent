@@ -30,6 +30,8 @@ export default defineConfig({
       : undefined,
   },
   build: {
-    sourcemap: true,
+    // Los .map exponen el código fuente; en producción (imagen de nginx) no
+    // se generan. Para depurar un build: BUILD_SOURCEMAP=true npm run build
+    sourcemap: process.env.BUILD_SOURCEMAP === 'true',
   },
 })

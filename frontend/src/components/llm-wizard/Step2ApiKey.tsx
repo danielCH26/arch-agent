@@ -16,7 +16,7 @@ export function Step2ApiKey({ apiKey, onChange, onBack, onNext, loading, error }
   return (
     <div>
       {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
+        <div role="alert" className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
       )}
 
       <div className="space-y-4">
@@ -38,8 +38,7 @@ export function Step2ApiKey({ apiKey, onChange, onBack, onNext, loading, error }
             <button
               type="button"
               onClick={() => setShowKey(!showKey)}
-              tabIndex={-1}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
               aria-label={showKey ? 'Ocultar API key' : 'Mostrar API key'}
             >
               {showKey ? (
@@ -73,7 +72,7 @@ export function Step2ApiKey({ apiKey, onChange, onBack, onNext, loading, error }
           type="button"
           onClick={onNext}
           disabled={!isValid || loading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'Validando...' : 'Continuar'}
         </button>
