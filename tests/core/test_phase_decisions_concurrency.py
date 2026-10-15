@@ -153,6 +153,11 @@ def _call_record_decision(
             action=action,
         )
         db.commit()
+        # commit() expira los atributos y close() desconecta la fila: sin este
+        # refresh, leer ``result.approval.id`` en el test daba
+        # DetachedInstanceError (mismo problema que se corrigió en
+        # post_phase_decision).
+        db.refresh(result.approval)
         return result
     except Exception as exc:  # noqa: BLE001 -- we want to forward the typed error
         db.rollback()

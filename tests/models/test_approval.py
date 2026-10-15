@@ -113,6 +113,27 @@ def fresh_project(db_session):
     db_session.commit()
 
 
+def _session_id_for(db_session, user) -> int:
+    """``approvals.session_id`` es FK a ``sessions``: crea (o reutiliza) la
+    sesión del usuario de prueba. Antes los tests usaban ``session_id=1``,
+    que solo existe en una base con datos sembrados; en CI la tabla está
+    vacía y el INSERT fallaba con ForeignKeyViolation. El fixture
+    ``fresh_project`` ya borra las sesiones del usuario en el teardown.
+    """
+    from app.models.session import UserSession
+
+    row = (
+        db_session.query(UserSession)
+        .filter(UserSession.user_id == user.id)
+        .first()
+    )
+    if row is None:
+        row = UserSession(user_id=user.id, engram_state={})
+        db_session.add(row)
+        db_session.flush()
+    return row.id
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -166,7 +187,7 @@ def test_approval_previous_output_populated_on_modify(db_session, fresh_project)
     user, project = fresh_project
     prior = {"mermaid": "graph TD; A-->B", "notes": "v1"}
     approval = Approval(
-        session_id=1,  # actual session is created via record_approval_decision below
+        session_id=_session_id_for(db_session, user),
         project_id=project.id,
         phase="refinamiento",
         decision="modified",
@@ -187,7 +208,7 @@ def test_approval_payload_and_payload_hash_round_trip(db_session, fresh_project)
     payload = {"trade_offs": {"patron_elegido": "CQRS"}, "advantage": "audit"}
     payload_hash = "a" * 32  # SHA256 hex truncated to 32 chars (16 bytes hex)
     approval = Approval(
-        session_id=1,
+        session_id=_session_id_for(db_session, user),
         project_id=project.id,
         phase="revision",
         decision="modified",
