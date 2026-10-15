@@ -8,9 +8,11 @@ faltaba cubrir con un test unitario.
 """
 
 import logging
+import re
 
 import pytest
 
+from app.core import elicitation_agent
 from app.core.elicitation_agent import (
     ElicitationAgentError,
     ElicitationLLMError,
@@ -35,9 +37,12 @@ class _FakeModel:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = []
+        # config (callbacks, run_name) de cada invocación; None si no se pasó.
+        self.configs = []
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.calls.append(messages)
+        self.configs.append(config)
         response = self._responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -79,35 +84,52 @@ class TestExtractJsonObject:
 
 
 class TestEsPreguntaCompuesta:
-    def test_dos_bloques_interrogativos_apilados_son_compuestos(self):
-        pregunta = (
+    @pytest.mark.parametrize(
+        "pregunta",
+        [
+            # Bloques interrogativos apilados (2 cierres '?').
             "¿Quiénes son los usuarios principales? "
-            "¿Qué funcionalidades críticas necesitan?"
-        )
+            "¿Qué funcionalidades críticas necesitan?",
+            # Caso del issue #100: un solo '?', dos preguntas unidas con "y".
+            "¿Quiénes son los usuarios principales y qué funcionalidades "
+            "críticas necesitan?",
+            "¿Cuántos usuarios esperan tener y cómo se autenticarían?",
+            "¿Quiénes son y cuántos serían?",
+            "¿Qué problema resuelve o para quién es?",
+            "¿Qué tan seguido lo usarían y por qué?",
+            "¿Qué usuarios usan el sistema y con quién se integran?",
+            # Mayúsculas en el conector / palabra interrogativa.
+            "¿Quiénes son los usuarios Y Qué necesitan?",
+        ],
+    )
+    def test_preguntas_compuestas_se_detectan(self, pregunta):
         assert _es_pregunta_compuesta(pregunta) is True
 
-    def test_pregunta_granular_no_es_compuesta(self):
-        assert _es_pregunta_compuesta(
-            "¿Quiénes son los usuarios principales del sistema?"
-        ) is False
-
-    def test_y_dentro_de_un_solo_bloque_interrogativo_no_es_compuesto(self):
-        # Falso positivo a evitar: una sola interrogación con "y" interno
-        # tiene UN solo '?' -- ese caso lo cubren las reglas del prompt,
-        # no este detector (Issue #100: heurística deliberadamente angosta).
-        pregunta = (
-            "¿Quiénes son los usuarios principales y qué funcionalidades "
-            "críticas necesitan?"
-        )
+    @pytest.mark.parametrize(
+        "pregunta",
+        [
+            "¿Quiénes son los usuarios principales del sistema?",
+            # "y" entre sustantivos dentro de UNA sola interrogación.
+            "¿Qué frameworks y bases de datos usan?",
+            "¿Qué restricciones de tiempo y presupuesto tienen?",
+            # Sin tilde, "como"/"que"/"cuando" son conjunciones o relativos,
+            # no interrogativos: no deben contar como segunda pregunta.
+            "¿Qué usuarios usan el sistema y como administradores?",
+            "¿Necesitan que el sistema funcione offline o cuando haya red?",
+            "¿Qué datos se guardan y que sean auditables?",
+        ],
+    )
+    def test_preguntas_granulares_no_se_marcan(self, pregunta):
         assert _es_pregunta_compuesta(pregunta) is False
 
     def test_sin_cierres_interrogativos_no_es_compuesta(self):
         assert _es_pregunta_compuesta("") is False
         assert _es_pregunta_compuesta("Cuéntame más sobre las restricciones") is False
 
-    def test_tipo_inesperado_no_rompe_y_no_es_compuesta(self):
+    @pytest.mark.parametrize("valor", [None, 42, ["¿a?", "¿b?"]])
+    def test_tipo_inesperado_no_rompe_y_no_es_compuesta(self, valor):
         # Fail-open: un tipo inesperado no debe romper el flujo del agente.
-        assert _es_pregunta_compuesta(None) is False
+        assert _es_pregunta_compuesta(valor) is False
 
 
 class TestNextStepPromptGranularidad:
@@ -121,6 +143,11 @@ class TestNextStepPromptGranularidad:
 
     def test_prompt_exige_granularidad_respondible_en_una_o_dos_oraciones(self):
         assert "una o dos oraciones" in NEXT_STEP_SYSTEM_PROMPT
+
+    def test_prompt_exige_un_solo_aspecto_dentro_de_cada_dimension(self):
+        # "Una sola dimensión" por sí sola deja pasar "¿Quiénes son y cuántos
+        # serían?" (ambos son de Usuarios): la regla baja un nivel más.
+        assert "un solo aspecto a la vez" in NEXT_STEP_SYSTEM_PROMPT
 
     def test_prompt_incluye_ejemplo_compuesto_malo(self):
         assert "MALA (compuesta)" in NEXT_STEP_SYSTEM_PROMPT
@@ -149,6 +176,11 @@ PREGUNTA_COMPUESTA = (
     "¿Qué funcionalidades críticas necesitan?"
 )
 PREGUNTA_GRANULAR = "¿Quiénes son los usuarios principales del sistema?"
+# Caso del issue #100: un solo '?' con dos interrogaciones unidas por "y".
+PREGUNTA_COMPUESTA_UN_SIGNO = (
+    "¿Quiénes son los usuarios principales y qué funcionalidades "
+    "críticas necesitan?"
+)
 
 
 class TestNextStepRetryPreguntaCompuesta:
@@ -168,6 +200,18 @@ class TestNextStepRetryPreguntaCompuesta:
         assert decision.question == PREGUNTA_GRANULAR
         assert len(model.calls) == 2
 
+    def test_pregunta_del_issue_con_un_solo_signo_dispara_reintento(self):
+        # El caso que motivó el issue #100: un solo '?', dos preguntas.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA_UN_SIGNO}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        decision = next_step(model, history=HISTORY_5)
+        assert decision.question == PREGUNTA_GRANULAR
+        assert len(model.calls) == 2
+
     def test_reintento_reusa_el_mismo_contexto_con_instruccion_correctiva(self):
         model = _FakeModel(
             [
@@ -182,94 +226,130 @@ class TestNextStepRetryPreguntaCompuesta:
         # El historial original viaja en el reintento (mismo seam de invocación).
         assert "p0" in contexto
 
+    def test_reintento_incluye_la_pregunta_rechazada(self):
+        # Sin la pregunta rechazada el modelo tendría que adivinar qué
+        # corregir y probablemente repetiría lo mismo.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        next_step(model, history=HISTORY_5)
+        contexto_principal = model.calls[0][1].content
+        contexto_reintento = model.calls[1][1].content
+        assert PREGUNTA_COMPUESTA in contexto_reintento
+        # La pregunta rechazada solo viaja en el reintento (efímera).
+        assert PREGUNTA_COMPUESTA not in contexto_principal
+
+    def test_reintento_usa_run_name_propio_y_propaga_callbacks(self):
+        callback = object()
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        next_step(model, history=HISTORY_5, callbacks=[callback])
+        assert model.configs[0] == {
+            "callbacks": [callback],
+            "run_name": "elicitation-next-step",
+        }
+        assert model.configs[1] == {
+            "callbacks": [callback],
+            "run_name": "elicitation-next-step-retry",
+        }
+
 
 class TestNextStepFailOpenPreguntaCompuesta:
     """Fail-open (Issue #100): si el reintento no arregla la pregunta, se
     devuelve la original con warning -- nunca se eleva un error al usuario."""
 
-    def test_reintento_tambien_compuesto_devuelve_original_con_warning(self, caplog):
+    def _decision_con_reintento(self, caplog, respuesta_reintento):
         model = _FakeModel(
             [
                 f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
-                f'{{"done": false, "question": "{PREGUNTA_GRANULAR} ¿seguro?", "reason": "y"}}',
+                respuesta_reintento,
             ]
         )
         with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
             decision = next_step(model, history=HISTORY_5)
-        assert decision.question == PREGUNTA_COMPUESTA
         assert len(model.calls) == 2
-        assert "compuesta" in caplog.text.lower()
-        assert PREGUNTA_COMPUESTA in caplog.text
+        # Siempre se devuelve la decisión original, sin raise.
+        assert decision.done is False
+        assert decision.question == PREGUNTA_COMPUESTA
+        return caplog.text.lower()
+
+    def test_reintento_tambien_compuesto_devuelve_original_con_warning(self, caplog):
+        texto = self._decision_con_reintento(
+            caplog,
+            f'{{"done": false, "question": "{PREGUNTA_GRANULAR} ¿seguro?", "reason": "y"}}',
+        )
+        assert "pese al reintento" in texto
+        assert PREGUNTA_COMPUESTA.lower() in texto
 
     def test_reintento_no_parseable_devuelve_original_sin_raise(self, caplog):
-        model = _FakeModel(
-            [
-                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
-                "esto no es json",
-            ]
-        )
-        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
-            decision = next_step(model, history=HISTORY_5)
-        assert decision.question == PREGUNTA_COMPUESTA
-        assert len(model.calls) == 2
-        assert "compuesta" in caplog.text.lower()
+        texto = self._decision_con_reintento(caplog, "esto no es json")
+        assert "falló al invocar o parsear" in texto
+        assert "elicitationagenterror" in texto
 
     def test_reintento_json_sin_clave_done_devuelve_original_con_warning(self, caplog):
-        # Soomri review (round 2, A corregir 2): este caso faltaba
-        # testear. Si el reintento devuelve JSON parseable pero sin la
-        # clave 'done', se devuelve la original con warning.
-        model = _FakeModel(
-            [
-                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
-                '{"question": "¿algo granular?", "reason": "sin done"}',
-            ]
+        # Si el reintento devuelve JSON parseable pero sin la clave 'done',
+        # se devuelve la original con warning.
+        texto = self._decision_con_reintento(
+            caplog, '{"question": "¿algo granular?", "reason": "sin done"}'
         )
-        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
-            decision = next_step(model, history=HISTORY_5)
-        assert decision.question == PREGUNTA_COMPUESTA
-        assert len(model.calls) == 2
-        assert "sin la clave" in caplog.text or "'done'" in caplog.text
+        assert "sin la clave" in texto
 
     def test_reintento_con_done_true_devuelve_original_con_warning(self, caplog):
-        # Soomri review (round 2, A corregir 2): este caso faltaba
-        # testear. Si el reintento devuelve done=true, no nos sirve como
-        # pregunta a mostrar -- se devuelve la original con warning.
-        model = _FakeModel(
-            [
-                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
-                '{"done": true, "question": null, "reason": "listo"}',
-            ]
+        # done=true no sirve como pregunta a mostrar: se devuelve la original.
+        texto = self._decision_con_reintento(
+            caplog, '{"done": true, "question": null, "reason": "listo"}'
         )
-        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
-            decision = next_step(model, history=HISTORY_5)
-        assert decision.question == PREGUNTA_COMPUESTA
-        assert decision.done is False
-        assert len(model.calls) == 2
-        assert "pese al reintento" in caplog.text.lower()
+        assert "done=true" in texto
+        # El log distingue este caso del de "pregunta todavía compuesta".
+        assert "pese al reintento" not in texto
 
     def test_reintento_con_error_de_invocacion_devuelve_original_con_warning(self, caplog):
-        # Soomri review (round 2, A corregir 2): el test existente
-        # ('reintento_no_parseable') cubre error de PARSEO de JSON, pero
-        # el caso real de 429 / timeout del LLM viaja como
-        # ElicitationLLMError (subclase de ElicitationAgentError), y ese
-        # camino no estaba testeado. _invoke_json traduce cualquier
-        # excepción del modelo en ElicitationLLMError, y el except del
-        # guardarraíl (ElicitationAgentError) la captura por ser
-        # subclase -- devolviendo la original con warning.
-        model = _FakeModel(
-            [
-                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
-                RuntimeError("Error code: 429 - rate_limit_exceeded"),
-            ]
+        # El caso real de 429 / timeout del LLM viaja como
+        # ElicitationLLMError (distinto de un error de parseo de JSON).
+        texto = self._decision_con_reintento(
+            caplog, RuntimeError("Error code: 429 - rate_limit_exceeded")
         )
-        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
-            decision = next_step(model, history=HISTORY_5)
-        assert decision.question == PREGUNTA_COMPUESTA
-        assert len(model.calls) == 2
-        assert (
-            "falló al invocar" in caplog.text.lower()
-            or "compuesta" in caplog.text.lower()
+        assert "falló al invocar" in texto
+        assert "elicitationllmerror" in texto
+
+    @pytest.mark.parametrize("escalar", ["null", "42", '"texto"', "[1, 2]"])
+    def test_reintento_con_json_que_no_es_objeto_devuelve_original(self, caplog, escalar):
+        # Antes: `"done" not in data` lanzaba TypeError con null/42 y
+        # llegaba a la API como un 500.
+        texto = self._decision_con_reintento(caplog, escalar)
+        assert "no es un objeto" in texto
+
+    def test_reintento_con_contenido_en_bloques_devuelve_original(self, caplog):
+        # response.content puede ser una lista de bloques (en vez de str):
+        # _strip_json_fences lanzaba AttributeError, que no es un
+        # ElicitationAgentError.
+        texto = self._decision_con_reintento(
+            caplog, [{"type": "text", "text": '{"done": false}'}]
         )
+        assert "falló al invocar o parsear" in texto
+
+    @pytest.mark.parametrize(
+        "pregunta_json",
+        ["null", '""', '"   "', '["¿a?", "¿b?"]', "42"],
+        ids=["nula", "vacia", "solo_espacios", "lista", "numero"],
+    )
+    def test_reintento_con_pregunta_invalida_devuelve_original(
+        self, caplog, pregunta_json
+    ):
+        # Una pregunta nula, vacía o que no es texto no puede persistirse
+        # como pending_question.
+        texto = self._decision_con_reintento(
+            caplog,
+            f'{{"done": false, "question": {pregunta_json}, "reason": "y"}}',
+        )
+        assert "vacía o que no es texto" in texto
 
 
 class TestNextStepSinReintento:
@@ -320,15 +400,13 @@ class TestNextStepFirstQuestion:
         assert model.calls == []
 
     def test_first_question_is_one_dimension_not_compound(self):
-        # Soomri review (round 2, A corregir 1): FIRST_QUESTION es la
-        # primera pregunta que el usuario ve y NO pasa por el guardarraíl
-        # de preguntas compuestas (next_step retorna antes de invocar al
-        # LLM cuando history está vacía), así que debe ser una sola
-        # dimensión. Si combina 'problema' con 'usuarios' (unidos con 'y'
-        # o con un 'para quién es' implícito), el detector
-        # _es_pregunta_compuesta() no la atrapa porque solo cuenta '?'.
-        # Esta es una prueba de intención: la pregunta no debe nombrar
-        # dos categorías del prompt al mismo tiempo.
+        # FIRST_QUESTION es la primera pregunta que el usuario ve y NO
+        # pasa por el guardarraíl de preguntas compuestas (next_step
+        # retorna antes de invocar al LLM cuando history está vacía), así
+        # que debe ser una sola dimensión. Si combina 'problema' con
+        # 'usuarios' (con 'y' o con un 'para quién es' implícito), el
+        # detector no la atrapa. Esta es una prueba de intención: la
+        # pregunta no debe nombrar dos categorías del prompt a la vez.
         pregunta_lower = FIRST_QUESTION.lower()
         menciona_problema = "problema" in pregunta_lower
         # 'usuarios' aparece literal, o como 'para quién' / 'quienes
@@ -342,9 +420,35 @@ class TestNextStepFirstQuestion:
         )
         assert not (menciona_problema and menciona_usuarios), (
             f"FIRST_QUESTION no debe combinar 'problema' y 'usuarios' en "
-            f"la misma pregunta (Issue #100, Soomri round 2): "
+            f"la misma pregunta (Issue #100): "
             f"{FIRST_QUESTION!r}"
         )
+
+
+class TestRegistroTuteo:
+    """El producto entero está en tuteo: el voseo mezclado en un mismo texto
+    (ej. "Cuéntame ... querés") es visible para el usuario y delata
+    inconsistencia. Guarda contra regresiones en los textos del módulo."""
+
+    _VOSEO = re.compile(
+        r"\b(querés|podés|tenés|sabés|decís|cubrí|dividí|devolvé|contame|"
+        r"decime|escribí|elegí|describí|respondé|hacé|fijate|mirá|usá|"
+        r"pensá|ponete|vos)\b",
+        re.IGNORECASE,
+    )
+
+    @pytest.mark.parametrize(
+        "nombre",
+        [
+            "FIRST_QUESTION",
+            "NEXT_STEP_SYSTEM_PROMPT",
+            "SUMMARY_SYSTEM_PROMPT",
+            "_CORRECCION_PREGUNTA_COMPUESTA",
+        ],
+    )
+    def test_los_textos_del_agente_no_usan_voseo(self, nombre):
+        texto = getattr(elicitation_agent, nombre)
+        assert not self._VOSEO.search(texto), self._VOSEO.search(texto).group(0)
 
 
 class TestNextStepHardRules:

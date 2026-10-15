@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -31,12 +32,14 @@ MAX_QUESTIONS = 10
 # HU5: "El sistema inicia con pregunta abierta" -- se fuerza determinísticamente
 # (no se le pide al LLM que decida la primera pregunta) para que este criterio
 # de aceptación no dependa de que el modelo se porte bien.
-# Issue #100 (Soomri review round 2): una sola dimensión, no compuesta. El
-# detector _es_pregunta_compuesta() solo cuenta '?' así que no atraparía un
-# "... y para quién es?" implícito. Por eso esta constante es la única
-# fuente de verdad de la primera pregunta, y se testea por intención.
+# Issue #100: una sola dimensión, no compuesta. Esta pregunta no pasa por
+# el guardarraíl _es_pregunta_compuesta() (next_step retorna antes de
+# invocar al LLM), y el detector tampoco atraparía un "para quién es"
+# implícito. Por eso esta constante es la única fuente de verdad de la
+# primera pregunta, y se testea por intención.
+# Registro: tuteo, igual que el resto del producto (frontend y prompts).
 FIRST_QUESTION = (
-    "Cuéntame en tus propias palabras: ¿qué problema querés resolver "
+    "Cuéntame en tus propias palabras: ¿qué problema quieres resolver "
     "con este sistema?"
 )
 
@@ -48,7 +51,7 @@ Eres un product manager levantando requerimientos para un nuevo proyecto \
 de software mediante preguntas progresivas. Cada pregunta debe construir \
 sobre las respuestas anteriores, no repetir lo ya preguntado.
 
-Antes de decidir que el contexto es suficiente, cubrí estas 4 categorías \
+Antes de decidir que el contexto es suficiente, cubre estas 4 categorías \
 a lo largo de la conversación (no todo en una sola pregunta):
 1. Usuarios: quiénes son, cuántos, qué tan seguido usarían el sistema.
 2. Funcionalidades: qué debe poder hacer el sistema, en orden de prioridad.
@@ -59,11 +62,13 @@ a lo largo de la conversación (no todo en una sola pregunta):
 
 Reglas de granularidad para cada pregunta (Issue #100):
 - Una pregunta cubre UNA sola dimensión (usuarios, funcionalidades, \
-restricciones o calidad). Nunca dos en la misma pregunta.
+restricciones o calidad). Nunca dos en la misma pregunta. Dentro de una \
+dimensión, pregunta por un solo aspecto a la vez (por ejemplo, quiénes \
+son los usuarios; cuántos serían, en otra pregunta).
 - Prohibida la pregunta compuesta: no unas dos interrogaciones con "y/e/o" \
 ni apiles varios bloques ¿...? en un mismo turno.
 - Granularidad: la pregunta debe poder responderse en una o dos oraciones. \
-Si la respuesta natural sería una lista, dividí en preguntas separadas \
+Si la respuesta natural sería una lista, divide en preguntas separadas \
 para los turnos siguientes.
 
 Ejemplos (solo ilustran la regla de arriba, no son preguntas nuevas):
@@ -126,28 +131,47 @@ class ElicitationDecision:
 
 # Instrucción correctiva efímera del reintento (Issue #100): solo viaja en
 # el contexto de ESTA llamada -- nunca se persiste en historial ni estado.
+# Incluye la pregunta rechazada: sin ella el modelo tendría que adivinar
+# qué corregir y, con temperatura baja, tendería a repetirla.
 _CORRECCION_PREGUNTA_COMPUESTA = (
-    "Tu pregunta anterior combinaba varios temas en una sola pregunta. "
-    "Devolvé en el mismo JSON UNA sola pregunta sobre UN solo tema, "
+    "Tu pregunta anterior combinaba varios temas en una sola pregunta: "
+    "\"{pregunta_rechazada}\". "
+    "Devuelve en el mismo JSON UNA sola pregunta sobre UN solo tema, "
     "sin 'y' que una dos interrogaciones."
 )
 
 
+# Palabras interrogativas (con tilde) que abren una segunda pregunta tras un
+# conector. Se exige la tilde a propósito: sin ella "que", "como", "cuando"
+# o "donde" son conjunciones/relativos muy comunes ("... y como
+# administradores", "... o cuando sea posible") y darían falsos positivos.
+_INTERROG = (
+    r"(?:(?:por|para|a|con)\s+)?"
+    r"(?:qué|quién(?:es)?|cuál(?:es)?|cuánt[oa]s?|cómo|cuándo|dónde)"
+)
+_CONECTOR_INTERROG = re.compile(rf"\b(?:y|e|o)\s+{_INTERROG}\b", re.IGNORECASE)
+
+
 def _es_pregunta_compuesta(question: str) -> bool:
     """
-    Detector determinista de preguntas compuestas (Issue #100): cada bloque
-    interrogativo termina en '?', así que 2 o más cierres = 2 o más
-    preguntas en un mismo turno.
+    Detector determinista de preguntas compuestas (Issue #100). Marca como
+    compuesta una pregunta que:
+
+    1. Tiene 2 o más cierres '?': cada bloque interrogativo termina en '?',
+       así que 2 o más cierres = 2 o más preguntas apiladas en un turno.
+    2. Une dos interrogaciones con un conector y/e/o seguido de una palabra
+       interrogativa, aunque haya un solo '?' ("¿Quiénes son los usuarios y
+       qué funcionalidades necesitan?").
 
     Heurística deliberadamente angosta para evitar falsos positivos: una
-    sola pregunta con "y" interno legítimo ("¿Qué frameworks y bases de
-    datos usan?") tiene UN solo '?' y NO se marca como compuesta -- ese
-    caso lo cubren las reglas del prompt, no este guardarraíl.
+    sola pregunta con "y" interno legítimo entre sustantivos ("¿Qué
+    frameworks y bases de datos usan?") NO se marca -- "y bases" no es "y"
+    + palabra interrogativa. Ese caso lo cubren las reglas del prompt.
     """
     if not isinstance(question, str):
         # Fail-open: un tipo inesperado no debe romper el flujo del agente.
         return False
-    return question.count("?") >= 2
+    return question.count("?") >= 2 or bool(_CONECTOR_INTERROG.search(question))
 
 
 def _history_to_text(history: list[dict]) -> str:
@@ -238,27 +262,44 @@ def _reintentar_pregunta_granular(
     """
     Guardarraíl determinista (Issue #100): si la pregunta del modelo es
     evidentemente compuesta, se reintenta UNA sola vez agregando una
-    instrucción correctiva al contexto. Si el reintento falla (error de
-    invocación/parseo o sigue compuesto) se hace fail-open: se devuelve la
-    pregunta original con un warning -- nunca se eleva el error al usuario.
+    instrucción correctiva (que incluye la pregunta rechazada) al contexto.
+
+    Fail-open total: ante CUALQUIER falla del reintento (error de
+    invocación o de parseo, JSON que no es un objeto, contenido con una
+    forma inesperada, o una pregunta inválida o todavía compuesta) se
+    devuelve la pregunta original con un warning -- nunca se eleva un
+    error al usuario.
     """
+    correccion = _CORRECCION_PREGUNTA_COMPUESTA.format(
+        pregunta_rechazada=decision.question
+    )
     try:
         data = _invoke_json(
             model,
             NEXT_STEP_SYSTEM_PROMPT,
-            f"{context}\n\n{_CORRECCION_PREGUNTA_COMPUESTA}",
+            f"{context}\n\n{correccion}",
             callbacks=callbacks,
-            # Issue #100 (Soomri review round 2, sugerencia 3): run_name
-            # distinto al de la llamada principal para que Langfuse pueda
-            # medir cada cuánto se dispara el guardarraíl. La instrucción
-            # correctiva sigue siendo efímera: solo viaja en este
-            # contexto, nunca se persiste.
+            # run_name distinto al de la llamada principal para que Langfuse
+            # pueda medir cada cuánto se dispara el guardarraíl. La
+            # instrucción correctiva sigue siendo efímera: solo viaja en
+            # este contexto, nunca se persiste.
             run_name="elicitation-next-step-retry",
         )
-    except ElicitationAgentError:
+    except Exception as e:  # noqa: BLE001 -- fail-open: nada debe llegar al usuario
         _LOGGER.warning(
-            "Reintento de pregunta compuesta falló al invocar o parsear el "
-            "JSON; se devuelve la pregunta original: %s",
+            "Reintento de pregunta compuesta falló al invocar o parsear la "
+            "respuesta (%s: %s); se devuelve la pregunta original: %s",
+            type(e).__name__,
+            e,
+            decision.question,
+        )
+        return decision
+
+    if not isinstance(data, dict):
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió un JSON que no es un "
+            "objeto (%s); se devuelve la pregunta original: %s",
+            type(data).__name__,
             decision.question,
         )
         return decision
@@ -272,18 +313,32 @@ def _reintentar_pregunta_granular(
         return decision
 
     reintentada = _decision_from_data(data)
-    if (
-        not reintentada.done
-        and reintentada.question
-        and not _es_pregunta_compuesta(reintentada.question)
-    ):
-        return reintentada
+    if reintentada.done:
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió done=true; se "
+            "devuelve la pregunta original: %s",
+            decision.question,
+        )
+        return decision
 
-    _LOGGER.warning(
-        "Pregunta compuesta devuelta pese al reintento correctivo: %s",
-        decision.question,
-    )
-    return decision
+    nueva = reintentada.question
+    if not isinstance(nueva, str) or not nueva.strip():
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió una pregunta vacía o "
+            "que no es texto (%s); se devuelve la pregunta original: %s",
+            type(nueva).__name__,
+            decision.question,
+        )
+        return decision
+
+    if _es_pregunta_compuesta(nueva):
+        _LOGGER.warning(
+            "Pregunta compuesta devuelta pese al reintento correctivo: %s",
+            decision.question,
+        )
+        return decision
+
+    return reintentada
 
 
 def next_step(
