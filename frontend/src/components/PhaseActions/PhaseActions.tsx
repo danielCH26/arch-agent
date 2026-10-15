@@ -9,6 +9,11 @@
  *     `ApiConflictError` (REQ-SA-29, REQ-SA-34).
  *
  * Also includes "Avanzar" button when phaseReady=true (REQ-SA-23/24).
+ *
+ * On `propuesta` the decision lives in <ProposalCard>/<ProposalActions>
+ * (it owns the proposal lifecycle, the `engram_state` snapshot and the
+ * reject->revert). There this component is mounted with `hideDecision` and
+ * renders ONLY "Avanzar", so the two surfaces can never disagree.
  */
 
 import { useState } from 'react'
@@ -28,6 +33,11 @@ export interface PhaseActionsProps {
   allowModify?: boolean
   /** Show "Avanzar" button when phase is ready to advance */
   phaseReady?: boolean
+  /**
+   * Hide Aprobar / Modificar / Rechazar (keep only "Avanzar"). Used on
+   * `propuesta`, where <ProposalCard> is the single decision surface.
+   */
+  hideDecision?: boolean
 }
 
 const ACTIONS: Array<{ action: PhaseDecisionAction; label: string; testId: string }> = [
@@ -35,9 +45,17 @@ const ACTIONS: Array<{ action: PhaseDecisionAction; label: string; testId: strin
   { action: 'modify', label: 'Modificar', testId: 'phase-action-modify' },
 ]
 
-export function PhaseActions({ projectId, phase, allowModify = true, phaseReady = false }: PhaseActionsProps) {
+export function PhaseActions({
+  projectId,
+  phase,
+  allowModify = true,
+  phaseReady = false,
+  hideDecision = false,
+}: PhaseActionsProps) {
   const decide = useApprovalsStore((s) => s.decide)
-  const pending = useApprovalsStore((s) => s.pendingByPhase[phase] ?? null)
+  const refreshApprovals = useApprovalsStore((s) => s.refresh)
+  const storedPending = useApprovalsStore((s) => s.pendingByPhase[phase] ?? null)
+  const pending = hideDecision ? null : storedPending
   const errorMessage = useApprovalsStore((s) => s.error)
   const clearError = useApprovalsStore((s) => s.clearError)
   const getProject = useProjectsStore((s) => s.getProject)
@@ -47,6 +65,7 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
   const [showModify, setShowModify] = useState(false)
   const [showReject, setShowReject] = useState(false)
   const [advancing, setAdvancing] = useState(false)
+  const [advanceError, setAdvanceError] = useState<string | null>(null)
 
   async function handle(action: PhaseDecisionAction, feedback?: string) {
     if (action === 'modify' && !feedback?.trim()) {
@@ -81,13 +100,25 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
 
   async function handleAdvance() {
     setAdvancing(true)
+    setAdvanceError(null)
     try {
       await advancePhase(projectId)
       // Refresh project state to show new phase
       await getProject(projectId)
+      // The new phase has its own pending decision. `pendingByPhase` only
+      // holds the phase that was current at the last fetch, so without this
+      // re-fetch the new phase showed no Aprobar/Modificar/Rechazar until
+      // the next chat message or a reload.
+      await refreshApprovals()
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('PhaseActions.advance failed', err)
+      // Surface the failure in the UI instead of only logging it.
+      setAdvanceError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'No se pudo avanzar de fase. Inténtalo de nuevo.',
+      )
     } finally {
       setAdvancing(false)
     }
@@ -119,6 +150,23 @@ export function PhaseActions({ projectId, phase, allowModify = true, phaseReady 
             </span>
           )}
         </p>
+      )}
+
+      {advanceError && (
+        <div
+          role="alert"
+          data-testid="phase-actions-advance-error"
+          className="rounded bg-red-50 px-3 py-2 text-xs text-red-700"
+        >
+          {advanceError}
+          <button
+            type="button"
+            onClick={() => setAdvanceError(null)}
+            className="ml-2 underline"
+          >
+            Cerrar
+          </button>
+        </div>
       )}
 
       {errorMessage && (

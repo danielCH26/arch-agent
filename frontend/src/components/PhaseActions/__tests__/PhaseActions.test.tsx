@@ -10,12 +10,20 @@
  * 2. When there is neither a pending decision nor a ready phase, the
  *    component renders nothing (REQ-SA-19.2 preserved).
  */
-import { render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { advancePhase } from '../../../api/projects'
 import { useApprovalsStore } from '../../../stores/approvalsStore'
 import { useProjectsStore } from '../../../stores/projectsStore'
 import { PhaseActions } from '../PhaseActions'
+
+// Only `advancePhase` is replaced; the rest of the module (used by
+// projectsStore) stays real.
+vi.mock('../../../api/projects', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../api/projects')>()),
+  advancePhase: vi.fn(),
+}))
 
 describe('PhaseActions render gates (B3)', () => {
   beforeEach(() => {
@@ -70,5 +78,88 @@ describe('PhaseActions render gates (B3)', () => {
     expect(screen.getByTestId('phase-action-reject')).toBeTruthy()
     // Not ready yet: no advance button (REQ-SA-15).
     expect(screen.queryByTestId('phase-action-advance')).toBeNull()
+  })
+})
+
+const PENDING_PROPUESTA = {
+  propuesta: {
+    phase: 'propuesta',
+    since: '2026-10-07T00:00:00Z',
+    last_decision: null,
+    last_decided_at: null,
+  },
+}
+
+describe('PhaseActions on propuesta (single decision surface)', () => {
+  beforeEach(() => {
+    useApprovalsStore.setState({ pendingByPhase: {}, error: null })
+    useProjectsStore.setState({
+      projects: [],
+      currentProject: null,
+      status: 'idle',
+      error: null,
+    })
+  })
+
+  it('hideDecision keeps only Avanzar: the decision lives in <ProposalCard>', () => {
+    useApprovalsStore.setState({ pendingByPhase: PENDING_PROPUESTA })
+    render(
+      <PhaseActions projectId={7} phase="propuesta" phaseReady={true} hideDecision />,
+    )
+
+    expect(screen.getByTestId('phase-action-advance')).toBeTruthy()
+    expect(screen.queryByTestId('phase-action-approve')).toBeNull()
+    expect(screen.queryByTestId('phase-action-modify')).toBeNull()
+    expect(screen.queryByTestId('phase-action-reject')).toBeNull()
+    expect(screen.queryByText(/Decisión pendiente/)).toBeNull()
+  })
+
+  it('hideDecision renders nothing while the proposal is still undecided', () => {
+    useApprovalsStore.setState({ pendingByPhase: PENDING_PROPUESTA })
+    const { container } = render(
+      <PhaseActions projectId={7} phase="propuesta" phaseReady={false} hideDecision />,
+    )
+    expect(container.querySelector('[data-testid="phase-actions"]')).toBeNull()
+  })
+})
+
+describe('PhaseActions Avanzar', () => {
+  beforeEach(() => {
+    vi.mocked(advancePhase).mockReset()
+    useApprovalsStore.setState({ pendingByPhase: {}, error: null })
+  })
+
+  it('re-fetches the approvals so the NEW phase gets its pending decision', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const getProject = vi.fn().mockResolvedValue(null)
+    useApprovalsStore.setState({ refresh })
+    useProjectsStore.setState({ getProject })
+    vi.mocked(advancePhase).mockResolvedValue({
+      current_phase: 'revision',
+      phase_ready: false,
+      message: 'ok',
+    })
+
+    render(<PhaseActions projectId={7} phase="refinamiento" phaseReady={true} />)
+    fireEvent.click(screen.getByTestId('phase-action-advance'))
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    expect(getProject).toHaveBeenCalledWith(7)
+  })
+
+  it('shows the failure in the UI instead of only logging it', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    useApprovalsStore.setState({ refresh })
+    useProjectsStore.setState({ getProject: vi.fn().mockResolvedValue(null) })
+    vi.mocked(advancePhase).mockRejectedValue(
+      new Error('La fase actual todavía no está aprobada.'),
+    )
+
+    render(<PhaseActions projectId={7} phase="refinamiento" phaseReady={true} />)
+    fireEvent.click(screen.getByTestId('phase-action-advance'))
+
+    const alert = await screen.findByTestId('phase-actions-advance-error')
+    expect(alert.textContent).toMatch(/todavía no está aprobada/)
+    expect(refresh).not.toHaveBeenCalled()
   })
 })

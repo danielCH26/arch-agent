@@ -142,9 +142,14 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
   // the SSE `event: phase_locked` consumer is missed (the v1 production
   // bug), the surface still mounts on the first render and after every
   // chat response via the `refresh` call below.
+  //
+  // Also re-fetch when the phase changes (e.g. after "Avanzar"):
+  // `pendingByPhase` is rebuilt from /phases for the phase that was current
+  // at fetch time, so the new phase would otherwise have no pending entry
+  // and <PhaseActions> would not show its decision buttons.
   useEffect(() => {
     void fetchApprovalsHistory(projectId)
-  }, [fetchApprovalsHistory, projectId])
+  }, [fetchApprovalsHistory, projectId, currentPhase])
 
   const refreshApprovalsAfterChat = useCallback(() => {
     void refreshApprovals()
@@ -218,13 +223,17 @@ export function ChatWindow({ projectId, phase = null }: ChatWindowProps) {
         {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the
             pendingDecision derived server-side via /phases. Independent of
             the SSE `event: phase_locked` consumer so production never
-            silently fails to render the surface. */}
+            silently fails to render the surface. On `propuesta` the
+            decision lives in <ProposalCard> (lifecycle, snapshot,
+            reject->revert), so <PhaseActions> only offers "Avanzar"
+            there (hideDecision). */}
         {!isElicitation && (pendingDecision || storePhaseReady) && (
           <PhaseActions
             projectId={projectId}
             phase={currentPhase ?? pendingDecision?.phase ?? ''}
             allowModify={currentPhase !== 'final'}
             phaseReady={storePhaseReady}
+            hideDecision={currentPhase === 'propuesta'}
           />
         )}
         {busy && (

@@ -8,6 +8,8 @@ import {
   decideProposal,
   getProposal as fetchProposal,
 } from '../api/proposals'
+import { useApprovalsStore } from './approvalsStore'
+import { projectsStore } from './projectsStore'
 
 /**
  * Single-source-of-truth for the currently active proposal.
@@ -226,6 +228,23 @@ export const proposalsStore = create<ProposalsState>((set, get) => ({
           inFlight: 'idle',
         }
       })
+      // HU10: on `propuesta` this card and <PhaseActions> read the SAME
+      // server state (pending decision + phase_ready + current_phase). The
+      // decision above changed it, so re-sync both stores; otherwise
+      // PhaseActions keeps showing stale pending buttons and "Avanzar"
+      // never appears until a chat message or a reload. Both are no-ops
+      // when no project is loaded, and neither may fail the decision.
+      void useApprovalsStore
+        .getState()
+        .refresh()
+        .catch(() => undefined)
+      const projectId = projectsStore.getState().currentProject?.id
+      if (projectId != null) {
+        void projectsStore
+          .getState()
+          .getProject(projectId)
+          .catch(() => undefined)
+      }
       return response
     } catch (err) {
       const message =
