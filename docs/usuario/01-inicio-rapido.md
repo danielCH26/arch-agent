@@ -14,7 +14,7 @@ De cero a tu primera propuesta de arquitectura en cinco pasos. Si quieres el det
 4. Al registrarte entras automáticamente al panel de proyectos.
 
 #Screenshot-registro
-<!-- Reemplazar por: ![Pantalla de registro](screenshots/registro.png) -->
+![Pantalla de registro](screenshots/Registro.png)
 
 ## 2. Configurar tu LLM (obligatorio)
 
@@ -28,8 +28,10 @@ El agente necesita un modelo de lenguaje para funcionar. En la barra lateral, ab
 
 Prefiere los modelos con la etiqueta verde **"Recomendado"**.
 
+NOTA: Para esto falta lo que debe implementar Daniel de score, cuando se tenga listo se debe traer para que el frontend lo maneje.
+
 #Screenshot-configuracion-llm
-<!-- Reemplazar por: ![Asistente de configuración LLM](screenshots/configuracion-llm.png) -->
+![Asistente de configuración LLM](screenshots/configuracion-llm.png)
 
 > Usas **Ollama** o **LM Studio** en tu máquina? Usa `http://host.docker.internal:11434/v1` (Ollama) o `http://host.docker.internal:1234/v1` (LM Studio) en lugar de `localhost`.
 
@@ -40,7 +42,7 @@ Prefiere los modelos con la etiqueta verde **"Recomendado"**.
 3. Haz clic en **Crear**: se abre el chat del proyecto en la fase **Requerimientos**.
 
 #Screenshot-nuevo-proyecto
-<!-- Reemplazar por: ![Diálogo de nuevo proyecto](screenshots/nuevo-proyecto.png) -->
+![Diálogo de nuevo proyecto](screenshots/Nuevo-proyecto.png)
 
 ## 4. Responde las preguntas del agente
 
@@ -49,7 +51,7 @@ El agente te hace preguntas una a una sobre el problema, los usuarios, las funci
 Cuando tiene suficiente información, muestra un **resumen de requerimientos**. Revisalo y hace clic en **Aprobar** (o en **Modificar** para pedir ajustes). Después haz clic en **Continuar a Propuesta**.
 
 #Screenshot-elicitacion
-<!-- Reemplazar por: ![Chat de elicitación con resumen](screenshots/elicitacion.png) -->
+![Chat de elicitación con resumen](screenshots/Chat-elicitacion-resumen.png)
 
 ## 5. Genera y aprueba la propuesta
 
@@ -59,7 +61,7 @@ Cuando tiene suficiente información, muestra un **resumen de requerimientos**. 
 4. Con la propuesta aprobada, haz clic en **Continuar a Refinamiento**: el agente genera el **diagrama** automáticamente.
 
 #Screenshot-propuesta
-<!-- Reemplazar por: ![Tarjeta de propuesta de arquitectura](screenshots/propuesta.png) -->
+![Tarjeta de propuesta de arquitectura](screenshots/Propuesta-arquitectura.png)
 
 ¡Listo! Ya tienes una arquitectura documentada con su diagrama.
 

@@ -31,21 +31,21 @@ Este tutorial recorre Arch Agent de punta a punta con un proyecto de ejemplo: **
 3. Envia el formulario. Si todo es válido, entras directamente al panel de proyectos.
 
 #Screenshot-registro
-<!-- Reemplazar por: ![Pantalla de registro](screenshots/registro.png) -->
+![Pantalla de registro](screenshots/Registro.png)
 
 ### Iniciar sesión
 
 En visitas posteriores ingresa tu **usuario** y **contraseña** en la pantalla de inicio de sesión. La sesión dura un tiempo limitado (por defecto 60 minutos); cuando expira, la app te devuelve al login.
 
 #Screenshot-inicio-sesion
-<!-- Reemplazar por: ![Pantalla de inicio de sesión](screenshots/inicio-sesion.png) -->
+![Pantalla de inicio de sesión](screenshots/Inicio-sesion.png)
 
 ---
 
 ## 2. Conocer la interfaz
 
-#Screenshot-página-principal
-<!-- Reemplazar por: ![Página principal con barra lateral y lista de proyectos](screenshots/pagina-principal.png) -->
+#Screenshot-pagina-principal
+![Página principal con barra lateral y lista de proyectos](screenshots/Pagina-principal.png) -->
 
 | Zona | Qué contiene |
 |------|--------------|
@@ -79,14 +79,14 @@ Pega la URL base del proveedor. El asistente verifica que la URL responda como u
 | LM Studio (local) | `http://host.docker.internal:1234/v1` |
 
 #Screenshot-llm-paso1-base-url
-<!-- Reemplazar por: ![Paso 1: Base URL](screenshots/llm-paso1-base-url.png) -->
+![Paso 1: Base URL](screenshots/LLM-paso1-base-url.png)
 
 ### Paso 2 — API Key
 
 Pega la clave del proveedor. El asistente prueba la conexión real. La clave **se guarda cifrada** y solo cuando confirmas el paso 3; después nunca se vuelve a mostrar completa.
 
 #Screenshot-llm-paso2-api-key
-<!-- Reemplazar por: ![Paso 2: API Key](screenshots/llm-paso2-api-key.png) -->
+![Paso 2: API Key](screenshots/LLM-paso2-api-key.png)
 
 ### Paso 3 — Modelo
 
@@ -101,7 +101,9 @@ Elige el modelo de la lista desplegable. Los modelos están clasificados por cal
 ¿Tu modelo no está en la lista (por ejemplo, un fine-tune)? Usa **Cancelar** en este paso para que aparezca un campo de texto y escribe el nombre exacto del modelo. Haz clic en **Guardar**.
 
 #Screenshot-llm-paso3-modelo
-<!-- Reemplazar por: ![Paso 3: selección de modelo](screenshots/llm-paso3-modelo.png) -->
+![Paso 3: selección de modelo](screenshots/Configuracion-LLM.png)
+
+NOTA: Nuevamente, como en el inicio rápido, esto no se encuentra implementado porque todavía se está a la espera de que Daniel implemente a development el score de los modelos
 
 ### Cambiar la configuración más adelante
 
@@ -111,7 +113,7 @@ Si ya tienes una configuración guardada, verás un **resumen** con dos opciones
 - **Cambiar todo** — vuelve al paso 1.
 
 #Screenshot-llm-resumen
-<!-- Reemplazar por: ![Resumen de configuración LLM](screenshots/llm-resumen.png) -->
+![Resumen de configuración LLM](screenshots/Resumen-configuracion-LLM.png)
 
 ---
 
@@ -125,12 +127,12 @@ Si ya tienes una configuración guardada, verás un **resumen** con dos opciones
 La app abre el **chat** del proyecto, en la fase **Requerimientos**. El nombre del proyecto y su fase actual se ven en la parte superior del chat.
 
 #Screenshot-nuevo-proyecto
-<!-- Reemplazar por: ![Diálogo de nuevo proyecto](screenshots/nuevo-proyecto.png) -->
+![Diálogo de nuevo proyecto](screenshots/Nuevo-proyecto-turnofacil.png)
 
 En la lista de **Proyectos** cada tarjeta muestra el nombre, la descripción y una **etiqueta de fase** (con ✓ cuando la fase actual ya está aprobada).
 
 #Screenshot-lista-proyectos
-<!-- Reemplazar por: ![Lista de proyectos con etiquetas de fase](screenshots/lista-proyectos.png) -->
+![Lista de proyectos con etiquetas de fase](screenshots/Lista-proyectos.png)
 
 ---
 
@@ -155,10 +157,10 @@ Si subes un archivo con un nombre que ya existe, la app te pregunta qué hacer:
 | **Cancelar** | No sube nada. |
 
 #Screenshot-documentos
-<!-- Reemplazar por: ![Pantalla de documentos del proyecto](screenshots/documentos.png) -->
+![Pantalla de documentos del proyecto](screenshots/Documentos.png)
 
 #Screenshot-archivo-duplicado
-<!-- Reemplazar por: ![Diálogo de archivo duplicado](screenshots/archivo-duplicado.png) -->
+![Diálogo de archivo duplicado](screenshots/Archivo-duplicado.png)
 
 > **Tip:** si subes un documento nuevo después de que el agente ya generó el resumen de requerimientos, usa **Modificar** en el resumen para que lo incorpore.
 
@@ -183,7 +185,7 @@ Al entrar al chat el agente ya te muestra la primera pregunta. Responde en el cu
 Mientras el agente piensa verás tres puntos animados. Responde con el mayor detalle posible: volumen esperado de usuarios, presupuesto, tecnologías obligatorias o prohibidas, requisitos de disponibilidad o seguridad, etc.
 
 #Screenshot-elicitacion
-<!-- Reemplazar por: ![Chat de elicitación](screenshots/elicitacion.png) -->
+![Chat de elicitación](screenshots/Elicitacion.png)
 
 ### Validar el resumen
 
@@ -203,14 +205,14 @@ Debajo aparece la pregunta *"¿El resumen representa las necesidades del proyect
 | **Rechazar** | Descarta el resumen y reinicia la elicitación desde cero. |
 
 #Screenshot-resumen-requerimientos
-<!-- Reemplazar por: ![Resumen de requerimientos con botones de decisión](screenshots/resumen-requerimientos.png) -->
+![Resumen de requerimientos con botones de decisión](screenshots/Chat-elicitacion-resumen-Turnofacil.png) -->
 
 ### Avanzar de fase
 
 Al aprobar aparece un aviso verde: **"Requerimientos aprobados ✓ Ya puedes continuar a la fase de Propuesta"**. Haz clic en **Continuar a Propuesta**. Si antes de avanzar te acuerdas de algo, usa **Pedir un ajuste**.
 
 #Screenshot-avanzar-fase
-<!-- Reemplazar por: ![Aviso de fase aprobada con botón Continuar](screenshots/avanzar-fase.png) -->
+![Aviso de fase aprobada con botón Continuar](screenshots/Avanzar-fase.png)
 
 ---
 
@@ -230,7 +232,7 @@ En la tarjeta **Propuesta de arquitectura** haz clic en **Generar propuesta**. E
 La etiqueta en la esquina de la tarjeta indica el estado: **Propuesta**, **Aprobada** o **Rechazada**.
 
 #Screenshot-propuesta
-<!-- Reemplazar por: ![Tarjeta de propuesta con trade-offs y citas](screenshots/propuesta.png) -->
+![Tarjeta de propuesta con trade-offs y citas](screenshots/Propuesta.png)
 
 ### Decidir sobre la propuesta
 
@@ -246,14 +248,16 @@ Debajo de la propuesta tenés:
 Mientras se genera una nueva iteración, **la versión actual se conserva** en pantalla. Cada iteración muestra arriba el feedback que la originó.
 
 #Screenshot-iterar-propuesta
-<!-- Reemplazar por: ![Cuadro de feedback para iterar la propuesta](screenshots/iterar-propuesta.png) -->
+![Cuadro de feedback para iterar la propuesta](screenshots/Iterar-propuesta.png)
+
+![Cuadro de feedback para iterar la propuesta](screenshots/Iterar-propuesta2.png)
 
 ### Evolución del diseño
 
 Cuando hay más de una versión aparece la sección desplegable **"Evolución del diseño (N versiones)"**, donde puedes releer cada iteración anterior y el feedback que la produjo.
 
 #Screenshot-evolucion-diseno
-<!-- Reemplazar por: ![Historial de iteraciones de la propuesta](screenshots/evolucion-diseno.png) -->
+![Historial de iteraciones de la propuesta](screenshots/Evolucion-diseño.png)
 
 Con la propuesta aprobada, haz clic en **Continuar a Refinamiento**.
 
@@ -263,15 +267,17 @@ Con la propuesta aprobada, haz clic en **Continuar a Refinamiento**.
 
 Al entrar a esta fase **el agente genera automáticamente el diagrama** de la propuesta aprobada (en formato Mermaid, renderizado como imagen). No hace falta pedirlo.
 
+NOTA: ACTUALMENTE NO LO GENERA AUTOMÁTICAMENTE. Esto se debe evaluar nuevamente cuando esté en development, si se implementó el fix
+
 #Screenshot-diagrama
-<!-- Reemplazar por: ![Diagrama generado en el chat](screenshots/diagrama.png) -->
+![Diagrama generado en el chat](screenshots/Diagrama.png)
 
 ### Ver el diagrama en grande
 
 Haz clic sobre la miniatura para abrir el **visor ampliado**. Usa los botones de **acercar** / **alejar** para ajustar el zoom y cerralo cuando termines.
 
 #Screenshot-visor-diagrama
-<!-- Reemplazar por: ![Visor ampliado del diagrama con zoom](screenshots/visor-diagrama.png) -->
+![Visor ampliado del diagrama con zoom](screenshots/Visor-diagrama.png)
 
 ### Decidir sobre el diagrama
 
@@ -294,7 +300,9 @@ Cuando la fase está aprobada aparece **Continuar a Revisión**.
 Es la última fase del flujo. Por ahora no tiene una pantalla propia: el chat sigue disponible para consultar al agente sobre la arquitectura final, y en la lista de proyectos el proyecto aparece con la etiqueta **Revisión**.
 
 #Screenshot-revision
-<!-- Reemplazar por: ![Proyecto en fase de Revisión](screenshots/revision.png) -->
+![Proyecto en fase de Revisión](screenshots/Revision.png)
+
+![Proyecto en fase de Revisión dashboard](screenshots/Revision-2.png)
 
 ---
 
@@ -310,7 +318,7 @@ En la parte superior del chat, el botón **🕘 Historial de diagramas** abre un
 El panel es **solo de consulta**: las decisiones se toman en el chat, sobre cada diagrama.
 
 #Screenshot-historial-diagramas
-<!-- Reemplazar por: ![Panel de historial de diagramas](screenshots/historial-diagramas.png) -->
+![Panel de historial de diagramas](screenshots/Historial-diagramas.png)
 
 ---
 
@@ -324,7 +332,7 @@ En **👤 Perfil** puedes:
 Para salir, usa **Cerrar sesión** en el encabezado.
 
 #Screenshot-perfil
-<!-- Reemplazar por: ![Pantalla de perfil de usuario](screenshots/perfil.png) -->
+![Pantalla de perfil de usuario](screenshots/Perfil.png)
 
 ---
 
