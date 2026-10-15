@@ -1,3 +1,5 @@
+import pytest
+
 from app.core.proposal_generator import ProposalGenerator
 
 
@@ -718,6 +720,15 @@ def test_missing_sections_rejects_tradeoff_tables_without_three_options_or_crite
     assert _missing_sections(incomplete) == ["Tabla de trade-offs (3 opciones y 3 criterios)"]
 
 
+def _error_meta(events):
+    """(code, retryable) del ultimo evento, que debe ser un ``error`` estructurado."""
+    name, payload = events[-1]
+    assert name == "error"
+    assert set(payload) == {"message", "code", "retryable"}
+    assert isinstance(payload["message"], str) and payload["message"]
+    return payload["code"], payload["retryable"]
+
+
 def _drain(gen_iter):
     import asyncio
 
@@ -776,7 +787,8 @@ def test_truncated_proposal_is_not_persisted_and_yields_error():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "incompleta" in events[-1][1]
+    assert "incompleta" in events[-1][1]["message"]
+    assert _error_meta(events) == ("incomplete_proposal", False)
     assert not any(name == "done" for name, _ in events)
 
 
@@ -1569,7 +1581,7 @@ def test_section_error_does_not_blame_the_token_limit():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "límite de tokens" not in events[-1][1]
+    assert "límite de tokens" not in events[-1][1]["message"]
 
 def test_feedback_rules_tell_the_model_to_update_the_tradeoffs_section_too():
     from app.core.proposal_generator import _build_prompt
@@ -1605,3 +1617,625 @@ def test_negation_still_covers_a_plain_list_of_patterns():
     # "y" sin marca positiva NO corta la clausula: la negacion sigue aplicando.
     assert not _explicitly_requested("Monolito modular", "evitar microservicios y monolito modular")
     assert _feedback_stance("Monolito modular", "no quiero microservicios y monolito modular") is None
+
+# --- F19: progreso, tope de tiempo y cancelacion (HU primera propuesta < 5 min) ---
+
+
+def _patched_generator(model, persisted=None):
+    """ProposalGenerator con todo lo externo parcheado (devuelve el stream y el contexto)."""
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    persisted = persisted if persisted is not None else []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    stack = ExitStack()
+    stack.enter_context(patch.object(gen, "_load_project_and_session", return_value=(project, 1)))
+    stack.enter_context(patch.object(gen, "load_requirements_text", return_value=""))
+    stack.enter_context(patch.object(gen, "load_documents_text", return_value=("", [])))
+    stack.enter_context(patch.object(gen, "_retrieve_patterns", return_value=[]))
+    stack.enter_context(patch.object(gen, "build_langchain_model", return_value=model))
+    stack.enter_context(
+        patch.object(
+            gen,
+            "_persist_proposal_and_log",
+            side_effect=lambda **kw: persisted.append(kw) or (7, 8, 1),
+        )
+    )
+    stack.enter_context(patch.object(gen, "_engram_mirror", new=_noop_async))
+    return stack, gen.ProposalGenerator(user_id=1, project_id=1), persisted
+
+
+class _Chunk:
+    def __init__(self, content, metadata=None):
+        self.content = content
+        self.response_metadata = metadata or {}
+
+
+def test_progress_events_cover_every_stage_in_order_and_never_regress():
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, _persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    progress = [payload for name, payload in events if name == "progress"]
+    stages = [p["stage"] for p in progress]
+    assert stages[0] == "context"
+    assert stages[1] == "retrieval"
+    assert "generating" in stages
+    assert stages[-1] == "saving"
+    # El orden de etapas respeta el pipeline y el porcentaje solo sube.
+    order = ["context", "retrieval", "generating", "saving"]
+    assert [order.index(s) for s in stages] == sorted(order.index(s) for s in stages)
+    percents = [p["percent"] for p in progress]
+    assert percents == sorted(percents)
+    assert percents[-1] < 100  # el 100 % lo marca ``done``, no ``progress``
+    assert all(p["elapsed_ms"] >= 0 for p in progress)
+    # ``progress`` llega antes que ``done`` y done reporta el tiempo total.
+    names = [name for name, _ in events]
+    assert names.index("done") > max(i for i, n in enumerate(names) if n == "progress")
+    assert events[-1][1]["elapsed_ms"] >= 0
+
+
+def test_generation_progress_is_throttled_and_tracks_received_chars(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_PROGRESS_INTERVAL_S", 0.0)
+    monkeypatch.setattr(gen, "PROPOSAL_EXPECTED_CHARS", 100)
+
+    class _Model:
+        async def astream(self, _prompt):
+            for _ in range(4):
+                yield _Chunk("x" * 20)
+            yield _Chunk(_FULL_PROPOSAL, {"finish_reason": "stop"})
+
+    stack, generator, _ = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    gen_progress = [p for n, p in events if n == "progress" and p["stage"] == "generating" and "chars" in p]
+    assert [p["chars"] for p in gen_progress][:4] == [20, 40, 60, 80]
+    assert all(20 <= p["percent"] <= 92 for p in gen_progress)
+
+
+def test_generation_percent_is_bounded():
+    from app.core import proposal_generator as gen
+
+    assert gen._generation_percent(0) == 20
+    assert gen._generation_percent(10**9) == 92
+
+
+def test_generation_over_budget_yields_error_and_does_not_persist(monkeypatch):
+    import asyncio
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.2)
+    closed = []
+
+    class _SlowModel:
+        async def astream(self, _prompt):
+            try:
+                yield _Chunk("## Componentes\n")
+                await asyncio.sleep(5)  # el proveedor se cuelga
+                yield _Chunk("nunca llega")
+            finally:
+                closed.append(True)
+
+    stack, generator, persisted = _patched_generator(_SlowModel())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+    assert "tiempo máximo" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
+    assert not any(name == "done" for name, _ in events)
+    assert closed == [True]  # el stream del LLM se cerro
+
+
+def test_timeout_of_the_llm_client_is_not_reported_as_our_budget():
+    class _Model:
+        async def astream(self, _prompt):
+            raise TimeoutError("read timeout")
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert events[-1][0] == "error"
+    assert "LLM stream failed" in events[-1][1]["message"]
+    assert "tiempo máximo" not in events[-1][1]["message"]
+    # Un fallo del proveedor es reintentable, pero NO es nuestro tope de tiempo.
+    assert _error_meta(events) == ("llm_stream_failed", True)
+
+
+def test_budget_zero_disables_the_deadline(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0)
+
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert len(persisted) == 1
+    progress = [p for n, p in events if n == "progress"]
+    assert all(p["budget_s"] is None for p in progress)
+
+
+def test_closing_the_generator_midstream_stops_the_llm_and_persists_nothing():
+    """El usuario pulsa Cancelar: el cliente se desconecta y se cierra el generador."""
+    import asyncio
+
+    closed = []
+
+    class _Model:
+        async def astream(self, _prompt):
+            try:
+                for _ in range(1000):
+                    yield _Chunk("palabra ")
+                    await asyncio.sleep(0)
+            finally:
+                closed.append(True)
+
+    stack, generator, persisted = _patched_generator(_Model())
+
+    async def _run():
+        stream = generator.generate_stream()
+        seen = 0
+        async for name, _payload in stream:
+            if name == "token":
+                seen += 1
+                if seen == 3:
+                    break
+        await stream.aclose()  # lo que hace Starlette al desconectarse el cliente
+        return seen
+
+    with stack:
+        seen = asyncio.run(_run())
+
+    assert seen == 3
+    assert closed == [True]
+    assert persisted == []
+
+
+# --- F19: el tope de tiempo aplica a TODAS las etapas ----------------------
+
+
+class _FullModel:
+    """Modelo simulado que responde enseguida con una propuesta completa."""
+
+    def __init__(self, calls=None):
+        self.calls = calls if calls is not None else []
+
+    async def astream(self, _prompt):
+        self.calls.append(1)
+        yield _Chunk(_FULL_PROPOSAL)
+        yield _Chunk("", {"finish_reason": "stop"})
+
+
+def _slow(seconds):
+    import time
+
+    def _inner(*_args, **_kwargs):
+        time.sleep(seconds)
+        return []
+
+    return _inner
+
+
+def test_within_budget_returns_the_result_with_and_without_deadline():
+    import asyncio
+    from time import perf_counter
+
+    from app.core import proposal_generator as gen
+
+    async def work():
+        return 5
+
+    assert asyncio.run(gen._within_budget(work(), None)) == 5
+    assert asyncio.run(gen._within_budget(work(), perf_counter() + 5)) == 5
+
+
+def test_within_budget_cuts_a_slow_awaitable_and_reports_the_stage():
+    import asyncio
+    from time import perf_counter
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    async def work():
+        await asyncio.sleep(5)
+
+    with pytest.raises(gen._GenerationTimeout) as exc:
+        asyncio.run(gen._within_budget(work(), perf_counter() + 0.1, "retrieval"))
+    assert exc.value.stage == "retrieval"
+
+
+def test_within_budget_with_expired_deadline_does_not_start_the_work():
+    import asyncio
+    from time import perf_counter
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    ran = []
+
+    async def work():
+        ran.append(1)
+
+    with pytest.raises(gen._GenerationTimeout):
+        asyncio.run(gen._within_budget(work(), perf_counter() - 1, "context"))
+    assert ran == []
+
+
+def test_within_budget_does_not_mask_a_timeout_raised_by_the_work_itself():
+    import asyncio
+    from time import perf_counter
+
+    import pytest
+
+    from app.core import proposal_generator as gen
+
+    async def work():
+        raise TimeoutError("read timeout del cliente")
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(gen._within_budget(work(), perf_counter() + 60))
+
+
+def test_save_reserve_is_a_slice_of_the_budget_never_more_than_20_percent(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_SAVE_RESERVE_S", 10.0)
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 300.0)
+    assert gen._save_reserve_s() == 10.0
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 15.0)
+    assert gen._save_reserve_s() == 3.0
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0)
+    assert gen._save_reserve_s() == 0.0
+
+
+def test_format_duration_reads_naturally():
+    from app.core import proposal_generator as gen
+
+    assert gen._format_duration(300) == "5 min"
+    assert gen._format_duration(330) == "5 min 30 s"
+    assert gen._format_duration(15) == "15 s"
+
+
+def test_context_loading_over_budget_yields_error_and_never_calls_the_llm(monkeypatch):
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    calls = []
+    stack, generator, persisted = _patched_generator(_FullModel(calls))
+    with stack, patch.object(gen, "load_requirements_text", side_effect=_slow(0.9)):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert "tiempo máximo" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
+    assert calls == [] and persisted == []
+    assert not any(name in {"token", "done"} for name, _ in events)
+
+
+def test_retrieval_over_budget_yields_error_instead_of_continuing_without_context(monkeypatch):
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    calls = []
+    stack, generator, persisted = _patched_generator(_FullModel(calls))
+    with stack, patch.object(gen, "_retrieve_patterns", side_effect=_slow(0.9)):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert "tiempo máximo" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
+    assert calls == [] and persisted == []
+    # Se avisó que se estaba buscando, pero nunca se llegó a redactar.
+    stages = [p["stage"] for n, p in events if n == "progress"]
+    assert stages[-1] == "retrieval"
+
+
+def test_saving_over_budget_yields_a_specific_error_and_no_done(monkeypatch):
+    import time
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    stack, generator, _ = _patched_generator(_FullModel())
+
+    def _slow_persist(**_kwargs):
+        time.sleep(0.9)
+        return (7, 8, 1)
+
+    with stack, patch.object(gen, "_persist_proposal_and_log", side_effect=_slow_persist):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert "guardado" in events[-1][1]["message"]
+    # Guardando, la fila pudo quedar escrita: codigo propio (el front rehidrata).
+    assert _error_meta(events) == ("save_timeout", True)
+    assert not any(name == "done" for name, _ in events)
+
+
+def test_timeout_message_shows_the_configured_limit_in_readable_form(monkeypatch):
+    import asyncio
+
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+
+    class _Hangs:
+        async def astream(self, _prompt):
+            await asyncio.sleep(60)
+            yield _Chunk("nunca")
+
+    stack, generator, _ = _patched_generator(_Hangs())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "error"
+    assert f"({gen._format_duration(0.5)})" in events[-1][1]["message"]
+    assert "0 min" not in events[-1][1]["message"]
+
+
+def test_persist_gets_a_statement_timeout_that_fits_in_the_budget():
+    stack, generator, persisted = _patched_generator(_FullModel())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert 0 < persisted[0]["statement_timeout_ms"] <= 300_000
+
+
+def test_persist_has_no_statement_timeout_when_the_budget_is_disabled(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0)
+    stack, generator, persisted = _patched_generator(_FullModel())
+    with stack:
+        _drain(generator.generate_stream())
+
+    assert persisted[0]["statement_timeout_ms"] is None
+
+
+def test_persist_sets_the_statement_timeout_before_writing_anything():
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    db.add.side_effect = lambda obj: setattr(obj, "id", 1)
+    kwargs = dict(
+        session_id=1,
+        project_id=1,
+        iteration=1,
+        prior_iteration=0,
+        prior_proposal_id=None,
+        prior_content=None,
+        markdown="m",
+        citations=[],
+        feedback=None,
+        prompt="p",
+    )
+    with patch.object(gen, "SessionLocal", return_value=db):
+        result = gen._persist_proposal_and_log(statement_timeout_ms=1234, **kwargs)
+
+    assert result == (1, 1, 1)
+    first_call = db.execute.call_args_list[0]
+    assert "statement_timeout" in str(first_call.args[0])
+    assert first_call.args[1] == {"ms": "1234"}
+    db.commit.assert_called_once()
+
+    db.reset_mock()
+    with patch.object(gen, "SessionLocal", return_value=db):
+        gen._persist_proposal_and_log(**kwargs)
+    db.execute.assert_not_called()
+
+
+# --- Review PR: errores al guardar --------------------------------------------
+
+
+class _CompleteModel:
+    async def astream(self, _prompt):
+        yield _Chunk(_FULL_PROPOSAL)
+        yield _Chunk("", {"finish_reason": "stop"})
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Has alcanzado el máximo de iteraciones (5)",
+        "La propuesta ya no es la última iteración; recarga antes de modificar.",
+        "La siguiente iteración no es válida; recarga e intenta de nuevo.",
+    ],
+)
+def test_domain_error_while_saving_keeps_its_specific_message(message):
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    stack, generator, _ = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "_persist_proposal_and_log", side_effect=gen._ProposalDomainError(message)
+    ):
+        events = _drain(generator.generate_stream())
+
+    assert events[-1] == (
+        "error",
+        {"message": message, "code": "rejected", "retryable": False},
+    )
+    assert not any(name == "done" for name, _ in events)
+
+
+def test_technical_error_while_saving_never_leaks_internal_details():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    leak = "No se pudo persistir la propuesta: (psycopg2.OperationalError) SELECT secret FROM x"
+    stack, generator, _ = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "_persist_proposal_and_log", side_effect=gen._ProposalPersistError(leak)
+    ):
+        events = _drain(generator.generate_stream())
+
+    name, payload = events[-1]
+    message = payload["message"]
+    assert name == "error"
+    assert (payload["code"], payload["retryable"]) == ("save_failed", False)
+    assert message.startswith("No se pudo guardar la propuesta")
+    assert "psycopg2" not in message and "SELECT" not in message
+
+
+def test_persist_wraps_infrastructure_failures_as_persist_error_not_domain_error():
+    """Un fallo de BD no debe poder confundirse con un error de dominio mostrable."""
+    from unittest.mock import MagicMock, patch
+
+    from app.core import proposal_generator as gen
+
+    db = MagicMock()
+    db.query.side_effect = RuntimeError("connection reset")
+    kwargs = dict(
+        session_id=1, project_id=1, iteration=1, prior_iteration=0,
+        prior_proposal_id=None, prior_content=None, markdown="m",
+        citations=[], feedback=None, prompt="p",
+    )
+    with patch.object(gen, "SessionLocal", return_value=db):
+        with pytest.raises(gen._ProposalPersistError):
+            gen._persist_proposal_and_log(**kwargs)
+
+    assert not issubclass(gen._ProposalPersistError, gen._ProposalDomainError)
+    db.rollback.assert_called()
+
+
+# --- Contrato del evento `error` estructurado (review PR) ----------------------
+# El front decide el reintento por `retryable`/`code`, nunca por el texto.
+
+
+def test_error_event_helper_builds_the_documented_payload():
+    from app.core import proposal_generator as gen
+
+    assert gen._error_event("boom", gen.ERR_TIMEOUT, retryable=True) == (
+        "error",
+        {"message": "boom", "code": "timeout", "retryable": True},
+    )
+    # Por defecto NO es reintentable: hay que optar explicitamente.
+    assert gen._error_event("x", gen.ERR_REJECTED)[1]["retryable"] is False
+
+
+def test_missing_ids_are_invalid_request_and_not_retryable():
+    from app.core import proposal_generator as gen
+
+    no_project = _drain(gen.ProposalGenerator(user_id=1).generate_stream())
+    no_user = _drain(gen.ProposalGenerator(project_id=1).generate_stream())
+
+    assert _error_meta(no_project) == ("invalid_request", False)
+    assert _error_meta(no_user) == ("invalid_request", False)
+
+
+def test_invalid_llm_config_is_not_retryable():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.llm_loader import LLMConfigError
+
+    stack, generator, persisted = _patched_generator(_CompleteModel())
+    with stack, patch.object(gen, "build_langchain_model", side_effect=LLMConfigError("sin API key")):
+        events = _drain(generator.generate_stream())
+
+    assert _error_meta(events) == ("llm_config", False)
+    assert events[-1][1]["message"] == "sin API key"
+    assert persisted == []
+
+
+def test_empty_llm_output_is_a_distinct_non_retryable_code():
+    class _Empty:
+        async def astream(self, _prompt):
+            yield _Chunk("")
+
+    stack, generator, persisted = _patched_generator(_Empty())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert _error_meta(events) == ("llm_empty", False)
+    assert persisted == []
+
+
+def test_domain_error_while_loading_context_is_rejected_and_not_retryable():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    stack, generator, persisted = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "_load_project_and_session", side_effect=gen._ProposalDomainError("Proyecto no encontrado")
+    ):
+        events = _drain(generator.generate_stream())
+
+    assert _error_meta(events) == ("rejected", False)
+    assert events[-1][1]["message"] == "Proyecto no encontrado"
+    assert persisted == []
+
+
+def test_retryable_never_depends_on_the_wording_of_the_message(monkeypatch):
+    """Mismo codigo aunque el texto cambie: el front no puede (ni debe) leerlo."""
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "_format_duration", lambda _s: "SEIS MINUTOS")
+
+    class _Hangs:
+        async def astream(self, _prompt):
+            import asyncio
+
+            await asyncio.sleep(60)
+            yield _Chunk("nunca")
+
+    monkeypatch.setattr(gen, "PROPOSAL_MAX_SECONDS", 0.5)
+    stack, generator, _ = _patched_generator(_Hangs())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert "SEIS MINUTOS" in events[-1][1]["message"]
+    assert _error_meta(events) == ("timeout", True)
+
+
+def test_only_transient_codes_are_retryable():
+    """Guarda el contrato de la spec (REQ-13): lista cerrada de codigos reintentables."""
+    from app.core import proposal_generator as gen
+
+    transient = {gen.ERR_TIMEOUT, gen.ERR_SAVE_TIMEOUT, gen.ERR_LLM_STREAM}
+    permanent = {
+        gen.ERR_INVALID_REQUEST,
+        gen.ERR_REJECTED,
+        gen.ERR_LLM_CONFIG,
+        gen.ERR_LLM_EMPTY,
+        gen.ERR_INCOMPLETE,
+        gen.ERR_SAVE_FAILED,
+    }
+    assert transient.isdisjoint(permanent)
+    assert len(transient | permanent) == 9  # un codigo nuevo obliga a clasificarlo aqui

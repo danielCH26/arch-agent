@@ -205,6 +205,98 @@ describe('ProposalCard', () => {
     })
   })
 
+  describe('progreso, cancelar y reintentar (F19)', () => {
+    it('muestra el progreso mientras genera y "Cancelar" vuelve a ofrecer generar', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      expect(screen.getByTestId('proposal-progress')).toBeInTheDocument()
+      await user.click(screen.getByTestId('proposal-cancel-generation'))
+
+      expect(screen.queryByTestId('proposal-progress')).not.toBeInTheDocument()
+      expect(screen.getByTestId('proposal-cancelled')).toBeInTheDocument()
+      expect(screen.getByTestId('proposal-generate')).toHaveTextContent('Generar propuesta')
+    })
+
+    it('tras un fallo de la modificación ofrece reintentar con el mismo feedback', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true }))
+
+      expect(await screen.findByTestId('proposal-retry-feedback')).toHaveTextContent('agrega caché')
+      await user.click(screen.getByTestId('proposal-retry'))
+
+      expect(createProposalStream).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(createProposalStream).mock.calls[1][1]).toMatchObject({ proposalId: 41, feedback: 'agrega caché' })
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+      act(() => streams[1].onError('Reintento cancelado en el test.'))
+    })
+
+    it('no ofrece reintentar ante un error permanente (p. ej. límite de iteraciones)', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'x')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      act(() => streams[0].onError('Has alcanzado el máximo de iteraciones (5)', undefined, { code: 'rejected', retryable: false }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('máximo de iteraciones')
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('no ofrece reintentar si el feedback pendiente es de otra propuesta (id viejo)', async () => {
+      await renderWithProposal(proposalOut())
+      act(() => proposalsStore.setState({
+        error: 'La generación superó el tiempo máximo (5 min)',
+        errorRetryable: true,
+        lastModify: { proposalId: 40, feedback: 'agrega caché' },
+      }))
+
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('el reintento lo decide `retryable`, no la redacción del mensaje', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      // El texto suena a timeout, pero el backend lo marca como permanente.
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'rejected', retryable: false }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('tiempo máximo')
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('un flag reintentable huérfano (sin error) no muestra el reintento', async () => {
+      await renderWithProposal(proposalOut())
+      act(() => proposalsStore.setState({ error: null, errorRetryable: true, lastModify: { proposalId: 41, feedback: 'x' } }))
+
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('tras cancelar una modificación conserva la versión actual y permite reintentar', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      await user.click(screen.getByTestId('proposal-cancel-generation'))
+
+      expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas')
+      expect(screen.getByTestId('proposal-modify-cancelled')).toBeInTheDocument()
+      expect(screen.getByTestId('proposal-retry')).toBeInTheDocument()
+    })
+  })
+
   it('numera las fuentes RAG como [n] para que coincidan con las citas de la tabla', async () => {
     await renderWithProposal(proposalOut({
       citations: [

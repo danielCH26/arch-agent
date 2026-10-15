@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { proposalsStore } from '../stores/proposalsStore'
 import type { ProposalCitation } from '../api/proposals'
 import { renderMarkdownBlocks } from './MessageBubble'
+import { ProposalProgress } from './ProposalProgress'
 import { formatDateTime } from '../lib/format'
 
 interface ProposalCardProps {
@@ -22,7 +23,7 @@ const lifecycleLabel = {
 }
 
 export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
-  const { current, iterations, projectState, activity, error, load, generate, modify, decide, reset } = proposalsStore()
+  const { current, iterations, projectState, activity, error, errorRetryable, cancelled, lastModify, load, generate, modify, retry, decide, reset } = proposalsStore()
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [comment, setComment] = useState('')
@@ -45,6 +46,20 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   // bloquea en el cliente: el servidor rechaza la iteración de más con su mensaje.
   const maxIterations = projectState?.max_iterations ?? null
   const iterationLimitReached = maxIterations !== null && (proposal?.iteration ?? 0) >= maxIterations
+  // Si una modificación falla, se corta por el tope de tiempo o se cancela, el
+  // feedback ya no está en el formulario: "Reintentar" lo reenvía.
+  // Reintentar solo sirve para cortes transitorios. Un 4xx, el límite de
+  // iteraciones o una configuración LLM inválida requieren una acción distinta.
+  // Lo decide el backend con el campo estructurado `retryable` del evento SSE
+  // `error`; el texto del mensaje es solo para mostrarlo y no se interpreta.
+  const retryableError = error !== null && errorRetryable
+  // Además, el feedback pendiente debe ser de ESTA propuesta: si la vigente ya
+  // cambió (se rehidrató tras un corte al guardar), el `proposalId` viejo daría 409.
+  const canRetry =
+    lastModify !== null &&
+    lastModify.proposalId === proposal?.id &&
+    !busy &&
+    (retryableError || cancelled)
 
   const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!proposal?.id) return
@@ -91,6 +106,21 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
       {approvedWithoutContent && (
         <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           La propuesta de este proyecto ya fue aprobada{projectState?.approved_at ? ` el ${formatDateTime(projectState.approved_at)}` : ''}. La fase está lista para avanzar.
+        </p>
+      )}
+
+      {/* F19: progreso visible + cancelar mientras se genera/modifica. */}
+      <ProposalProgress />
+
+      {cancelled && !error && !proposal && !busy && (
+        <p className="mt-4 text-xs text-gray-500" role="status" data-testid="proposal-cancelled">
+          Generación cancelada. No se guardó nada; puedes volver a generar la propuesta.
+        </p>
+      )}
+
+      {cancelled && !error && proposal?.id && !busy && (
+        <p className="mt-3 text-xs text-gray-500" role="status" data-testid="proposal-modify-cancelled">
+          Modificación cancelada. Se conserva la versión actual.
         </p>
       )}
 
@@ -158,6 +188,14 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
 
       {iterations.length > 1 && <p className="mt-3 text-xs text-gray-500">{iterations.length} iteraciones generadas en esta sesión. Se muestra la más reciente.</p>}
       {error && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
+      {canRetry && (
+        <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="proposal-retry-panel">
+          <button type="button" onClick={retry} className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-50" data-testid="proposal-retry">
+            Reintentar con el mismo feedback
+          </button>
+          <span className="text-xs italic text-gray-500" data-testid="proposal-retry-feedback">“{lastModify?.feedback}”</span>
+        </div>
+      )}
     </section>
   )
 }

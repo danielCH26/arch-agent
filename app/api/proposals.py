@@ -6,9 +6,11 @@ snapshot contract used by diagram generation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+from contextlib import aclosing
 from typing import AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -29,6 +31,8 @@ from app.models.project import Project
 from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
+# El mínimo evita un bucle de comentarios si se configura accidentalmente 0.
+SSE_HEARTBEAT_SECONDS = max(1.0, float(os.getenv("SSE_HEARTBEAT_SECONDS", "15")))
 
 PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
 PROPOSAL_MAX_ITER = int(os.getenv("PROPOSAL_MAX_ITER", "5"))
@@ -88,11 +92,76 @@ def _emit_sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+_ITEM, _END, _FAILED = "item", "end", "failed"
+
+
 async def _sse_stream(
     events: AsyncIterator[tuple[str, object]],
 ) -> AsyncIterator[str]:
-    async for event, payload in events:
-        yield _emit_sse(event, payload)
+    """Serializa los eventos a SSE, con heartbeat, y propaga la cancelacion.
+
+    F19: cuando el usuario pulsa "Cancelar" el front aborta el fetch, el
+    servidor deja de escribir y este generador recibe ``CancelledError`` /
+    ``GeneratorExit``. Se cancela al productor y se cierra el generador interno
+    (y con el, el stream del LLM) de inmediato, para no gastar tokens en una
+    propuesta que nadie va a ver.
+
+    El generador se consume dentro de UNA sola tarea productora (``pump``) que
+    entrega los eventos por una cola. Asi todos sus pasos corren en el mismo
+    ``contextvars.Context``: LangChain/Langfuse fijan ahi sus callbacks de
+    tracing y, si cada paso fuera una Task distinta (como al envolver cada
+    ``__anext__`` en ``create_task``), el valor fijado en un paso no se veria en
+    el siguiente y ``ContextVar.reset`` fallaria con "created in a different
+    Context". Ademas no se crea una Task por token.
+    """
+    queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue(maxsize=1)
+    stopping = False
+
+    async def pump() -> None:
+        try:
+            # aclosing dentro de la tarea: el generador se cierra en el mismo
+            # contexto en el que se itero.
+            async with aclosing(events) as inner:
+                async for item in inner:
+                    await queue.put((_ITEM, item))
+            await queue.put((_END, None))
+        except asyncio.CancelledError:
+            if stopping:  # lo cancelo el consumidor: terminar sin avisar
+                raise
+            await queue.put((_FAILED, asyncio.CancelledError()))
+        except Exception as exc:  # llega al consumidor, igual que antes
+            await queue.put((_FAILED, exc))
+
+    producer = asyncio.create_task(pump())
+    try:
+        while True:
+            try:
+                async with asyncio.timeout(SSE_HEARTBEAT_SECONDS):
+                    kind, value = await queue.get()
+            except TimeoutError:
+                # Los comentarios SSE los ignora el parser del cliente, pero
+                # mantienen viva la conexion ante proxies con idle timeout.
+                yield ": ping\n\n"
+                continue
+            if kind == _END:
+                break
+            if kind == _FAILED:
+                raise value  # type: ignore[misc]
+            event, payload = value  # type: ignore[misc]
+            yield _emit_sse(event, payload)
+    except (asyncio.CancelledError, GeneratorExit):
+        logger.info("Proposal stream cancelled by client")
+        raise
+    finally:
+        # Debe terminar antes de salir: el productor cierra el generador y,
+        # con el, el stream del LLM.
+        stopping = True
+        if not producer.done():
+            producer.cancel()
+        try:
+            await producer
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def _project_key(project_id: int) -> str:
@@ -272,8 +341,11 @@ async def generate_proposal(
     generator = ProposalGenerator(user_id=user_id, project_id=body.project_id)
 
     async def event_iterator():
-        async for event, payload in generator.generate_stream(project_id=body.project_id):
-            yield event, payload
+        async with aclosing(
+            generator.generate_stream(project_id=body.project_id)
+        ) as events:
+            async for event, payload in events:
+                yield event, payload
 
     return StreamingResponse(
         _sse_stream(event_iterator()),
@@ -312,6 +384,17 @@ async def modify_proposal(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})",
             )
+        latest = (
+            db.query(Proposal)
+            .filter(Proposal.project_id == prior.project_id)
+            .order_by(Proposal.iteration.desc())
+            .first()
+        )
+        if latest is None or latest.id != prior.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La propuesta ya no es la última iteración; recarga antes de modificar.",
+            )
         project_id = int(prior.project_id)
     finally:
         db.close()
@@ -319,12 +402,15 @@ async def modify_proposal(
     generator = ProposalGenerator(user_id=user_id, project_id=project_id)
 
     async def event_iterator():
-        async for event, payload in generator.generate_stream(
-            project_id=project_id,
-            feedback=body.feedback,
-            prior_proposal_id=proposal_id,
-        ):
-            yield event, payload
+        async with aclosing(
+            generator.generate_stream(
+                project_id=project_id,
+                feedback=body.feedback,
+                prior_proposal_id=proposal_id,
+            )
+        ) as events:
+            async for event, payload in events:
+                yield event, payload
 
     return StreamingResponse(
         _sse_stream(event_iterator()),
