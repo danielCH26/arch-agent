@@ -54,6 +54,17 @@ HISTORY_1 = [{"pregunta": "p0", "respuesta": "r0"}]
 HISTORY_5 = [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(5)]
 HISTORY_10 = [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(10)]
 
+# Historiales que ya cubren los factores de viabilidad obligatorios
+# (presupuesto, equipo, plazo). Sin esto, a partir del mínimo de preguntas la
+# regla de viabilidad responde antes que el LLM y el guardarraíl de preguntas
+# compuestas nunca llega a ejecutarse. Los tests del guardarraíl los usan para
+# aislar su comportamiento de esa regla.
+_RESPUESTA_VIABILIDAD = (
+    "Presupuesto de 20000 USD, equipo de 3 desarrolladores y plazo de 3 meses."
+)
+HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
+HISTORY_5_VIABLE = HISTORY_1_VIABLE + HISTORY_5[1:]
+
 
 class TestStripJsonFences:
     def test_fence_with_json_tag(self):
@@ -196,7 +207,7 @@ class TestNextStepRetryPreguntaCompuesta:
                 f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
             ]
         )
-        decision = next_step(model, history=HISTORY_5)
+        decision = next_step(model, history=HISTORY_5_VIABLE)
         assert decision.done is False
         assert decision.question == PREGUNTA_GRANULAR
         assert len(model.calls) == 2
@@ -209,7 +220,7 @@ class TestNextStepRetryPreguntaCompuesta:
                 f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
             ]
         )
-        decision = next_step(model, history=HISTORY_5)
+        decision = next_step(model, history=HISTORY_5_VIABLE)
         assert decision.question == PREGUNTA_GRANULAR
         assert len(model.calls) == 2
 
@@ -220,7 +231,7 @@ class TestNextStepRetryPreguntaCompuesta:
                 f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
             ]
         )
-        next_step(model, history=HISTORY_5)
+        next_step(model, history=HISTORY_5_VIABLE)
         mensajes_reintento = model.calls[1]
         contexto = mensajes_reintento[1].content
         assert "UNA sola pregunta sobre UN solo tema" in contexto
@@ -236,7 +247,7 @@ class TestNextStepRetryPreguntaCompuesta:
                 f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
             ]
         )
-        next_step(model, history=HISTORY_5)
+        next_step(model, history=HISTORY_5_VIABLE)
         contexto_principal = model.calls[0][1].content
         contexto_reintento = model.calls[1][1].content
         assert PREGUNTA_COMPUESTA in contexto_reintento
@@ -251,7 +262,7 @@ class TestNextStepRetryPreguntaCompuesta:
                 f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
             ]
         )
-        next_step(model, history=HISTORY_5, callbacks=[callback])
+        next_step(model, history=HISTORY_5_VIABLE, callbacks=[callback])
         assert model.configs[0] == {
             "callbacks": [callback],
             "run_name": "elicitation-next-step",
@@ -274,7 +285,7 @@ class TestNextStepFailOpenPreguntaCompuesta:
             ]
         )
         with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
-            decision = next_step(model, history=HISTORY_5)
+            decision = next_step(model, history=HISTORY_5_VIABLE)
         assert len(model.calls) == 2
         # Siempre se devuelve la decisión original, sin raise.
         assert decision.done is False
@@ -361,7 +372,7 @@ class TestNextStepSinReintento:
         model = _FakeModel(
             [f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "x"}}']
         )
-        decision = next_step(model, history=HISTORY_5)
+        decision = next_step(model, history=HISTORY_5_VIABLE)
         assert decision.question == PREGUNTA_GRANULAR
         assert len(model.calls) == 1
 
@@ -386,7 +397,7 @@ class TestNextStepSinReintento:
                 f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
             ]
         )
-        decision = next_step(model, history=HISTORY_1)
+        decision = next_step(model, history=HISTORY_1_VIABLE)
         assert decision.done is False
         assert decision.question == PREGUNTA_GRANULAR
         assert len(model.calls) == 2
