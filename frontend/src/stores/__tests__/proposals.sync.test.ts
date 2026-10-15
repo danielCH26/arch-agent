@@ -31,9 +31,9 @@ describe('proposalsStore.decide syncs the HU10 stores', () => {
     vi.mocked(decideProposal).mockReset()
     vi.mocked(decideProposal).mockResolvedValue(DECISION_RESPONSE as never)
     proposalsStore.setState({
-      currentProposal: null,
+      current: null,
       iterations: [],
-      inFlight: 'idle',
+      activity: 'idle',
       error: null,
     })
   })

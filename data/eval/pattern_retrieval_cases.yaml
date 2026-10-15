@@ -1,0 +1,129 @@
+# Casos para medir el retrieval de patrones (scripts/eval_pattern_retrieval.py).
+#
+# Cada caso describe un proyecto como lo escribiria un usuario y el patron que
+# un arquitecto razonable elegiria como PRINCIPAL.
+#   esperado:   nombre exacto (pattern_name) del patron ideal -> cuenta para top-1 estricto
+#   aceptables: otros patrones defendibles -> cuentan para top-1 flexible y top-3
+#
+# Si el proyecto del profe se parece a alguno, ajusta/agrega casos: cuantos mas
+# casos reales, mas confiable es la metrica. Mantener los nombres sincronizados
+# con data/patterns/*.yaml (el script avisa si un nombre no existe).
+- id: clinica-citas
+  descripcion: "Aplicación web para gestionar citas médicas de una clínica pequeña: registro de pacientes, agenda de doctores y recordatorios por correo. Equipo de 3 desarrolladores, 4 meses, presupuesto bajo, un solo servidor."
+  esperado: "Arquitectura en capas (Layered)"
+  aceptables: ["Monolito modular (Modular Monolith)", "MVC / MVVM (Modelo-Vista-Controlador)"]
+
+- id: biblioteca-universitaria
+  descripcion: "Proyecto universitario: sistema de biblioteca con catálogo, préstamos y multas para 500 usuarios. Somos 4 estudiantes y tenemos un semestre. Sin equipo de infraestructura."
+  esperado: "Arquitectura en capas (Layered)"
+  aceptables: ["MVC / MVVM (Modelo-Vista-Controlador)", "Monolito modular (Modular Monolith)"]
+
+- id: ecommerce-modular
+  descripcion: "Tienda en línea con catálogo, carrito, pedidos, pagos e inventario. Equipo de 6 personas que quiere un solo despliegue ahora pero módulos con límites claros para poder separarlos en el futuro."
+  esperado: "Monolito modular (Modular Monolith)"
+  aceptables: ["Arquitectura hexagonal (Puertos y Adaptadores)", "Arquitectura en capas (Layered)"]
+
+- id: pasarela-pagos
+  descripcion: "Servicio de pagos con reglas de negocio complejas que debe poder cambiar de proveedor (Stripe, PayU, Wompi) sin reescribir la lógica, con alta cobertura de pruebas unitarias sin levantar base de datos."
+  esperado: "Arquitectura hexagonal (Puertos y Adaptadores)"
+  aceptables: ["Clean Architecture"]
+
+- id: backend-larga-vida
+  descripcion: "Backend de una fintech con casos de uso bien definidos (crear cuenta, transferir, congelar tarjeta) que debe sobrevivir a cambios de framework y de base de datos en los próximos 10 años."
+  esperado: "Clean Architecture"
+  aceptables: ["Arquitectura hexagonal (Puertos y Adaptadores)"]
+
+- id: plataforma-multiequipo
+  descripcion: "Plataforma con 5 equipos independientes, millones de usuarios y necesidad de desplegar y escalar cada capacidad por separado. Ya tenemos Kubernetes, CI/CD y observabilidad."
+  esperado: "Microservicios"
+  aceptables: ["Arquitectura orientada a eventos (Event-Driven)", "API Gateway + Backend for Frontend (BFF)"]
+
+- id: iot-telemetria-alertas
+  descripcion: "Plataforma que recibe eventos de miles de sensores IoT por segundo, dispara alertas en segundos y además genera reportes históricos mensuales. Equipo de 8 con experiencia en Kafka y Spark."
+  esperado: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
+  aceptables: ["Arquitectura orientada a eventos (Event-Driven)"]
+
+- id: logistica-eventos
+  descripcion: "Sistema de logística donde pedidos, inventario, facturación y notificaciones deben reaccionar a eventos de forma asíncrona y desacoplada, con picos de tráfico fuertes."
+  esperado: "Arquitectura orientada a eventos (Event-Driven)"
+  aceptables: ["Microservicios", "Saga (transacciones distribuidas)"]
+
+- id: banco-auditoria
+  descripcion: "Sistema contable que por regulación debe guardar cada cambio de saldo como un registro inmutable y poder reconstruir el estado de cualquier cuenta en una fecha pasada."
+  esperado: "Event sourcing"
+  aceptables: ["CQRS (Command Query Responsibility Segregation)"]
+
+- id: lecturas-masivas
+  descripcion: "Aplicación con 100 veces más lecturas que escrituras, dashboards pesados y consultas con un modelo distinto al de escritura que deben escalar por separado."
+  esperado: "CQRS (Command Query Responsibility Segregation)"
+  aceptables: ["Event sourcing"]
+
+- id: api-esporadica
+  descripcion: "API con tráfico esporádico para un evento de dos semanas, equipo de 2 personas, sin servidores que administrar y pagando solo por uso. Presupuesto limitado."
+  esperado: "Serverless (Function-as-a-Service)"
+  aceptables: ["Arquitectura en capas (Layered)"]
+
+- id: procesar-imagenes
+  descripcion: "Los usuarios suben fotos y el sistema las redimensiona, comprime y genera miniaturas automáticamente al recibir cada archivo. La carga varía de cero a miles de subidas por hora."
+  esperado: "Serverless (Function-as-a-Service)"
+  aceptables: ["Pipes and Filters (tuberías y filtros)"]
+
+- id: web-movil-multiples-servicios
+  descripcion: "Producto con app móvil, portal web y API pública para socios, cada uno con necesidades de datos distintas, consumiendo varios servicios backend. Necesitamos autenticación y límites de uso centralizados."
+  esperado: "API Gateway + Backend for Frontend (BFF)"
+  aceptables: ["Microservicios"]
+
+- id: app-pantallas
+  descripcion: "App móvil de seguimiento de hábitos con varias pantallas, formularios y gráficos sencillos, hecha por 2 personas con Flutter y un backend mínimo."
+  esperado: "MVC / MVVM (Modelo-Vista-Controlador)"
+  aceptables: ["Arquitectura en capas (Layered)"]
+
+- id: limpieza-documentos
+  descripcion: "Sistema que recibe documentos PDF, extrae el texto, lo limpia, lo clasifica y lo guarda. Cada paso debe poder cambiarse o reordenarse de forma independiente. Equipo de 2 estudiantes."
+  esperado: "Pipes and Filters (tuberías y filtros)"
+  aceptables: ["Pipeline de datos ETL / ELT por lotes"]
+
+- id: editor-plugins
+  descripcion: "Herramienta de análisis donde la comunidad pueda agregar nuevos lenguajes y funciones mediante plugins sin tocar el código base, y donde cada cliente active solo los módulos que necesita."
+  esperado: "Microkernel (arquitectura de plugins)"
+  aceptables: []
+
+- id: integracion-corporativa
+  descripcion: "Una aseguradora debe integrar su core legado, su CRM y su portal web mediante servicios corporativos reutilizables, con contratos estándar y gobierno de TI."
+  esperado: "Arquitectura orientada a servicios (SOA)"
+  aceptables: ["API Gateway + Backend for Frontend (BFF)", "Microservicios"]
+
+- id: reserva-viaje
+  descripcion: "Reserva de viajes que combina vuelo, hotel y auto en servicios independientes con base de datos propia; si uno falla hay que cancelar los demás de forma consistente."
+  esperado: "Saga (transacciones distribuidas)"
+  aceptables: ["Arquitectura orientada a eventos (Event-Driven)"]
+
+- id: bi-ventas
+  descripcion: "Dashboard de ventas en Power BI que cada noche consolida datos de un ERP, archivos Excel y una API en una base analítica. Equipo de 3 personas, los datos pueden tener un día de retraso."
+  esperado: "Pipeline de datos ETL / ELT por lotes"
+  aceptables: ["Data Lakehouse con capas Medallion (bronce, plata, oro)"]
+
+- id: fraude-tiempo-real
+  descripcion: "Detección de fraude con tarjetas que evalúa cada transacción en segundos sobre un flujo continuo de eventos y además reentrena con el histórico completo."
+  esperado: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
+  aceptables: ["Arquitectura orientada a eventos (Event-Driven)"]
+
+- id: plataforma-analitica
+  descripcion: "Plataforma analítica que ingiere logs, CSV y bases de datos, conserva el dato original para auditar y entrega tablas limpias por etapas para dashboards y modelos de predicción."
+  esperado: "Data Lakehouse con capas Medallion (bronce, plata, oro)"
+  aceptables: ["Pipeline de datos ETL / ELT por lotes"]
+
+- id: churn-produccion
+  descripcion: "Servicio que predice la deserción de clientes con una API de inferencia, reentrenamiento mensual, versionado de modelos y monitoreo de la calidad de las predicciones."
+  esperado: "Pipeline de MLOps (entrenamiento, registro y serving de modelos)"
+  aceptables: []
+
+- id: asistente-agentes-llm
+  descripcion: "Asistente con agentes de LLM que recupera documentos con RAG, genera diagramas y guarda el historial. Proyecto de curso de un equipo de 4 estudiantes, 3 meses, interfaz web de chat y una base de datos."
+  esperado: "Arquitectura en capas (Layered)"
+  aceptables: ["Monolito modular (Modular Monolith)", "Arquitectura hexagonal (Puertos y Adaptadores)", "MVC / MVVM (Modelo-Vista-Controlador)"]
+
+- id: erp-pyme
+  descripcion: "ERP para una pyme con facturación, compras y nómina como módulos que comparten una base de datos. Equipo de 5 personas que despliega una sola aplicación."
+  esperado: "Monolito modular (Modular Monolith)"
+  aceptables: ["Arquitectura en capas (Layered)"]

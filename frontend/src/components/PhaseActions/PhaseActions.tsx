@@ -38,6 +38,11 @@ export interface PhaseActionsProps {
    * `propuesta`, where <ProposalCard> is the single decision surface.
    */
   hideDecision?: boolean
+  /**
+   * Se llama tras una decisión o un avance exitoso, para que la página
+   * (ChatPage) recargue su propio estado de fase (stepper, barra superior).
+   */
+  onPhaseChanged?: () => void | Promise<void>
 }
 
 const ACTIONS: Array<{ action: PhaseDecisionAction; label: string; testId: string }> = [
@@ -51,6 +56,7 @@ export function PhaseActions({
   allowModify = true,
   phaseReady = false,
   hideDecision = false,
+  onPhaseChanged,
 }: PhaseActionsProps) {
   const decide = useApprovalsStore((s) => s.decide)
   const refreshApprovals = useApprovalsStore((s) => s.refresh)
@@ -81,6 +87,7 @@ export function PhaseActions({
       setShowModify(false)
       setShowReject(false)
       setModifyFeedback('')
+      void Promise.resolve(onPhaseChanged?.()).catch(() => undefined)
     } catch (err) {
       // 409 surfaces as ApiConflictError; the store already records the
       // typed error. We let the parent render the banner.
@@ -110,6 +117,7 @@ export function PhaseActions({
       // re-fetch the new phase showed no Aprobar/Modificar/Rechazar until
       // the next chat message or a reload.
       await refreshApprovals()
+      void Promise.resolve(onPhaseChanged?.()).catch(() => undefined)
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('PhaseActions.advance failed', err)

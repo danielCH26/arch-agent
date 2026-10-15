@@ -18,6 +18,7 @@ from cryptography.fernet import Fernet
 # Only JWT_SECRET_KEY gets a default; DATABASE_URL is intentionally left
 # unset so Postgres-backed ``skipif(not DATABASE_URL)`` markers fire.
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars")
+os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
 
 
 def pytest_configure(config):
@@ -25,6 +26,7 @@ def pytest_configure(config):
     # Same as module top: never inject a DATABASE_URL default. Tests
     # requiring Postgres opt in via ``DATABASE_URL`` in the runner env.
     os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars")
+    os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
 
 
 @pytest.fixture(autouse=True)

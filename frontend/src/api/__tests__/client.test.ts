@@ -89,7 +89,7 @@ describe('apiFetch', () => {
     })
     global.fetch = mockFetch
 
-    await expect(apiFetch('/api/test')).rejects.toThrow()
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ name: 'ApiError', status: 401 })
 
     expect(mockLogout).toHaveBeenCalled()
     expect(mockRedirectToLogin).toHaveBeenCalledOnce()
@@ -101,11 +101,11 @@ describe('apiFetch', () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 400,
-      json: () => Promise.resolve({ detail: 'Bad request' }),
+      json: () => Promise.resolve({ detail: 'El nombre es obligatorio' }),
     })
     global.fetch = mockFetch
 
-    await expect(apiFetch('/api/test')).rejects.toThrow()
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ name: 'ApiError', status: 400, message: 'El nombre es obligatorio' })
   })
 })
 

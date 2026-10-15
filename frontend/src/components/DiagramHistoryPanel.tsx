@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchDiagramHistory, type DiagramDecision, type DiagramVersion } from '../api/diagrams'
+import { useDialog } from '../hooks/useDialog'
+import { formatDateTime } from '../lib/format'
 
 interface DiagramHistoryPanelProps {
   projectId: number
@@ -7,95 +9,98 @@ interface DiagramHistoryPanelProps {
   onClose: () => void
 }
 
-// Estado de cada version, solo informativo. Las decisiones (aprobar / rechazar
-// / pedir cambios) se toman UNICAMENTE en el chat, cuando se le muestra el
-// diagrama al usuario: antes este panel tambien las ofrecia sobre "el diagrama
-// actual", asi que se podia rechazar desde aqui algo ya aprobado en el chat.
-const STATUS_LABEL: Record<DiagramDecision, { text: string; className: string }> = {
-  approve: { text: '✅ Aprobado', className: 'bg-green-100 text-green-800' },
-  reject: { text: '❌ Rechazado', className: 'bg-red-100 text-red-800' },
-  modify: { text: '✏️ Cambios solicitados', className: 'bg-yellow-100 text-yellow-800' },
+// Estado de cada versión, solo informativo. Las decisiones (aprobar /
+// rechazar / pedir cambios) se toman únicamente en el chat, cuando se le
+// muestra el diagrama al usuario.
+const labels: Record<DiagramDecision, string> = {
+  approve: '✅ Aprobado',
+  reject: '❌ Rechazado',
+  modify: '✏️ Cambios solicitados',
 }
 
-function StatusBadge({ decision }: { decision: DiagramVersion['decision'] }) {
-  const status = decision ? STATUS_LABEL[decision] : null
-  return (
-    <span
-      className={`inline-block text-xs rounded px-2 py-0.5 ${
-        status ? status.className : 'bg-gray-100 text-gray-600'
-      }`}
-    >
-      {status ? status.text : 'Sin decisión'}
-    </span>
-  )
+const styles: Record<DiagramDecision, string> = {
+  approve: 'bg-green-100 text-green-700',
+  reject: 'bg-red-100 text-red-700',
+  modify: 'bg-amber-100 text-amber-700',
 }
 
 export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistoryPanelProps) {
-  const [versions, setVersions] = useState<DiagramVersion[]>([])
+  const [diagrams, setDiagrams] = useState<DiagramVersion[]>([])
   const [loading, setLoading] = useState(false)
-  const [loadError, setLoadError] = useState('')
+  const [error, setError] = useState('')
+
+  const dialogRef = useDialog<HTMLElement>({ open, onClose })
 
   useEffect(() => {
     if (!open) return
+    // Se descartan los datos y las respuestas de un proyecto anterior.
+    let cancelled = false
+    setDiagrams([])
     setLoading(true)
-    setLoadError('')
+    setError('')
     fetchDiagramHistory(projectId)
-      .then(setVersions)
-      .catch((err) => {
-        setVersions([])
-        setLoadError(err instanceof Error ? err.message : 'No se pudo cargar el historial.')
+      .then((data) => {
+        if (!cancelled) setDiagrams(data)
       })
-      .finally(() => setLoading(false))
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'No se pudo cargar el historial.')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open, projectId])
 
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex justify-end z-50">
-      <div className="w-full max-w-sm bg-white h-full overflow-y-auto p-4 shadow-xl">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold">Historial de diagramas</h2>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-800">
-            ✕
-          </button>
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-slate-900/30"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="diagram-history-title"
+        className="h-full w-full max-w-md overflow-y-auto bg-white p-5 shadow-2xl"
+      >
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <h2 id="diagram-history-title" className="text-lg font-semibold text-gray-900">Historial de diagramas</h2>
+            <p className="mt-1 text-sm text-gray-500">Versiones generadas para este proyecto.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800" aria-label="Cerrar historial">✕</button>
         </div>
 
-        {loading && <p className="text-sm text-gray-500">Cargando…</p>}
+        {loading && <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-200 border-b-sky-600" /></div>}
+        {!loading && error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+        {!loading && !error && diagrams.length === 0 && <p className="py-8 text-center text-sm text-gray-500">Todavía no hay diagramas generados en este proyecto.</p>}
 
-        {!loading && loadError && (
-          <p className="text-sm text-red-700 bg-red-50 rounded p-2">{loadError}</p>
-        )}
-
-        {!loading && !loadError && versions.length === 0 && (
-          <p className="text-sm text-gray-500">Todavía no hay diagramas generados en este proyecto.</p>
-        )}
-
-        <ul className="space-y-4">
-          {versions.map((version) => (
-            <li key={version.id} className="border rounded-lg p-2">
-              <img
-                src={version.url}
-                alt={version.filename ?? `diagrama ${version.message_id}`}
-                className="w-full rounded"
-                loading="lazy"
-              />
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <p className="text-xs text-gray-500">
-                  {new Date(version.created_at).toLocaleString()}
-                </p>
-                <StatusBadge decision={version.decision} />
+        <div className="space-y-4">
+          {diagrams.map((diagram) => (
+            <article key={diagram.id} className="rounded-xl border border-gray-200 p-3">
+              <img src={diagram.url} alt={diagram.filename ?? `Diagrama ${diagram.message_id}`} className="w-full rounded-lg bg-gray-50" loading="lazy" />
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <span className="text-xs text-gray-500">{formatDateTime(diagram.created_at)}</span>
+                <span className={`rounded-full px-2 py-1 text-xs font-medium ${diagram.decision ? styles[diagram.decision] : 'bg-gray-100 text-gray-600'}`}>
+                  {diagram.decision ? labels[diagram.decision] : 'Sin decisión'}
+                </span>
               </div>
-            </li>
+            </article>
           ))}
-        </ul>
+        </div>
 
-        {versions.length > 0 && (
-          <p className="mt-4 border-t pt-3 text-xs text-gray-500">
-            Aquí solo se consulta el historial. Las decisiones sobre un diagrama se toman en el
-            chat, cuando se te muestra.
+        {diagrams.length > 0 && (
+          <p className="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-500">
+            Aquí solo se consulta el historial. Las decisiones sobre un diagrama se toman en el chat, cuando se te muestra.
           </p>
         )}
-      </div>
+      </section>
     </div>
   )
 }

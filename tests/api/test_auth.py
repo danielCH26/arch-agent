@@ -9,12 +9,13 @@ import pytest
 import os
 
 # Configurar entorno antes de cualquier import de app.
-# setdefault preserves an explicit DATABASE_URL set by the runner (HU10 v3 fix).
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
-os.environ.setdefault("JWT_ALGORITHM", "HS256")
-os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
-os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
+# DATABASE_URL NO se fija aquí (HU10 v3): un default "test:test" pisaba el
+# de app.core.database en una corrida completa y rompía los tests con
+# Postgres real (tests/test_document_storage.py) y el skipif de HU10.
+os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
+os.environ["JWT_ALGORITHM"] = "HS256"
+os.environ["JWT_EXPIRES_MINUTES"] = "60"
+os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
 
 
 class TestGetUserByLogin:
