@@ -143,6 +143,68 @@ describe('ProposalCard', () => {
     await waitFor(() => expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas'))
   })
 
+  describe('fallo a mitad de stream (sin dead-end)', () => {
+    it('al fallar generar tras recibir tokens muestra el error y ofrece reintentar', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      act(() => streams[0].onToken('## Contexto parcial'))
+      expect(await screen.findByTestId('proposal-content')).toHaveTextContent('Contexto parcial')
+
+      // El backend no persiste la propuesta truncada y emite `error` después de los tokens.
+      act(() => streams[0].onError('La generación terminó antes de completarse.'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('La generación terminó antes de completarse.')
+      expect(screen.queryByTestId('proposal-content')).not.toBeInTheDocument()
+      // Sin id no hay acciones de decisión sobre una propuesta que no existe.
+      expect(screen.queryByTestId('proposal-approve')).not.toBeInTheDocument()
+      const retry = screen.getByTestId('proposal-generate')
+      expect(retry).toHaveTextContent('Reintentar')
+
+      await user.click(retry)
+      expect(createProposalStream).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      // Cierra el stream del reintento: el store rastrea streams por proyecto a
+      // nivel de módulo y uno abierto bloquearía el load() de los demás tests.
+      act(() => streams[1].onError('Reintento cancelado en el test.'))
+    })
+
+    it('al fallar modificar tras recibir tokens vuelve a la propuesta anterior con su error', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'incluir caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      expect(createProposalStream).toHaveBeenCalledWith('modify', expect.objectContaining({ proposalId: 41 }), expect.anything())
+
+      act(() => streams[0].onToken('Iteración parcial'))
+      expect(await screen.findByTestId('proposal-content')).toHaveTextContent('Iteración parcial')
+
+      act(() => streams[0].onError('La generación terminó antes de completarse.'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('La generación terminó antes de completarse.')
+      expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas')
+      expect(screen.getByTestId('proposal-content')).not.toHaveTextContent('Iteración parcial')
+      // La iteración 1 sigue siendo accionable: se puede aprobar, modificar o rechazar.
+      expect(screen.getByTestId('proposal-approve')).toBeEnabled()
+      expect(screen.getByTestId('proposal-modify')).toBeEnabled()
+    })
+
+    it('un error de red al iniciar la generación también deja el botón de reintento', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      act(() => streams[0].onError('No se pudo conectar con el servidor.'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo conectar con el servidor.')
+      expect(screen.getByTestId('proposal-generate')).toHaveTextContent('Reintentar')
+    })
+  })
+
   it('numera las fuentes RAG como [n] para que coincidan con las citas de la tabla', async () => {
     await renderWithProposal(proposalOut({
       citations: [
