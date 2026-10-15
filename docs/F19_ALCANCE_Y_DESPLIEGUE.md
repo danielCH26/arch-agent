@@ -1,24 +1,32 @@
 # F19 — alcance real del PR, cambios de contrato y despliegue
 
-Este documento existe porque el PR de F19 incluye, además de la optimización de
-latencia, trabajo de otras historias (en particular `hu09-primera-propuesta-5min`)
-que no cambia solo rendimiento. Lo ideal es separarlo en otro PR; mientras tanto
-queda documentado aquí.
+Este documento resume qué cambia el PR de F19, qué contratos de la API modifica
+y qué hay que hacer al desplegarlo.
 
 ## Qué incluye el PR
 
+El PR está rebaseado sobre `development`: solo contiene trabajo de F19. HU9
+(`hu09-primera-propuesta-5min`) entró por su cuenta en el #95.
+
 | Bloque | Contenido |
 |---|---|
-| F19 / HU9 (latencia) | caché de embeddings, pool de conexiones, paralelización de `scope=all`, batch de documentos, warm-up del modelo, `PROPOSAL_MAX_SECONDS`, evento SSE `progress`, "Cancelar" / "Reintentar" |
-| Complejidad de patrones | `migrations/0018_add_pattern_complexity.sql`, `complexity` en los 10 YAML de `data/patterns/`, `PROPOSAL_COMPLEXITY_PENALTY` y la descalificación dura de patrones de complejidad alta en proyectos pequeños |
-| Contexto del proyecto | `app/core/project_context.py` y cambios en `elicitation_agent.py` |
-| Endpoints nuevos | `GET /api/projects/{id}/proposals` (historial) y `GET /api/projects/{id}/proposals/latest` (vigente, excluye rechazadas) |
-| CI | `.github/workflows/ci.yml`: pytest (con `pgvector/pgvector:pg16`) y vitest + build del frontend en cada PR y en cada push a `main` |
-| Proxy del frontend | `frontend/nginx.conf`: `proxy_read_timeout` de 300 s a 330 s (tope de `PROPOSAL_MAX_SECONDS` + margen) |
-| UI de fases | `frontend/src/api/phases.ts` (fases y etiquetas), `ChatWindow` y `PhaseBadge` (cada fase tiene su pantalla y el letrero muestra el nombre real); el PR también toca `Layout` |
-| Prompts del agente | `app/core/agent.py`: ajustes del prompt de sistema (persona y *hints* de librerías y diagramas) |
-| Elicitación | `app/api/elicitation.py`: la respuesta del usuario se guarda **antes** de pedirle la siguiente pregunta al LLM, así un fallo del LLM ya no la pierde |
-| Limpieza | borrado de `resolve-merge-conflicts.patch` |
+| Caché y búsqueda RAG | `app/core/rag.py`: caché LRU de embeddings de consultas (`RAG_EMBEDDING_CACHE_SIZE`), paralelización de `scope=all` y métricas al log (no en la respuesta) |
+| Pool de PostgreSQL | `app/core/database.py`: pool persistente (`DB_POOL_*`) con su dimensionamiento documentado en `.env.example` |
+| Variables de entorno | `app/core/env.py` (`env_int` / `env_float`): un valor vacío, no numérico o bajo el mínimo vuelve al default con un warning |
+| Indexado de documentos | `app/api/documents.py`: `embed_documents` en lotes de `EMBEDDING_BATCH_SIZE` (límite de memoria, no mejora la latencia) |
+| API de RAG | `app/api/rag.py`: `similarity_search` vía `asyncio.to_thread` y límite de 2000 caracteres por consulta (422) |
+| Cancelar al guardar | `app/core/proposal_generator.py`: `cancel_event` comprobado antes del `commit` (rollback si se canceló); en el frontend, `cancel()` resincroniza con `/proposals/latest` al instante y a los 2 s |
+| Propuestas (API) | `app/api/proposals.py`: los 409 documentados en OpenAPI y `SSE_HEARTBEAT_SECONDS` con mínimo de 1 s |
+| Arranque | `server.py`: `load_dotenv()` antes de importar `app.*` (el pool lee `DB_POOL_*` al importarse) y aviso si alguien registra un `on_event` que `lifespan` ignoraría |
+| Benchmark | `scripts/seed_bench_vectors.py` y `docs/BENCHMARK_F19.md` |
+
+Ya estaban en `development` antes de este PR, y por eso **no** forman parte de
+él: el tope `PROPOSAL_MAX_SECONDS`, el evento SSE `progress`, "Cancelar" /
+"Reintentar" (HU9, #95), la migración `0018` y la complejidad de patrones, los
+endpoints `GET /api/projects/{id}/proposals` y `/proposals/latest`, el CI
+(`.github/workflows/ci.yml`), `frontend/nginx.conf` (330 s), la UI de fases, los
+prompts de `app/core/agent.py` y la persistencia de respuestas en
+`app/api/elicitation.py`.
 
 ## Cambios de contrato de la API (no son "sin modificar contratos")
 
@@ -67,6 +75,8 @@ stream".
 ## Pasos obligatorios de despliegue
 
 1. **Migración `0018`** (`ALTER TABLE architect_patterns ADD COLUMN complexity`).
+   Viene de `development`, no de este PR; solo aplica si el entorno todavía no la
+   tiene.
    El backend aplica las migraciones pendientes al arrancar; si usas Docker,
    reconstruye: `docker compose up -d --build backend`. Es aditiva y nullable.
 2. **Sembrar los patrones** *después* de la migración:
