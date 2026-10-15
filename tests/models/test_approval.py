@@ -56,6 +56,14 @@ def db_session():
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
 
+    # CI usa un Postgres vacío (no corre migrations/): crear el esquema desde
+    # los modelos, igual que tests/test_document_storage.py. Es idempotente
+    # (checkfirst) y no toca tablas que ya existan en una base migrada.
+    import app.models  # noqa: F401  # registrar todos los modelos
+    from app.core.database import Base
+
+    Base.metadata.create_all(engine)
+
     session = SessionLocal()
     try:
         yield session
@@ -96,6 +104,9 @@ def fresh_project(db_session):
     db_session.add(project)
     db_session.flush()
     yield user, project
+    # Si un test dejó la transacción abortada, sin rollback el cleanup falla
+    # y arrastra a los tests siguientes (InFailedSqlTransaction).
+    db_session.rollback()
     db_session.query(Project).filter(Project.id == project.id).delete()
     db_session.query(UserSession).filter(UserSession.user_id == user.id).delete()
     db_session.query(User).filter(User.id == user.id).delete()
