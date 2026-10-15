@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, ForeignKey, func
+from sqlalchemy import JSON, Column, Integer, String, Text, TIMESTAMP, ForeignKey, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import Base
@@ -57,16 +57,23 @@ class Approval(Base):
     # default '{}' cubre las decisiones que NO son modify (approve/reject)
     # y las filas anteriores a 0018; las decisiones modify deben poblarlo
     # explícitamente.
+    #
+    # JSONB en Postgres y JSON plano en SQLite (mismo patrón que
+    # ``app/models/message.py``): los tests que hacen ``create_all`` sobre
+    # SQLite (test_chat_history, test_diagrams, test_elicitation) fallaban con
+    # CompileError al no poder renderizar JSONB. El ``server_default`` es un
+    # literal sin ``::jsonb`` por la misma razón; en Postgres '{}' se convierte
+    # a jsonb solo, y la tabla real la define la migración 0018.
     previous_output = Column(
-        JSONB,
+        JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,
         default=dict,
-        server_default="'{}'::jsonb",
+        server_default=text("'{}'"),
     )
     # HU10 v2 (migration 0018, REQ-SA-30): payload arbitrario del request.
     # Nullable porque no todas las decisiones llevan payload (approve sin
     # feedback no tiene payload).
-    payload = Column(JSONB, nullable=True)
+    payload = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     # HU10 v2 (migration 0018, REQ-SA-30): SHA256 hex[:32] de
     # canonical_json({action, payload}). Permite que un retry idéntico
     # dentro de 60s retorne 200 idempotent sin INSERT nuevo.
