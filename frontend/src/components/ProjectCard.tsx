@@ -14,10 +14,13 @@ const PHASE_LABELS: Record<string, string> = {
   propuesta: 'Propuesta',
   refinamiento: 'Refinamiento',
   revision: 'Revisión',
+  // HU10: quinta fase (mismo label que PHASE_LABELS del backend).
+  final: 'Cierre',
 }
 
 function statusBadge(project: Project): { label: string; className: string } {
-  if (project.current_phase === 'revision' && project.phase_ready) {
+  // HU10: la última fase es `final` (antes era `revision`).
+  if (project.current_phase === 'final' && project.phase_ready) {
     return { label: 'Completado', className: 'bg-green-100 text-green-800' }
   }
   if (project.current_phase === 'requerimientos') {

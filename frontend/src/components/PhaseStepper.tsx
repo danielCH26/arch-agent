@@ -3,6 +3,8 @@ const PHASE_LABELS: Record<string, string> = {
   propuesta: 'Propuesta',
   refinamiento: 'Refinamiento',
   revision: 'Revisión',
+  // HU10: quinta fase (mismo label que PHASE_LABELS del backend).
+  final: 'Cierre',
 }
 
 interface PhaseStepperProps {
