@@ -9,11 +9,25 @@ from sqlalchemy import select
 from app.api.dependencies import get_current_user
 from app.api.phase_errors import INTERNAL_ERROR_DETAIL, phase_decision_http_error
 from app.auth.validators import ValidationError
-from app.core.database import SessionLocal
+from app.core import database as _database
 from app.models.approval import Approval
 from app.models.project import Project
 
 logger = logging.getLogger(__name__)
+
+
+def SessionLocal():  # noqa: N802 - mantiene el nombre que parchean los tests
+    """Abre una sesión resolviendo ``app.core.database.SessionLocal`` en cada
+    llamada (no al importar el módulo).
+
+    Así funcionan los dos estilos de parche que conviven tras el merge con
+    development: ``patch("app.api.projects.SessionLocal")`` (tests HU10) y
+    ``patch("app.core.database.SessionLocal")`` / reasignar
+    ``database.SessionLocal`` (tests de elicitación y de ``_require_project``).
+    Con el import a nivel de módulo el segundo estilo no tenía efecto y
+    ``_require_project`` consultaba la base real.
+    """
+    return _database.SessionLocal()
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
