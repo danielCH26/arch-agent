@@ -5,7 +5,8 @@ Ejecuta el flujo completo de fases como lo vive un usuario real, sin
 mocks, y verifica tanto el camino feliz como los gates negativos:
 
     requerimientos: elicitacion -> approve -> advance
-    propuesta:      generate propuesta -> approve (+ idempotencia)
+    propuesta:      generate propuesta -> approve por /api/proposals/{id}/decide
+                    (el mismo camino que la UI) -> retry idempotente
     refinamiento:   modify (con feedback) -> pending no nulo (B4)
                     -> advance bloqueado (409) -> approve -> advance
     revision:       reject -> pending no nulo (B4) -> approve -> advance
@@ -13,7 +14,7 @@ mocks, y verifica tanto el camino feliz como los gates negativos:
                     bloqueado (ultima fase)
 
 Gates negativos pinchados: phase_mismatch (409), advance sin aprovacion
-(409/400), modify en final (400), advance en final (400).
+(409/400), modify en final (422), advance en final (400).
 
 Uso (con el stack de docker-compose.walk.yml):
 
@@ -262,14 +263,19 @@ def step_neg_advance_blocked(w: Walk, expect_statuses: tuple = (400, 409)) -> No
 
 
 def step_neg_modify_final(w: Walk) -> None:
-    """modify en final -> 400 (REQ-SA-8/I3, gate en record_decision)."""
+    """modify en final -> 422 (REQ-SA-8/I3, gate en record_decision).
+
+    El gate lanza ``InvalidActionError`` (http_status=422) y el endpoint lo
+    traduce a 422 ``validation_error``. El 400 ``missing_feedback`` solo
+    aplica a modify SIN feedback, que este paso no manda.
+    """
     r = w.client.post(
         f"{w.base_url}/api/projects/{w.project_id}/phase/final/decision",
         json={"action": "modify", "feedback": "un ajuste"},
         headers=w._headers(),
     )
-    w.step(r.status_code == 400,
-           f"gate: modify en final -> 400 (got {r.status_code})")
+    w.step(r.status_code == 422,
+           f"gate: modify en final -> 422 (got {r.status_code})")
 
 
 def step_neg_advance_final(w: Walk) -> None:
@@ -305,9 +311,22 @@ def run(w: Walk, skip_until_phases: bool) -> None:
     proposal_id = done.get("proposal_id")
     w.step(proposal_id is not None, f"generar propuesta id={proposal_id}")
 
-    first = step_decision(w, "propuesta", "approve")
-    w.step(first.get("phase_ready") is True, "aprobar propuesta -> phase_ready true")
-    # Idempotencia (REQ-SA-30.1): retry identico dentro de la ventana.
+    # Se aprueba por el MISMO camino que usa la UI (ProposalCard): este
+    # endpoint es el unico que tambien mueve proposal.lifecycle y guarda el
+    # snapshot de la propuesta. /phase/propuesta/decision no hace ninguna de
+    # las dos cosas, asi que aprobar por ahi dejaria la propuesta en
+    # 'proposed'. La respuesta de /decide trae lifecycle y phase_ready;
+    # PhaseDecisionOut (el endpoint generico) NO trae phase_ready.
+    decided = w.req(
+        "POST", f"/api/proposals/{proposal_id}/decide",
+        json_body={"decision": "approve"}, expect=(200,),
+    ).json()
+    w.step(decided.get("lifecycle") == "approved",
+           "aprobar propuesta -> lifecycle approved")
+    w.step(decided.get("phase_ready") is True,
+           "aprobar propuesta -> phase_ready true")
+    # Idempotencia (REQ-SA-30.1): retry identico dentro de la ventana, por el
+    # endpoint canonico de decisiones de fase.
     retry = step_decision(w, "propuesta", "approve")
     w.step(retry.get("idempotent") is True, "retry identico -> idempotent=true")
     step_advance(w, "propuesta", "refinamiento")

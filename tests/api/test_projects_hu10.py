@@ -357,3 +357,146 @@ def test_mark_ready_returns_404(client, auth_headers, mock_user):
     detail = response.json()["detail"]
     assert detail["error"] == "endpoint_removed"
     assert "replacement" in detail
+
+
+# ---------------------------------------------------------------------------
+# Re-review fixes: detached session, timestamps, no str(exc) leak
+# ---------------------------------------------------------------------------
+
+
+def test_post_phase_decision_reads_approval_before_session_closes(
+    client, auth_headers, mock_user
+):
+    """Regression: the handler used to read ``result.approval.id`` /
+    ``created_at`` AFTER ``db.commit()`` + ``db.close()``.
+
+    ``SessionLocal`` expires attributes on commit and ``close()`` detaches the
+    row, so every decision answered 500 (DetachedInstanceError) even though it
+    had been saved, and every idempotent retry failed the same way. The other
+    tests here mock the session, so they could never see it; this one uses a
+    real SQLAlchemy session (SQLite, same ``sessionmaker`` defaults as
+    ``app.core.database.SessionLocal``) with a stand-in ORM row.
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy import Column, DateTime, Integer, create_engine, func
+    from sqlalchemy.orm import declarative_base, sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    Base = declarative_base()
+
+    class FakeApproval(Base):
+        __tablename__ = "fake_approvals"
+        id = Column(Integer, primary_key=True)
+        created_at = Column(DateTime, server_default=func.now())
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    real_session = sessionmaker(bind=engine)  # expire_on_commit=True (default)
+
+    def fake_record_decision(db, **_kwargs):
+        row = FakeApproval()
+        db.add(row)
+        db.flush()
+        return SimpleNamespace(
+            approval=row,
+            idempotent=False,
+            next_phase="refinamiento",
+            phase_ready=True,
+        )
+
+    with patch(
+        "app.core.phase_decisions.record_decision", side_effect=fake_record_decision
+    ), patch("app.api.projects._require_project", return_value=None), patch(
+        "app.api.projects.SessionLocal", side_effect=real_session
+    ):
+        response = client.post(
+            "/api/projects/7/phase/propuesta/decision",
+            json={"action": "approve"},
+            headers=auth_headers,
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["decision_id"] == 1
+    assert body["next_phase"] == "refinamiento"
+    # decided_at carries an explicit offset (naive DB timestamp read as UTC).
+    assert body["decided_at"].endswith("+00:00")
+
+
+def test_get_phases_timestamps_share_the_same_utc_offset(
+    client, auth_headers, mock_user
+):
+    """``since`` got ``+00:00`` but ``last_decided_at`` did not, so the browser
+    parsed one as UTC and the other as local time."""
+    project = _project_row(current_phase="refinamiento", phase_ready=False)
+
+    pending = MagicMock()
+    pending.phase = "refinamiento"
+    pending.since = datetime(2026, 9, 27, 22, 0, 0)  # naive, as the DB returns it
+    pending.last_decision = "rejected"
+    pending.last_decided_at = datetime(2026, 9, 27, 22, 0, 0)
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = project
+    db.execute.return_value.scalars.return_value.all.return_value = []
+
+    with patch("app.core.phase_decisions.get_pending_decision", return_value=pending), \
+         patch("app.api.projects.SessionLocal", return_value=db):
+        response = client.get(f"/api/projects/{project.id}/phases", headers=auth_headers)
+
+    assert response.status_code == 200, response.text
+    pending_out = response.json()["pending_decision"]
+    assert pending_out["since"].endswith("+00:00")
+    assert pending_out["last_decided_at"].endswith("+00:00")
+
+
+def test_get_phases_pending_without_decisions_has_null_timestamps(
+    client, auth_headers, mock_user
+):
+    project = _project_row(current_phase="refinamiento", phase_ready=False)
+
+    pending = MagicMock()
+    pending.phase = "refinamiento"
+    pending.since = None
+    pending.last_decision = None
+    pending.last_decided_at = None
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = project
+    db.execute.return_value.scalars.return_value.all.return_value = []
+
+    with patch("app.core.phase_decisions.get_pending_decision", return_value=pending), \
+         patch("app.api.projects.SessionLocal", return_value=db):
+        response = client.get(f"/api/projects/{project.id}/phases", headers=auth_headers)
+
+    assert response.status_code == 200, response.text
+    pending_out = response.json()["pending_decision"]
+    assert pending_out["since"] is None
+    assert pending_out["last_decided_at"] is None
+
+
+def test_advance_unexpected_error_does_not_leak_exception_text(
+    client, auth_headers, mock_user
+):
+    """REQ-SA-34: the 500 fallback must never return ``str(exc)``."""
+    project = _project_row(current_phase="propuesta", phase_ready=True)
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = project
+
+    with patch(
+        "app.core.phase_decisions.assert_hu10_approval_for_current_phase",
+        side_effect=RuntimeError("connection string password=hunter2"),
+    ), patch("app.api.projects.SessionLocal", return_value=db):
+        response = client.post(
+            f"/api/projects/{project.id}/advance",
+            headers=auth_headers,
+        )
+
+    assert response.status_code == 500
+    assert "hunter2" not in response.text
+    assert response.json()["detail"] == {"error": "internal_error"}

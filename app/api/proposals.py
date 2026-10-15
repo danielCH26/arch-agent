@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 from typing import AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,9 +19,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.dependencies import get_current_user
+from app.api.phase_errors import INTERNAL_ERROR_DETAIL, phase_decision_http_error
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
-from app.core.phase_decisions import record_decision
+from app.core.phase_decisions import PhaseDecisionError, record_decision
 from app.core.proposal_generator import ProposalGenerator, RAG_MIN_SIMILARITY
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
@@ -359,13 +361,24 @@ async def decide_proposal(
             )
 
         action_type = "approve" if body.decision == "approve" else "reject"
+        # ``interaction_logs`` has no proposal_id, so the duplicate-decision
+        # guard is scoped by time instead: only a decision logged at or after
+        # THIS proposal was created can refer to it. Without the lower bound,
+        # reject -> revert -> new proposal -> reject again returned a bogus
+        # 409 "ya fue rechazada" because the previous proposal's log row
+        # matched (project, phase, action). All conditions stay in ONE
+        # ``.filter()`` call. The ``isinstance`` keeps the bound off when the
+        # row has no usable timestamp (e.g. a bare mock).
+        guard_conditions = [
+            InteractionLog.project_id == proposal.project_id,
+            InteractionLog.phase == PHASE,
+            InteractionLog.action_type == action_type,
+        ]
+        if isinstance(proposal.created_at, datetime):
+            guard_conditions.append(InteractionLog.created_at >= proposal.created_at)
         existing = (
             db.query(InteractionLog)
-            .filter(
-                InteractionLog.project_id == proposal.project_id,
-                InteractionLog.phase == PHASE,
-                InteractionLog.action_type == action_type,
-            )
+            .filter(*guard_conditions)
             .order_by(InteractionLog.created_at.desc())
             .first()
         )
@@ -399,6 +412,12 @@ async def decide_proposal(
                 )
             )
 
+        # NOTE (idempotency): ``record_decision`` dedupes identical retries
+        # inside its 60s window, but the ProposalApproval / InteractionLog
+        # rows added here are NOT deduped by it. A retry never reaches this
+        # point twice only because the lifecycle check above (``!= "proposed"``)
+        # and the InteractionLog guard reject it first. Keep those two guards
+        # in front of any change to this block.
         db.add(
             InteractionLog(
                 session_id=proposal.session_id,
@@ -439,12 +458,17 @@ async def decide_proposal(
     except HTTPException:
         db.rollback()
         raise
+    except PhaseDecisionError as exc:
+        # REQ-SA-28 / REQ-SA-34: e.g. a stale tab hitting a proposal whose
+        # phase moved on -> typed 409, not a 500 that leaks str(exc).
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     except Exception as exc:
         db.rollback()
         logger.exception("decide_proposal failed for proposal_id=%s", proposal_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"No se pudo registrar la decisión: {exc}",
+            detail=INTERNAL_ERROR_DETAIL,
         ) from exc
     finally:
         db.close()
@@ -519,11 +543,17 @@ async def decide_project_proposal(
     except HTTPException:
         db.rollback()
         raise
+    except PhaseDecisionError as exc:
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     except Exception as exc:
         db.rollback()
+        logger.exception(
+            "decide_project_proposal failed for project_id=%s", project_id
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=INTERNAL_ERROR_DETAIL,
         ) from exc
     finally:
         db.close()

@@ -162,6 +162,25 @@ def _next_phase(current: str) -> Optional[str]:
     return AVAILABLE_PHASES[idx + 1]
 
 
+IDEMPOTENCY_KEY_MAX_LEN = 32
+"""Width of ``approvals.payload_hash`` (String(32))."""
+
+
+def _normalize_idempotency_key(key: Optional[str]) -> Optional[str]:
+    """Return ``key`` unchanged when it fits the column, else a stable digest.
+
+    Keys up to ``IDEMPOTENCY_KEY_MAX_LEN`` chars are stored verbatim (so
+    existing clients keep working); longer ones are replaced by a truncated
+    SHA-256 hex digest. Empty / ``None`` returns ``None`` so the caller falls
+    back to the canonical payload hash.
+    """
+    if not key:
+        return None
+    if len(key) <= IDEMPOTENCY_KEY_MAX_LEN:
+        return key
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:IDEMPOTENCY_KEY_MAX_LEN]
+
+
 def _canonical_payload_hash(
     action: str,
     payload: Optional[dict],
@@ -275,7 +294,13 @@ def record_decision(
         )
 
     # ---- 4. Idempotency key derivation (REQ-SA-30) ----
-    key = idempotency_key or _canonical_payload_hash(action, payload, feedback)
+    # ``approvals.payload_hash`` is String(32): a longer client key (a UUID
+    # with dashes is 36 chars) would raise DataError in Postgres and surface
+    # as an untyped 500. Normalise instead of rejecting so any client key
+    # works and the same key always maps to the same stored value.
+    key = _normalize_idempotency_key(idempotency_key) or _canonical_payload_hash(
+        action, payload, feedback
+    )
 
     # ---- 5. Idempotent retry check (REQ-SA-30.1) ----
     recent = db.execute(
@@ -360,6 +385,28 @@ class PendingDecision:
     last_decided_at: Optional[datetime]
 
 
+def _last_decision(
+    db: Session, *, project_id: int, phase: str
+) -> Optional[Approval]:
+    """Most recent approval row for ``(project_id, phase)``, or ``None``.
+
+    Single definition of "the last decision" shared by
+    ``get_pending_decision`` and ``assert_hu10_approval_for_current_phase``
+    so the pending surface and the /advance gate can never disagree
+    (B4: gating on "any historical approved row" stranded the user after
+    approve -> reject).
+    """
+    return db.execute(
+        select(Approval)
+        .where(
+            Approval.project_id == project_id,
+            Approval.phase == phase,
+        )
+        .order_by(Approval.created_at.desc(), Approval.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def get_pending_decision(
     db: Session, *, project_id: int
 ) -> Optional[PendingDecision]:
@@ -377,8 +424,6 @@ def get_pending_decision(
     ``pending_decision`` from the response and mounts
     ``<PhaseActions>`` if it is non-null (REQ-SA-26.1).
     """
-    from datetime import datetime, timezone
-
     project = db.execute(
         select(Project).where(Project.id == project_id)
     ).scalar_one_or_none()
@@ -395,28 +440,21 @@ def get_pending_decision(
     # must yield pending again; gating on "an approved row exists"
     # stranded the user (no action buttons, and /advance 400s because
     # phase_ready is False).
-    last = db.execute(
-        select(Approval)
-        .where(
-            Approval.project_id == project_id,
-            Approval.phase == project.current_phase,
-        )
-        .order_by(Approval.created_at.desc(), Approval.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    last = _last_decision(db, project_id=project_id, phase=project.current_phase)
 
     # Last decision is approved: no pending surface needed
     if last is not None and last.decision == "approved":
         return None
 
-    # Return pending with since = decision timestamp, or utcnow if none exist yet
-    since = last.created_at if last else datetime.now(tz=timezone.utc)
-
+    # ``since`` / ``last_decided_at`` are None when no decision is on file
+    # (as the PendingDecisionOut contract says). The old ``utcnow()`` fallback
+    # produced a "desde <now>" label that changed on every poll and meant
+    # nothing.
     return PendingDecision(
         phase=project.current_phase,
-        since=since,
+        since=last.created_at if last else None,
         last_decision=last.decision if last else None,
-        last_decided_at=last.created_at if last else since,
+        last_decided_at=last.created_at if last else None,
     )
 
 
@@ -442,8 +480,8 @@ def assert_hu10_approval_for_current_phase(
     db: Session, *, project_id: int
 ) -> None:
     """REQ-SA-36: if the project's current phase is HU10-owned, ensure
-    a recent ``approved`` decision exists before /advance can flip the
-    phase.
+    the LAST decision for the phase is ``approved`` before /advance can
+    flip the phase.
 
     Raises ``PhaseNotApprovedError`` (mapped to 409) when the gate is
     missing. F05-owned phases (``requerimientos``) are skipped — F05 is
@@ -459,15 +497,9 @@ def assert_hu10_approval_for_current_phase(
     if project.current_phase not in HU10_OWNED_PHASES:
         return  # F05 owns this phase; no HU10 gate required
 
-    approved = db.execute(
-        select(Approval)
-        .where(
-            Approval.project_id == project_id,
-            Approval.phase == project.current_phase,
-            Approval.decision == "approved",
-        )
-        .order_by(Approval.created_at.desc(), Approval.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if approved is None:
+    # Same criterion as ``get_pending_decision``: the LAST decision for the
+    # phase must be an approval. "Any historical approved row" is laxer than
+    # the pending surface (approve -> reject would still pass this gate).
+    last = _last_decision(db, project_id=project_id, phase=project.current_phase)
+    if last is None or last.decision != "approved":
         raise PhaseNotApprovedError(project.current_phase)

@@ -33,8 +33,10 @@ from app.core.phase_decisions import (
     PhaseDecisionResult,
     PhaseMismatchError,
     PhaseNotApprovedError,
+    IDEMPOTENCY_KEY_MAX_LEN,
     _canonical_payload_hash,
     _next_phase,
+    _normalize_idempotency_key,
     assert_hu10_approval_for_current_phase,
     get_pending_decision,
     record_decision,
@@ -470,7 +472,12 @@ def test_get_pending_decision_returns_pending_when_no_record():
     pending = get_pending_decision(db, project_id=7)
     assert pending is not None
     assert pending.phase == "refinamiento"
-    assert pending.since is not None  # Should return utcnow() fallback
+    # No decision on file: the timestamps are None, as the PendingDecisionOut
+    # contract says. The old utcnow() fallback made the UI show a "desde
+    # <now>" label that changed on every poll.
+    assert pending.since is None
+    assert pending.last_decided_at is None
+    assert pending.last_decision is None
 
 
 def test_get_pending_decision_returns_none_when_approved():
@@ -622,6 +629,63 @@ def test_advance_gate_passes_when_hu10_approval_exists():
     db.execute.side_effect = execute_side_effect
     # MUST NOT raise.
     assert_hu10_approval_for_current_phase(db, project_id=7)
+
+
+def test_advance_gate_blocks_when_last_decision_is_not_approved():
+    """B4 alignment: the gate uses the LAST decision, like get_pending_decision.
+
+    approve -> reject leaves an approved row in the history; the old gate
+    ("any approved row") would let /advance through while the pending surface
+    already says the phase needs a decision.
+    """
+    db = MagicMock()
+    project = MagicMock()
+    project.current_phase = "refinamiento"
+
+    last = MagicMock()
+    last.decision = "rejected"  # the most recent row, after an earlier approve
+    executions = iter([project, last])
+
+    def execute_side_effect(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.side_effect = lambda: next(executions, None)
+        return result
+
+    db.execute.side_effect = execute_side_effect
+
+    with pytest.raises(PhaseNotApprovedError) as exc_info:
+        assert_hu10_approval_for_current_phase(db, project_id=7)
+    assert exc_info.value.phase == "refinamiento"
+
+
+# ---------------------------------------------------------------------------
+# idempotency_key normalisation (approvals.payload_hash is String(32))
+# ---------------------------------------------------------------------------
+
+
+def test_short_idempotency_key_is_kept_verbatim():
+    assert _normalize_idempotency_key("abc-123") == "abc-123"
+    assert _normalize_idempotency_key("x" * IDEMPOTENCY_KEY_MAX_LEN) == "x" * 32
+
+
+@pytest.mark.parametrize("key", [None, ""])
+def test_empty_idempotency_key_falls_back_to_payload_hash(key):
+    assert _normalize_idempotency_key(key) is None
+
+
+def test_long_idempotency_key_is_digested_to_column_width():
+    """A UUID with dashes is 36 chars: stored raw it raises DataError in
+    Postgres (untyped 500). It must map to a stable value that fits."""
+    uuid_key = "123e4567-e89b-12d3-a456-426614174000"
+    assert len(uuid_key) > IDEMPOTENCY_KEY_MAX_LEN
+
+    normalised = _normalize_idempotency_key(uuid_key)
+
+    assert normalised is not None
+    assert len(normalised) == IDEMPOTENCY_KEY_MAX_LEN
+    # Deterministic: the same client key is still an idempotent retry.
+    assert _normalize_idempotency_key(uuid_key) == normalised
+    assert _normalize_idempotency_key(uuid_key + "x") != normalised
 
 
 # ---------------------------------------------------------------------------

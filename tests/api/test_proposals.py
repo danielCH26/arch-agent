@@ -427,3 +427,179 @@ def test_reject_registers_decision_before_reverting_phase():
         "trips the phase==current_phase gate (PhaseMismatchError) and the "
         "generic except turns it into a 500 (Soomri round-2 B5)."
     )
+
+
+# --- Re-review fixes: typed errors, no str(exc) leak, scoped duplicate guard --
+
+
+class TestDecideErrorsAreTyped:
+    """REQ-SA-28 / REQ-SA-34 for the proposal decision endpoints.
+
+    B5 only fixed the trigger (phase reverted before the gate). The handlers
+    still turned ANY exception into a 500 carrying ``str(exc)``, so a
+    ``PhaseMismatchError`` (stale tab, phase already advanced) was both the
+    wrong status and a leak.
+    """
+
+    @staticmethod
+    def _call_decide_proposal(apply_side_effect):
+        import asyncio
+
+        from app.api import proposals as proposals_module
+
+        proposal = MagicMock()
+        proposal.id = 5
+        proposal.project_id = 7
+        proposal.session_id = 1
+        proposal.lifecycle = "proposed"
+        proposal.content = {"secciones": []}
+        project = MagicMock()
+        project.id = 7
+        project.current_phase = "propuesta"
+
+        db = MagicMock()
+        db.get.return_value = proposal
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        body = proposals_module.DecideRequest(decision="approve", comment="ok")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module,
+            "_apply_project_proposal_decision",
+            side_effect=apply_side_effect,
+        ):
+            return asyncio.run(proposals_module.decide_proposal(5, body, {"user_id": "1"}))
+
+    def test_phase_mismatch_is_a_typed_409(self):
+        from fastapi import HTTPException
+
+        from app.core.phase_decisions import PhaseMismatchError
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._call_decide_proposal(
+                PhaseMismatchError(current_phase="refinamiento", requested_phase="propuesta")
+            )
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == {
+            "error": "phase_mismatch",
+            "current_phase": "refinamiento",
+            "requested_phase": "propuesta",
+        }
+
+    def test_unexpected_error_does_not_leak_exception_text(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._call_decide_proposal(RuntimeError("api_key=sk-secret"))
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"error": "internal_error"}
+        assert "sk-secret" not in str(exc_info.value.detail)
+
+    def test_decide_project_proposal_phase_mismatch_is_a_typed_409(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from app.api import proposals as proposals_module
+        from app.core.phase_decisions import PhaseMismatchError
+
+        project = MagicMock()
+        project.id = 7
+        db = MagicMock()
+        body = proposals_module.ProposalDecisionIn(decision="approve")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module,
+            "_apply_project_proposal_decision",
+            side_effect=PhaseMismatchError(
+                current_phase="requerimientos", requested_phase="propuesta"
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    proposals_module.decide_project_proposal(7, body, {"user_id": "1"})
+                )
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["error"] == "phase_mismatch"
+
+    def test_decide_project_proposal_unexpected_error_does_not_leak(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from app.api import proposals as proposals_module
+
+        project = MagicMock()
+        project.id = 7
+        db = MagicMock()
+        body = proposals_module.ProposalDecisionIn(decision="approve")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module,
+            "_apply_project_proposal_decision",
+            side_effect=RuntimeError("postgres://user:pw@host/db"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    proposals_module.decide_project_proposal(7, body, {"user_id": "1"})
+                )
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"error": "internal_error"}
+
+
+class TestDuplicateGuardIsScopedToTheProposal:
+    """``interaction_logs`` has no proposal_id. Without a lower time bound the
+    guard matched the PREVIOUS proposal's log row: reject -> revert -> new
+    proposal -> reject again answered a bogus 409 "ya fue rechazada"."""
+
+    @staticmethod
+    def _run(created_at):
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from app.api import proposals as proposals_module
+
+        proposal = MagicMock()
+        proposal.id = 5
+        proposal.project_id = 7
+        proposal.session_id = 1
+        proposal.lifecycle = "proposed"
+        proposal.content = {"secciones": []}
+        proposal.created_at = created_at
+        project = MagicMock()
+        project.id = 7
+        project.current_phase = "propuesta"
+
+        db = MagicMock()
+        db.get.return_value = proposal
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        body = proposals_module.DecideRequest(decision="reject", comment=None)
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module, "_apply_project_proposal_decision", return_value=None
+        ):
+            asyncio.run(proposals_module.decide_proposal(5, body, {"user_id": "1"}))
+        return db.query.return_value.filter.call_args
+
+    def test_guard_adds_a_lower_bound_at_proposal_creation(self):
+        from datetime import datetime
+
+        call = self._run(datetime(2026, 10, 7, 12, 0, 0))
+        # project_id, phase, action_type + created_at >= proposal.created_at,
+        # all inside ONE .filter() call.
+        assert len(call.args) == 4
+
+    def test_guard_keeps_the_three_base_conditions_without_a_timestamp(self):
+        call = self._run(None)
+        assert len(call.args) == 3

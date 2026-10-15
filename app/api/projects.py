@@ -1,3 +1,5 @@
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -5,12 +7,32 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.dependencies import get_current_user
+from app.api.phase_errors import INTERNAL_ERROR_DETAIL, phase_decision_http_error
 from app.auth.validators import ValidationError
 from app.core.database import SessionLocal
 from app.models.approval import Approval
 from app.models.project import Project
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+def _iso_utc(value: Optional[datetime]) -> Optional[str]:
+    """ISO-8601 with an explicit offset, so ``new Date(...)`` in the browser
+    never reads it as local time.
+
+    ``approvals.created_at`` is a TIMESTAMP *without* time zone filled by
+    ``now()``: a naive value is interpreted as UTC, which is only correct
+    while the database session runs in UTC (the docker-compose Postgres
+    does). Applied to EVERY timestamp this module returns, so ``since``,
+    ``last_decided_at`` and ``decided_at`` can no longer disagree.
+    """
+    if value is None:
+        return None
+    if getattr(value, "tzinfo", None) is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 
 # --- Pydantic models ----------------------------------------------------------
@@ -279,17 +301,11 @@ async def get_phases(
         pending = get_pending_decision(db, project_id=project_id)
         pending_out: Optional[PendingDecisionOut] = None
         if pending is not None:
-            # Include explicit +00:00 suffix for JavaScript Date() parsing
-            since_iso = pending.since.isoformat() if pending.since else None
-            if since_iso and pending.since.tzinfo is None:
-                since_iso = since_iso + "+00:00"
             pending_out = PendingDecisionOut(
                 phase=pending.phase,
-                since=since_iso,
+                since=_iso_utc(pending.since),
                 last_decision=pending.last_decision,
-                last_decided_at=(
-                    pending.last_decided_at.isoformat() if pending.last_decided_at else None
-                ),
+                last_decided_at=_iso_utc(pending.last_decided_at),
             )
 
         # Per-phase status snapshot for the UI (5 entries).
@@ -356,14 +372,7 @@ async def post_phase_decision(
         422 on invalid phase/action (forwarded from PhaseDecisionError).
         404 when the project does not exist or is not owned by the caller.
     """
-    from app.core.phase_decisions import (
-        IDEMPOTENCY_WINDOW_SECONDS,
-        InvalidActionError,
-        InvalidPhaseError,
-        PhaseDecisionError,
-        PhaseMismatchError,
-        record_decision,
-    )
+    from app.core.phase_decisions import PhaseDecisionError, record_decision
 
     if phase not in AVAILABLE_PHASES:
         raise HTTPException(
@@ -415,48 +424,33 @@ async def post_phase_decision(
             previous_output=body.previous_output,
         )
         db.commit()
-    except PhaseMismatchError as exc:
-        # REQ-SA-28: typed 409 body; NEVER str(exc).
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "phase_mismatch",
-                "current_phase": exc.current_phase,
-                "requested_phase": exc.requested_phase,
-            },
-        )
-    except (InvalidPhaseError, InvalidActionError) as exc:
-        # REQ-SA-34: structured detail, never str(exc). Use the exception
-        # class name as a stable, non-leaking identifier.
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"error": "validation_error", "kind": type(exc).__name__},
-        )
+        # ``SessionLocal`` expires attributes on commit and ``close()`` below
+        # detaches the row, so reading ``result.approval.*`` AFTER the
+        # ``finally`` raised DetachedInstanceError: the row was saved but the
+        # client got a 500, and every retry (idempotent path, same commit +
+        # close) failed the same way. Reload and copy what the response
+        # needs while the session is still open.
+        db.refresh(result.approval)
+        decision_id = result.approval.id
+        decided_at = result.approval.created_at
+        next_phase = result.next_phase
+        idempotent = result.idempotent
     except PhaseDecisionError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail={"error": "phase_decision_error", "kind": type(exc).__name__},
-        )
+        # REQ-SA-28 / REQ-SA-34: typed body, NEVER str(exc).
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     finally:
         db.close()
 
-    decided_at = result.approval.created_at or _now_utc()
     return PhaseDecisionOut(
-        decision_id=result.approval.id,
+        decision_id=decision_id,
         action=body.action,
         phase=phase,
         project_id=project_id,
-        next_phase=result.next_phase,
-        decided_at=decided_at.isoformat() if hasattr(decided_at, "isoformat") else str(decided_at),
-        idempotent=result.idempotent,
+        next_phase=next_phase,
+        decided_at=_iso_utc(decided_at) or _iso_utc(datetime.now(tz=timezone.utc)),
+        idempotent=idempotent,
     )
-
-
-def _now_utc():
-    """Helper for decided_at fallback when approval.created_at is None."""
-    from datetime import datetime, timezone
-
-    return datetime.now(tz=timezone.utc)
 
 
 # REQ-SA-36: /advance checks the HU10 approval record for HU10-owned phases
@@ -498,10 +492,7 @@ async def advance_phase(
         try:
             assert_hu10_approval_for_current_phase(db, project_id=project_id)
         except PhaseNotApprovedError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"error": "phase_not_approved", "phase": exc.phase},
-            )
+            raise phase_decision_http_error(exc) from exc
 
         if not project.phase_ready:
             raise HTTPException(
@@ -529,9 +520,14 @@ async def advance_phase(
     except HTTPException:
         db.rollback()
         raise
-    except Exception as e:
+    except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        # REQ-SA-34: log the cause server-side, never return str(exc).
+        logger.exception("advance_phase failed for project_id=%s", project_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=INTERNAL_ERROR_DETAIL,
+        ) from exc
     finally:
         db.close()
 
