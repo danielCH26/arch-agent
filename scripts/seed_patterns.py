@@ -15,19 +15,34 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from seed_common import connect_db, log
+from app.core.pattern_catalog import (  # noqa: E402
+    PATTERNS_DIR,
+    build_pattern_chunks,
+    load_patterns as _load_catalog,
+)
+from seed_common import connect_db, log  # noqa: E402
 
-PATTERNS_DIR = Path(__file__).parent.parent / "data" / "patterns"
+# Complejidad operativa que exige cada patron (campo `complexity` del YAML).
+VALID_COMPLEXITY = ("baja", "media", "alta")
 
 
 def load_patterns() -> list[dict]:
-    files = sorted(PATTERNS_DIR.glob("*.yaml"))
-    if not files:
+    patterns = _load_catalog()
+    if not patterns:
         log(f"No se encontraron archivos .yaml en {PATTERNS_DIR}", "ERROR")
         sys.exit(1)
-    return [yaml.safe_load(path.read_text(encoding="utf-8")) for path in files]
+    for pattern in patterns:
+        if pattern.get("complexity") not in VALID_COMPLEXITY:
+            log(
+                f"{pattern['pattern_name']}: complexity={pattern.get('complexity')!r} "
+                f"no es una de {VALID_COMPLEXITY}; ese patron no se penalizara al reordenar",
+                "WARN",
+            )
+    return patterns
 
 
 _model = None
@@ -88,8 +103,8 @@ def upsert_pattern(cur, pattern: dict) -> int:
             """
             INSERT INTO architect_patterns
                 (pattern_name, category, description, use_cases, tradeoffs,
-                 when_not_to_use, decision_signals, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
+                 when_not_to_use, decision_signals, complexity, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
             RETURNING id
             """,
             (
@@ -100,6 +115,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
                 json.dumps(pattern["tradeoffs"]),
                 pattern.get("when_not_to_use"),
                 decision_signals,
+                pattern.get("complexity"),
                 embedding,
             ),
         )
@@ -109,7 +125,8 @@ def upsert_pattern(cur, pattern: dict) -> int:
         """
         UPDATE architect_patterns
         SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
-            when_not_to_use = %s, decision_signals = %s, embedding = %s::vector
+            when_not_to_use = %s, decision_signals = %s, complexity = %s,
+            embedding = %s::vector
         WHERE id = %s
         """,
         (
@@ -119,6 +136,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
             json.dumps(pattern["tradeoffs"]),
             pattern.get("when_not_to_use"),
             decision_signals,
+            pattern.get("complexity"),
             embedding,
             row[0],
         ),
@@ -129,32 +147,10 @@ def upsert_pattern(cur, pattern: dict) -> int:
 def seed_pattern_chunks(cur, pattern_id: int, pattern: dict) -> int:
     """Recrea los chunks indexables del patron."""
     cur.execute("DELETE FROM architect_pattern_chunks WHERE pattern_id = %s", (pattern_id,))
-    name = pattern["pattern_name"]
-
-    tradeoffs_text = None
-    if pattern.get("tradeoffs"):
-        ventajas = "; ".join(pattern["tradeoffs"].get("ventajas", []))
-        desventajas = "; ".join(pattern["tradeoffs"].get("desventajas", []))
-        tradeoffs_text = f"{name} - ventajas: {ventajas}. Desventajas: {desventajas}."
-
-    signals_text = None
-    if pattern.get("decision_signals"):
-        preguntas = "; ".join(
-            f"{signal['pregunta']} -> {signal['señal_patron']}"
-            for signal in pattern["decision_signals"]
-        )
-        signals_text = f"{name} - señales de decision: {preguntas}"
-
-    candidates = {
-        "summary": f"{name}: {pattern['description']} {pattern['use_cases']}",
-        "tradeoffs": tradeoffs_text,
-        "when_not_to_use": (
-            f"{name} - no usar cuando: {pattern['when_not_to_use']}"
-            if pattern.get("when_not_to_use")
-            else None
-        ),
-        "decision_signals": signals_text,
-    }
+    # build_pattern_chunks vive en app/core/pattern_catalog.py: es la misma
+    # logica que usa scripts/eval_pattern_retrieval.py, asi la evaluacion mide
+    # exactamente lo que se indexa.
+    candidates = build_pattern_chunks(pattern)
 
     created = 0
     for chunk_type, text in candidates.items():

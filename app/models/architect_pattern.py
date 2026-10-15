@@ -18,5 +18,6 @@ class ArchitectPattern(Base):
     tradeoffs = Column(JSONB)
     when_not_to_use = Column(Text)
     decision_signals = Column(JSONB)
+    complexity = Column(String(10))  # baja | media | alta
     embedding = Column(Vector(384))
     created_at = Column(TIMESTAMP, server_default=func.now())

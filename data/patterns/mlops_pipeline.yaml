@@ -1,0 +1,42 @@
+pattern_name: "Pipeline de MLOps (entrenamiento, registro y serving de modelos)"
+category: "Flujo de datos"
+complexity: "media"
+description: >
+  Automatiza el ciclo de vida de un modelo de aprendizaje automático en etapas
+  reproducibles: preparación de datos, entrenamiento, evaluación, registro
+  versionado del modelo, despliegue como servicio y monitoreo de su desempeño.
+use_cases: >
+  Sistemas que ponen en producción modelos predictivos o de lenguaje: servicios
+  de inferencia por API, reentrenamiento periódico, comparación de versiones de
+  modelos y monitoreo de deriva de datos y calidad de predicciones.
+when_not_to_use: >
+  Análisis exploratorios o prototipos académicos donde el modelo se entrena una
+  sola vez en un cuaderno y no se despliega; automatizar el ciclo completo
+  costaría más que el valor que aporta.
+tradeoffs:
+  ventajas:
+    - "Hace reproducibles los entrenamientos al versionar datos, código, parámetros y modelos, lo que permite auditar y repetir resultados"
+    - "Automatiza evaluación y despliegue, lo que reduce errores manuales y acorta el tiempo entre un modelo nuevo y su uso en producción"
+    - "El registro de modelos permite comparar versiones, volver a una versión anterior y promover solo las que superan una métrica mínima"
+    - "El monitoreo detecta la degradación del modelo y la deriva de datos antes de que afecten a los usuarios"
+  desventajas:
+    - "Añade infraestructura y herramientas (orquestador, registro de modelos, monitoreo) que el equipo debe aprender y mantener"
+    - "Definir métricas de calidad y umbrales de promoción automática es difícil y un criterio mal elegido despliega modelos malos"
+    - "La reproducibilidad real exige versionar también los datos, lo que es costoso en almacenamiento y disciplina"
+    - "Para un modelo entrenado una sola vez o un prototipo, el pipeline completo es sobreingeniería frente a un cuaderno y un script"
+decision_signals:
+  - pregunta: "¿Vas a poner un modelo de aprendizaje automático en producción y reentrenarlo con el tiempo?"
+    señal_patron: "sí -> Pipeline de MLOps (entrenamiento, registro y serving de modelos)"
+  - pregunta: "¿Necesitas versionar, comparar y auditar distintos modelos y conjuntos de datos?"
+    señal_patron: "sí -> Pipeline de MLOps (entrenamiento, registro y serving de modelos)"
+  - pregunta: "¿Debes monitorear la calidad de las predicciones y detectar deriva de datos?"
+    señal_patron: "sí -> Pipeline de MLOps (entrenamiento, registro y serving de modelos)"
+quality_attributes: [reproducibilidad, trazabilidad de modelos, automatización, monitoreo de calidad]
+team_fit: "equipo de 3 a 10 personas con ciencia de datos e ingeniería que despliega modelos y los reentrena periódicamente"
+example_scenarios:
+  - "Servicio que predice la deserción de clientes con una API de inferencia y reentrenamiento mensual con datos nuevos"
+  - "Aplicación con un modelo de lenguaje o de clasificación que se versiona, se evalúa automáticamente y se despliega por etapas"
+  - "Proyecto de visión por computador cuyo modelo debe monitorearse para detectar pérdida de precisión en producción"
+fuentes:
+  - titulo: "MLOps: Continuous delivery and automation pipelines in machine learning (Google Cloud)"
+    url: "https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning"
