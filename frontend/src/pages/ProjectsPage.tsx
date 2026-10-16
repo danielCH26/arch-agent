@@ -7,7 +7,10 @@ import { ProjectCardsSkeleton } from '../components/Skeleton'
 
 export function ProjectsPage() {
   const location = useLocation()
-  const [showCreateDialog, setShowCreateDialog] = useState(false)
+  // "Crear otro proyecto" al terminar uno llega con { openCreate: true }.
+  const [showCreateDialog, setShowCreateDialog] = useState(
+    () => (location.state as { openCreate?: boolean } | null)?.openCreate === true,
+  )
   const { projects, error, hasLoaded, fetchProjects } = projectsStore()
   // Mensaje al llegar redirigido (p. ej. desde un proyecto que ya no existe).
   const routeMessage = (location.state as { message?: string } | null)?.message

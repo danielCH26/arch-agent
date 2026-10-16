@@ -149,6 +149,16 @@ function ChatPageContent() {
   const isElicitationPhase = phase?.current_phase === ELICITATION_PHASE
   // En la fase propuesta la fase queda lista al aprobar la propuesta.
   const isProposalPhase = phase?.current_phase === PROPOSAL_PHASE
+  // Última fase (Revisión): se termina aprobando el ADR, no hay a dónde avanzar.
+  const isLastPhase =
+    !!phase && phase.available_phases[phase.available_phases.length - 1] === phase.current_phase
+  const phaseStatus = isLastPhase
+    ? phase?.phase_ready
+      ? 'Proyecto completado.'
+      : 'Última fase: revisa y aprueba el ADR para terminar.'
+    : phase?.phase_ready
+      ? 'Fase lista para avanzar.'
+      : 'Fase en progreso.'
 
   return (
     <div className="h-full flex flex-col">
@@ -164,7 +174,7 @@ function ChatPageContent() {
       {phase && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
           <span className="text-sm text-gray-600">
-            {phase.phase_ready ? 'Fase lista para avanzar.' : 'Fase en progreso.'}
+            {phaseStatus}
           </span>
           <div className="flex flex-wrap gap-2">
             {!isElicitationPhase && (
@@ -176,7 +186,7 @@ function ChatPageContent() {
                 Diagramas
               </button>
             )}
-            {!isElicitationPhase && !isProposalPhase && !phase.phase_ready && (
+            {!isElicitationPhase && !isProposalPhase && !isLastPhase && !phase.phase_ready && (
               <button
                 type="button"
                 onClick={handleMarkReady}
@@ -186,14 +196,16 @@ function ChatPageContent() {
                 Marcar fase como lista
               </button>
             )}
-            <button
-              type="button"
-              onClick={handleAdvance}
-              disabled={phaseActionLoading || !phase.phase_ready}
-              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
-            >
-              Avanzar fase →
-            </button>
+            {!isLastPhase && (
+              <button
+                type="button"
+                onClick={handleAdvance}
+                disabled={phaseActionLoading || !phase.phase_ready}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
+              >
+                Avanzar fase →
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -217,6 +229,7 @@ function ChatPageContent() {
               phase={phase?.current_phase}
               onProposalPhaseChanged={refreshAfterPhaseChange}
               onDiagramApproved={handleDiagramApproved}
+              onProjectCompleted={refreshAfterPhaseChange}
             />
           </div>
         )}

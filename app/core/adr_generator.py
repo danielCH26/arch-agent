@@ -108,6 +108,8 @@ class AdrContext:
     mermaid: Optional[str] = None
     diagram_approved: bool = False
     decisions: list[AdrDecision] = field(default_factory=list)
+    # Cambios pedidos en la fase Revisión ("Solicitar cambios"), en orden.
+    revision_feedback: list[str] = field(default_factory=list)
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -432,7 +434,11 @@ incluida completa con su análisis de trade-offs y la opción elegida.
 ## 6. Historial de decisiones
 
 {_decision_log(ctx.decisions)}
+{f'''
+**Cambios pedidos en la revisión del ADR:**
 
+{_bullets(ctx.revision_feedback)}
+''' if ctx.revision_feedback else ''}
 ## 7. Guía para empezar
 
 {guide}
@@ -511,6 +517,14 @@ def _adr_prompt(ctx: AdrContext) -> str:
         f"Respuestas de la elicitación:\n{respuestas or '(sin respuestas)'}\n\n"
         f"Propuesta aprobada:\n{proposal}\n\n"
         f"Diagrama aprobado (Mermaid):\n{ctx.mermaid or '(sin diagrama)'}\n"
+        + (
+            "\nCambios pedidos por el equipo al revisar el ADR (aplícalos en tu "
+            "respuesta; el más reciente manda si se contradicen):\n"
+            + "\n".join(f"- {item}" for item in ctx.revision_feedback)
+            + "\n"
+            if ctx.revision_feedback
+            else ""
+        )
     )
 
 

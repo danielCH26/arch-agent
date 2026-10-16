@@ -52,9 +52,17 @@ interface ChatWindowProps {
   onProposalPhaseChanged?: () => void | Promise<void>
   // Refinamiento: aprobar el diagrama cierra la fase y avanza a Revisión.
   onDiagramApproved?: () => void | Promise<void>
+  // Revisión: al aprobar el ADR el proyecto queda terminado.
+  onProjectCompleted?: () => void | Promise<void>
 }
 
-export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagramApproved }: ChatWindowProps) {
+export function ChatWindow({
+  projectId,
+  phase,
+  onProposalPhaseChanged,
+  onDiagramApproved,
+  onProjectCompleted,
+}: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
   // Fase: la que pasa la página o, si no viene, la del proyecto activo.
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
@@ -178,7 +186,9 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
         {announcement}
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {showAdrPanel && <AdrPanel projectId={projectId} projectName={projectName} />}
+        {showAdrPanel && (
+          <AdrPanel projectId={projectId} projectName={projectName} onCompleted={onProjectCompleted} />
+        )}
         {showProposalCard && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
         )}

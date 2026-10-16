@@ -5,14 +5,27 @@ export interface AdrOut {
   generated_at: string | null
   // false cuando la guía práctica (sección 7) no se pudo redactar con el LLM.
   guide_complete: boolean
+  // Cambios pedidos al revisar el ADR, en orden.
+  feedback_history: string[]
+  // Momento en que se aprobó el ADR (proyecto terminado), o null.
+  approved_at: string | null
 }
+
+const adrPath = (projectId: number) => `/api/projects/${encodeURIComponent(String(projectId))}/adr`
 
 export function getAdr(projectId: number): Promise<AdrOut> {
-  return apiFetch<AdrOut>(`/api/projects/${encodeURIComponent(String(projectId))}/adr`)
+  return apiFetch<AdrOut>(adrPath(projectId))
 }
 
-export function generateAdr(projectId: number): Promise<AdrOut> {
-  return apiFetch<AdrOut>(`/api/projects/${encodeURIComponent(String(projectId))}/adr`, {
+// Sin feedback regenera el ADR; con feedback registra los cambios pedidos y los aplica.
+export function generateAdr(projectId: number, feedback?: string): Promise<AdrOut> {
+  return apiFetch<AdrOut>(adrPath(projectId), {
     method: 'POST',
+    body: JSON.stringify(feedback ? { feedback } : {}),
   })
+}
+
+// Aprueba el ADR: el proyecto queda terminado.
+export function approveAdr(projectId: number): Promise<AdrOut> {
+  return apiFetch<AdrOut>(`${adrPath(projectId)}/approve`, { method: 'POST' })
 }

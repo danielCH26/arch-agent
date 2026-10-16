@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../api/chat', async (importOriginal) => {
@@ -7,8 +8,9 @@ vi.mock('../../api/chat', async (importOriginal) => {
   return { ...actual, fetchChatHistory: vi.fn().mockResolvedValue([]), createChatStream: vi.fn() }
 })
 vi.mock('../../api/adr', () => ({
-  getAdr: vi.fn().mockResolvedValue({ markdown: null, generated_at: null, guide_complete: false }),
+  getAdr: vi.fn().mockResolvedValue({ markdown: null, generated_at: null, guide_complete: false, feedback_history: [], approved_at: null }),
   generateAdr: vi.fn(),
+  approveAdr: vi.fn(),
 }))
 vi.mock('../../api/diagrams', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/diagrams')>()
@@ -58,7 +60,11 @@ describe('ChatWindow — fase Revisión', () => {
 
   it('muestra el ADR y oculta la conversación de las fases anteriores', async () => {
     setup('revision')
-    render(<ChatWindow projectId={3} />)
+    render(
+      <MemoryRouter>
+        <ChatWindow projectId={3} />
+      </MemoryRouter>,
+    )
 
     expect(await screen.findByTestId('adr-panel')).toBeInTheDocument()
     expect(screen.queryByText('Respuesta de refinamiento')).not.toBeInTheDocument()
@@ -69,7 +75,11 @@ describe('ChatWindow — fase Revisión', () => {
 
   it('permite ver la conversación anterior con el botón', async () => {
     setup('revision')
-    render(<ChatWindow projectId={3} />)
+    render(
+      <MemoryRouter>
+        <ChatWindow projectId={3} />
+      </MemoryRouter>,
+    )
 
     await userEvent.click(await screen.findByTestId('toggle-prior-chat'))
 
@@ -78,7 +88,11 @@ describe('ChatWindow — fase Revisión', () => {
 
   it('en Refinamiento se ve la conversación completa', () => {
     setup('refinamiento')
-    render(<ChatWindow projectId={3} />)
+    render(
+      <MemoryRouter>
+        <ChatWindow projectId={3} />
+      </MemoryRouter>,
+    )
 
     expect(screen.getByText('Respuesta de refinamiento')).toBeInTheDocument()
     expect(screen.queryByTestId('toggle-prior-chat')).not.toBeInTheDocument()

@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
-import { generateAdr, getAdr, type AdrOut } from '../api/adr'
+import { useNavigate } from 'react-router-dom'
+import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
 import { renderMarkdownBlocks } from './MessageBubble'
+import { ProjectCompletedDialog } from './ProjectCompletedDialog'
 
 interface AdrPanelProps {
   projectId: number
   projectName?: string | null
+  // Se llama al aprobar el ADR (proyecto terminado) para refrescar la página.
+  onCompleted?: () => void | Promise<void>
 }
 
 // Nombre de archivo seguro a partir del nombre del proyecto.
@@ -43,8 +47,13 @@ function formatDate(iso: string | null): string {
  * guía práctica para empezar a construir. Se puede regenerar y descargar en
  * Markdown (GitHub/GitLab renderizan el diagrama Mermaid).
  */
-export function AdrPanel({ projectId, projectName }: AdrPanelProps) {
+export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps) {
+  const navigate = useNavigate()
   const [adr, setAdr] = useState<AdrOut | null>(null)
+  const [showChanges, setShowChanges] = useState(false)
+  const [changes, setChanges] = useState('')
+  const [approving, setApproving] = useState(false)
+  const [celebrate, setCelebrate] = useState(false)
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
@@ -77,15 +86,31 @@ export function AdrPanel({ projectId, projectName }: AdrPanelProps) {
     }
   }, [projectId])
 
-  async function handleGenerate() {
+  async function handleGenerate(feedback?: string) {
     setGenerating(true)
     setError('')
     try {
-      setAdr(await generateAdr(projectId))
+      setAdr(await generateAdr(projectId, feedback))
+      setShowChanges(false)
+      setChanges('')
     } catch (err) {
       setError(err instanceof Error && err.message ? err.message : 'No se pudo generar el ADR.')
     } finally {
       setGenerating(false)
+    }
+  }
+
+  async function handleApprove() {
+    setApproving(true)
+    setError('')
+    try {
+      setAdr(await approveAdr(projectId))
+      setCelebrate(true)
+      void Promise.resolve(onCompleted?.()).catch(() => undefined)
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : 'No se pudo aprobar el ADR.')
+    } finally {
+      setApproving(false)
     }
   }
 
@@ -101,6 +126,8 @@ export function AdrPanel({ projectId, projectName }: AdrPanelProps) {
   }
 
   const markdown = adr?.markdown ?? null
+  const completed = Boolean(adr?.approved_at)
+  const busy = generating || approving || loading
 
   return (
     <section
@@ -138,10 +165,11 @@ export function AdrPanel({ projectId, projectName }: AdrPanelProps) {
               </button>
             </>
           )}
+          {!completed && (
           <button
             type="button"
             data-testid="adr-generate"
-            disabled={generating || loading}
+            disabled={busy}
             onClick={() => void handleGenerate()}
             className={
               markdown
@@ -151,8 +179,85 @@ export function AdrPanel({ projectId, projectName }: AdrPanelProps) {
           >
             {generating ? 'Generando…' : markdown ? 'Regenerar ADR' : 'Generar ADR'}
           </button>
+          )}
         </div>
       </div>
+
+      {markdown && !completed && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 dark:bg-indigo-950">
+          <p className="mr-auto text-sm text-indigo-900 dark:text-indigo-200">
+            Revisa el documento. Si está bien, apruébalo para terminar el proyecto.
+          </p>
+          <button
+            type="button"
+            data-testid="adr-request-changes"
+            disabled={busy}
+            onClick={() => setShowChanges((value) => !value)}
+            className="rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-sm text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+          >
+            Solicitar cambios
+          </button>
+          <button
+            type="button"
+            data-testid="adr-approve"
+            disabled={busy}
+            onClick={() => void handleApprove()}
+            className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            {approving ? 'Aprobando…' : 'Aprobar y finalizar proyecto'}
+          </button>
+        </div>
+      )}
+
+      {showChanges && !completed && (
+        <div className="mt-3 space-y-2" data-testid="adr-changes-form">
+          <label htmlFor={`adr-changes-${projectId}`} className="block text-sm font-medium text-gray-800 dark:text-gray-200">
+            ¿Qué quieres cambiar en el ADR?
+          </label>
+          <textarea
+            id={`adr-changes-${projectId}`}
+            value={changes}
+            onChange={(event) => setChanges(event.target.value)}
+            rows={3}
+            maxLength={2000}
+            placeholder="Por ejemplo: usar Redis para caché, agregar un riesgo sobre la integración con la EPS…"
+            className="w-full rounded-lg border border-gray-300 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+          />
+          <button
+            type="button"
+            data-testid="adr-send-changes"
+            disabled={busy || !changes.trim()}
+            onClick={() => void handleGenerate(changes.trim())}
+            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            Aplicar cambios y regenerar
+          </button>
+        </div>
+      )}
+
+      {completed && (
+        <div
+          role="status"
+          data-testid="adr-completed"
+          className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800"
+        >
+          <span className="mr-auto font-medium">✅ Proyecto completado. El ADR quedó aprobado.</span>
+          <button
+            type="button"
+            onClick={() => navigate('/projects', { state: { openCreate: true } })}
+            className="rounded-lg bg-green-600 px-3 py-1.5 text-white hover:bg-green-700"
+          >
+            Crear otro proyecto
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/projects')}
+            className="rounded-lg border border-green-300 px-3 py-1.5 hover:bg-green-100"
+          >
+            Ir al inicio
+          </button>
+        </div>
+      )}
 
       {generating && (
         <p role="status" className="mt-3 text-sm text-indigo-800 dark:text-indigo-300">
@@ -200,6 +305,8 @@ export function AdrPanel({ projectId, projectName }: AdrPanelProps) {
           {renderMarkdownBlocks(markdown)}
         </article>
       )}
+
+      <ProjectCompletedDialog open={celebrate} projectName={projectName} onClose={() => setCelebrate(false)} />
     </section>
   )
 }
