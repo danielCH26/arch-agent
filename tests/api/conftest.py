@@ -9,9 +9,9 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 # Configurar entorno antes de importar la app.
-# Usar setdefault para no pisar el DATABASE_URL del CI (PR #102 round 2, Laura).
-# Si la env var ya esta seteada (por el CI workflow o por un test runner
-# externo), se respeta; si no, usamos el default local de Postgres.
+# setdefault en las 5 variables: el CI (y cualquier runner externo) puede
+# exportar sus propias; pisarlas aqui rompia los guards de skip de los tests
+# Postgres-backed y acoplaba la suite a una URL hardcoded (PR #102 round 2).
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32ch")
 os.environ.setdefault("JWT_ALGORITHM", "HS256")

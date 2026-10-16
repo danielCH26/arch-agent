@@ -12,6 +12,7 @@ La integracion con LangChain se mantiene en dos puntos:
 
 from __future__ import annotations
 
+import os
 from time import perf_counter
 from typing import Iterable, Literal, Optional
 
@@ -20,42 +21,29 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.embeddings import get_embeddings
-from app.core.exceptions import RAGEmbeddingError
 from app.models.architect_pattern import ArchitectPattern
 from app.models.architect_pattern_chunk import ArchitectPatternChunk
 from app.models.uploaded_document import DocumentChunk, UploadedDocument
 
 SearchScope = Literal["all", "patterns", "documents"]
 
+# El indice ivfflat de architect_pattern_chunks se creo con lists=100, pero la
+# tabla tiene unos cientos de filas: con probes=10 solo se visita ~10% de las
+# listas y el resultado puede omitir chunks relevantes (o devolver menos de k).
+# Para patrones se buscan TODAS las listas (probes >= lists = busqueda exacta);
+# con tan pocos vectores el costo es despreciable. Los documentos del usuario
+# siguen usando probes=10. PATTERN_SEARCH_PROBES=10 restaura el comportamiento
+# anterior.
+PATTERN_SEARCH_PROBES = int(os.getenv("PATTERN_SEARCH_PROBES", "100"))
+
 
 class RAGSearchError(Exception):
     """Error especifico del pipeline RAG."""
 
 
-def _validate_embedding_dimensions(embedding: list[float]) -> None:
-    """Input shape check — wrong dimension is a programmer error, not an
-    embedding provider outage. We raise the generic ``RAGSearchError``."""
+def _validate_embedding(embedding: list[float]) -> None:
     if len(embedding) != 384:
         raise RAGSearchError(f"Embedding invalido: se esperaban 384 dimensiones, llegaron {len(embedding)}")
-
-
-def _validate_embedding_provider(embedding: list[float]) -> None:
-    """Provider-side check — the embedding model ran but produced nonsense
-    (None, empty list, wrong shape from a buggy embedding service). Raise
-    ``RAGEmbeddingError`` so the global handler returns 503 and the
-    endpoint translates it to a user-friendly Spanish message.
-    """
-    if not embedding:
-        raise RAGEmbeddingError(
-            "El proveedor de embeddings no devolvió un vector "
-            "(respuesta inesperada del modelo)."
-        )
-
-
-# Backwards-compatible alias for callers that still use the old name.
-# New callers should use ``_validate_embedding_dimensions``.
-def _validate_embedding(embedding: list[float]) -> None:
-    _validate_embedding_dimensions(embedding)
 
 
 def _similarity_from_cosine_distance(distance: float | None) -> float | None:
@@ -75,6 +63,7 @@ def _pattern_chunk_to_document(
         "pattern_name": pattern.pattern_name,
         "category": pattern.category,
         "tradeoffs": pattern.tradeoffs,
+        "complexity": getattr(pattern, "complexity", None),
         "chunk_type": chunk.chunk_type,
         "distance": float(distance) if distance is not None else None,
         "similarity": _similarity_from_cosine_distance(distance),
@@ -111,10 +100,11 @@ def similarity_search_patterns_by_vector(
     query_embedding: list[float],
     k: int = 5,
     category: Optional[str] = None,
-    probes: int = 10,
+    probes: Optional[int] = None,
 ) -> tuple[list[Document], float]:
     """Busca chunks de patrones de arquitectura por similitud coseno en PGVector."""
     _validate_embedding(query_embedding)
+    probes = PATTERN_SEARCH_PROBES if probes is None else probes
     db = SessionLocal()
     started = perf_counter()
     try:
@@ -174,7 +164,6 @@ def similarity_search_patterns(
     """Embebe una consulta y busca patrones relevantes."""
     embed_started = perf_counter()
     query_embedding = get_embeddings().embed_query(f"query: {query}")
-    _validate_embedding_provider(query_embedding)
     embedding_ms = (perf_counter() - embed_started) * 1000
     docs, search_ms = similarity_search_patterns_by_vector(query_embedding, k=k, category=category)
     return docs, search_ms, embedding_ms
@@ -189,7 +178,6 @@ def similarity_search_document_chunks(
     """Embebe una consulta y busca chunks privados relevantes."""
     embed_started = perf_counter()
     query_embedding = get_embeddings().embed_query(f"query: {query}")
-    _validate_embedding_provider(query_embedding)
     embedding_ms = (perf_counter() - embed_started) * 1000
     docs, search_ms = similarity_search_document_chunks_by_vector(
         query_embedding,
@@ -225,16 +213,6 @@ def similarity_search(
         (documents, metrics) donde metrics separa embedding_ms y search_ms.
         search_ms mide solo consultas PGVector; es el numero relevante para
         validar el criterio <100ms con 10k vectores.
-
-    Empty results are returned as ``([], metrics)`` — NOT raised as an
-    exception. "No docs matched" is a soft signal that the caller (chat
-    route, ``api/rag.py``, proposal generator) is expected to handle by
-    continuing with empty context. Raising an exception for this case was
-    reviewed out (PR #85 round 2): callers were logging empty-result
-    branches as warnings anyway, so the typed exception added noise
-    without adding signal. Real failures (provider down, invalid scope,
-    missing user_id) still raise ``RAGSearchError`` /
-    ``RAGEmbeddingError`` as before.
     """
     if scope not in {"all", "patterns", "documents"}:
         raise RAGSearchError("scope debe ser 'all', 'patterns' o 'documents'")
@@ -243,7 +221,6 @@ def similarity_search(
 
     embed_started = perf_counter()
     query_embedding = get_embeddings().embed_query(f"query: {query}")
-    _validate_embedding_provider(query_embedding)
     embedding_ms = (perf_counter() - embed_started) * 1000
 
     groups: list[tuple[list[Document], float]] = []
@@ -260,17 +237,6 @@ def similarity_search(
         )
 
     merged = _merge_by_distance(groups)[:k]
-    if not merged:
-        # Empty results are a soft signal (no docs matched). Return empty
-        # list + metrics so callers can continue with no context instead of
-        # catching a typed exception. Real errors above (provider down,
-        # invalid scope, etc.) still raise; see module-level docstring.
-        search_ms = sum(group_ms for _, group_ms in groups)
-        return [], {
-            "embedding_ms": embedding_ms,
-            "search_ms": search_ms,
-            "total_ms": embedding_ms + search_ms,
-        }
     search_ms = sum(group_ms for _, group_ms in groups)
     return merged, {
         "embedding_ms": embedding_ms,

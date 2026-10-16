@@ -83,13 +83,28 @@ function buildDiagramAdjustmentPrompt(feedback: string, previousMermaid: string 
   ].join('\n')
 }
 
+// Un `\|` escapado es texto de la celda, no un separador de columna (misma
+// regla que `_table_cells` en el backend).
 function splitTableRow(row: string) {
-  return row
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim())
+  let text = row.trim()
+  if (text.startsWith('|')) text = text.slice(1)
+  if (text.endsWith('|') && !text.endsWith('\\|')) text = text.slice(0, -1)
+
+  const cells: string[] = []
+  let current = ''
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\\' && text[i + 1] === '|') {
+      current += '|'
+      i += 1
+    } else if (text[i] === '|') {
+      cells.push(current.trim())
+      current = ''
+    } else {
+      current += text[i]
+    }
+  }
+  cells.push(current.trim())
+  return cells
 }
 
 export function parseInline(content: string): InlineToken[] {
@@ -157,7 +172,12 @@ function renderInline(content: string): React.ReactNode[] {
     }
 
     // Texto plano como string: <strong>texto</strong> en vez de <strong><span>…
-    return token.value
+    // El modelo separa los efectos de una celda de tabla con `<br>` (markdown no
+    // admite saltos de línea ahí): se convierte en <br/> real, sin HTML crudo.
+    if (!/<br\s*\/?>/i.test(token.value)) return token.value
+    return token.value.split(/<br\s*\/?>/gi).flatMap((part, partIndex) =>
+      partIndex === 0 ? [part] : [<br key={`br-${index}-${partIndex}`} />, part],
+    )
   })
 }
 
@@ -354,7 +374,12 @@ function stripFullMessageCodeFence(content: string): string {
 }
 
 export function renderMarkdownBlocks(content: string) {
-  const normalizedContent = stripFullMessageCodeFence(content).replace(/<br\s*\/?>/gi, '\n')
+  // Las filas de tabla conservan su `<br>`: pasarlo a salto de línea partiría la
+  // fila en dos. renderInline lo convierte en <br/> dentro de la celda.
+  const normalizedContent = stripFullMessageCodeFence(content)
+    .split('\n')
+    .map((line) => (line.includes('|') ? line : line.replace(/<br\s*\/?>/gi, '\n')))
+    .join('\n')
   const parts = normalizedContent.split(htmlTablePattern)
   const htmlTables = normalizedContent.match(htmlTablePattern) ?? []
   const blocks: React.ReactNode[] = []

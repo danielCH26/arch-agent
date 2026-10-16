@@ -15,6 +15,7 @@ os.environ.setdefault(
     "DATABASE_URL", "postgresql://asistente:asistente@localhost:5432/asistente_db"
 )
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars")
+os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
 
 
 def pytest_configure(config):
@@ -26,6 +27,7 @@ def pytest_configure(config):
     os.environ.setdefault(
         "JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars"
     )
+    os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
 
 
 @pytest.fixture(autouse=True)

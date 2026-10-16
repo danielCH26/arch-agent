@@ -142,4 +142,185 @@ describe('ProposalCard', () => {
     render(<ProposalCard projectId={PROJECT_ID} />)
     await waitFor(() => expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas'))
   })
+
+  describe('fallo a mitad de stream (sin dead-end)', () => {
+    it('al fallar generar tras recibir tokens muestra el error y ofrece reintentar', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      act(() => streams[0].onToken('## Contexto parcial'))
+      expect(await screen.findByTestId('proposal-content')).toHaveTextContent('Contexto parcial')
+
+      // El backend no persiste la propuesta truncada y emite `error` después de los tokens.
+      act(() => streams[0].onError('La generación terminó antes de completarse.'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('La generación terminó antes de completarse.')
+      expect(screen.queryByTestId('proposal-content')).not.toBeInTheDocument()
+      // Sin id no hay acciones de decisión sobre una propuesta que no existe.
+      expect(screen.queryByTestId('proposal-approve')).not.toBeInTheDocument()
+      const retry = screen.getByTestId('proposal-generate')
+      expect(retry).toHaveTextContent('Reintentar')
+
+      await user.click(retry)
+      expect(createProposalStream).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      // Cierra el stream del reintento: el store rastrea streams por proyecto a
+      // nivel de módulo y uno abierto bloquearía el load() de los demás tests.
+      act(() => streams[1].onError('Reintento cancelado en el test.'))
+    })
+
+    it('al fallar modificar tras recibir tokens vuelve a la propuesta anterior con su error', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'incluir caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      expect(createProposalStream).toHaveBeenCalledWith('modify', expect.objectContaining({ proposalId: 41 }), expect.anything())
+
+      act(() => streams[0].onToken('Iteración parcial'))
+      expect(await screen.findByTestId('proposal-content')).toHaveTextContent('Iteración parcial')
+
+      act(() => streams[0].onError('La generación terminó antes de completarse.'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('La generación terminó antes de completarse.')
+      expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas')
+      expect(screen.getByTestId('proposal-content')).not.toHaveTextContent('Iteración parcial')
+      // La iteración 1 sigue siendo accionable: se puede aprobar, modificar o rechazar.
+      expect(screen.getByTestId('proposal-approve')).toBeEnabled()
+      expect(screen.getByTestId('proposal-modify')).toBeEnabled()
+    })
+
+    it('un error de red al iniciar la generación también deja el botón de reintento', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      act(() => streams[0].onError('No se pudo conectar con el servidor.'))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo conectar con el servidor.')
+      expect(screen.getByTestId('proposal-generate')).toHaveTextContent('Reintentar')
+    })
+  })
+
+  describe('progreso, cancelar y reintentar (F19)', () => {
+    it('muestra el progreso mientras genera y "Cancelar" vuelve a ofrecer generar', async () => {
+      const user = userEvent.setup()
+      render(<ProposalCard projectId={PROJECT_ID} />)
+      await user.click(await screen.findByTestId('proposal-generate'))
+
+      expect(screen.getByTestId('proposal-progress')).toBeInTheDocument()
+      await user.click(screen.getByTestId('proposal-cancel-generation'))
+
+      expect(screen.queryByTestId('proposal-progress')).not.toBeInTheDocument()
+      expect(screen.getByTestId('proposal-cancelled')).toBeInTheDocument()
+      expect(screen.getByTestId('proposal-generate')).toHaveTextContent('Generar propuesta')
+    })
+
+    it('tras un fallo de la modificación ofrece reintentar con el mismo feedback', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true }))
+
+      expect(await screen.findByTestId('proposal-retry-feedback')).toHaveTextContent('agrega caché')
+      await user.click(screen.getByTestId('proposal-retry'))
+
+      expect(createProposalStream).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(createProposalStream).mock.calls[1][1]).toMatchObject({ proposalId: 41, feedback: 'agrega caché' })
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+      act(() => streams[1].onError('Reintento cancelado en el test.'))
+    })
+
+    it('no ofrece reintentar ante un error permanente (p. ej. límite de iteraciones)', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'x')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      act(() => streams[0].onError('Has alcanzado el máximo de iteraciones (5)', undefined, { code: 'rejected', retryable: false }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('máximo de iteraciones')
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('no ofrece reintentar si el feedback pendiente es de otra propuesta (id viejo)', async () => {
+      await renderWithProposal(proposalOut())
+      act(() => proposalsStore.setState({
+        error: 'La generación superó el tiempo máximo (5 min)',
+        errorRetryable: true,
+        lastModify: { proposalId: 40, feedback: 'agrega caché' },
+      }))
+
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('el reintento lo decide `retryable`, no la redacción del mensaje', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      // El texto suena a timeout, pero el backend lo marca como permanente.
+      act(() => streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'rejected', retryable: false }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('tiempo máximo')
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('un flag reintentable huérfano (sin error) no muestra el reintento', async () => {
+      await renderWithProposal(proposalOut())
+      act(() => proposalsStore.setState({ error: null, errorRetryable: true, lastModify: { proposalId: 41, feedback: 'x' } }))
+
+      expect(screen.queryByTestId('proposal-retry')).not.toBeInTheDocument()
+    })
+
+    it('tras cancelar una modificación conserva la versión actual y permite reintentar', async () => {
+      const user = userEvent.setup()
+      await renderWithProposal(proposalOut())
+
+      await user.click(screen.getByTestId('proposal-modify'))
+      await user.type(screen.getByLabelText('¿Qué debería cambiar?'), 'agrega caché')
+      await user.click(screen.getByRole('button', { name: 'Generar nueva iteración' }))
+      await user.click(screen.getByTestId('proposal-cancel-generation'))
+
+      expect(screen.getByTestId('proposal-content')).toHaveTextContent('Arquitectura en capas')
+      expect(screen.getByTestId('proposal-modify-cancelled')).toBeInTheDocument()
+      expect(screen.getByTestId('proposal-retry')).toBeInTheDocument()
+    })
+  })
+
+  it('numera las fuentes RAG como [n] para que coincidan con las citas de la tabla', async () => {
+    await renderWithProposal(proposalOut({
+      citations: [
+        { pattern_id: 7, pattern_name: 'Hexagonal', similarity: 0.91, source_role: 'primary' },
+        { pattern_id: 11, pattern_name: 'BFF', similarity: 0.88, source_role: 'tradeoff_option' },
+      ],
+    }))
+
+    expect(screen.getByText('Fuentes RAG para los trade-offs:')).toBeInTheDocument()
+    expect(screen.getByText(/\[1\] Hexagonal/)).toBeInTheDocument()
+    expect(screen.getByText(/\[2\] BFF/)).toBeInTheDocument()
+    // Sin numeración propia de lista: el [n] ya es el número que cita la tabla.
+    expect(document.querySelector('ol')).toBeNull()
+  })
+
+  it('renderiza la tabla de trade-offs con <br> en las celdas sin partir las filas', async () => {
+    await renderWithProposal(proposalOut({
+      content:
+        '## Trade-offs y decisión\n| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n| Hexagonal | 1. Testeable.<br>2. Cambio de proveedor. | 1. Más código.<br />2. Curva de aprendizaje. | Media |\n| Modular | a | b | Baja |\n| Capas | a | b | Baja |',
+    }))
+
+    const table = screen.getByTestId('proposal-content').querySelector('table') as HTMLTableElement
+    expect(table.textContent).not.toMatch(/<br/i)
+    expect(table.querySelectorAll('br')).toHaveLength(2)
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(3)
+  })
 })

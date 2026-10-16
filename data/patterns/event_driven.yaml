@@ -1,5 +1,6 @@
 pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
 category: "Distribuida"
+complexity: "alta"
 description: >
   Los componentes se comunican mediante eventos publicados a un bus o cola, en
   vez de llamadas directas, favoreciendo el bajo acoplamiento temporal.
@@ -11,11 +12,15 @@ when_not_to_use: >
   una llamada síncrona es suficiente.
 tradeoffs:
   ventajas:
-    - "Bajo acoplamiento: los productores no conocen a los consumidores"
-    - "Buen ajuste natural para notificaciones y procesamiento asíncrono"
+    - "Productores y consumidores desacoplados: el productor no sabe quién consume, así que se agregan consumidores nuevos (notificaciones, auditoría) sin modificar el productor ni crear integraciones punto a punto"
+    - "Respuesta casi en tiempo real: los consumidores reaccionan al evento apenas ocurre, útil para notificaciones y procesos que no deben bloquear al usuario"
+    - "Escalabilidad y elasticidad: cada consumidor escala por separado y las colas absorben picos de carga mediante procesamiento diferido"
+    - "Varias vistas independientes del mismo flujo: varios subsistemas procesan los mismos eventos y, con event streaming (log durable), un consumidor puede reprocesar eventos tras corregir un bug o unirse tarde"
   desventajas:
-    - "Depurar el flujo completo de un evento es más difícil (trazabilidad)"
-    - "Requiere infraestructura de mensajería adicional (cola o bus de eventos)"
+    - "Consistencia eventual: tras publicar un evento, distintas partes del sistema ven estados distintos durante un lapso, y la UI y las lecturas deben diseñarse para tolerar datos desactualizados"
+    - "Observabilidad: no hay pila de llamadas compartida, así que hace falta un correlation ID en cada evento y planear las trazas desde el inicio; probar el flujo extremo a extremo exige estrategias propias"
+    - "Entrega y orden: con varias instancias de un consumidor puede haber duplicados o desorden, por lo que se requieren consumidores idempotentes, reintentos, colas de mensajes fallidos y manejo de eventos perdidos"
+    - "Infraestructura y contratos: requiere operar un broker o bus de eventos, y como productores y consumidores se despliegan por separado, un cambio de esquema del evento puede romper a los consumidores"
 decision_signals:
   - pregunta: "¿Hay procesos que pueden completarse de forma asíncrona sin bloquear al usuario?"
     señal_patron: "sí -> Arquitectura orientada a eventos (Event-Driven)"
@@ -23,3 +28,12 @@ decision_signals:
     señal_patron: "sí -> Arquitectura orientada a eventos (Event-Driven)"
   - pregunta: "¿Necesitas absorber picos de trabajo con colas y procesamiento diferido?"
     señal_patron: "sí -> Arquitectura orientada a eventos (Event-Driven)"
+fuentes:
+  - titulo: "Event-driven architecture style (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/event-driven"
+quality_attributes: [desacoplamiento, escalabilidad, tolerancia a picos, procesamiento asíncrono]
+team_fit: "equipo de 6 o más personas con experiencia en brokers de mensajes y observabilidad distribuida"
+example_scenarios:
+  - "Plataforma de logística donde pedidos, inventario, facturación y notificaciones reaccionan a eventos sin depender unos de otros"
+  - "Sistema que procesa miles de eventos por segundo de sensores IoT y dispara alertas y flujos asíncronos"
+  - "E-commerce con picos de ventas donde el pago, el envío y los correos deben procesarse de forma asíncrona"

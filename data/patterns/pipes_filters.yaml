@@ -1,0 +1,42 @@
+pattern_name: "Pipes and Filters (tuberías y filtros)"
+category: "Flujo de datos"
+complexity: "baja"
+description: >
+  Descompone un procesamiento en etapas independientes (filtros) conectadas por
+  canales (tuberías); cada filtro recibe datos, los transforma y los entrega al
+  siguiente, y las etapas se pueden reordenar, reutilizar o paralelizar.
+use_cases: >
+  Procesamiento secuencial de datos o archivos: limpieza y transformación de
+  datasets, compiladores, procesamiento de imágenes, audio o texto, y flujos de
+  validación donde cada paso es independiente y de entrada y salida claras.
+when_not_to_use: >
+  Aplicaciones interactivas con estado compartido entre pasos, transacciones que
+  deben ser atómicas o flujos con mucha lógica condicional entre etapas, donde
+  el paso de datos entre filtros añade más complejidad que valor.
+tradeoffs:
+  ventajas:
+    - "Cada filtro es independiente, así que se puede probar, reemplazar o reutilizar en otro flujo sin afectar al resto del pipeline"
+    - "Las etapas pueden ejecutarse en paralelo cuando los datos lo permiten, lo que mejora el rendimiento de procesamientos por lotes grandes"
+    - "Agregar, quitar o reordenar pasos de transformación es sencillo porque el contrato entre filtros es solo el formato de los datos"
+    - "Es un modelo mental simple y fácil de explicar y documentar, ideal para equipos pequeños que procesan datos"
+  desventajas:
+    - "El formato de datos compartido entre filtros se vuelve un acoplamiento oculto: cambiarlo obliga a revisar todas las etapas conectadas"
+    - "Manejar errores y reintentos es difícil porque una falla a mitad del pipeline puede dejar datos parcialmente procesados"
+    - "Serializar y deserializar datos entre etapas añade sobrecarga y latencia que pesan en flujos con respuestas interactivas"
+    - "No es adecuado para sistemas con estado compartido o interacción continua con el usuario, donde las etapas necesitan coordinarse"
+decision_signals:
+  - pregunta: "¿El sistema procesa datos o archivos mediante pasos secuenciales y bien definidos?"
+    señal_patron: "sí -> Pipes and Filters (tuberías y filtros)"
+  - pregunta: "¿Quieres poder reordenar o reutilizar pasos de transformación de forma independiente?"
+    señal_patron: "sí -> Pipes and Filters (tuberías y filtros)"
+  - pregunta: "¿Cada paso recibe una entrada y produce una salida sin depender de estado compartido?"
+    señal_patron: "sí -> Pipes and Filters (tuberías y filtros)"
+quality_attributes: [modularidad de transformaciones, reutilización, rendimiento por lotes, simplicidad]
+team_fit: "equipo de 1 a 5 personas que procesa datos, archivos o texto en etapas secuenciales"
+example_scenarios:
+  - "Sistema que recibe documentos PDF, extrae el texto, lo limpia, lo clasifica y guarda el resultado, con cada paso como etapa independiente"
+  - "Proceso de limpieza de un dataset con pasos de validación, normalización, imputación de nulos y exportación, hecho por 2 estudiantes"
+  - "Procesador de imágenes que redimensiona, aplica filtros y comprime en una secuencia de pasos reutilizables"
+fuentes:
+  - titulo: "Pipes and Filters pattern (Microsoft Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters"
