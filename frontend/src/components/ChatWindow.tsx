@@ -73,6 +73,12 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
   const [announcement, setAnnouncement] = useState('')
   const wasStreaming = useRef(false)
   const [checkingDiagrams, setCheckingDiagrams] = useState(false)
+  // Revisión/Cierre: el historial del chat es uno solo por proyecto (los
+  // mensajes no guardan la fase), así que la conversación de Requerimientos,
+  // Propuesta y Refinamiento se oculta detrás de un botón. `priorCount` es
+  // cuántos mensajes había al entrar a la fase; los nuevos sí se muestran.
+  const [priorCount, setPriorCount] = useState<number | null>(null)
+  const [showPrior, setShowPrior] = useState(false)
   // Proyecto para el que ya se intentó el diagrama automático en esta visita a
   // Refinamiento (evita repetirlo en cada render o por StrictMode).
   const autoDiagramFor = useRef<number | null>(null)
@@ -102,6 +108,28 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
     }
     void state.loadHistory(projectId)
   }, [projectId])
+
+  useEffect(() => {
+    if (!showAdrPanel) {
+      setPriorCount(null)
+      setShowPrior(false)
+      return
+    }
+    // Se lee el store en vivo: el historial de ESTE proyecto debe estar cargado
+    // (si no, el conteo quedaría en 0 y se verían todos los mensajes viejos).
+    const state = chatStore.getState()
+    if (priorCount === null && !state.loadingHistory && state.activeProjectId === projectId) {
+      setPriorCount(state.messages.length)
+    }
+  }, [showAdrPanel, loadingHistory, messages.length, priorCount, projectId])
+
+  useEffect(() => {
+    setPriorCount(null)
+    setShowPrior(false)
+  }, [projectId])
+
+  const hiddenCount = showAdrPanel && !showPrior && priorCount !== null ? priorCount : 0
+  const visibleMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages
 
   // Refinamiento: al entrar, si el proyecto todavía no tiene ningún diagrama,
   // se genera solo. Si ya hay diagramas (volver a entrar, F5) no se genera
@@ -162,7 +190,22 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
           </p>
         )}
 
-        {messages.length === 0 && !isStreaming && !loadingHistory && (
+        {showAdrPanel && priorCount !== null && priorCount > 0 && (
+          <div className="text-center">
+            <button
+              type="button"
+              data-testid="toggle-prior-chat"
+              onClick={() => setShowPrior((value) => !value)}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              {showPrior
+                ? 'Ocultar la conversación de las fases anteriores'
+                : `Ver la conversación de las fases anteriores (${priorCount} mensajes)`}
+            </button>
+          </div>
+        )}
+
+        {messages.length === 0 && !isStreaming && !loadingHistory && !showAdrPanel && (
           <div className="text-center text-gray-500 py-8">
             <svg className="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -171,7 +214,7 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
           </div>
         )}
 
-        {messages.map((message) => (
+        {visibleMessages.map((message) => (
           <MessageBubble
             key={message.id}
             message={message}
