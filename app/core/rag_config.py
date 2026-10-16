@@ -1,10 +1,15 @@
 """
 Configuración compartida del pipeline RAG.
 
-Vive en ``app/core/`` -- y no en ``app/api/chat.py`` -- para que las tres capas
-que filtran por relevancia (el chat y la generación de propuestas, que también
-alimenta las regeneraciones del router de proposals) importen la MISMA constante sin caer en un import circular. ADR-009
-dejó el módulo como refactor pendiente; este es ese refactor.
+Vive en ``app/core/`` -- y no en ``app/api/chat.py`` -- para que el umbral y
+la evidencia que lo justifica tengan un único lugar de definición, importable
+desde cualquier capa sin caer en un import circular. ADR-009 dejó el módulo
+como refactor pendiente; este es ese refactor.
+
+Hoy el único consumidor es el chat. La generación de propuestas NO aplica este
+piso: su consulta siempre está dentro del dominio del proyecto y trae los
+``PROPOSAL_RAG_TOP_N`` patrones más cercanos, con un piso propio y opcional
+(``PROPOSAL_RAG_MIN_SIMILARITY``, ver ``app/core/proposal_generator.py``).
 """
 
 # Umbral MÍNIMO de similitud para considerar un chunk/patrón "relevante".
@@ -32,6 +37,6 @@ dejó el módulo como refactor pendiente; este es ese refactor.
 # docs/QA_criterios_aceptacion_RAG_final.md.
 #
 # AVISO: este es un CONTRATO DE NEGOCIO, no un número de tuning. Bajarlo cambia
-# qué citas llegan al modelo en TODOS los flujos a la vez (chat, propuestas y
-# regeneraciones). Si hay que moverlo, se mueve acá y en un solo lugar.
+# qué citas del RAG llegan al modelo en el chat. Si hay que moverlo, se mueve acá
+# y en un solo lugar.
 RAG_MIN_SIMILARITY: float = 0.85

@@ -46,7 +46,8 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 # En la fase de propuesta no hay umbral fijo de similitud (el piso de 0.85,
-# RAG_MIN_SIMILARITY, vive solo en ``app/api/chat.py``). La
+# RAG_MIN_SIMILARITY, vive en ``app/core/rag_config.py`` y solo lo usa el
+# chat). La
 # consulta se arma con el nombre/descripcion/requerimientos del proyecto, asi
 # que siempre esta dentro del dominio: en vez de descartar candidatos por un
 # umbral fijo (que con multilingual-e5-small dejaba la lista vacia), se trae

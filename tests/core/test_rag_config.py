@@ -2,10 +2,10 @@
 Contrato del umbral de relevancia del RAG.
 
 ``RAG_MIN_SIMILARITY`` es un contrato de negocio, no un numero de tuning:
-bajarlo cambia que citas llegan al modelo en el chat, en la generacion de
-propuestas y en las regeneraciones, todo a la vez. Antes de estos fixes vivia
-duplicado en tres modulos; estos tests fijan que exista UN solo lugar de
-definicion y que ese valor no se mueva por accidente.
+bajarlo cambia que citas llegan al modelo en el chat. Antes de estos fixes
+vivia duplicado en tres modulos; estos tests fijan que exista UN solo lugar de
+definicion y que ese valor no se mueva por accidente. La fase de propuesta no
+usa este piso (trae los top-N patrones, ver tests/core/test_proposal_generator.py).
 """
 
 import ast
@@ -42,8 +42,8 @@ def test_rag_config_es_el_unico_lugar_de_definicion():
 
     Se parsea con ``ast`` todo ``app/`` (no una lista fija de consumidores):
     cualquier ``RAG_MIN_SIMILARITY = ...`` o ``RAG_MIN_SIMILARITY: float = ...``
-    fuera de ``rag_config.py`` desincroniza en silencio el retrieval entre el
-    chat y las propuestas.
+    fuera de ``rag_config.py`` vuelve a crear una segunda fuente de verdad para
+    el umbral.
     """
     canonico = APP_DIR / "core" / "rag_config.py"
     redeclaraciones = []
@@ -70,31 +70,27 @@ def test_el_guard_detecta_la_forma_anotada():
     assert _asignaciones_de("RAG_MIN_SIMILARITY", arbol) == [1, 2]
 
 
-def test_los_consumidores_ven_el_mismo_objeto():
-    """No alcanza con que los valores coincidan: deben ser la misma constante.
+def test_el_chat_usa_el_objeto_de_rag_config():
+    """No alcanza con que el valor coincida: debe ser la misma constante.
 
-    Si un modulo re-exporta una copia, el test de igualdad de valores seguiria
-    en verde y la desincronizacion volveria a colarse.
+    Si el chat vuelve a tener una copia local, un test de igualdad de valores
+    seguiria en verde y la desincronizacion volveria a colarse.
     """
     from app.api import chat as chat_module
-    from app.core import proposal_generator as generator_module
 
     assert chat_module.RAG_MIN_SIMILARITY is RAG_MIN_SIMILARITY
-    assert generator_module.RAG_MIN_SIMILARITY is RAG_MIN_SIMILARITY
 
 
-def test_el_umbral_realmente_filtra_en_todos_los_consumidores():
-    """Cada consumidor aplica el umbral importado, no uno local."""
+def test_el_umbral_realmente_filtra_en_el_chat():
+    """El filtro del chat aplica el umbral importado, no uno local."""
     from langchain_core.documents import Document
 
-    from app.api.chat import _is_relevant as chat_relevante
-    from app.core.proposal_generator import _is_relevant as proposal_relevante
+    from app.api.chat import _is_relevant
 
     arriba = Document(page_content="x", metadata={"similarity": 0.90})
     abajo = Document(page_content="x", metadata={"similarity": 0.70})
     justo = Document(page_content="x", metadata={"similarity": 0.85})
 
-    for filtrar in (chat_relevante, proposal_relevante):
-        assert filtrar(arriba) is True
-        assert filtrar(justo) is True
-        assert filtrar(abajo) is False
+    assert _is_relevant(arriba) is True
+    assert _is_relevant(justo) is True
+    assert _is_relevant(abajo) is False
