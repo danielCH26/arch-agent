@@ -77,8 +77,11 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
   // mensajes no guardan la fase), así que la conversación de Requerimientos,
   // Propuesta y Refinamiento se oculta detrás de un botón. `priorCount` es
   // cuántos mensajes había al entrar a la fase; los nuevos sí se muestran.
-  const [priorCount, setPriorCount] = useState<number | null>(null)
+  // Se guarda junto con el proyecto al que pertenece: así cambiar de proyecto
+  // invalida el conteo sin un efecto aparte (que corría después y lo borraba).
+  const [prior, setPrior] = useState<{ projectId: number; count: number } | null>(null)
   const [showPrior, setShowPrior] = useState(false)
+  const priorCount = showAdrPanel && prior?.projectId === projectId ? prior.count : null
   // Proyecto para el que ya se intentó el diagrama automático en esta visita a
   // Refinamiento (evita repetirlo en cada render o por StrictMode).
   const autoDiagramFor = useRef<number | null>(null)
@@ -111,22 +114,19 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagram
 
   useEffect(() => {
     if (!showAdrPanel) {
-      setPriorCount(null)
+      setPrior(null)
       setShowPrior(false)
       return
     }
+    if (prior?.projectId === projectId) return
     // Se lee el store en vivo: el historial de ESTE proyecto debe estar cargado
     // (si no, el conteo quedaría en 0 y se verían todos los mensajes viejos).
     const state = chatStore.getState()
-    if (priorCount === null && !state.loadingHistory && state.activeProjectId === projectId) {
-      setPriorCount(state.messages.length)
+    if (!state.loadingHistory && state.activeProjectId === projectId) {
+      setPrior({ projectId, count: state.messages.length })
+      setShowPrior(false)
     }
-  }, [showAdrPanel, loadingHistory, messages.length, priorCount, projectId])
-
-  useEffect(() => {
-    setPriorCount(null)
-    setShowPrior(false)
-  }, [projectId])
+  }, [showAdrPanel, loadingHistory, messages.length, prior, projectId])
 
   const hiddenCount = showAdrPanel && !showPrior && priorCount !== null ? priorCount : 0
   const visibleMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages
