@@ -7,13 +7,19 @@ Revisión de PR #63: agrega el caso de fence sin la palabra 'json' que
 faltaba cubrir con un test unitario.
 """
 
+import logging
+import re
+
 import pytest
 
+from app.core import elicitation_agent
 from app.core.elicitation_agent import (
     ElicitationAgentError,
     ElicitationLLMError,
     FIRST_QUESTION,
     MAX_QUESTIONS,
+    NEXT_STEP_SYSTEM_PROMPT,
+    _es_pregunta_compuesta,
     _extract_json_object,
     _strip_json_fences,
     generate_summary,
@@ -32,9 +38,12 @@ class _FakeModel:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = []
+        # config (callbacks, run_name) de cada invocación; None si no se pasó.
+        self.configs = []
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.calls.append(messages)
+        self.configs.append(config)
         response = self._responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -44,6 +53,17 @@ class _FakeModel:
 HISTORY_1 = [{"pregunta": "p0", "respuesta": "r0"}]
 HISTORY_5 = [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(5)]
 HISTORY_10 = [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(10)]
+
+# Historiales que ya cubren los factores de viabilidad obligatorios
+# (presupuesto, equipo, plazo). Sin esto, a partir del mínimo de preguntas la
+# regla de viabilidad responde antes que el LLM y el guardarraíl de preguntas
+# compuestas nunca llega a ejecutarse. Los tests del guardarraíl los usan para
+# aislar su comportamiento de esa regla.
+_RESPUESTA_VIABILIDAD = (
+    "Presupuesto de 20000 USD, equipo de 3 desarrolladores y plazo de 3 meses."
+)
+HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
+HISTORY_5_VIABLE = HISTORY_1_VIABLE + HISTORY_5[1:]
 
 
 class TestStripJsonFences:
@@ -75,6 +95,314 @@ class TestExtractJsonObject:
         assert _extract_json_object("sin json aquí") == "sin json aquí"
 
 
+class TestEsPreguntaCompuesta:
+    @pytest.mark.parametrize(
+        "pregunta",
+        [
+            # Bloques interrogativos apilados (2 cierres '?').
+            "¿Quiénes son los usuarios principales? "
+            "¿Qué funcionalidades críticas necesitan?",
+            # Caso del issue #100: un solo '?', dos preguntas unidas con "y".
+            "¿Quiénes son los usuarios principales y qué funcionalidades "
+            "críticas necesitan?",
+            "¿Cuántos usuarios esperan tener y cómo se autenticarían?",
+            "¿Quiénes son y cuántos serían?",
+            "¿Qué problema resuelve o para quién es?",
+            "¿Qué tan seguido lo usarían y por qué?",
+            "¿Qué usuarios usan el sistema y con quién se integran?",
+            # Mayúsculas en el conector / palabra interrogativa.
+            "¿Quiénes son los usuarios Y Qué necesitan?",
+        ],
+    )
+    def test_preguntas_compuestas_se_detectan(self, pregunta):
+        assert _es_pregunta_compuesta(pregunta) is True
+
+    @pytest.mark.parametrize(
+        "pregunta",
+        [
+            "¿Quiénes son los usuarios principales del sistema?",
+            # "y" entre sustantivos dentro de UNA sola interrogación.
+            "¿Qué frameworks y bases de datos usan?",
+            "¿Qué restricciones de tiempo y presupuesto tienen?",
+            # Sin tilde, "como"/"que"/"cuando" son conjunciones o relativos,
+            # no interrogativos: no deben contar como segunda pregunta.
+            "¿Qué usuarios usan el sistema y como administradores?",
+            "¿Necesitan que el sistema funcione offline o cuando haya red?",
+            "¿Qué datos se guardan y que sean auditables?",
+        ],
+    )
+    def test_preguntas_granulares_no_se_marcan(self, pregunta):
+        assert _es_pregunta_compuesta(pregunta) is False
+
+    def test_sin_cierres_interrogativos_no_es_compuesta(self):
+        assert _es_pregunta_compuesta("") is False
+        assert _es_pregunta_compuesta("Cuéntame más sobre las restricciones") is False
+
+    @pytest.mark.parametrize("valor", [None, 42, ["¿a?", "¿b?"]])
+    def test_tipo_inesperado_no_rompe_y_no_es_compuesta(self, valor):
+        # Fail-open: un tipo inesperado no debe romper el flujo del agente.
+        assert _es_pregunta_compuesta(valor) is False
+
+
+class TestNextStepPromptGranularidad:
+    """Issue #100 opción A: el prompt prohíbe explícitamente la pregunta
+    compuesta y exige granularidad (el prompt ES el artefacto, el test de
+    contenido es legítimo acá)."""
+
+    def test_prompt_prohibe_pregunta_compuesta_y_exige_una_dimension(self):
+        assert "UNA sola dimensión" in NEXT_STEP_SYSTEM_PROMPT
+        assert "Prohibida la pregunta compuesta" in NEXT_STEP_SYSTEM_PROMPT
+
+    def test_prompt_exige_granularidad_respondible_en_una_o_dos_oraciones(self):
+        assert "una o dos oraciones" in NEXT_STEP_SYSTEM_PROMPT
+
+    def test_prompt_exige_un_solo_aspecto_dentro_de_cada_dimension(self):
+        # "Una sola dimensión" por sí sola deja pasar "¿Quiénes son y cuántos
+        # serían?" (ambos son de Usuarios): la regla baja un nivel más.
+        assert "un solo aspecto a la vez" in NEXT_STEP_SYSTEM_PROMPT
+
+    def test_prompt_incluye_ejemplo_compuesto_malo(self):
+        assert "MALA (compuesta)" in NEXT_STEP_SYSTEM_PROMPT
+        assert (
+            "¿Quiénes son los usuarios principales y qué funcionalidades "
+            "críticas necesitan?" in NEXT_STEP_SYSTEM_PROMPT
+        )
+
+    def test_prompt_incluye_ejemplo_granular_bueno(self):
+        assert "BUENA (granular)" in NEXT_STEP_SYSTEM_PROMPT
+        assert (
+            "¿Quiénes son los usuarios principales del sistema?"
+            in NEXT_STEP_SYSTEM_PROMPT
+        )
+
+    def test_prompt_mantiene_las_4_categorias_y_contrato_json(self):
+        # Regresión: las reglas nuevas no reemplazan lo existente.
+        for categoria in ("Usuarios", "Funcionalidades", "Restricciones", "Calidad"):
+            assert categoria in NEXT_STEP_SYSTEM_PROMPT
+        assert '"done": bool' in NEXT_STEP_SYSTEM_PROMPT
+        assert '"question"' in NEXT_STEP_SYSTEM_PROMPT
+
+
+PREGUNTA_COMPUESTA = (
+    "¿Quiénes son los usuarios principales? "
+    "¿Qué funcionalidades críticas necesitan?"
+)
+PREGUNTA_GRANULAR = "¿Quiénes son los usuarios principales del sistema?"
+# Caso del issue #100: un solo '?' con dos interrogaciones unidas por "y".
+PREGUNTA_COMPUESTA_UN_SIGNO = (
+    "¿Quiénes son los usuarios principales y qué funcionalidades "
+    "críticas necesitan?"
+)
+
+
+class TestNextStepRetryPreguntaCompuesta:
+    """Issue #100 opción C: una pregunta evidentemente compuesta dispara
+    UN reintento correctivo; si el reintento devuelve una pregunta
+    granular, se usa esa."""
+
+    def test_pregunta_compuesta_dispara_reintento_y_usa_la_granular(self):
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        decision = next_step(model, history=HISTORY_5_VIABLE)
+        assert decision.done is False
+        assert decision.question == PREGUNTA_GRANULAR
+        assert len(model.calls) == 2
+
+    def test_pregunta_del_issue_con_un_solo_signo_dispara_reintento(self):
+        # El caso que motivó el issue #100: un solo '?', dos preguntas.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA_UN_SIGNO}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        decision = next_step(model, history=HISTORY_5_VIABLE)
+        assert decision.question == PREGUNTA_GRANULAR
+        assert len(model.calls) == 2
+
+    def test_reintento_reusa_el_mismo_contexto_con_instruccion_correctiva(self):
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        next_step(model, history=HISTORY_5_VIABLE)
+        mensajes_reintento = model.calls[1]
+        contexto = mensajes_reintento[1].content
+        assert "UNA sola pregunta sobre UN solo tema" in contexto
+        # El historial original viaja en el reintento (mismo seam de invocación).
+        assert "p0" in contexto
+
+    def test_reintento_incluye_la_pregunta_rechazada(self):
+        # Sin la pregunta rechazada el modelo tendría que adivinar qué
+        # corregir y probablemente repetiría lo mismo.
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        next_step(model, history=HISTORY_5_VIABLE)
+        contexto_principal = model.calls[0][1].content
+        contexto_reintento = model.calls[1][1].content
+        assert PREGUNTA_COMPUESTA in contexto_reintento
+        # La pregunta rechazada solo viaja en el reintento (efímera).
+        assert PREGUNTA_COMPUESTA not in contexto_principal
+
+    def test_reintento_usa_run_name_propio_y_propaga_callbacks(self):
+        callback = object()
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        next_step(model, history=HISTORY_5_VIABLE, callbacks=[callback])
+        assert model.configs[0] == {
+            "callbacks": [callback],
+            "run_name": "elicitation-next-step",
+        }
+        assert model.configs[1] == {
+            "callbacks": [callback],
+            "run_name": "elicitation-next-step-retry",
+        }
+
+
+class TestNextStepFailOpenPreguntaCompuesta:
+    """Fail-open (Issue #100): si el reintento no arregla la pregunta, se
+    devuelve la original con warning -- nunca se eleva un error al usuario."""
+
+    def _decision_con_reintento(self, caplog, respuesta_reintento):
+        model = _FakeModel(
+            [
+                f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                respuesta_reintento,
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="app.core.elicitation_agent"):
+            decision = next_step(model, history=HISTORY_5_VIABLE)
+        assert len(model.calls) == 2
+        # Siempre se devuelve la decisión original, sin raise.
+        assert decision.done is False
+        assert decision.question == PREGUNTA_COMPUESTA
+        return caplog.text.lower()
+
+    def test_reintento_tambien_compuesto_devuelve_original_con_warning(self, caplog):
+        texto = self._decision_con_reintento(
+            caplog,
+            f'{{"done": false, "question": "{PREGUNTA_GRANULAR} ¿seguro?", "reason": "y"}}',
+        )
+        assert "pese al reintento" in texto
+        assert PREGUNTA_COMPUESTA.lower() in texto
+
+    def test_reintento_no_parseable_devuelve_original_sin_raise(self, caplog):
+        texto = self._decision_con_reintento(caplog, "esto no es json")
+        assert "falló al invocar o parsear" in texto
+        assert "elicitationagenterror" in texto
+
+    def test_reintento_json_sin_clave_done_devuelve_original_con_warning(self, caplog):
+        # Si el reintento devuelve JSON parseable pero sin la clave 'done',
+        # se devuelve la original con warning.
+        texto = self._decision_con_reintento(
+            caplog, '{"question": "¿algo granular?", "reason": "sin done"}'
+        )
+        assert "sin la clave" in texto
+
+    def test_reintento_con_done_true_devuelve_original_con_warning(self, caplog):
+        # done=true no sirve como pregunta a mostrar: se devuelve la original.
+        texto = self._decision_con_reintento(
+            caplog, '{"done": true, "question": null, "reason": "listo"}'
+        )
+        assert "done=true" in texto
+        # El log distingue este caso del de "pregunta todavía compuesta".
+        assert "pese al reintento" not in texto
+
+    def test_reintento_con_error_de_invocacion_devuelve_original_con_warning(self, caplog):
+        # El caso real de 429 / timeout del LLM viaja como
+        # ElicitationLLMError (distinto de un error de parseo de JSON).
+        texto = self._decision_con_reintento(
+            caplog, RuntimeError("Error code: 429 - rate_limit_exceeded")
+        )
+        assert "falló al invocar" in texto
+        assert "elicitationllmerror" in texto
+
+    @pytest.mark.parametrize("escalar", ["null", "42", '"texto"', "[1, 2]"])
+    def test_reintento_con_json_que_no_es_objeto_devuelve_original(self, caplog, escalar):
+        # Antes: `"done" not in data` lanzaba TypeError con null/42 y
+        # llegaba a la API como un 500.
+        texto = self._decision_con_reintento(caplog, escalar)
+        assert "no es un objeto" in texto
+
+    def test_reintento_con_contenido_en_bloques_devuelve_original(self, caplog):
+        # response.content puede ser una lista de bloques (en vez de str):
+        # _strip_json_fences lanzaba AttributeError, que no es un
+        # ElicitationAgentError.
+        texto = self._decision_con_reintento(
+            caplog, [{"type": "text", "text": '{"done": false}'}]
+        )
+        assert "falló al invocar o parsear" in texto
+
+    @pytest.mark.parametrize(
+        "pregunta_json",
+        ["null", '""', '"   "', '["¿a?", "¿b?"]', "42"],
+        ids=["nula", "vacia", "solo_espacios", "lista", "numero"],
+    )
+    def test_reintento_con_pregunta_invalida_devuelve_original(
+        self, caplog, pregunta_json
+    ):
+        # Una pregunta nula, vacía o que no es texto no puede persistirse
+        # como pending_question.
+        texto = self._decision_con_reintento(
+            caplog,
+            f'{{"done": false, "question": {pregunta_json}, "reason": "y"}}',
+        )
+        assert "vacía o que no es texto" in texto
+
+
+class TestNextStepSinReintento:
+    """Regresión (Issue #100): el guardarraíl no debe agregar llamadas al
+    LLM cuando no hay pregunta compuesta, ni en los caminos deterministas."""
+
+    def test_pregunta_granular_hace_una_sola_llamada(self):
+        model = _FakeModel(
+            [f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "x"}}']
+        )
+        decision = next_step(model, history=HISTORY_5_VIABLE)
+        assert decision.question == PREGUNTA_GRANULAR
+        assert len(model.calls) == 1
+
+    def test_pregunta_compuesta_al_maximo_se_fuerza_done_sin_reintento(self):
+        # Al llegar al máximo la regla dura fuerza done=True y descarta la
+        # pregunta: reintentar sería una llamada desperdiciada.
+        model = _FakeModel(
+            [f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}']
+        )
+        decision = next_step(model, history=HISTORY_10)
+        assert decision.done is True
+        assert decision.question is None
+        assert len(model.calls) == 1
+
+    def test_compuesta_forzada_por_minimo_tambien_se_reintenta(self):
+        # done=true antes del mínimo conserva la pregunta del modelo (acá
+        # compuesta); la regla dura la deja en done=False y el reintento
+        # opera sobre la decisión final.
+        model = _FakeModel(
+            [
+                f'{{"done": true, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}',
+                f'{{"done": false, "question": "{PREGUNTA_GRANULAR}", "reason": "y"}}',
+            ]
+        )
+        decision = next_step(model, history=HISTORY_1_VIABLE)
+        assert decision.done is False
+        assert decision.question == PREGUNTA_GRANULAR
+        assert len(model.calls) == 2
+
+
 class TestNextStepFirstQuestion:
     def test_first_question_is_deterministic_and_skips_llm(self):
         model = _FakeModel([])  # no debe consumirse ninguna respuesta
@@ -82,6 +410,31 @@ class TestNextStepFirstQuestion:
         assert decision.done is False
         assert decision.question == FIRST_QUESTION
         assert model.calls == []
+
+    def test_first_question_is_one_dimension_not_compound(self):
+        # FIRST_QUESTION es la primera pregunta que el usuario ve y NO
+        # pasa por el guardarraíl de preguntas compuestas (next_step
+        # retorna antes de invocar al LLM cuando history está vacía), así
+        # que debe ser una sola dimensión. Si combina 'problema' con
+        # 'usuarios' (con 'y' o con un 'para quién es' implícito), el
+        # detector no la atrapa. Esta es una prueba de intención: la
+        # pregunta no debe nombrar dos categorías del prompt a la vez.
+        pregunta_lower = FIRST_QUESTION.lower()
+        menciona_problema = "problema" in pregunta_lower
+        # 'usuarios' aparece literal, o como 'para quién' / 'quienes
+        # son' (que implican la categoría). Heurística conservadora a
+        # propósito: preferimos falsos negativos a romper reformulaciones
+        # legítimas del LLM en turnos posteriores.
+        menciona_usuarios = (
+            "usuarios" in pregunta_lower
+            or "para quién" in pregunta_lower
+            or "quiénes son" in pregunta_lower
+        )
+        assert not (menciona_problema and menciona_usuarios), (
+            f"FIRST_QUESTION no debe combinar 'problema' y 'usuarios' en "
+            f"la misma pregunta (Issue #100): "
+            f"{FIRST_QUESTION!r}"
+        )
 
     def test_first_question_uses_relevant_documents_when_available(self):
         model = _FakeModel([
@@ -105,6 +458,60 @@ class TestNextStepFirstQuestion:
         prompt_context = model.calls[0][1].content
         assert "inventario de bodegas" in prompt_context
         assert "No hay respuestas todavía" in prompt_context
+
+
+class TestPreguntasForzadasSonGranulares:
+    """Las preguntas que el agente devuelve SIN pasar por el LLM (la primera
+    pregunta y las de viabilidad obligatoria) tampoco pasan por el
+    guardarraíl de reintento. Por eso se fija aquí que ninguna sea
+    compuesta (Issue #100)."""
+
+    def test_first_question_no_es_compuesta(self):
+        assert not _es_pregunta_compuesta(FIRST_QUESTION)
+
+    @pytest.mark.parametrize(
+        "factor, pregunta",
+        [(name, question) for name, _patterns, question in elicitation_agent._VIABILITY_FACTORS],
+    )
+    def test_preguntas_de_viabilidad_no_son_compuestas(self, factor, pregunta):
+        assert not _es_pregunta_compuesta(pregunta), (factor, pregunta)
+
+
+class TestRegistroTuteo:
+    """El producto entero está en tuteo: el voseo mezclado en un mismo texto
+    (ej. "Cuéntame ... querés") es visible para el usuario y delata
+    inconsistencia. Guarda contra regresiones en los textos del módulo."""
+
+    _VOSEO = re.compile(
+        r"\b(querés|podés|tenés|sabés|decís|cubrí|dividí|devolvé|contame|"
+        r"decime|escribí|elegí|describí|respondé|hacé|fijate|mirá|usá|"
+        r"pensá|ponete|vos)\b",
+        re.IGNORECASE,
+    )
+
+    @pytest.mark.parametrize(
+        "nombre",
+        [
+            "FIRST_QUESTION",
+            "NEXT_STEP_SYSTEM_PROMPT",
+            "SUMMARY_SYSTEM_PROMPT",
+            "_CORRECCION_PREGUNTA_COMPUESTA",
+        ],
+    )
+    def test_los_textos_del_agente_no_usan_voseo(self, nombre):
+        texto = getattr(elicitation_agent, nombre)
+        assert not self._VOSEO.search(texto), self._VOSEO.search(texto).group(0)
+
+    def test_fallback_del_minimo_no_usa_voseo(self):
+        texto = elicitation_agent.MIN_QUESTIONS_FALLBACK
+        assert not self._VOSEO.search(texto), self._VOSEO.search(texto).group(0)
+
+    @pytest.mark.parametrize(
+        "factor, pregunta",
+        [(name, question) for name, _patterns, question in elicitation_agent._VIABILITY_FACTORS],
+    )
+    def test_preguntas_de_viabilidad_no_usan_voseo(self, factor, pregunta):
+        assert not self._VOSEO.search(pregunta), (factor, self._VOSEO.search(pregunta).group(0))
 
 
 class TestNextStepHardRules:
@@ -247,6 +654,18 @@ class TestMissingViabilityFactors:
         ]
         assert _missing(history) == ["presupuesto", "equipo", "plazo"]
 
+    def test_old_team_question_already_answered_is_not_asked_again(self):
+        # Sesión que estaba en curso al hacer el deploy: respondió la versión
+        # vieja (compuesta) de la pregunta del equipo con algo que la regex no
+        # reconoce. No debe recibir la pregunta nueva otra vez.
+        history = [
+            {
+                "pregunta": elicitation_agent._LEGACY_VIABILITY_QUESTIONS["equipo"][0],
+                "respuesta": "3 personas, 2 backend",
+            },
+        ]
+        assert "equipo" not in _missing(history)
+
     def test_accented_words_are_recognized(self):
         history = [
             {"pregunta": "p", "respuesta": "Una inversión de 5.000 dólares"},
@@ -317,3 +736,29 @@ class TestViabilityRuleGating:
             history.append({"pregunta": decision.question, "respuesta": "no sé"})
         assert decision.done is True
         assert len(history) == MAX_QUESTIONS
+
+
+# --- Re-revisión: palabras del dominio y montos pegados a la moneda ---------
+
+class TestViabilityRereview:
+    def test_domain_words_do_not_cover_budget_or_team(self):
+        description = "App para gestionar entregas de pedidos y equipos de gimnasio, reducir costos de envío"
+        assert _missing([], description) == ["presupuesto", "equipo", "plazo"]
+
+    def test_amount_glued_to_currency_counts_as_budget(self):
+        for answer in ("5000usd", "20000cop", "USD 5000", "$20.000", "10 mil pesos", "5k usd"):
+            history = [{"pregunta": "p", "respuesta": answer}]
+            assert "presupuesto" not in _missing(history), answer
+
+    def test_headcount_answers_count_as_team(self):
+        for answer in ("somos 3", "somos tres", "un solo desarrollador", "3 desarrolladores", "desarrolladores senior"):
+            history = [{"pregunta": "p", "respuesta": answer}]
+            assert "equipo" not in _missing(history), answer
+
+    def test_user_counts_are_not_a_team_size(self):
+        history = [{"pregunta": "p", "respuesta": "500 personas usarán el sistema"}]
+        assert "equipo" in _missing(history)
+
+    def test_own_llm_team_question_answered_with_headcount_is_not_asked_again(self):
+        history = [{"pregunta": "¿Cuántos devs son?", "respuesta": "somos 3"}]
+        assert "equipo" not in _missing(history)

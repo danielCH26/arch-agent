@@ -1,88 +1,524 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../api/proposals', () => ({
   createProposalStream: vi.fn(),
   decideProposal: vi.fn(),
-  getProposal: vi.fn(),
   getLatestProposal: vi.fn(),
-  getProposalHistory: vi.fn(),
+  getProjectProposalState: vi.fn(),
+  getProposal: vi.fn(),
 }))
 
 import * as api from '../../api/proposals'
-import { proposalsStore } from '../proposalsStore'
+import { CANCEL_RESYNC_DELAY_MS, proposalsStore } from '../proposalsStore'
 
-type Lifecycle = 'proposed' | 'approved' | 'rejected'
+type Callbacks = Parameters<typeof api.createProposalStream>[2]
 
-function out(id: number, iteration: number, lifecycle: Lifecycle) {
+const PROJECT_ID = 1
+
+const progress = {
+  stage: 'retrieval' as const,
+  percent: 12,
+  message: 'Buscando patrones de arquitectura relevantes',
+  elapsed_ms: 800,
+  budget_s: 300,
+}
+
+function out(id: number, iteration: number) {
   return {
     id,
-    project_id: 1,
+    project_id: PROJECT_ID,
     iteration,
     content: `## Componentes\n- v${iteration}`,
     citations: [],
     feedback: null,
-    lifecycle,
+    lifecycle: 'proposed' as const,
     created_at: '2026-10-01T00:00:00',
   }
 }
 
-describe('proposalsStore.loadLatest', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    proposalsStore.getState().reset()
+let streams: Callbacks[] = []
+let aborts: ReturnType<typeof vi.fn>[] = []
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  localStorage.clear()
+  streams = []
+  aborts = []
+  proposalsStore.getState().reset()
+  vi.mocked(api.createProposalStream).mockImplementation((_mode, _payload, callbacks) => {
+    streams.push(callbacks)
+    const abort = vi.fn()
+    aborts.push(abort)
+    return abort
+  })
+  vi.mocked(api.getProjectProposalState).mockResolvedValue({
+    approved: false,
+    approved_at: null,
+    approval_id: null,
+    proposal_snapshot_chars: 0,
+    last_decision: null,
+  })
+  vi.mocked(api.getProposal).mockImplementation(async (id: number) => out(id, 1))
+  // cancel() resincroniza con /proposals/latest: por defecto no hay nada guardado.
+  vi.mocked(api.getLatestProposal).mockResolvedValue(null)
+})
+
+afterEach(() => {
+  // Cierra los streams que quedaron abiertos: el store los rastrea por proyecto
+  // a nivel de módulo y uno abierto haría esperar al load() del test siguiente.
+  for (const callbacks of streams) callbacks.onError('cierre del test')
+  proposalsStore.getState().reset()
+})
+
+/** Deja una propuesta vigente (id 5) como si se hubiera generado antes. */
+function withCurrentProposal() {
+  proposalsStore.getState().generate(PROJECT_ID)
+  streams[0].onToken('v1')
+  streams[0].onDone(5, [])
+}
+
+describe('proposalsStore progreso y cancelación (F19)', () => {
+  it('guarda el progreso y el instante de inicio mientras genera, y los limpia al terminar', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    expect(proposalsStore.getState().startedAt).not.toBeNull()
+
+    streams[0].onProgress?.(progress)
+    expect(proposalsStore.getState().progress).toEqual(progress)
+
+    streams[0].onDone(9, [])
+    const state = proposalsStore.getState()
+    expect(state.activity).toBe('idle')
+    expect(state.progress).toBeNull()
+    expect(state.startedAt).toBeNull()
   })
 
-  it('usa /proposals/latest como propuesta vigente aunque la iteración más nueva esté rechazada', async () => {
-    // Historial de más reciente a más antigua: la iteración 2 fue rechazada.
-    vi.mocked(api.getProposalHistory).mockResolvedValue([
-      out(2, 2, 'rejected'),
-      out(1, 1, 'proposed'),
-    ])
-    vi.mocked(api.getLatestProposal).mockResolvedValue(out(1, 1, 'proposed'))
-
-    await proposalsStore.getState().loadLatest(1)
+  it('un error limpia el progreso pero conserva el mensaje', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onProgress?.(progress)
+    streams[0].onError('Se agotó el tiempo máximo')
 
     const state = proposalsStore.getState()
-    expect(state.currentProposal?.id).toBe(1)
-    expect(state.currentProposal?.lifecycle).toBe('proposed')
-    // El historial solo alimenta las iteraciones (incluye la rechazada).
-    expect(state.iterations.map((p) => p.id)).toEqual([2, 1])
+    expect(state.error).toBe('Se agotó el tiempo máximo')
+    expect(state.progress).toBeNull()
+    expect(state.startedAt).toBeNull()
   })
 
-  it('no muestra una propuesta rechazada cuando no hay ninguna viva', async () => {
-    vi.mocked(api.getProposalHistory).mockResolvedValue([out(2, 2, 'rejected')])
+  it('cancel() aborta el stream y deja la tarjeta lista para volver a generar', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onToken('borrador parcial')
+
+    proposalsStore.getState().cancel()
+
+    const state = proposalsStore.getState()
+    expect(aborts[0]).toHaveBeenCalledTimes(1)
+    expect(state.activity).toBe('idle')
+    expect(state.cancelled).toBe(true)
+    expect(state.error).toBeNull()
+    expect(state.current).toBeNull()
+  })
+
+  it('después de cancelar, los eventos tardíos del stream no tocan el estado', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().cancel()
+
+    streams[0].onToken('tarde')
+    streams[0].onProgress?.(progress)
+    streams[0].onError('tarde')
+
+    const state = proposalsStore.getState()
+    expect(state.current).toBeNull()
+    expect(state.progress).toBeNull()
+    expect(state.error).toBeNull()
+  })
+
+  it('cancelar una modificación conserva la versión vigente', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onToken('nueva versión a medias')
+
+    proposalsStore.getState().cancel()
+
+    const state = proposalsStore.getState()
+    expect(aborts[1]).toHaveBeenCalledTimes(1)
+    expect(state.current?.id).toBe(5)
+    expect(state.current?.content).not.toContain('a medias')
+    expect(state.cancelled).toBe(true)
+  })
+
+  it('cancel() resincroniza con el servidor por si el guardado ya había empezado', async () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID))
+    expect(proposalsStore.getState().current).toBeNull()
+    expect(proposalsStore.getState().cancelled).toBe(true)
+  })
+
+  it('si la propuesta se guardó antes de que la cancelación llegara, se muestra y no se dice "cancelada"', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(41, 1))
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(41))
+    const state = proposalsStore.getState()
+    expect(state.cancelled).toBe(false)
+    expect(state.activity).toBe('idle')
+  })
+
+  it('si el commit termina DESPUÉS de la primera resincronización, la segunda lectura lo recoge', async () => {
+    vi.useFakeTimers()
+    try {
+      // 1.ª lectura (justo tras abortar): aún no hay nada. 2.ª (tras el retraso): ya está.
+      vi.mocked(api.getLatestProposal)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(out(41, 1))
+      proposalsStore.getState().generate(PROJECT_ID)
+
+      proposalsStore.getState().cancel()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Primera lectura: sigue "cancelada" y sin propuesta (el commit no terminó).
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+      expect(proposalsStore.getState().cancelled).toBe(true)
+      expect(proposalsStore.getState().current).toBeNull()
+
+      await vi.advanceTimersByTimeAsync(CANCEL_RESYNC_DELAY_MS)
+
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(2)
+      const state = proposalsStore.getState()
+      expect(state.current?.id).toBe(41)
+      expect(state.cancelled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('la segunda resincronización no actúa si el usuario ya empezó otra acción', async () => {
+    vi.useFakeTimers()
+    try {
+      proposalsStore.getState().generate(PROJECT_ID)
+
+      proposalsStore.getState().cancel()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+
+      // Cambio de proyecto / logout: invalida la cancelación.
+      proposalsStore.getState().reset()
+      await vi.advanceTimersByTimeAsync(CANCEL_RESYNC_DELAY_MS * 2)
+
+      expect(api.getLatestProposal).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancelar una modificación recarga la versión del servidor y sigue "cancelada" si no cambió', async () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(5, 1))
+    proposalsStore.getState().modify(5, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    await vi.waitFor(() => expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID))
+    expect(proposalsStore.getState().current?.id).toBe(5)
+    expect(proposalsStore.getState().cancelled).toBe(true)
+  })
+
+  it('cancel() sin generación en curso no hace nada', () => {
+    proposalsStore.getState().cancel()
+    expect(proposalsStore.getState().cancelled).toBe(false)
+  })
+
+  it('una nueva generación borra la marca de cancelado', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().cancel()
+    proposalsStore.getState().generate(PROJECT_ID)
+    expect(proposalsStore.getState().cancelled).toBe(false)
+  })
+
+  it('cancelar libera la espera de load() para ese proyecto', async () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().cancel()
+
+    // Si el abort no liberara backgroundStreams, load() quedaría colgado.
+    await proposalsStore.getState().load(PROJECT_ID)
+    expect(proposalsStore.getState().activity).toBe('idle')
+  })
+
+  it('lanzar otra generación mientras hay un stream vivo ABORTA el anterior', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().generate(PROJECT_ID)
+
+    // Sin esto el fetch anterior seguía abierto y el backend gastando tokens.
+    expect(aborts[0]).toHaveBeenCalledTimes(1)
+    expect(aborts[1]).not.toHaveBeenCalled()
+  })
+
+  it('los eventos tardíos del stream reemplazado no tocan la nueva generación', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onToken('texto del stream viejo')
+    streams[0].onDone(99, [])
+
+    const state = proposalsStore.getState()
+    expect(state.current?.content).toBe('')
+    expect(state.activity).toBe('generating')
+    expect(state.iterations).toEqual([])
+  })
+
+  it('decidir limpia la marca de cancelado (no queda "Modificación cancelada" tras aprobar)', async () => {
+    vi.mocked(api.decideProposal).mockResolvedValue({
+      proposal_id: 5,
+      lifecycle: 'approved',
+      current_phase: null,
+      phase_ready: true,
+    })
+    withCurrentProposal()
+    proposalsStore.setState({ cancelled: true })
+
+    await proposalsStore.getState().decide(5, 'approve')
+
+    expect(proposalsStore.getState().cancelled).toBe(false)
+    expect(proposalsStore.getState().current?.lifecycle).toBe('approved')
+  })
+
+  it('reset() NO aborta el stream: termina en segundo plano y se recuerda', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    proposalsStore.getState().reset()
+
+    expect(aborts[0]).not.toHaveBeenCalled()
+    streams[0].onDone(11, [])
+    expect(localStorage.getItem(`archagent:user:anon:last-proposal:${PROJECT_ID}`)).toBe('11')
+  })
+})
+
+describe('proposalsStore reintento de una modificación (F19)', () => {
+  it('un error a mitad de la redacción descarta el borrador parcial para poder reintentar', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onToken('## Componentes\n- API ')
+
+    streams[0].onError('La generación superó el tiempo máximo (5 min)')
+
+    const state = proposalsStore.getState()
+    expect(state.current).toBeNull()
+    expect(state.error).toContain('tiempo máximo')
+    expect(state.activity).toBe('idle')
+  })
+
+  it('guarda el feedback mientras modifica y lo conserva si falla (tope de tiempo)', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)')
+
+    const state = proposalsStore.getState()
+    expect(state.lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+    expect(state.current?.id).toBe(5) // la versión vigente no se toca
+    expect(state.error).toContain('tiempo máximo')
+  })
+
+  it('retry() vuelve a lanzar la modificación con el mismo feedback', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('boom')
+    vi.mocked(api.createProposalStream).mockClear()
+
+    proposalsStore.getState().retry()
+
+    expect(api.createProposalStream).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.createProposalStream).mock.calls[0][0]).toBe('modify')
+    expect(vi.mocked(api.createProposalStream).mock.calls[0][1]).toMatchObject({
+      proposalId: 5,
+      feedback: 'agrega caché',
+    })
+    const state = proposalsStore.getState()
+    expect(state.activity).toBe('modifying')
+    expect(state.error).toBeNull()
+  })
+
+  it('cancelar una modificación también permite reintentarla', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+
+    proposalsStore.getState().cancel()
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+  })
+
+  it('al terminar bien o al generar de nuevo se olvida el feedback pendiente', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onDone(6, [])
+    expect(proposalsStore.getState().lastModify).toBeNull()
+
+    proposalsStore.getState().modify(6, 'otro cambio')
+    streams[2].onError('boom')
+    expect(proposalsStore.getState().lastModify).not.toBeNull()
+    proposalsStore.getState().generate(PROJECT_ID)
+    expect(proposalsStore.getState().lastModify).toBeNull()
+  })
+
+  it('retry() sin nada que reintentar, o con una generación en curso, no hace nada', () => {
+    proposalsStore.getState().retry()
+    expect(api.createProposalStream).not.toHaveBeenCalled()
+
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'x')
+    vi.mocked(api.createProposalStream).mockClear()
+    proposalsStore.getState().retry() // sigue en curso
+    expect(api.createProposalStream).not.toHaveBeenCalled()
+  })
+})
+
+describe('proposalsStore corte por tiempo al guardar (F19)', () => {
+  it('rehidrata la última propuesta viva y conserva el error', async () => {
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(12, 1))
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+
+    streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'save_timeout', retryable: true })
+
+    await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(12))
+    expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID)
+    expect(proposalsStore.getState().error).toContain('tiempo máximo')
+    expect(localStorage.getItem(`archagent:user:anon:last-proposal:${PROJECT_ID}`)).toBe('12')
+  })
+
+  it('un corte por tiempo antes de guardar no rehidrata', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onProgress?.(progress)
+
+    streams[0].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true })
+
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+    expect(proposalsStore.getState().current).toBeNull()
+  })
+})
+
+describe('proposalsStore: timeout durante el guardado al modificar (review PR)', () => {
+  it('no deja "Reintentar" disponible y conserva el mensaje aunque la rehidratación termine', async () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockResolvedValue(out(6, 2))
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'save_timeout', retryable: true })
+
+    expect(proposalsStore.getState().lastModify).toBeNull()
+    await vi.waitFor(() => expect(proposalsStore.getState().current?.id).toBe(6))
+    expect(proposalsStore.getState().error).toContain('tiempo máximo')
+  })
+
+  it('si la rehidratación falla en silencio tampoco se ofrece reintentar', async () => {
+    withCurrentProposal()
+    vi.mocked(api.getLatestProposal).mockRejectedValue(new Error('red caída'))
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'save_timeout', retryable: true })
+    await Promise.resolve()
+
+    const state = proposalsStore.getState()
+    expect(state.lastModify).toBeNull()
+    expect(state.current?.id).toBe(5)
+    expect(state.error).toContain('tiempo máximo')
+  })
+
+  it('un timeout que NO fue guardando sigue permitiendo reintentar', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.(progress)
+
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true })
+
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+  })
+})
+
+describe('proposalsStore: errorRetryable viene del backend, no del texto', () => {
+  it('un error con retryable=true lo deja marcado como reintentable (modificar)', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('Se cortó la conexión con el modelo', undefined, { code: 'llm_stream_failed', retryable: true })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+  })
+
+  it('un error con retryable=false no es reintentable aunque el texto diga "tiempo máximo"', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'rejected', retryable: false })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('un error sin metadatos (cliente/red/backend viejo) no es reintentable', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('No se pudo conectar con el servidor.')
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('también aplica al generar desde cero', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onError('Superó el tiempo máximo', undefined, { code: 'timeout', retryable: true })
+
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
+  })
+
+  it('decide por el CÓDIGO: un corte "guardando" sin save_timeout no rehidrata ni olvida el feedback', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onProgress?.({ ...progress, stage: 'saving', percent: 95 })
+    streams[1].onError('La generación superó el tiempo máximo (5 min)', undefined, { code: 'timeout', retryable: true })
+
+    expect(api.getLatestProposal).not.toHaveBeenCalled()
+    expect(proposalsStore.getState().lastModify).toEqual({ proposalId: 5, feedback: 'agrega caché' })
+  })
+
+  it('save_timeout se detecta aunque el backend cambie la redacción del mensaje', () => {
+    withCurrentProposal()
     vi.mocked(api.getLatestProposal).mockResolvedValue(null)
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('Recarga para verificar si se guardó', undefined, { code: 'save_timeout', retryable: true })
 
-    await proposalsStore.getState().loadLatest(1)
-
-    const state = proposalsStore.getState()
-    // currentProposal null => la tarjeta ofrece "Generar propuesta".
-    expect(state.currentProposal).toBeNull()
-    expect(state.iterations.map((p) => p.id)).toEqual([2])
+    expect(api.getLatestProposal).toHaveBeenCalledWith(PROJECT_ID)
+    expect(proposalsStore.getState().lastModify).toBeNull()
   })
 
-  it('recargar de nuevo no vuelve a caer en la versión rechazada', async () => {
-    vi.mocked(api.getProposalHistory).mockResolvedValue([
-      out(2, 2, 'rejected'),
-      out(1, 1, 'proposed'),
-    ])
-    vi.mocked(api.getLatestProposal).mockResolvedValue(out(1, 1, 'proposed'))
+  it('un error posterior que no viene del stream (decide) no hereda el flag anterior', async () => {
+    vi.mocked(api.decideProposal).mockRejectedValue(new Error('No se pudo registrar la decisión.'))
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'agrega caché')
+    streams[1].onError('m', undefined, { code: 'timeout', retryable: true })
+    expect(proposalsStore.getState().errorRetryable).toBe(true)
 
-    await proposalsStore.getState().loadLatest(1)
+    await expect(proposalsStore.getState().decide(5, 'approve')).rejects.toThrow()
+
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+
+  it('reset() limpia el flag', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onError('m', undefined, { code: 'timeout', retryable: true })
+
     proposalsStore.getState().reset()
-    await proposalsStore.getState().loadLatest(1)
 
-    expect(proposalsStore.getState().currentProposal?.id).toBe(1)
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
   })
 
-  it('si el historial falla, usa la propuesta de /latest', async () => {
-    vi.mocked(api.getProposalHistory).mockRejectedValue(new Error('boom'))
-    vi.mocked(api.getLatestProposal).mockResolvedValue(out(3, 1, 'approved'))
+  it('una nueva generación arranca sin error ni flag residual', () => {
+    proposalsStore.getState().generate(PROJECT_ID)
+    streams[0].onError('m', undefined, { code: 'timeout', retryable: true })
 
-    await proposalsStore.getState().loadLatest(1)
+    proposalsStore.getState().generate(PROJECT_ID)
 
-    const state = proposalsStore.getState()
-    expect(state.currentProposal?.id).toBe(3)
-    expect(state.iterations.map((p) => p.id)).toEqual([3])
+    expect(proposalsStore.getState().error).toBeNull()
+    expect(proposalsStore.getState().errorRetryable).toBe(false)
   })
 })
