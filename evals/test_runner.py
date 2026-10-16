@@ -1,25 +1,35 @@
 """
-Tests del scorer del golden set.
+Tests del golden set.
 
 Todo corre offline: no hay red, ni API key, ni base de datos. El scorer es una
-funcion pura, asi que estos tests son deterministas y valen como puerta de calidad
-en CI.
+funcion pura y el runner se ejercita con un chat falso, asi que estos tests son
+deterministas y valen como puerta de calidad en CI.
 """
 
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessageChunk
 
 from evals.runner import (
     SECCIONES_REQUERIDAS,
+    _contenido,
+    _es_rate_limit,
     _filtrar_peores,
     _jaccard,
     calcular_variabilidad,
     cargar_casos,
     construir_modelo,
+    dry_run,
+    main,
     marcadores_cita,
+    resolver_proveedor,
+    resumir_por_modelo,
     score_output,
 )
 
@@ -54,6 +64,14 @@ def caso(citations: list[dict] | None = None) -> dict:
     }
 
 
+def _con_cuerpo(componentes: str, patrones: str = "- Patron A [1]") -> str:
+    return (
+        f"## Componentes\n{componentes}\n\n"
+        "## Tecnologías\n- Python\n\n"
+        f"## Patrones\n{patrones}\n"
+    )
+
+
 # --- Secciones obligatorias -------------------------------------------------
 
 
@@ -77,19 +95,26 @@ def test_sin_ninguna_seccion_es_fallo():
     assert score["secciones_ok"] is False
 
 
-def test_titulo_con_tilde_en_tecnologias_cumple_el_contrato():
-    """El prompt real pide 'Tecnologías' con tilde; el scorer lo acepta tal cual."""
-    con_tilde = SALIDA_PERFECTA.replace("## Tecnologias", "## Tecnologías")
-    score = score_output(con_tilde, caso())
-    assert score["secciones_ok"] is True
+def test_tecnologias_sin_tilde_incumple_el_contrato():
+    """El prompt pide 'Tecnologías' con tilde: sin ella la seccion falta."""
+    sin_tilde = SALIDA_PERFECTA.replace("## Tecnologías", "## Tecnologias")
+    assert sin_tilde != SALIDA_PERFECTA
+    score = score_output(sin_tilde, caso())
+    assert score["secciones_ok"] is False
+    assert "Tecnologias" in score["secciones_extra"]
+    assert score["pass_estructural"] is False
 
 
-# --- Orden ------------------------------------------------------------------
+def test_secciones_requeridas_son_las_del_prompt_real():
+    """Guarda contra cambiar el contrato por accidente desde el harness."""
+    assert SECCIONES_REQUERIDAS == ("Componentes", "Tecnologías", "Patrones")
+
+
+# --- Orden, extras, preambulo y cierre ---------------------------------------
 
 
 def test_orden_correcto_de_las_tres_secciones():
-    score = score_output(SALIDA_PERFECTA, caso())
-    assert score["orden_ok"] is True
+    assert score_output(SALIDA_PERFECTA, caso())["orden_ok"] is True
 
 
 def test_orden_incorrecto_es_fallo():
@@ -104,15 +129,8 @@ def test_orden_incorrecto_es_fallo():
     assert score["pass_estructural"] is False
 
 
-# --- Secciones extra --------------------------------------------------------
-
-
 def test_seccion_extra_detectada():
-    con_extra = SALIDA_PERFECTA.replace(
-        "## Patrones\n- Arquitectura en capas (Layered) [1]\n",
-        "## Patrones\n- Arquitectura en capas (Layered) [1]\n\n"
-        "## Riesgos\n- Riesgo de proveedor\n",
-    )
+    con_extra = SALIDA_PERFECTA + "\n## Riesgos\n- Riesgo de proveedor\n"
     score = score_output(con_extra, caso())
     assert score["sin_secciones_extra"] is False
     assert "Riesgos" in score["secciones_extra"]
@@ -120,38 +138,57 @@ def test_seccion_extra_detectada():
 
 
 def test_sin_secciones_extra_en_salida_correcta():
-    score = score_output(SALIDA_PERFECTA, caso())
+    assert score_output(SALIDA_PERFECTA, caso())["sin_secciones_extra"] is True
+
+
+def test_preambulo_es_fallo():
+    score = score_output("Claro, aca va la propuesta:\n\n" + SALIDA_PERFECTA, caso())
+    assert score["sin_preambulo"] is False
+    assert score["pass_estructural"] is False
+
+
+def test_h1_es_preambulo_y_seccion_extra():
+    score = score_output("# Propuesta\n\n" + SALIDA_PERFECTA, caso())
+    assert score["sin_preambulo"] is False
+    assert "# Propuesta" in score["secciones_extra"]
+    assert score["pass_estructural"] is False
+
+
+def test_cierre_conversacional_se_reporta_sin_tumbar_el_pass():
+    score = score_output(SALIDA_PERFECTA + "\nEspero que te sirva.\n", caso())
+    assert score["cierre_suelto"] is True
+    assert score["pass_estructural"] is True
+
+
+def test_salida_perfecta_no_tiene_cierre_suelto():
+    assert score_output(SALIDA_PERFECTA, caso())["cierre_suelto"] is False
+
+
+def test_heading_dentro_de_bloque_de_codigo_no_cuenta():
+    texto = _con_cuerpo("- API\n\n```markdown\n## Riesgos\n```")
+    score = score_output(texto, caso())
     assert score["sin_secciones_extra"] is True
+    assert score["pass_estructural"] is True
+
+
+def test_salida_vacia():
+    score = score_output("", caso())
+    assert score["vacio"] is True
+    assert score["pass_estructural"] is False
 
 
 # --- Citas ------------------------------------------------------------------
 
 
 def test_cita_valida_con_tres_citations():
-    tres = caso(
-        [
-            {"pattern_name": "A", "snippet": "a"},
-            {"pattern_name": "B", "snippet": "b"},
-            {"pattern_name": "C", "snippet": "c"},
-        ]
-    )
-    texto = (
-        "## Componentes\n- Componente [3]\n\n"
-        "## Tecnologías\n- Python\n\n"
-        "## Patrones\n- Patron C [3]\n"
-    )
-    score = score_output(texto, tres)
+    tres = caso([{"pattern_name": x, "snippet": x} for x in "ABC"])
+    score = score_output(_con_cuerpo("- Componente [3]", "- Patron C [3]"), tres)
     assert score["citas_validas"] is True
     assert score["marcadores"] == [3, 3]
 
 
 def test_cita_fuera_de_rango_es_invalida():
-    texto = (
-        "## Componentes\n- Componente [9]\n\n"
-        "## Tecnologías\n- Python\n\n"
-        "## Patrones\n- Patron A [1]\n"
-    )
-    score = score_output(texto, caso())
+    score = score_output(_con_cuerpo("- Componente [9]"), caso())
     assert score["citas_validas"] is False
     assert 9 in score["marcadores_fuera_de_rango"]
     assert score["pass_estructural"] is False
@@ -159,33 +196,18 @@ def test_cita_fuera_de_rango_es_invalida():
 
 def test_caso_sin_citations_con_marcador_es_fallo_esperado():
     """Sin contexto RAG el modelo no deberia inventar referencias [N]."""
-    texto = (
-        "## Componentes\n- Script cron [1]\n\n"
-        "## Tecnologías\n- Python\n\n"
-        "## Patrones\n- No aplica\n"
-    )
-    score = score_output(texto, caso([]))
+    score = score_output(_con_cuerpo("- Script cron [1]", "- No aplica"), caso([]))
     assert score["citas_validas"] is False
     assert score["pass_estructural"] is False
 
 
 def test_caso_sin_citations_sin_marcadores_pasa_citas():
-    texto = (
-        "## Componentes\n- Script cron\n\n"
-        "## Tecnologías\n- Python\n\n"
-        "## Patrones\n- No aplica a este caso\n"
-    )
-    score = score_output(texto, caso([]))
+    score = score_output(_con_cuerpo("- Script cron", "- No aplica"), caso([]))
     assert score["citas_validas"] is True
 
 
 def test_enlace_markdown_no_cuenta_como_cita():
-    texto = (
-        "## Componentes\n- API [documentacion](#api)\n\n"
-        "## Tecnologías\n- Python\n\n"
-        "## Patrones\n- Patron A [1]\n"
-    )
-    score = score_output(texto, caso())
+    score = score_output(_con_cuerpo("- API [documentacion](#api)"), caso())
     assert score["citas_validas"] is True
     assert score["marcadores"] == [1]
 
@@ -194,100 +216,288 @@ def test_marcadores_ignora_texto_no_numerico():
     assert marcadores_cita("ver [Anexo 1] y [Componentes]") == []
 
 
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        ("[1, 2]", [1, 2]),
+        ("[1,3]", [1, 3]),
+        ("[1-3]", [1, 2, 3]),
+        ("[1–3]", [1, 2, 3]),
+        ("[1, 3-4]", [1, 3, 4]),
+        ("[2][5]", [2, 5]),
+        ("[1-999]", [1, 999]),
+    ],
+)
+def test_marcadores_lista_y_rango(texto, esperado):
+    assert marcadores_cita(texto) == esperado
+
+
+def test_rango_que_se_pasa_de_las_citations_es_invalido():
+    una = caso([{"pattern_name": "A", "snippet": "a"}])
+    score = score_output(_con_cuerpo("- Componente [1-3]"), una)
+    assert score["citas_validas"] is False
+    assert score["marcadores_fuera_de_rango"] == [2, 3]
+
+
+def test_indice_en_bloque_de_codigo_no_es_cita():
+    texto = _con_cuerpo("- Script\n\n```python\nprimero = arr[0]\n```", "- No aplica")
+    score = score_output(texto, caso([]))
+    assert score["marcadores"] == []
+    assert score["citas_validas"] is True
+
+
+def test_indice_en_codigo_inline_no_es_cita():
+    assert marcadores_cita("usar `arr[0]` y luego [1]") == [1]
+
+
 # --- Metricas secundarias ---------------------------------------------------
 
 
 def test_bullets_por_seccion_se_cuentan_por_seccion():
     score = score_output(SALIDA_PERFECTA, caso())
-    assert score["bullets_por_seccion"]["Componentes"] == 2
-    assert score["bullets_por_seccion"]["Tecnologías"] == 2
-    assert score["bullets_por_seccion"]["Patrones"] == 1
+    assert score["bullets_por_seccion"] == {"Componentes": 2, "Tecnologías": 2, "Patrones": 1}
+
+
+def test_bullets_numerados_y_con_punto_medio():
+    texto = _con_cuerpo("1. API\n2) Worker\n• Cola\n+ Cache")
+    assert score_output(texto, caso())["bullets_por_seccion"]["Componentes"] == 4
 
 
 def test_largo_es_la_cantidad_de_caracteres():
-    score = score_output(SALIDA_PERFECTA, caso())
-    assert score["largo"] == len(SALIDA_PERFECTA)
+    assert score_output(SALIDA_PERFECTA, caso())["largo"] == len(SALIDA_PERFECTA)
 
 
 def test_pass_estructural_true():
     score = score_output(SALIDA_PERFECTA, caso())
     assert score["pass_estructural"] is True
-    assert score["secciones_ok"] is True
-    assert score["orden_ok"] is True
-    assert score["sin_secciones_extra"] is True
-    assert score["citas_validas"] is True
-
-
-def test_secciones_requeridas_son_las_del_prompt_real():
-    """Guarda contra cambiar el contrato por accidente desde el harness."""
-    assert SECCIONES_REQUERIDAS == ("Componentes", "Tecnologías", "Patrones")
+    for clave in ("secciones_ok", "orden_ok", "sin_secciones_extra", "sin_preambulo",
+                  "citas_validas"):
+        assert score[clave] is True
 
 
 # --- Agregacion de variabilidad --------------------------------------------
 
 
-def _ejecucion(caso_id: str, modelo: str, repeat: int, markdown: str, score: dict) -> dict:
+def _ejecucion(caso_id: str, modelo: str, repeat: int, markdown: str) -> dict:
     return {
         "caso_id": caso_id,
         "modelo": modelo,
         "repeat": repeat,
         "ok": True,
         "markdown": markdown,
-        "score": score,
+        "score": score_output(markdown, caso()),
     }
 
 
+def _fallida(caso_id: str, modelo: str, repeat: int) -> dict:
+    return {"caso_id": caso_id, "modelo": modelo, "repeat": repeat, "ok": False,
+            "error": "429"}
+
+
 def test_variabilidad_detecta_repeats_identicos():
-    ejecuciones = [
-        _ejecucion("c1", "m1", i, SALIDA_PERFECTA, score_output(SALIDA_PERFECTA, caso()))
-        for i in (1, 2, 3)
-    ]
+    ejecuciones = [_ejecucion("c1", "m1", i, SALIDA_PERFECTA) for i in (1, 2, 3)]
     v = calcular_variabilidad(ejecuciones, "c1", "m1")
     assert v["tasa_exacta"] == 1.0
     assert v["acuerdo_estructural"] == 1.0
     assert v["desvio_largo"] == 0.0
+    assert v["salidas_distintas"] == 1
+    assert v["similitud_media"] == 1.0
+    assert v["pares"] == 3
 
 
 def test_variabilidad_detecta_repeats_distintos():
-    base = (
-        "## Componentes\n- API [1]\n\n"
-        "## Tecnologías\n- Python\n\n"
-        "## Patrones\n- Patron A [1]\n"
-    )
-    a = base
-    b = base + "\n- Nota adicional\n"
-    c = base.replace("- Python", "- Python 3.12")
-    ejecuciones = [
-        _ejecucion("c1", "m1", 1, a, score_output(a, caso())),
-        _ejecucion("c1", "m1", 2, b, score_output(b, caso())),
-        _ejecucion("c1", "m1", 3, c, score_output(c, caso())),
-    ]
+    a = _con_cuerpo("- API [1]")
+    b = a + "\n- Nota adicional\n"
+    c = a.replace("- Python", "- Python 3.12")
+    ejecuciones = [_ejecucion("c1", "m1", i, t) for i, t in enumerate((a, b, c), 1)]
     v = calcular_variabilidad(ejecuciones, "c1", "m1")
     assert v["tasa_exacta"] == 0.0
     assert v["acuerdo_estructural"] == 1.0
     assert v["desvio_largo"] > 0
+    assert v["salidas_distintas"] == 3
+    assert 0.8 < v["similitud_media"] < 1.0
 
 
-def test_variabilidad_ignora_ejecuciones_fallidas():
+def test_exacta_normalizada_ignora_espacios_sobrantes():
+    a = SALIDA_PERFECTA
+    b = SALIDA_PERFECTA.replace("- Python\n", "- Python   \n").replace("\n\n", "\n\n\n")
     v = calcular_variabilidad(
-        [
-            {"caso_id": "c1", "modelo": "m1", "repeat": 1, "ok": False, "error": "429"},
-            _ejecucion(
-                "c1", "m1", 2, SALIDA_PERFECTA, score_output(SALIDA_PERFECTA, caso())
-            ),
-        ],
-        "c1",
-        "m1",
+        [_ejecucion("c1", "m1", 1, a), _ejecucion("c1", "m1", 2, b)], "c1", "m1"
+    )
+    assert v["tasa_exacta"] == 0.0
+    assert v["tasa_exacta_normalizada"] == 1.0
+
+
+def test_variabilidad_con_un_solo_exito_no_inventa_estabilidad():
+    v = calcular_variabilidad(
+        [_fallida("c1", "m1", 1), _ejecucion("c1", "m1", 2, SALIDA_PERFECTA)], "c1", "m1"
     )
     assert v["repeats_ok"] == 1
     assert v["repeats_fallidos"] == 1
     assert v["tasa_exacta"] is None
+    assert v["desvio_largo"] is None
+    assert v["tasa_pass_estructural"] == 1.0
+
+
+def test_variabilidad_sin_exitos_tiene_todas_las_claves_en_none():
+    v = calcular_variabilidad([_fallida("c1", "m1", 1)], "c1", "m1")
+    for clave in ("tasa_pass_estructural", "largo_medio", "desvio_largo", "tasa_exacta",
+                  "similitud_media", "acuerdo_estructural", "solapamiento_citas"):
+        assert v[clave] is None, clave
 
 
 def test_jaccard_de_conjuntos_vacios():
     assert _jaccard(set(), set()) == 1.0
     assert _jaccard({1}, set()) == 0.0
     assert _jaccard({1, 2}, {2, 3}) == pytest.approx(1 / 3)
+
+
+def test_resumen_no_promedia_casos_sin_datos():
+    """Un caso con desvio 19 y dos sin datos debe dar 19, no 6.33."""
+    corto = SALIDA_PERFECTA
+    largo = SALIDA_PERFECTA + "x" * 38
+    ejecuciones = [
+        _ejecucion("c1", "m1", 1, corto),
+        _ejecucion("c1", "m1", 2, largo),
+        _fallida("c2", "m1", 1),
+        _fallida("c2", "m1", 2),
+        _fallida("c3", "m1", 1),
+        _ejecucion("c3", "m1", 2, corto),
+    ]
+    variabilidad = [calcular_variabilidad(ejecuciones, c, "m1") for c in ("c1", "c2", "c3")]
+    resumen = resumir_por_modelo(variabilidad, ejecuciones)["m1"]
+    assert resumen["desvio_largo"] == pytest.approx(19.0)
+    assert resumen["casos_medibles"] == 1
+    assert resumen["ejecuciones"] == 6
+    assert resumen["ejecuciones_ok"] == 3
+    assert resumen["ejecuciones_fallidas"] == 3
+
+
+def test_resumen_distingue_pasa_siempre_de_falla_siempre():
+    malo = "Sin formato."
+    ejecuciones = [
+        _ejecucion("bien", "m1", 1, SALIDA_PERFECTA),
+        _ejecucion("bien", "m1", 2, SALIDA_PERFECTA),
+        _ejecucion("mal", "m1", 1, malo),
+        _ejecucion("mal", "m1", 2, malo),
+    ]
+    variabilidad = [calcular_variabilidad(ejecuciones, c, "m1") for c in ("bien", "mal")]
+    resumen = resumir_por_modelo(variabilidad, ejecuciones)["m1"]
+    assert resumen["acuerdo_estructural"] == 1.0
+    assert resumen["casos_pass_siempre"] == 1
+    assert resumen["casos_falla_siempre"] == 1
+    assert resumen["tasa_pass_estructural"] == 0.5
+
+
+# --- Filtro de peores -------------------------------------------------------
+
+
+def test_filtrar_peores_separa_peores_insuficientes_y_fallidos():
+    """``None or 1.0`` excluia los pares sin datos; y un par con un solo exito
+    no es "todos fallidos". Las tres listas son disjuntas."""
+    variabilidad = [
+        {"caso_id": "c1", "modelo": "m1", "tasa_exacta": 0.5, "repeats_ok": 3},
+        {"caso_id": "c2", "modelo": "m1", "tasa_exacta": 1.0, "repeats_ok": 3},
+        {"caso_id": "c3", "modelo": "m1", "tasa_exacta": None, "repeats_ok": 0},
+        {"caso_id": "c4", "modelo": "m2", "tasa_exacta": None, "repeats_ok": 1},
+        {"caso_id": "c5", "modelo": "m1", "tasa_exacta": 0.0, "repeats_ok": 2},
+    ]
+    resultado = _filtrar_peores(variabilidad)
+    assert {v["caso_id"] for v in resultado["peor"]} == {"c1", "c5"}
+    assert {v["caso_id"] for v in resultado["insuficientes"]} == {"c4"}
+    assert {v["caso_id"] for v in resultado["all_failed"]} == {"c3"}
+
+
+def test_filtrar_peores_con_lista_vacia():
+    assert _filtrar_peores([]) == {"peor": [], "insuficientes": [], "all_failed": []}
+
+
+# --- Helpers del runner -----------------------------------------------------
+
+
+def test_contenido_normaliza_str_lista_y_none():
+    assert _contenido(AIMessageChunk(content="hola")) == "hola"
+    assert _contenido(MagicMock(content=["a", {"text": "b"}, {"type": "x"}])) == "ab"
+    assert _contenido(MagicMock(content=None)) == ""
+    assert _contenido("plano") == "plano"
+
+
+def test_es_rate_limit():
+    assert _es_rate_limit(RuntimeError("Error code: 429 - rate limit"))
+    assert _es_rate_limit(RuntimeError("Too Many Requests"))
+    error = RuntimeError("boom")
+    error.status_code = 429  # type: ignore[attr-defined]
+    assert _es_rate_limit(error)
+    assert not _es_rate_limit(RuntimeError("500 internal error"))
+
+
+def test_resolver_proveedor_usa_groq_api_key_con_el_endpoint_default():
+    from app.core.llm_loader import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+
+    base_url, api_key, modelo = resolver_proveedor({"GROQ_API_KEY": "gsk-fake"})
+    assert base_url == DEFAULT_LLM_BASE_URL
+    assert api_key == "gsk-fake"
+    assert modelo == DEFAULT_LLM_MODEL
+
+
+def test_resolver_proveedor_no_manda_la_clave_de_groq_a_otro_endpoint():
+    _, api_key, _ = resolver_proveedor(
+        {"GROQ_API_KEY": "gsk-fake", "LLM_BASE_URL": "https://otro.example/v1"}
+    )
+    assert api_key == ""
+
+
+def test_resolver_proveedor_prefiere_llm_api_key():
+    _, api_key, modelo = resolver_proveedor(
+        {"GROQ_API_KEY": "gsk-fake", "LLM_API_KEY": "sk-otra", "LLM_MODEL": "m"}
+    )
+    assert api_key == "sk-otra"
+    assert modelo == "m"
+
+
+# --- Carga de casos ---------------------------------------------------------
+
+
+def _yaml(tmp_path: Path, contenido: str) -> Path:
+    ruta = tmp_path / "cases.yaml"
+    ruta.write_text(contenido, encoding="utf-8")
+    return ruta
+
+
+_CASO_YAML = """
+casos:
+  - id: a-001
+    nombre: "A"
+    project_name: "P"
+    descripcion: "D"
+"""
+
+
+def test_caso_sin_clave_citations_es_lista_vacia(tmp_path):
+    assert cargar_casos(_yaml(tmp_path, _CASO_YAML))[0]["citations"] == []
+
+
+def test_caso_con_citations_null_es_lista_vacia(tmp_path):
+    casos = cargar_casos(_yaml(tmp_path, _CASO_YAML + "    citations: null\n"))
+    assert casos[0]["citations"] == []
+
+
+@pytest.mark.parametrize(
+    ("contenido", "mensaje"),
+    [
+        ("otra: 1\n", "clave 'casos'"),
+        ("casos: []\n", "ningun caso"),
+        (_CASO_YAML + "    citations: {}\n", "debe ser una lista"),
+        (_CASO_YAML + "    citations:\n      - pattern_name: X\n", "no tiene 'snippet'"),
+        (_CASO_YAML + "    citations:\n      - texto\n", "no es un mapping"),
+        (_CASO_YAML + "    feedback: ''\n", "'feedback'"),
+        (_CASO_YAML.replace('descripcion: "D"', 'descripcion: ""'), "'descripcion'"),
+        (_CASO_YAML + _CASO_YAML.split("casos:\n")[1], "id duplicado"),
+    ],
+)
+def test_cargar_casos_rechaza_schema_invalido(tmp_path, contenido, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        cargar_casos(_yaml(tmp_path, contenido))
 
 
 # --- Corpus -----------------------------------------------------------------
@@ -297,241 +507,330 @@ def test_el_corpus_real_carga_y_es_valido():
     casos = cargar_casos()
     assert len(casos) >= 8
     assert sum(1 for c in casos if not c["citations"]) >= 2
-    assert any(len(c["citations"]) >= 3 for c in casos)
-    assert any(not c["citations"] for c in casos)
+    assert any(len(c["citations"]) >= 4 for c in casos)
+    # Produccion recupera k=5: nunca mas de 5 citations por caso.
+    assert all(len(c["citations"]) <= 5 for c in casos)
+    # Produccion puede devolver varios chunks del mismo patron.
+    assert any(
+        len({x["pattern_name"] for x in c["citations"]}) < len(c["citations"])
+        for c in casos
+    )
+    # El camino de iteracion esta cubierto.
+    assert any(c.get("feedback") and c.get("prior_content") for c in casos)
+
+
+def _chunks_de_produccion() -> dict[str, set[str]]:
+    """``pattern_name -> {chunk_text}`` con el chunker real del seed.
+
+    Se ejecuta ``seed_pattern_chunks`` contra un cursor falso y sin modelo de
+    embeddings: lo unico que interesa es el texto que insertaria.
+    """
+    raiz = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(raiz / "scripts"))
+    try:
+        import seed_patterns
+    finally:
+        sys.path.pop(0)
+
+    chunks: dict[str, set[str]] = {}
+    cursor = MagicMock()
+    with patch.object(seed_patterns, "embed_passage", return_value=[0.0]):
+        for patron in seed_patterns.load_patterns():
+            cursor.reset_mock()
+            seed_patterns.seed_pattern_chunks(cursor, 1, patron)
+            textos = {
+                llamada.args[1][2]
+                for llamada in cursor.execute.call_args_list
+                if "INSERT" in llamada.args[0]
+            }
+            chunks[patron["pattern_name"]] = textos
+    return chunks
+
+
+def test_cada_snippet_es_un_chunk_real_truncado_como_en_produccion():
+    """Lo que el corpus le muestra al modelo es lo que produccion le mostraria."""
+    chunks = _chunks_de_produccion()
+    errores = []
+    for c in cargar_casos():
+        for i, cita in enumerate(c["citations"], start=1):
+            nombre = cita["pattern_name"]
+            if nombre not in chunks:
+                errores.append(f"{c['id']} cita {i}: patron inexistente '{nombre}'")
+            elif cita["snippet"] not in {t[:240] for t in chunks[nombre]}:
+                errores.append(
+                    f"{c['id']} cita {i}: el snippet no es chunk_text[:240] de "
+                    f"'{nombre}' (¿se edito data/patterns/?)"
+                )
+    assert not errores, "\n".join(errores)
 
 
 def test_los_casos_reales_sin_citations_rechazan_la_salida_de_ejemplo():
     for caso_real in cargar_casos():
-        if caso_real["citations"]:
-            continue
-        # La salida de ejemplo cita [1] y [2]; contra un caso sin citations
-        # provistas eso debe fallar la validacion de citas.
-        score = score_output(SALIDA_PERFECTA, caso_real)
-        assert score["citas_validas"] is False
+        if not caso_real["citations"]:
+            assert score_output(SALIDA_PERFECTA, caso_real)["citas_validas"] is False
 
 
 # --- El prompt real se construye para CADA caso (B1) -----------------------
 
 
 def test_el_prompt_real_se_construye_para_cada_caso_del_corpus():
-    """Cada caso del golden set debe poder armar un prompt via ``_build_prompt``.
+    """Gate contra el B1: cada caso arma su prompt con la funcion de produccion,
+    no vacio, con el project_name, las tres secciones y, si hay iteracion, el
+    feedback y la propuesta previa."""
+    from evals.runner import armar_prompt
 
-    Antes del fix B1, el runner llamaba a ``_build_prompt`` con un quinto
-    argumento (``descripcion``) que la firma no acepta. Cada invocacion
-    levantaba ``TypeError`` y el runner la tragaba con un ``except``
-    generico, asi que el harness reportaba 0 ejecuciones y nadie se enteraba
-    de que en realidad no estaba midiendo nada. Esta prueba es el gate que
-    evita volver a esa situacion: por cada caso del corpus, el prompt se
-    debe poder construir sin excepcion, salir no vacio, y contener el
-    ``project_name`` que el caso declara.
-
-    El nombre del caso (``nombre``) y su descripcion larga NO son
-    obligatorios en el output -- el prompt de produccion solo lleva
-    ``project_name``, ``citations`` y ``feedback/prior_content``
-    opcionales. La descripcion del YAML queda como campo documental.
-    """
-    from app.core.proposal_generator import _build_prompt
-
-    casos = cargar_casos()
-    assert casos, "el corpus real no puede estar vacio"
-
-    for caso in casos:
-        prompt = _build_prompt(
-            caso["citations"],
-            None,
-            None,
-            caso["project_name"],
-        )
-        assert isinstance(prompt, str) and prompt, (
-            f"el prompt para {caso['id']} salio vacio"
-        )
-        assert caso["project_name"] in prompt, (
-            f"el prompt para {caso['id']} no contiene el project_name"
-        )
-        # El contrato del prompt exige las tres secciones (con tilde).
-        assert "## Componentes" in prompt
-        assert "## Tecnologías" in prompt
-        assert "## Patrones" in prompt
+    for c in cargar_casos():
+        prompt = armar_prompt(c)
+        assert prompt and c["project_name"] in prompt, c["id"]
+        for seccion in SECCIONES_REQUERIDAS:
+            assert f"## {seccion}" in prompt, (c["id"], seccion)
+        if c.get("feedback"):
+            assert c["feedback"].strip() in prompt, c["id"]
+        if c.get("prior_content"):
+            assert c["prior_content"][:200] in prompt, c["id"]
 
 
 def test_dry_run_devuelve_no_cero_si_build_prompt_falla():
-    """Si el prompt de produccion revienta, dry_run NO debe reportar OK.
-
-    Repro del B1: antes, la llamada con 5 argumentos levantaba TypeError,
-    el except del dry_run lo tragaba, imprimia "[AVISO]" y devolvia 0.
-    Asi que el harness siempre daba verde aunque no pudiera medir nada.
-    Despues del fix, ``dry_run`` propaga el fallo (exit code 1).
-    """
-    from unittest.mock import patch
-    from evals.runner import dry_run
-
-    casos = cargar_casos()
     with patch(
         "app.core.proposal_generator._build_prompt",
         side_effect=RuntimeError("exploto el prompt"),
     ):
-        exit_code = dry_run(casos)
-
-    assert exit_code != 0, (
-        "dry_run devolvio 0 con _build_prompt roto: el harness "
-        "estaria reportando OK mientras no puede medir nada."
-    )
+        assert dry_run(cargar_casos()) == 1
 
 
-def test_ejecutar_corrida_devuelve_uno_si_todas_las_invocaciones_fallaron():
-    """Si TODOS los triples (caso, modelo, repeat) fallaron, exit 1.
+def test_dry_run_valida_todos_los_casos_no_solo_el_primero():
+    from app.core.proposal_generator import _build_prompt as real
 
-    Distinguir "la app dio OK con metricas 0" de "la app nunca llego a
-    ejecutarse" es lo que hace util al harness en CI: el segundo caso
-    tiene que prender una alarma. Antes del fix B1, ``ejecutar_corrida``
-    devolvia 0 siempre.
-    """
-    import argparse
-    from unittest.mock import MagicMock, patch
-    from evals.runner import ejecutar_corrida
+    def falla_en_el_ultimo(citations, prior, feedback, project_name):
+        if project_name == cargar_casos()[-1]["project_name"] and feedback:
+            raise RuntimeError("solo el ultimo")
+        return real(citations, prior, feedback, project_name)
 
-    # Forzamos que ``construir_modelo`` "funcione" (devuelve un mock de
-    # chat) pero ``chat.invoke`` siempre tire. Asi el loader no rompe
-    # pero las ejecuciones terminan todas con ``ok=False``.
-    chat_mock = MagicMock()
-    chat_mock.invoke.side_effect = RuntimeError("rate limit eterno")
-
-    args = argparse.Namespace(
-        models="m1",
-        case=None,
-        repeats=1,
-        temperature=0.0,
-        sleep=0.0,
-        dry_run=False,
-    )
-
-    env = {
-        "LLM_BASE_URL": "https://api.groq.com/openai/v1",
-        "LLM_API_KEY": "gsk-fake",
-        "LLM_MODEL": "m1",
-    }
-    with patch.dict("os.environ", env), \
-         patch("evals.runner.construir_modelo", return_value=chat_mock):
-        exit_code = ejecutar_corrida(args)
-
-    assert exit_code == 1, (
-        "ejecutar_corrida devolvio 0 aunque todos los triples fallaron: "
-        "CI no podria distinguir 'midio y dio 0' de 'nunca ejecuto'."
-    )
+    with patch("app.core.proposal_generator._build_prompt", side_effect=falla_en_el_ultimo):
+        assert dry_run(cargar_casos()) == 1
 
 
-# --- Filtro de peores (I8) -------------------------------------------------
+def test_dry_run_ok_con_el_corpus_real():
+    assert dry_run(cargar_casos()) == 0
 
 
-def test_filtrar_peores_separa_all_failed_de_peores_con_datos():
-    """El listado "peor" no debe tragarse los pares donde TODO fallo.
-
-    Antes del fix, ``peor = [v for v in variabilidad if (v.get("tasa_exacta")
-    or 1.0) < 1.0]``. Cuando ``tasa_exacta`` era None (todos los repeats
-    fallaron), ``None or 1.0 == 1.0`` y el par quedaba excluido del listado
-    -- justo lo opuesto a lo que sirve para diagnosticar.
-
-    La regla que estamos testeando: ``peor`` agrupa pares con variabilidad
-    observada (tasa_exacta < 1.0); ``all_failed`` agrupa los pares sin
-    datos suficientes. Las dos listas son disjuntas y entre las dos suman
-    la variabilidad completa.
-    """
-    from evals.runner import _filtrar_peores
-
-    variabilidad = [
-        # Caso "malo": algunos repeats identicos, otros no. tasa_exacta < 1.0.
-        {"caso_id": "c1", "modelo": "m1", "tasa_exacta": 0.5},
-        # Caso "perfecto": todos los repeats identicos. tasa_exacta == 1.0.
-        # No es "peor" ni "all_failed": queda fuera de ambas listas.
-        {"caso_id": "c2", "modelo": "m1", "tasa_exacta": 1.0},
-        # Caso "all-failed": tasa_exacta == None (0 o 1 repeats_ok).
-        {"caso_id": "c3", "modelo": "m1", "tasa_exacta": None},
-        # Otro "all-failed" para probar que se preservan todos los registros.
-        {"caso_id": "c4", "modelo": "m2", "tasa_exacta": None},
-        # "Peor" con tasa_exacta == 0.0 (peor de los peores).
-        {"caso_id": "c5", "modelo": "m1", "tasa_exacta": 0.0},
-    ]
-
-    resultado = _filtrar_peores(variabilidad)
-
-    assert {v["caso_id"] for v in resultado["peor"]} == {"c1", "c5"}
-    assert {v["caso_id"] for v in resultado["all_failed"]} == {"c3", "c4"}
-    # Las dos listas son disjuntas (mismo caso_id/modelo no aparece en ambas)
-    ids_peor = {(v["caso_id"], v["modelo"]) for v in resultado["peor"]}
-    ids_failed = {(v["caso_id"], v["modelo"]) for v in resultado["all_failed"]}
-    assert ids_peor.isdisjoint(ids_failed)
-
-
-def test_filtrar_peores_con_lista_vacia_devuelve_dos_listas_vacias():
-    from evals.runner import _filtrar_peores
-
-    resultado = _filtrar_peores([])
-
-    assert resultado == {"peor": [], "all_failed": []}
-
-
-def test_filtrar_peores_solo_identicos_no_aparecen_en_peor():
-    """Variabilidad == 1.0 (todos los repeats identicos byte a byte) no
-    es "peor": son modelos perfectamente reproducibles."""
-    from evals.runner import _filtrar_peores
-
-    variabilidad = [
-        {"caso_id": "c1", "modelo": "m1", "tasa_exacta": 1.0},
-        {"caso_id": "c2", "modelo": "m1", "tasa_exacta": 1.0},
-    ]
-
-    resultado = _filtrar_peores(variabilidad)
-
-    assert resultado["peor"] == []
-    assert resultado["all_failed"] == []
-
-
-# --- Construccion del modelo: el runner NO debe duplicar la logica de prod ---
+# --- Construccion del modelo ------------------------------------------------
 
 
 def test_construir_modelo_omite_temperature_para_serie_o():
-    """El runner debe respetar la misma omision de temperature que la app.
-
-    Antes del I6, ``construir_modelo`` llamaba ``init_chat_model`` directo con
-    ``temperature=...`` siempre. Si el usuario del harness queria medir la
-    serie o* (que solo admite 1), terminaba con un 400 silencioso. El fix
-    centraliza la regla en ``app.core.llm_loader._build_chat_model``, igual
-    que produccion, y el runner la consume en vez de duplicarla.
-    """
-    from unittest.mock import patch
-
+    """Igual que produccion: la serie o* solo admite 1 y responde 400 a otro valor."""
     with patch("app.core.llm_loader.init_chat_model") as mock_init:
-        mock_init.return_value = MagicMock() if False else None  # type: ignore
-        construir_modelo(
-            modelo="o1-mini",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-test",
-            temperature=0.0,
-        )
-
-    # Si el helper del runner no omite temperature, init_chat_model la recibe
-    # y OpenAI responde 400 al primer token.
-    kwargs = mock_init.call_args.kwargs
-    assert "temperature" not in kwargs
+        construir_modelo("o1-mini", "https://api.openai.com/v1", "sk-test", 0.0)
+    assert "temperature" not in mock_init.call_args.kwargs
 
 
 def test_construir_modelo_manda_temperature_para_familia_comun():
-    """El runner sigue mandando temperature para modelos que la soportan."""
-    from unittest.mock import patch, MagicMock
-
     with patch("app.core.llm_loader.init_chat_model") as mock_init:
-        mock_init.return_value = MagicMock()
-        construir_modelo(
-            modelo="gpt-4o-mini",
-            base_url="https://api.openai.com/v1",
-            api_key="sk-test",
-            temperature=0.0,
-        )
-
+        construir_modelo("gpt-4o-mini", "https://api.openai.com/v1", "sk-test", 0.0)
     kwargs = mock_init.call_args.kwargs
     assert kwargs["temperature"] == 0.0
     assert kwargs["model"] == "gpt-4o-mini"
     assert kwargs["model_provider"] == "openai"
     assert kwargs["base_url"] == "https://api.openai.com/v1"
     assert kwargs["api_key"] == "sk-test"
+
+
+# --- Corrida completa con un chat falso -------------------------------------
+
+
+class ChatFalso:
+    """Imita ``BaseChatModel.stream``: cada respuesta es una lista de chunks o
+    una excepcion. Las respuestas se consumen en orden y la ultima se repite."""
+
+    def __init__(self, *respuestas):
+        self.respuestas = list(respuestas)
+        self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
+
+    def stream(self, prompt, **kwargs):
+        self.prompts.append(prompt)
+        self.kwargs.append(kwargs)
+        respuesta = self.respuestas.pop(0) if len(self.respuestas) > 1 else self.respuestas[0]
+        if isinstance(respuesta, Exception):
+            raise respuesta
+        return iter(respuesta)
+
+
+def chunks(texto: str, finish_reason: str = "stop") -> list[AIMessageChunk]:
+    mitad = len(texto) // 2
+    return [
+        AIMessageChunk(content=texto[:mitad]),
+        AIMessageChunk(
+            content=texto[mitad:],
+            response_metadata={"finish_reason": finish_reason},
+            usage_metadata={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+        ),
+    ]
+
+
+@pytest.fixture
+def entorno(monkeypatch, tmp_path):
+    """API key falsa, sin espera real y resultados en tmp_path."""
+    for var in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "GROQ_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-fake")
+    monkeypatch.setattr("evals.runner.time.sleep", lambda _s: None)
+    return tmp_path
+
+
+def correr(tmp_path: Path, chats: dict, *argv: str) -> tuple[int, dict | None]:
+    def construir(modelo, *_args):
+        chat = chats[modelo]
+        if isinstance(chat, Exception):
+            raise chat
+        return chat
+
+    with patch("evals.runner.construir_modelo", side_effect=construir):
+        codigo = main(["--sleep", "0", "--output-dir", str(tmp_path), *argv])
+    archivos = sorted(tmp_path.glob("*.json"))
+    datos = json.loads(archivos[-1].read_text(encoding="utf-8")) if archivos else None
+    return codigo, datos
+
+
+def test_corrida_exitosa_sale_con_cero_y_guarda_procedencia(entorno):
+    chat = ChatFalso(chunks(_con_cuerpo("- API", "- No aplica")))
+    codigo, datos = correr(
+        entorno, {"m1": chat}, "--models", "m1", "--case", "vacio-001", "--repeats", "2"
+    )
+    assert codigo == 0
+    assert datos["gate"] == {"paso": True, "motivos": []}
+    meta = datos["metadata"]
+    assert meta["temperature_efectiva"] == {"m1": 0.0}
+    procedencia = meta["procedencia"]
+    assert len(procedencia["cases_yaml_sha256"]) == 64
+    assert len(procedencia["build_prompt_fuente_sha256"]) == 64
+    assert set(procedencia["prompts_sha256"]) == {"vacio-001"}
+    assert "langchain-core" in procedencia["paquetes"]
+    ejecucion = datos["ejecuciones"][0]
+    assert ejecucion["finish_reason"] == "stop"
+    assert ejecucion["usage"]["output_tokens"] == 20
+    assert ejecucion["markdown"] == _con_cuerpo("- API", "- No aplica")
+    assert chat.kwargs[0] == {"stream_usage": True}
+    assert datos["variabilidad"][0]["tasa_exacta"] == 1.0
+
+
+def test_temperatura_efectiva_de_la_serie_o_es_none(entorno):
+    chat = ChatFalso(chunks(SALIDA_PERFECTA))
+    _, datos = correr(
+        entorno, {"o3-mini": chat}, "--models", "o3-mini", "--case", "hex-001",
+        "--repeats", "2",
+    )
+    assert datos["metadata"]["temperature_solicitada"] == 0.0
+    assert datos["metadata"]["temperature_efectiva"] == {"o3-mini": None}
+
+
+def test_orden_intercalado_por_repeat(entorno):
+    chat = ChatFalso(chunks(SALIDA_PERFECTA))
+    _, datos = correr(
+        entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001", "--case",
+        "mono-001", "--repeats", "2",
+    )
+    orden = [(e["repeat"], e["caso_id"]) for e in datos["ejecuciones"]]
+    assert orden == [(1, "hex-001"), (1, "mono-001"), (2, "hex-001"), (2, "mono-001")]
+
+
+def test_todas_las_invocaciones_fallidas_sale_con_uno(entorno):
+    chat = ChatFalso(RuntimeError("500 internal"))
+    codigo, datos = correr(entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001")
+    assert codigo == 1
+    assert "ninguna invocacion fue exitosa" in datos["gate"]["motivos"]
+
+
+def test_ningun_modelo_construible_sale_con_uno(entorno):
+    """Antes: ``ejecuciones`` vacia -> exit 0 sin medir nada."""
+    codigo, datos = correr(
+        entorno, {"m1": RuntimeError("no existe")}, "--models", "m1", "--case", "hex-001"
+    )
+    assert codigo == 1
+    assert datos["ejecuciones"] == []
+    assert datos["errores_construccion"][0]["modelo"] == "m1"
+    assert datos["resumen_por_modelo"]["m1"]["error_construccion"]
+
+
+def test_un_modelo_no_construible_entre_varios_sale_con_uno_y_queda_registrado(entorno):
+    chats = {"a": ChatFalso(chunks(SALIDA_PERFECTA)), "b": RuntimeError("404 model")}
+    codigo, datos = correr(entorno, chats, "--models", "a,b", "--case", "hex-001")
+    assert codigo == 1
+    assert [e["modelo"] for e in datos["errores_construccion"]] == ["b"]
+    assert any("no se pudo construir: b" in m for m in datos["gate"]["motivos"])
+    assert "b" in datos["resumen_por_modelo"]
+
+
+def test_salida_vacia_cuenta_como_fallo(entorno):
+    """Tres vacias daban exacta = acuerdo = citas = 1.0: 'reproducibilidad perfecta'."""
+    chat = ChatFalso(chunks("", finish_reason="length"))
+    codigo, datos = correr(entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001")
+    assert codigo == 1
+    ejecucion = datos["ejecuciones"][0]
+    assert ejecucion["ok"] is False
+    assert ejecucion["finish_reason"] == "length"
+    assert "vacio" in ejecucion["error"]
+    assert datos["variabilidad"][0]["tasa_exacta"] is None
+
+
+def test_tasa_de_exito_bajo_el_minimo_sale_con_uno(entorno):
+    """1 fallo de 6 es 83%: por debajo del 90% por defecto."""
+    chat = ChatFalso(
+        RuntimeError("timeout"), *[chunks(SALIDA_PERFECTA)] * 5
+    )
+    codigo, datos = correr(
+        entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001", "--repeats", "6"
+    )
+    assert codigo == 1
+    assert any("min-ok-rate" in m for m in datos["gate"]["motivos"])
+
+    chat = ChatFalso(RuntimeError("timeout"), *[chunks(SALIDA_PERFECTA)] * 5)
+    codigo, _ = correr(
+        entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001", "--repeats", "6",
+        "--min-ok-rate", "0.8",
+    )
+    assert codigo == 0
+
+
+def test_rate_limit_se_reintenta(entorno):
+    chat = ChatFalso(RuntimeError("Error code: 429"), chunks(SALIDA_PERFECTA))
+    codigo, datos = correr(
+        entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001", "--repeats", "2"
+    )
+    assert codigo == 0
+    assert datos["ejecuciones"][0]["intentos"] == 2
+    assert all(e["ok"] for e in datos["ejecuciones"])
+
+
+def test_rate_limit_agota_reintentos(entorno):
+    chat = ChatFalso(RuntimeError("Error code: 429"))
+    codigo, datos = correr(
+        entorno, {"m1": chat}, "--models", "m1", "--case", "hex-001", "--retries", "1"
+    )
+    assert codigo == 1
+    assert datos["ejecuciones"][0]["intentos"] == 2
+
+
+def test_case_inexistente_sale_con_dos_y_mensaje(entorno, capsys):
+    codigo, datos = correr(entorno, {}, "--case", "nope")
+    assert codigo == 2
+    assert datos is None
+    assert "--case desconocido: nope" in capsys.readouterr().err
+
+
+def test_sin_api_key_sale_con_dos(entorno, monkeypatch, capsys):
+    monkeypatch.delenv("GROQ_API_KEY")
+    codigo, _ = correr(entorno, {}, "--case", "hex-001")
+    assert codigo == 2
+    assert "LLM_API_KEY" in capsys.readouterr().err
+
+
+def test_un_solo_repeat_sale_con_dos(entorno):
+    codigo, _ = correr(entorno, {}, "--repeats", "1")
+    assert codigo == 2
+
+
+def test_min_ok_rate_fuera_de_rango_es_error_de_uso():
+    with pytest.raises(SystemExit) as exc:
+        main(["--min-ok-rate", "1.5"])
+    assert exc.value.code == 2

@@ -53,7 +53,7 @@ describe('ProposalCard', () => {
         project_id: 1,
         iteration: 1,
         content_markdown:
-          '## Componentes\n- Servicio de autenticación\n\n## Tecnologias\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal',
+          '## Componentes\n- Servicio de autenticación\n\n## Tecnologías\n- Node.js\n- Postgres\n\n## Patrones\n- Hexagonal',
         citations: [
           { pattern_id: 1, pattern_name: 'Hexagonal', similarity: 0.91 },
         ],
@@ -82,7 +82,7 @@ describe('ProposalCard', () => {
       screen.getByRole('heading', { name: 'Componentes' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('heading', { name: 'Tecnologias' }),
+      screen.getByRole('heading', { name: 'Tecnologías' }),
     ).toBeInTheDocument()
     expect(
       screen.getByRole('heading', { name: 'Patrones' }),

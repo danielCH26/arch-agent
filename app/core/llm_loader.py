@@ -53,7 +53,9 @@ DEFAULT_LLM_TEMPERATURE: float = 0.0
 # Modelo: `openai/gpt-oss-120b`. Se evaluo `qwen/qwen3.8-27b` y se descarto --
 # es Preview, Groq advierte que "should not be used in production environments as
 # they may be discontinued at short notice", cuesta $4.00/1M de output contra
-# $0.60 de este, y no tiene baseline medido. Este si: ver el corpus de `evals/`.
+# $0.60 de este. Ninguno de los dos tiene todavia un baseline de variabilidad
+# valido: el de #99 se midio con un runner roto y quedo superado. La primera
+# medicion de este modelo va a `evals/baselines/` (ver su README).
 DEFAULT_LLM_BASE_URL: str = "https://api.groq.com/openai/v1"
 DEFAULT_LLM_MODEL: str = "openai/gpt-oss-120b"
 

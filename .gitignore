@@ -62,6 +62,10 @@ frontend/.env.local
 .codegraph/
 .freebuff/
 
-# Evals: resultados de corridas y cobertura
+# Evals: resultados de corridas y cobertura. Los resumenes de baselines SI se
+# versionan: son la referencia auditable de cada medicion (ver
+# evals/baselines/README.md), y sin esta excepcion los atrapa `*.md`.
 evals/results/
+!evals/baselines/
+!evals/baselines/*.md
 .coverage

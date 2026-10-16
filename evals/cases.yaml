@@ -1,19 +1,28 @@
 # Golden set de propuestas de arquitectura.
 #
-# Corpus hermetico: los `citations` son datos estaticos hardcodeados. El harness
-# NO consulta PGVector ni la base de datos, para poder correr en una laptop con
-# solo una API key.
+# Corpus hermetico: los `citations` son datos estaticos. El harness NO consulta
+# PGVector ni la base de datos, para poder correr en una laptop con una API key.
 #
-# Los `snippet` salen del contenido real de los YAML de `data/patterns/`.
-# Si se edita un patron, actualiza aqui el fragmento correspondiente.
+# Cada `snippet` es EXACTAMENTE lo que produccion le pasaria al modelo: el
+# `chunk_text` que arma `scripts/seed_patterns.py::seed_pattern_chunks` a partir
+# de `data/patterns/*.yaml` (tipos summary, tradeoffs, when_not_to_use y
+# decision_signals, con el prefijo "{nombre}: ..." o "{nombre} - ..."),
+# truncado a 240 caracteres como en `proposal_generator._filter_citations`.
+# `evals/test_runner.py` lo verifica contra el chunker real: si se edita un
+# patron, el test indica que snippet regenerar.
+#
+# Como en produccion (`k=5`), un caso puede traer hasta 5 citations y repetir
+# el mismo patron con chunks distintos.
 #
 # Nota sobre `descripcion`: en produccion la descripcion viaja al modelo solo
 # por el camino del RAG (`_build_summary_query` la concatena a la query del
-# recuperador). NO entra al prompt del LLM: la firma de `_build_prompt`
-# recibe 4 argumentos (citations, prior_content, feedback, project_name) y
-# `descripcion` no es uno de ellos. Este campo se conserva en el YAML por
-# valor documental -- el README, seccion "Limitaciones honestas", explica
-# por que el harness no la envia al modelo y como se compensa.
+# recuperador). NO entra al prompt del LLM: `_build_prompt` recibe citations,
+# prior_content, feedback y project_name. Aca es documental: explica el
+# escenario y de donde salen las citations. Ver "Limitaciones honestas" en el
+# README.
+#
+# `feedback` y `prior_content` son opcionales y cubren el camino de iteracion
+# ("modificar propuesta"), que produccion arma con el mismo `_build_prompt`.
 
 casos:
   - id: hex-001
@@ -28,115 +37,90 @@ casos:
       proveedores distintos sin cortar la operación.
     citations:
       - pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
-        snippet: >-
-          Aísla la lógica de negocio del núcleo mediante puertos (interfaces) y
-          adaptadores, de forma que la tecnología externa (DB, UI, APIs) se pueda
-          cambiar sin tocar el dominio. Sistemas donde se anticipan cambios de
-          tecnología externa (DB, proveedor de mensajería) o que requieren alta
-          cobertura de tests unitarios del dominio.
+        snippet: "Arquitectura hexagonal (Puertos y Adaptadores): Aísla la lógica de negocio del núcleo mediante puertos (interfaces) y adaptadores, de forma que la tecnología externa (DB, UI, APIs) se pueda cambiar sin tocar el dominio.\n Sistemas donde se a"
+      - pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
+        snippet: "Arquitectura hexagonal (Puertos y Adaptadores) - señales de decision: ¿Anticipas cambiar de proveedor de base de datos, mensajería o API externa? -> sí -> Arquitectura hexagonal (Puertos y Adaptadores); ¿Necesitas probar reglas de dominio s"
+      - pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
+        snippet: "Arquitectura hexagonal (Puertos y Adaptadores) - ventajas: Dominio testeable de forma aislada, sin dependencias externas; Cambiar de tecnología externa (DB, cola, UI) no afecta la lógica de negocio. Desventajas: Más código repetitivo (boile"
+      - pattern_name: "Clean Architecture"
+        snippet: "Clean Architecture: Organiza la aplicación alrededor de reglas de negocio y casos de uso en el centro, haciendo que las dependencias del código apunten hacia adentro. La UI, la base de datos, frameworks y servicios externos quedan como deta"
 
   - id: mono-001
     nombre: "CRUD interno para un equipo de soporte de cinco personas"
     project_name: "GestorDeTickets"
     descripcion: >-
       Herramienta interna para registrar, clasificar y cerrar tickets de soporte.
-      Es basicamente CRUD: alta de ticket, comentarios, estados y un dashboard
-      simple. La mantiene un equipo de cinco personas, el alcance esta cerrado
-      y no hay proyecciones de crecimiento relevantes. Un unico despliegue.
+      Es básicamente CRUD: alta de ticket, comentarios, estados y un dashboard
+      simple. La mantiene un equipo de cinco personas, el alcance está cerrado
+      y no hay proyecciones de crecimiento relevantes. Un único despliegue.
     citations:
       - pattern_name: "Arquitectura en capas (Layered)"
-        snippet: >-
-          Organiza el sistema en capas horizontales (presentación, lógica de
-          negocio, acceso a datos), cada una dependiendo solo de la capa
-          inmediatamente inferior. Aplicaciones CRUD de tamaño pequeño a mediano,
-          equipos pequeños, proyectos con alcance bien definido y bajo requerimiento
-          de escalar módulos por separado.
+        snippet: "Arquitectura en capas (Layered): Organiza el sistema en capas horizontales (presentación, lógica de negocio, acceso a datos), cada una dependiendo solo de la capa inmediatamente inferior.\n Aplicaciones CRUD de tamaño pequeño a mediano, equi"
+      - pattern_name: "Arquitectura en capas (Layered)"
+        snippet: "Arquitectura en capas (Layered) - ventajas: Curva de aprendizaje baja, fácil de entender para equipos nuevos; Despliegue único, sin complejidad de infraestructura distribuida. Desventajas: Escala como una sola unidad, no permite escalar mód"
       - pattern_name: "Monolito modular (Modular Monolith)"
-        snippet: >-
-          Un único despliegue, pero organizado internamente en módulos con
-          límites explícitos (bounded contexts), como paso intermedio antes de
-          migrar a microservicios. Equipos que quieren orden y límites claros
-          entre dominios sin asumir todavía el costo operativo de microservicios.
+        snippet: "Monolito modular (Modular Monolith): Un único despliegue, pero organizado internamente en módulos con límites explícitos (bounded contexts), como paso intermedio antes de migrar a microservicios. Es una práctica de la industria, con Shopify"
 
   - id: mono-002
-    nombre: "Operacion de transporte con tres dominios y un solo despliegue"
+    nombre: "Operación de transporte con tres dominios y un solo despliegue"
     project_name: "ControlDeFlota"
     descripcion: >-
-      Sistema para una empresa de transporte logistico: planificacion de rutas,
-      seguimiento de vehiculos en tiempo real y facturacion. Son tres dominios
+      Sistema para una empresa de transporte logístico: planificación de rutas,
+      seguimiento de vehículos en tiempo real y facturación. Son tres dominios
       claramente distintos, pero hoy viven en el mismo monolito. Hay un solo
       equipo de ocho ingenieros y no hay presupuesto ni expertise para operar
-      infraestructura distribuida. A futuro quieren poder extraer la facturacion
+      infraestructura distribuida. A futuro quieren poder extraer la facturación
       a un servicio propio si el negocio crece.
     citations:
       - pattern_name: "Monolito modular (Modular Monolith)"
-        snippet: >-
-          Un único despliegue, pero organizado internamente en módulos con
-          límites explícitos (bounded contexts), como paso intermedio antes de
-          migrar a microservicios. Mantiene la simplicidad operativa de un solo
-          despliegue Facilita una futura migración a microservicios si el
-          proyecto crece.
+        snippet: "Monolito modular (Modular Monolith): Un único despliegue, pero organizado internamente en módulos con límites explícitos (bounded contexts), como paso intermedio antes de migrar a microservicios. Es una práctica de la industria, con Shopify"
+      - pattern_name: "Monolito modular (Modular Monolith)"
+        snippet: "Monolito modular (Modular Monolith) - ventajas: Mantiene la simplicidad operativa de un solo despliegue; Facilita una futura migración a microservicios si el proyecto crece. Desventajas: Requiere disciplina del equipo para no romper los lím"
       - pattern_name: "Clean Architecture"
-        snippet: >-
-          Organiza la aplicación alrededor de reglas de negocio y casos de uso en
-          el centro, haciendo que las dependencias del código apunten hacia
-          adentro. La UI, la base de datos, frameworks y servicios externos
-          quedan como detalles de infraestructura que dependen del núcleo, no al
-          revés.
+        snippet: "Clean Architecture: Organiza la aplicación alrededor de reglas de negocio y casos de uso en el centro, haciendo que las dependencias del código apunten hacia adentro. La UI, la base de datos, frameworks y servicios externos quedan como deta"
 
   - id: micro-001
     nombre: "Marketplace con varios equipos y necesidades de escalado dispares"
     project_name: "MarketplaceTurismo"
     descripcion: >-
-      Plataforma de reserva de Turismo: hotspots, pagos, promociones y
+      Plataforma de reservas de turismo: alojamientos, pagos, promociones y
       notificaciones. Hay tres equipos independientes, cada uno con su roadmap y
-      su release train. Los hotspots reciben picos estacionales enormes en
+      su release train. Los alojamientos reciben picos estacionales enormes en
       temporada, mientras que el motor de promociones tiene carga baja y estable
-      las 24 horas. El perfilado muestra que el 80% del trafico es de lectura.
+      las 24 horas. El perfilado muestra que el 80% del tráfico es de lectura.
     citations:
       - pattern_name: "Microservicios"
-        snippet: >-
-          Divide el sistema en servicios pequeños e independientes, cada uno con
-          su propia base de datos y ciclo de despliegue, comunicados por red.
-          Productos con múltiples equipos trabajando en paralelo, módulos con
-          necesidades de escalado muy distintas entre sí.
+        snippet: "Microservicios: Divide el sistema en servicios pequeños e independientes, cada uno con su propia base de datos y ciclo de despliegue, comunicados por red.\n Productos con múltiples equipos trabajando en paralelo, módulos con necesidades de e"
+      - pattern_name: "Microservicios"
+        snippet: "Microservicios - señales de decision: ¿Hay varios equipos que necesitan desplegar dominios distintos sin coordinar cada release? -> sí -> Microservicios; ¿Algunos módulos tienen necesidades de escalado muy diferentes al resto? -> sí -> Micr"
+      - pattern_name: "Microservicios"
+        snippet: "Microservicios - ventajas: Escalado y despliegue independiente por servicio; Equipos pueden trabajar y liberar en paralelo sin bloquearse entre sí. Desventajas: Alta complejidad operativa: red, observabilidad, consistencia de datos; Requier"
       - pattern_name: "API Gateway + Backend for Frontend (BFF)"
-        snippet: >-
-          Un punto de entrada único (API Gateway) enruta y agrega llamadas a
-          servicios internos, con una capa BFF adaptada a las necesidades de cada
-          tipo de cliente (web, móvil). Simplifica el cliente: una sola llamada
-          agrega varios servicios internos.
+        snippet: "API Gateway + Backend for Frontend (BFF): Un punto de entrada único (API Gateway) enruta y agrega llamadas a servicios internos, con una capa BFF adaptada a las necesidades de cada tipo de cliente (web, móvil).\n Sistemas con múltiples clien"
+      - pattern_name: "CQRS (Command Query Responsibility Segregation)"
+        snippet: "CQRS (Command Query Responsibility Segregation): Separa el modelo de escritura (comandos) del modelo de lectura (consultas), permitiendo optimizar cada uno de forma independiente.\n Sistemas con patrones de lectura y escritura muy distintos "
 
   - id: evt-001
     nombre: "Notificaciones en tiempo real y procesamiento diferido"
     project_name: "PlataformaDeNotificaciones"
     descripcion: >-
-      El sistema recibe eventos de pedidos, envios y cambios de inventario, y
-      dispara notificaciones por email, push y SMS. No le importa al usuario
+      El sistema recibe eventos de pedidos, envíos y cambios de inventario, y
+      dispara notificaciones por email, push y SMS. Al usuario no le importa
       esperar: si un SMS tarda tres segundos en salir, no hay problema. Los picos
-      son irregulares, con rajadas unpredictables entre las 18 y las 21 horas. Las
+      son irregulares, con ráfagas impredecibles entre las 18 y las 21 horas. Las
       funciones son cortas y la empresa no quiere administrar servidores.
     citations:
       - pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
-        snippet: >-
-          Los componentes se comunican mediante eventos publicados a un bus o
-          cola, en vez de llamadas directas, favoreciendo el bajo acoplamiento
-          temporal. Bajo acoplamiento: los productores no conocen a los
-          consumidores.
+        snippet: "Arquitectura orientada a eventos (Event-Driven): Los componentes se comunican mediante eventos publicados a un bus o cola, en vez de llamadas directas, favoreciendo el bajo acoplamiento temporal.\n Sistemas con notificaciones en tiempo real,"
       - pattern_name: "Serverless (Function-as-a-Service)"
-        snippet: >-
-          La lógica se despliega como funciones individuales que ejecuta el
-          proveedor cloud bajo demanda, sin gestionar servidores directamente.
-          Cargas de trabajo intermitentes o impredecibles, equipos sin capacidad
-          de operar infraestructura propia.
+        snippet: "Serverless (Function-as-a-Service): La lógica se despliega como funciones individuales que ejecuta el proveedor cloud bajo demanda, sin gestionar servidores directamente.\n Cargas de trabajo intermitentes o impredecibles, equipos sin capacid"
+      - pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
+        snippet: "Arquitectura orientada a eventos (Event-Driven) - ventajas: Bajo acoplamiento: los productores no conocen a los consumidores; Buen ajuste natural para notificaciones y procesamiento asíncrono. Desventajas: Depurar el flujo completo de un ev"
       - pattern_name: "CQRS (Command Query Responsibility Segregation)"
-        snippet: >-
-          Separa el modelo de escritura (comandos) del modelo de lectura
-          (consultas), permitiendo optimizar cada uno de forma independiente.
-          Sistemas con patrones de lectura y escritura muy distintos entre sí.
+        snippet: "CQRS (Command Query Responsibility Segregation): Separa el modelo de escritura (comandos) del modelo de lectura (consultas), permitiendo optimizar cada uno de forma independiente.\n Sistemas con patrones de lectura y escritura muy distintos "
 
   - id: cpl-001
-    nombre: "Motor de pagos con exigencia de auditoria y separacion de lecturas"
+    nombre: "Motor de pagos con exigencia de auditoría y separación de lecturas"
     project_name: "CoreBancarioPagos"
     descripcion: >-
       Procesamiento de pagos y conciliación bancaria para una entidad financiera
@@ -148,45 +132,40 @@ casos:
       entre el modelo de escritura y el de lectura.
     citations:
       - pattern_name: "Event sourcing"
-        snippet: >-
-          Persiste eventos inmutables como fuente de verdad y reconstruye el
-          estado actual reproduciendo esos eventos. Auditoría fuerte, historial
-          completo, dominios financieros o transaccionales.
+        snippet: "Event sourcing: Persiste eventos inmutables como fuente de verdad y reconstruye el estado actual reproduciendo esos eventos.\n Auditoría fuerte, historial completo, dominios financieros o transaccionales.\n"
+      - pattern_name: "Event sourcing"
+        snippet: "Event sourcing - señales de decision: ¿Debes explicar exactamente cada cambio de estado por auditoría o cumplimiento? -> sí -> Event sourcing; ¿Necesitas reconstruir el estado de una entidad en una fecha pasada? -> sí -> Event sourcing; ¿El"
       - pattern_name: "CQRS (Command Query Responsibility Segregation)"
-        snippet: >-
-          Separa el modelo de escritura (comandos) del modelo de lectura
-          (consultas), permitiendo optimizar cada uno de forma independiente.
-          Modelos de lectura simplificados, adaptados exactamente a cada vista.
+        snippet: "CQRS (Command Query Responsibility Segregation): Separa el modelo de escritura (comandos) del modelo de lectura (consultas), permitiendo optimizar cada uno de forma independiente.\n Sistemas con patrones de lectura y escritura muy distintos "
+      - pattern_name: "Event sourcing"
+        snippet: "Event sourcing - ventajas: Auditoría completa: cada cambio queda registrado como evento inmutable; Permite reconstruir el estado en cualquier punto del tiempo (replay). Desventajas: Modelo mental más complejo que CRUD tradicional; Las consu"
+      - pattern_name: "CQRS (Command Query Responsibility Segregation)"
+        snippet: "CQRS (Command Query Responsibility Segregation) - ventajas: Permite optimizar y escalar lecturas y escrituras de forma independiente; Modelos de lectura simplificados, adaptados exactamente a cada vista. Desventajas: Añade complejidad de si"
 
   - id: mob-001
-    nombre: "Aplicacion movil con agregacion de datos de varios backends"
+    nombre: "Aplicación móvil con agregación de datos de varios backends"
     project_name: "SaludMovil"
     descripcion: >-
-      App movil para pacientes de una red de clinicas, con un backend ya
-      dividido en servicios de agenda, laboratorio, recetas y facturacion. Cada
+      App móvil para pacientes de una red de clínicas, con un backend ya
+      dividido en servicios de agenda, laboratorio, recetas y facturación. Cada
       pantalla de la app necesita combinar datos de dos o tres de esos servicios
-      y la respuesta no es la misma para un telefono que para el portal web del
-      laboratorio. Hay que centralizar autenticacion y rate limiting.
+      y la respuesta no es la misma para un teléfono que para el portal web del
+      laboratorio. Hay que centralizar autenticación y rate limiting.
     citations:
       - pattern_name: "API Gateway + Backend for Frontend (BFF)"
-        snippet: >-
-          Un punto de entrada único (API Gateway) enruta y agrega llamadas a
-          servicios internos, con una capa BFF adaptada a las necesidades de cada
-          tipo de cliente (web, móvil). Sistemas con múltiples clientes (web,
-          móvil) que consumen varios servicios backend y necesitan una capa de
-          agregación.
+        snippet: "API Gateway + Backend for Frontend (BFF): Un punto de entrada único (API Gateway) enruta y agrega llamadas a servicios internos, con una capa BFF adaptada a las necesidades de cada tipo de cliente (web, móvil).\n Sistemas con múltiples clien"
+      - pattern_name: "API Gateway + Backend for Frontend (BFF)"
+        snippet: "API Gateway + Backend for Frontend (BFF) - señales de decision: ¿Web y móvil necesitan respuestas distintas a partir de los mismos servicios internos? -> sí -> API Gateway + Backend for Frontend (BFF); ¿Cada pantalla del cliente requiere co"
       - pattern_name: "Microservicios"
-        snippet: >-
-          Divide el sistema en servicios pequeños e independientes, cada uno con
-          su propia base de datos y ciclo de despliegue, comunicados por red.
+        snippet: "Microservicios: Divide el sistema en servicios pequeños e independientes, cada uno con su propia base de datos y ciclo de despliegue, comunicados por red.\n Productos con múltiples equipos trabajando en paralelo, módulos con necesidades de e"
 
-  # --- Casos con RAG vacio -------------------------------------------------
+  # --- Casos con RAG vacío -------------------------------------------------
   # Miden el comportamiento cuando el recuperador no encuentra nada: el modelo
   # debe producir las tres secciones igual, sin inventar referencias [N].
   # Cualquier marcador [N] en la salida hace fallar `citas_validas`.
 
   - id: vacio-001
-    nombre: "Script interno sin encaje en ningun patron"
+    nombre: "Script interno sin encaje en ningún patrón"
     project_name: "GeneradorDeReportesPDF"
     descripcion: >-
       Utilidad interna que corre por cron a las 3 de la madrugada, lee un CSV
@@ -200,31 +179,73 @@ casos:
     nombre: "Prototipo desechable de una sola pantalla"
     project_name: "PrototipoBuscadorDocs"
     descripcion: >-
-      Demostradors para un evento interno: un buscador de documentos que indexa
-      unos PDFs de ejemplo y muestra resultados. Se armo en una tarde, se
-      demuestra el jueves y despues se borra. El objetivo es que funcione en la
+      Demostración para un evento interno: un buscador de documentos que indexa
+      unos PDFs de ejemplo y muestra resultados. Se armó en una tarde, se
+      demuestra el jueves y después se borra. El objetivo es que funcione en la
       notebook del presentador, sin concurrencia ni despliegue.
     citations: []
 
-  # --- Caso que no encaja en ningun patron, pero con contexto disponible ---
+  # --- Caso que no encaja en ningún patrón, pero con contexto disponible ---
   # El modelo tiene citas sobre microservicios y serverless, pero el proyecto no
-  # pide ninguno de los dos. Mide si alucina un patron o dice que no aplica.
+  # pide ninguno de los dos. OJO: como `descripcion` no llega al prompt, el
+  # modelo solo ve el project_name y los snippets; no tiene con qué juzgar si
+  # aplican. El caso mide si cita patrones por reflejo, no si razona bien
+  # (ver "Limitaciones honestas" en el README).
 
   - id: fuera-001
-    nombre: "Ajuste de curva de un motor fisico ya existant"
+    nombre: "Ajuste de curva de un motor físico ya existente"
     project_name: "TunerDeMotor"
     descripcion: >-
-      Programa de escritorio de una sola maquina, instalado en los PCs de un
-      taller mecanico, que calcula la curva de admision de un motor a partir de
-      datos de dinamometro. No hay red en el taller, no hay servidor, no hay
-      usuarios concurrentes. Corre en Windows sobre el mismo equipo del mecanico y
+      Programa de escritorio de una sola máquina, instalado en los PCs de un
+      taller mecánico, que calcula la curva de admisión de un motor a partir de
+      datos de dinamómetro. No hay red en el taller, no hay servidor, no hay
+      usuarios concurrentes. Corre en Windows sobre el mismo equipo del mecánico y
       todo el estado vive en un archivo local. Se entrega como un ejecutable.
     citations:
       - pattern_name: "Microservicios"
-        snippet: >-
-          Divide el sistema en servicios pequeños e independientes, cada uno con
-          su propia base de datos y ciclo de despliegue, comunicados por red.
+        snippet: "Microservicios: Divide el sistema en servicios pequeños e independientes, cada uno con su propia base de datos y ciclo de despliegue, comunicados por red.\n Productos con múltiples equipos trabajando en paralelo, módulos con necesidades de e"
       - pattern_name: "Serverless (Function-as-a-Service)"
-        snippet: >-
-          La lógica se despliega como funciones individuales que ejecuta el
-          proveedor cloud bajo demanda, sin gestionar servidores directamente.
+        snippet: "Serverless (Function-as-a-Service): La lógica se despliega como funciones individuales que ejecuta el proveedor cloud bajo demanda, sin gestionar servidores directamente.\n Cargas de trabajo intermitentes o impredecibles, equipos sin capacid"
+      - pattern_name: "Serverless (Function-as-a-Service)"
+        snippet: "Serverless (Function-as-a-Service) - ventajas: Sin gestión de servidores; se paga solo por ejecución real; Escala automáticamente ante picos de tráfico sin intervención manual. Desventajas: Cold starts pueden afectar la latencia en funcione"
+
+  # --- Camino de iteración ---------------------------------------------------
+  # El usuario rechaza una propuesta previa y pide un cambio. Es el camino que
+  # motiva fijar temperature=0 en `llm_loader` ("comparable entre
+  # iteraciones"): la misma propuesta previa + el mismo feedback deberían dar
+  # la misma propuesta nueva.
+
+  - id: iter-001
+    nombre: "Iteración: reemplazar microservicios por un despliegue único"
+    project_name: "ControlDeFlota"
+    descripcion: >-
+      Mismo escenario que mono-002. La primera propuesta sugirió microservicios;
+      el equipo la rechaza porque no puede operar infraestructura distribuida y
+      pide mantener un solo despliegue sin perder la opción de extraer la
+      facturación más adelante.
+    feedback: >-
+      No tenemos gente para operar infraestructura distribuida. Reemplazá los
+      microservicios por algo que se despliegue como una sola unidad, pero
+      dejando la facturación separada para poder extraerla después.
+    prior_content: |-
+      ## Componentes
+      - Servicio de rutas
+      - Servicio de seguimiento de vehículos
+      - Servicio de facturación
+      - API Gateway
+
+      ## Tecnologías
+      - Kubernetes
+      - Kafka
+      - PostgreSQL por servicio
+
+      ## Patrones
+      - Microservicios
+      - API Gateway
+    citations:
+      - pattern_name: "Monolito modular (Modular Monolith)"
+        snippet: "Monolito modular (Modular Monolith): Un único despliegue, pero organizado internamente en módulos con límites explícitos (bounded contexts), como paso intermedio antes de migrar a microservicios. Es una práctica de la industria, con Shopify"
+      - pattern_name: "Monolito modular (Modular Monolith)"
+        snippet: "Monolito modular (Modular Monolith) - ventajas: Mantiene la simplicidad operativa de un solo despliegue; Facilita una futura migración a microservicios si el proyecto crece. Desventajas: Requiere disciplina del equipo para no romper los lím"
+      - pattern_name: "Microservicios"
+        snippet: "Microservicios - no usar cuando: No es buena opción para equipos pequeños, presupuesto operativo limitado o dominios que todavía no tienen límites claros.\n"

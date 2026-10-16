@@ -7,48 +7,84 @@ de datos y no llama a un LLM. Eso lo hace testeable offline en CI.
 El runner de ejecucion arma el prompt con la funcion REAL de produccion
 (``app.core.proposal_generator._build_prompt``). Nunca se copia el texto del
 prompt aqui: si el prompt de produccion cambia, el golden set se entera solo.
+El costo de eso es que ``--dry-run`` y la corrida importan el backend: hace
+falta tener instalado ``requirements.txt`` (no hace falta ningun servicio
+corriendo: ni Postgres, ni PGVector, ni el modelo de embeddings).
 
 Uso rapido:
     python -m evals.runner --dry-run
-    python -m evals.runner --models gpt-oss-120b --repeats 5
+    python -m evals.runner --models openai/gpt-oss-120b --repeats 5
 
-Variables de entorno (mismos nombres que ``smoke_test_tool_calling.py``):
-    LLM_BASE_URL   p.ej. https://api.groq.com/openai/v1
-    LLM_API_KEY    clave del proveedor
-    LLM_MODEL      modelo por defecto si no se pasa --models
+Variables de entorno:
+    LLM_API_KEY    clave del proveedor. Si falta y el proveedor es el default
+                   de la app (Groq), se usa GROQ_API_KEY, igual que produccion.
+    LLM_BASE_URL   endpoint OpenAI-compatible. Default: DEFAULT_LLM_BASE_URL.
+    LLM_MODEL      modelo si no se pasa --models. Default: DEFAULT_LLM_MODEL.
+
+Exit codes:
+    0  la corrida midio y paso el gate (--min-ok-rate, todos los modelos
+       construidos, al menos un par (caso, modelo) con metricas).
+    1  la corrida no es confiable: ver el motivo impreso al final.
+    2  error de uso o de configuracion (flags, variables, --case inexistente).
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
+import hashlib
+import importlib.metadata
+import inspect
 import itertools
 import json
 import os
+import platform
 import re
 import statistics
+import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Dependencias de solo stdlib + pyyaml en este nivel, para que ``--dry-run`` y
-# los tests unitarios no dependan de langchain ni de la configuracion de la app.
 import yaml
 
 # --- Contrato del prompt de produccion ---------------------------------------
-# Estos tres encabezados son los literales de ``_build_prompt`` (en espanol,
-# con la tilde en "Tecnologias"). El prompt de produccion usa la forma con
-# tilde; el harness la refleja exactamente para que medir el contrato del
-# modelo no tenga desviaciones por "correccion" del scorer.
+# Estos tres encabezados son los literales de ``_build_prompt``, con la tilde
+# en "Tecnologías". El scorer compara sin normalizar acentos: responder
+# "Tecnologias" es incumplir el contrato y se mide como tal.
 SECCIONES_REQUERIDAS: tuple[str, ...] = ("Componentes", "Tecnologías", "Patrones")
 
 RUTA_CASES = Path(__file__).with_name("cases.yaml")
 RUTA_RESULTADOS = Path(__file__).with_name("results")
+RAIZ_REPO = Path(__file__).resolve().parent.parent
 
 # Espera base entre llamadas. El free tier de Groq son 30 RPM (2 s por request),
 # asi que 2.2 s deja margen. Ajustar con --sleep si el proveedor lo permite.
 SLEEP_POR_DEFECTO = 2.2
+
+# Reintentos ante 429. Las fallas por rate limit llegan en rafagas: si se
+# pierden sin reintentar, la muestra queda sesgada hacia los casos que tuvieron
+# suerte con el timing.
+REINTENTOS_POR_DEFECTO = 2
+
+# Fraccion minima de invocaciones exitosas para que la corrida cuente como
+# medicion. Con menos, las medias salen de una muestra que no es la planeada.
+MIN_OK_RATE_POR_DEFECTO = 0.9
+
+# Un rango de cita mas largo que esto (``[1-999]``) no es una cita plausible:
+# se cuentan solo los extremos para no inflar los marcadores.
+LARGO_MAX_RANGO_CITA = 20
+
+# Paquetes cuya version entra en la metadata de procedencia.
+PAQUETES_PROCEDENCIA = (
+    "langchain",
+    "langchain-core",
+    "langchain-openai",
+    "openai",
+    "pyyaml",
+)
 
 
 # =============================================================================
@@ -56,8 +92,11 @@ SLEEP_POR_DEFECTO = 2.2
 # =============================================================================
 
 _RE_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
-_RE_MARCADOR = re.compile(r"\[(\d+)\]")
-_RE_BULLET = re.compile(r"^\s*[-*]\s+\S")
+_RE_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_RE_CODIGO_INLINE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+# ``[1]``, ``[1, 2]``, ``[1-3]``, ``[1–3]`` y combinaciones (``[1, 3-4]``).
+_RE_MARCADOR = re.compile(r"\[(\d+(?:\s*[,\-–]\s*\d+)*)\]")
+_RE_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+\S")
 
 
 def _normalizar_heading(texto: str) -> str:
@@ -69,23 +108,70 @@ def _normalizar_heading(texto: str) -> str:
     return " ".join(texto.strip().split()).casefold()
 
 
-def _headings(markdown: str) -> list[tuple[int, int, str]]:
+def _sin_codigo(markdown: str) -> list[str]:
+    """Lineas del markdown con el codigo borrado, conservando los indices.
+
+    Un ``## Algo`` dentro de un bloque de codigo no es un encabezado, y un
+    ``arr[0]`` no es una cita. Las lineas de un bloque cercado (incluidas las
+    cercas) quedan vacias y el codigo inline se elimina de la linea.
+    """
+    salida: list[str] = []
+    cerca_abierta: str | None = None
+    for linea in markdown.splitlines():
+        match = _RE_FENCE.match(linea)
+        if cerca_abierta is not None:
+            if match and match.group(1)[0] == cerca_abierta[0] and len(
+                match.group(1)
+            ) >= len(cerca_abierta):
+                cerca_abierta = None
+            salida.append("")
+            continue
+        if match:
+            cerca_abierta = match.group(1)
+            salida.append("")
+            continue
+        salida.append(_RE_CODIGO_INLINE.sub("", linea))
+    return salida
+
+
+def _headings(lineas: list[str]) -> list[tuple[int, int, str]]:
     """Devuelve ``(indice_linea, nivel, texto)`` de cada encabezado markdown."""
     encontrados: list[tuple[int, int, str]] = []
-    for indice, linea in enumerate(markdown.splitlines()):
+    for indice, linea in enumerate(lineas):
         match = _RE_HEADING.match(linea)
         if match:
             encontrados.append((indice, len(match.group(1)), match.group(2).strip()))
     return encontrados
 
 
-def marcadores_cita(markdown: str) -> list[int]:
-    """Indices numericos ``[N]`` citados en el texto, en orden de aparicion.
+def _expandir_marcador(contenido: str) -> list[int]:
+    """``"1, 3-4"`` -> ``[1, 3, 4]``. Un rango absurdo cuenta solo sus extremos."""
+    numeros: list[int] = []
+    for parte in contenido.split(","):
+        extremos = [int(n) for n in re.split(r"\s*[\-–]\s*", parte.strip())]
+        if len(extremos) == 1:
+            numeros.append(extremos[0])
+            continue
+        desde, hasta = extremos[0], extremos[-1]
+        if desde <= hasta and hasta - desde <= LARGO_MAX_RANGO_CITA:
+            numeros.extend(range(desde, hasta + 1))
+        else:
+            numeros.extend([desde, hasta])
+    return numeros
 
-    Solo acepta numeros: un enlace markdown como ``[Componentes](#seccion)`` no
-    es una cita y no debe contarse.
+
+def marcadores_cita(markdown: str) -> list[int]:
+    """Indices numericos citados en el texto, en orden de aparicion.
+
+    Acepta ``[N]``, listas ``[1, 2]`` y rangos ``[1-3]``. Ignora el codigo
+    (``arr[0]`` en un bloque no es una cita) y el texto no numerico: un enlace
+    como ``[Componentes](#seccion)`` no se cuenta.
     """
-    return [int(n) for n in _RE_MARCADOR.findall(markdown)]
+    texto = "\n".join(_sin_codigo(markdown or ""))
+    marcadores: list[int] = []
+    for contenido in _RE_MARCADOR.findall(texto):
+        marcadores.extend(_expandir_marcador(contenido))
+    return marcadores
 
 
 def score_output(markdown: str, caso: dict) -> dict[str, Any]:
@@ -93,17 +179,20 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
 
     Funcion pura: no hace red, no usa DB, no llama al LLM.
 
-    Returns:
-        dict con ``secciones_ok``, ``orden_ok``, ``sin_secciones_extra``,
-        ``citas_validas``, ``bullets_por_seccion``, ``largo``, ``marcadores`` y
-        ``pass_estructural``.
+    ``pass_estructural`` exige cinco condiciones: las tres secciones
+    (``secciones_ok``), en orden (``orden_ok``), sin encabezados extra
+    (``sin_secciones_extra``), sin texto antes de la primera seccion
+    (``sin_preambulo``) y con todas las citas dentro de rango
+    (``citas_validas``). ``cierre_suelto`` es informativo y no entra al pass.
     """
     markdown = markdown or ""
     citas = caso.get("citations") or []
     total_citas = len(citas)
     requeridas = {_normalizar_heading(s) for s in SECCIONES_REQUERIDAS}
 
-    headings = _headings(markdown)
+    lineas = _sin_codigo(markdown)
+    lineas_originales = markdown.splitlines()
+    headings = _headings(lineas)
     de_nivel_2 = [(i, t) for i, nivel, t in headings if nivel == 2]
 
     # Presencia de cada seccion obligatoria (primera aparicion).
@@ -124,21 +213,40 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
         orden = [primera[_normalizar_heading(s)] for s in SECCIONES_REQUERIDAS]
         orden_ok = orden == sorted(orden) and len(set(orden)) == len(orden)
 
-    # Un encabezado `##` es "extra" si su texto no es una de las secciones
-    # obligatorias. Repetir una obligatoria no cuenta como extra, pero se
-    # reporta aparte en `secciones_duplicadas`.
+    # Extra: cualquier `##` que no sea obligatorio y cualquier `#` (H1). Repetir
+    # una obligatoria no cuenta como extra; se reporta en `secciones_duplicadas`.
     extras = [t for _, t in de_nivel_2 if _normalizar_heading(t) not in requeridas]
+    extras += [f"# {t}" for _, nivel, t in headings if nivel == 1]
     sin_secciones_extra = not extras
 
-    # Citas: todos los marcadores [N] deben caer dentro del rango provisto.
-    # Con citations vacias, cualquier marcador es invalido (fallo esperado del
+    # Preambulo: cualquier contenido (incluido un H1 o un bloque de codigo)
+    # antes del primer `##`. El prompt pide responder "exactamente" con las
+    # tres secciones.
+    primer_h2 = de_nivel_2[0][0] if de_nivel_2 else len(lineas_originales)
+    sin_preambulo = not any(l.strip() for l in lineas_originales[:primer_h2])
+
+    # Cierre suelto: la ultima linea con contenido no es un bullet ni la
+    # continuacion indentada de uno (p.ej. "Espero que te sirva"). Es
+    # informativo: un parrafo final legitimo dentro de Patrones tambien lo
+    # dispara, asi que no se usa para el pass.
+    ultima = next((l for l in reversed(lineas) if l.strip()), "")
+    cierre_suelto = bool(
+        de_nivel_2
+        and ultima.strip()
+        and not _RE_BULLET.match(ultima)
+        and not ultima.startswith((" ", "\t"))
+        and not _RE_HEADING.match(ultima)
+    )
+
+    # Citas: todos los marcadores deben caer dentro del rango provisto. Con
+    # citations vacias, cualquier marcador es invalido (fallo esperado del
     # modelo, no del scorer).
     marcadores = marcadores_cita(markdown)
     fuera_de_rango = [n for n in marcadores if n < 1 or n > total_citas]
     citas_validas = not fuera_de_rango
 
-    # Bullets por seccion: cuenta de lineas con "- " o "* " dentro del tramo
-    # que va desde el encabezado de la seccion hasta el siguiente `##`.
+    # Bullets por seccion: lineas con `-`, `*`, `+`, `•` o `1.` dentro del
+    # tramo que va desde el encabezado de la seccion hasta el siguiente `##`.
     bullets_por_seccion: dict[str, int] = {}
     for seccion in SECCIONES_REQUERIDAS:
         clave = _normalizar_heading(seccion)
@@ -146,24 +254,28 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
             bullets_por_seccion[seccion] = 0
             continue
         inicio = primera[clave]
-        fin = len(markdown.splitlines())
-        for indice, _ in de_nivel_2:
-            if indice > inicio:
-                fin = indice
-                break
-        lineas = markdown.splitlines()[inicio + 1 : fin]
-        bullets_por_seccion[seccion] = sum(1 for l in lineas if _RE_BULLET.match(l))
+        fin = next((i for i, _ in de_nivel_2 if i > inicio), len(lineas))
+        bullets_por_seccion[seccion] = sum(
+            1 for l in lineas[inicio + 1 : fin] if _RE_BULLET.match(l)
+        )
 
     pass_estructural = bool(
-        secciones_ok and orden_ok and sin_secciones_extra and citas_validas
+        secciones_ok
+        and orden_ok
+        and sin_secciones_extra
+        and sin_preambulo
+        and citas_validas
     )
 
     return {
+        "vacio": not markdown.strip(),
         "secciones_ok": secciones_ok,
         "orden_ok": orden_ok,
         "sin_secciones_extra": sin_secciones_extra,
+        "sin_preambulo": sin_preambulo,
         "citas_validas": citas_validas,
         "pass_estructural": pass_estructural,
+        "cierre_suelto": cierre_suelto,
         "bullets_por_seccion": bullets_por_seccion,
         "largo": len(markdown),
         "marcadores": marcadores,
@@ -179,7 +291,11 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
 
 
 def cargar_casos(ruta: Path = RUTA_CASES) -> list[dict]:
-    """Lee ``cases.yaml`` y valida el schema minimo de cada caso."""
+    """Lee ``cases.yaml`` y valida el schema minimo de cada caso.
+
+    ``citations`` ausente o ``null`` se toma como lista vacia. ``feedback`` y
+    ``prior_content`` son opcionales y cubren el camino de iteracion.
+    """
     with ruta.open(encoding="utf-8") as fh:
         datos = yaml.safe_load(fh)
 
@@ -204,9 +320,15 @@ def cargar_casos(ruta: Path = RUTA_CASES) -> list[dict]:
             raise ValueError(f"{where}: id duplicado")
         vistos.add(caso["id"])
 
+        for campo in ("feedback", "prior_content"):
+            valor = caso.get(campo)
+            if valor is not None and (not isinstance(valor, str) or not valor.strip()):
+                raise ValueError(f"{where}: '{campo}' debe ser texto no vacio u omitirse")
+            caso[campo] = valor
+
         citations = caso.get("citations")
         if citations is None:
-            caso["citations"] = []
+            citations = []
         if not isinstance(citations, list):
             raise ValueError(f"{where}: 'citations' debe ser una lista")
         for posicion_cita, cita in enumerate(citations, start=1):
@@ -217,22 +339,33 @@ def cargar_casos(ruta: Path = RUTA_CASES) -> list[dict]:
                     raise ValueError(
                         f"{where}: la cita #{posicion_cita} no tiene '{campo}'"
                     )
+        caso["citations"] = citations
 
     return casos
 
 
-def dry_run(casos: list[dict]) -> int:
-    """Valida el corpus e imprime el detalle. No necesita API key ni DB."""
-    print(f"Casos cargados: {len(casos)}\n")
-    print(
-        f"{'id':<12} {'proyecto':<26} {'citas':>5}  {'desc':>5}  nombre"
+def armar_prompt(caso: dict) -> str:
+    """Prompt de produccion para el caso. Unico punto que llama a ``_build_prompt``."""
+    from app.core.proposal_generator import _build_prompt
+
+    return _build_prompt(
+        caso["citations"],
+        caso.get("prior_content"),
+        caso.get("feedback"),
+        caso["project_name"],
     )
+
+
+def dry_run(casos: list[dict]) -> int:
+    """Valida el corpus y arma el prompt de cada caso. Sin API key ni red."""
+    print(f"Casos cargados: {len(casos)}\n")
+    print(f"{'id':<12} {'proyecto':<26} {'citas':>5}  {'iter':>4}  nombre")
     print("-" * 100)
     for caso in casos:
+        iteracion = "si" if caso.get("feedback") or caso.get("prior_content") else "-"
         print(
             f"{caso['id']:<12} {caso['project_name']:<26} "
-            f"{len(caso['citations']):>5}  {len(caso['descripcion']):>5}  "
-            f"{caso['nombre']}"
+            f"{len(caso['citations']):>5}  {iteracion:>4}  {caso['nombre']}"
         )
 
     sin_citas = [c["id"] for c in casos if not c["citations"]]
@@ -243,31 +376,27 @@ def dry_run(casos: list[dict]) -> int:
         f"(comparacion estricta, sin normalizar acentos)"
     )
 
-    # Verificacion obligatoria del prompt real: confirma que el harness
-    # puede construir el prompt que mandaria al LLM. Si falla, NO es un
-    # "AVISO" silencioso: el runner nunca podra ejecutar este caso, asi
-    # que el dry-run debe fallar loud (exit code != 0). Antes del fix B1
-    # la llamada tenia un quinto argumento que la firma no aceptaba, asi
-    # que cada invocacion levantaba TypeError, el except lo tragaba y el
-    # dry-run reportaba 0 con un mensaje de "AVISO" -- falso verde.
-    from app.core.proposal_generator import _build_prompt
-
-    try:
-        muestra = _build_prompt(
-            casos[0]["citations"],
-            None,
-            None,
-            casos[0]["project_name"],
-        )
-    except Exception as exc:  # noqa: BLE001 -- queremos reportar y abortar
-        print(
-            f"\n[ERROR] No se pudo construir el prompt con _build_prompt: {exc}",
-            file=sys.stderr,
-        )
+    # Se arma el prompt real de CADA caso: si alguno no se puede construir, el
+    # runner nunca podra medirlo, asi que el dry-run falla con exit 1 en vez de
+    # avisar y seguir (el falso verde del bug B1).
+    errores: list[str] = []
+    prompts: dict[str, str] = {}
+    for caso in casos:
+        try:
+            prompts[caso["id"]] = armar_prompt(caso)
+        except Exception as exc:  # noqa: BLE001 -- queremos reportar y abortar
+            errores.append(f"{caso['id']}: {type(exc).__name__}: {exc}")
+    if errores:
+        print("\n[ERROR] No se pudo construir el prompt con _build_prompt:", file=sys.stderr)
+        for error in errores:
+            print(f"  - {error}", file=sys.stderr)
         return 1
-    print(f"\n_build_prompt importado OK. Muestra ({len(muestra)} caracteres):")
+
+    primero = casos[0]["id"]
+    print(f"\nPrompts armados: {len(prompts)}. Muestra de '{primero}' "
+          f"({len(prompts[primero])} caracteres):")
     print("-" * 60)
-    print(muestra)
+    print(prompts[primero])
 
     print("\n[OK] Corpus valido. No se realizo ninguna llamada de red.")
     return 0
@@ -280,12 +409,20 @@ def dry_run(casos: list[dict]) -> int:
 
 def _jaccard(a: set[int], b: set[int]) -> float:
     """Jaccard de dos conjuntos de marcadores. Dos vacios = 1.0 (coinciden)."""
-    if not a and not b:
-        return 1.0
     union = a | b
     if not union:
         return 1.0
     return len(a & b) / len(union)
+
+
+def _normalizar_espacios(markdown: str) -> str:
+    """Quita espacios al final de linea, lineas vacias repetidas y bordes."""
+    lineas = [l.rstrip() for l in markdown.strip().splitlines()]
+    compactas: list[str] = []
+    for linea in lineas:
+        if linea or (compactas and compactas[-1]):
+            compactas.append(linea)
+    return "\n".join(compactas)
 
 
 def calcular_variabilidad(
@@ -293,97 +430,179 @@ def calcular_variabilidad(
 ) -> dict[str, Any]:
     """Agrega los repeats de un mismo (caso, modelo) en metricas de variabilidad.
 
-    Solo entra lo que salio bien; los fallos se excluyen del calculo.
+    Solo entra lo que salio bien; los fallos se excluyen del calculo. Las
+    metricas que necesitan pares (o una dispersion) quedan en ``None`` con
+    menos de dos repeats exitosos: un 0.0 ahi seria un "estable" inventado.
     """
-    exitosas = [
-        e
-        for e in ejecuciones
-        if e.get("ok") and e["caso_id"] == caso_id and e["modelo"] == modelo
-    ]
+    propias = [e for e in ejecuciones if e["caso_id"] == caso_id and e["modelo"] == modelo]
+    exitosas = [e for e in propias if e.get("ok")]
     n = len(exitosas)
     resumen: dict[str, Any] = {
         "caso_id": caso_id,
         "modelo": modelo,
         "repeats_ok": n,
-        "repeats_fallidos": sum(
-            1
-            for e in ejecuciones
-            if not e.get("ok") and e["caso_id"] == caso_id and e["modelo"] == modelo
-        ),
+        "repeats_fallidos": len(propias) - n,
+        "pares": n * (n - 1) // 2,
+        "tasa_pass_estructural": None,
+        "largo_medio": None,
+        "desvio_largo": None,
+        "salidas_distintas": None,
         "tasa_exacta": None,
+        "tasa_exacta_normalizada": None,
+        "similitud_media": None,
         "acuerdo_estructural": None,
         "solapamiento_citas": None,
-        "desvio_largo": 0.0,
-        "largo_medio": 0.0,
     }
     if n == 0:
         return resumen
 
     largos = [e["score"]["largo"] for e in exitosas]
     resumen["largo_medio"] = statistics.fmean(largos)
-    resumen["desvio_largo"] = statistics.pstdev(largos) if n > 1 else 0.0
-    resumen["tasa_pas_estructural"] = (
-        statistics.fmean(1.0 if e["score"]["pass_estructural"] else 0.0 for e in exitosas)
+    resumen["salidas_distintas"] = len({e["markdown"] for e in exitosas})
+    resumen["tasa_pass_estructural"] = statistics.fmean(
+        1.0 if e["score"]["pass_estructural"] else 0.0 for e in exitosas
     )
 
     if n < 2:
         return resumen
 
-    pares = list(itertools.combinations(range(n), 2))
+    resumen["desvio_largo"] = statistics.pstdev(largos)
+    pares = list(itertools.combinations(exitosas, 2))
     resumen["tasa_exacta"] = statistics.fmean(
-        1.0 if exitosas[i]["markdown"] == exitosas[j]["markdown"] else 0.0
-        for i, j in pares
+        1.0 if a["markdown"] == b["markdown"] else 0.0 for a, b in pares
+    )
+    resumen["tasa_exacta_normalizada"] = statistics.fmean(
+        1.0
+        if _normalizar_espacios(a["markdown"]) == _normalizar_espacios(b["markdown"])
+        else 0.0
+        for a, b in pares
+    )
+    resumen["similitud_media"] = statistics.fmean(
+        difflib.SequenceMatcher(None, a["markdown"], b["markdown"], autojunk=False).ratio()
+        for a, b in pares
     )
     resumen["acuerdo_estructural"] = statistics.fmean(
         1.0
-        if exitosas[i]["score"]["pass_estructural"]
-        == exitosas[j]["score"]["pass_estructural"]
+        if a["score"]["pass_estructural"] == b["score"]["pass_estructural"]
         else 0.0
-        for i, j in pares
+        for a, b in pares
     )
     resumen["solapamiento_citas"] = statistics.fmean(
-        _jaccard(
-            set(exitosas[i]["score"]["marcadores"]),
-            set(exitosas[j]["score"]["marcadores"]),
-        )
-        for i, j in pares
+        _jaccard(set(a["score"]["marcadores"]), set(b["score"]["marcadores"]))
+        for a, b in pares
     )
     return resumen
 
 
 def resumir_por_modelo(variabilidad: list[dict], ejecuciones: list[dict]) -> dict:
-    """Medias de cada métrica, agrupadas por modelo, sobre todos los casos."""
+    """Medias de cada metrica por modelo, solo sobre los casos medibles.
+
+    Un caso es medible con dos o mas repeats exitosos. Los casos sin datos no
+    entran a ninguna media (antes aportaban un ``desvio_largo`` de 0.0 que
+    tiraba el resumen hacia "estable").
+    """
     modelos = sorted({v["modelo"] for v in variabilidad})
     resumen: dict[str, Any] = {}
     for modelo in modelos:
         filas = [v for v in variabilidad if v["modelo"] == modelo]
-        propias = [
-            e for e in ejecuciones if e.get("ok") and e["modelo"] == modelo
-        ]
+        medibles = [f for f in filas if f["repeats_ok"] >= 2]
+        propias = [e for e in ejecuciones if e["modelo"] == modelo]
+        exitosas = [e for e in propias if e.get("ok")]
 
         def _media(clave: str) -> float | None:
-            valores = [f[clave] for f in filas if f.get(clave) is not None]
+            valores = [f[clave] for f in medibles if f.get(clave) is not None]
             return statistics.fmean(valores) if valores else None
 
         resumen[modelo] = {
             "casos": len(filas),
-            "ejecuciones_ok": len(propias),
-            "ejecuciones_fallidas": sum(
-                1 for e in ejecuciones if not e.get("ok") and e["modelo"] == modelo
+            "casos_medibles": len(medibles),
+            # `acuerdo_estructural` alto puede ser "pasa siempre" o "falla
+            # siempre": estos dos conteos dicen cual de las dos.
+            "casos_pass_siempre": sum(
+                1 for f in medibles if f["tasa_pass_estructural"] == 1.0
             ),
-            "tasa_pas_estructural": (
+            "casos_falla_siempre": sum(
+                1 for f in medibles if f["tasa_pass_estructural"] == 0.0
+            ),
+            "ejecuciones": len(propias),
+            "ejecuciones_ok": len(exitosas),
+            "ejecuciones_fallidas": len(propias) - len(exitosas),
+            "tasa_pass_estructural": (
                 statistics.fmean(
-                    1.0 if e["score"]["pass_estructural"] else 0.0 for e in propias
+                    1.0 if e["score"]["pass_estructural"] else 0.0 for e in exitosas
                 )
-                if propias
+                if exitosas
                 else None
             ),
             "tasa_exacta": _media("tasa_exacta"),
+            "tasa_exacta_normalizada": _media("tasa_exacta_normalizada"),
+            "similitud_media": _media("similitud_media"),
             "acuerdo_estructural": _media("acuerdo_estructural"),
             "solapamiento_citas": _media("solapamiento_citas"),
             "desvio_largo": _media("desvio_largo"),
         }
     return resumen
+
+
+# =============================================================================
+# Procedencia
+# =============================================================================
+
+
+def _sha256(texto: str | bytes) -> str:
+    datos = texto.encode("utf-8") if isinstance(texto, str) else texto
+    return hashlib.sha256(datos).hexdigest()
+
+
+def _git(*args: str) -> str | None:
+    try:
+        salida = subprocess.run(
+            ["git", *args],
+            cwd=RAIZ_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return salida.stdout.strip()
+
+
+def _version(paquete: str) -> str | None:
+    try:
+        return importlib.metadata.version(paquete)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def temperatura_efectiva(modelo: str, temperature: float) -> float | None:
+    """La temperatura que de verdad viaja al proveedor; ``None`` si se omite.
+
+    Para la serie ``o*`` el kwarg no se manda y el proveedor aplica la suya
+    (1). Registrar la solicitada en ese caso seria mentir en la metadata.
+    """
+    from app.core.llm_loader import _acepta_temperature
+
+    return temperature if _acepta_temperature(modelo) else None
+
+
+def procedencia(prompts: dict[str, str]) -> dict[str, Any]:
+    """Lo necesario para auditar o reproducir un baseline."""
+    from app.core.proposal_generator import _build_prompt
+
+    estado = _git("status", "--porcelain")
+    return {
+        "git_commit": _git("rev-parse", "HEAD"),
+        "git_sucio": bool(estado) if estado is not None else None,
+        "cases_yaml_sha256": _sha256(RUTA_CASES.read_bytes()),
+        "build_prompt_fuente_sha256": _sha256(inspect.getsource(_build_prompt)),
+        "prompts_sha256": {cid: _sha256(p) for cid, p in prompts.items()},
+        "python": platform.python_version(),
+        "plataforma": platform.platform(),
+        "paquetes": {p: _version(p) for p in PAQUETES_PROCEDENCIA},
+        "argv": sys.argv[1:],
+    }
 
 
 # =============================================================================
@@ -398,8 +617,7 @@ def construir_modelo(modelo: str, base_url: str, api_key: str, temperature: floa
     ``app/core/llm_loader.py``; aca queda parametrizable para poder medir como
     se comporta el corpus con otros valores. La construccion del modelo (y la
     omision de ``temperature`` para la serie ``o*``) se delega a
-    ``_build_chat_model`` para no duplicar la regla y reventar con un 400 si
-    el corpus incluye razonadores.
+    ``_build_chat_model`` para no duplicar la regla.
     """
     from app.core.llm_loader import _build_chat_model
 
@@ -411,140 +629,266 @@ def construir_modelo(modelo: str, base_url: str, api_key: str, temperature: floa
     )
 
 
+def resolver_proveedor(env: dict[str, str]) -> tuple[str, str, str]:
+    """``(base_url, api_key, modelo_default)`` con los mismos defaults que la app.
+
+    Sin ``LLM_BASE_URL`` se usa el endpoint default de la app (Groq), y ahi la
+    credencial puede venir de ``GROQ_API_KEY``, la misma variable que lee
+    produccion. Contra otro endpoint hace falta ``LLM_API_KEY`` explicita: la
+    clave de Groq no se manda a un tercero.
+    """
+    from app.core.llm_loader import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+
+    base_url = env.get("LLM_BASE_URL", "").strip() or DEFAULT_LLM_BASE_URL
+    api_key = env.get("LLM_API_KEY", "").strip()
+    if not api_key and base_url.rstrip("/") == DEFAULT_LLM_BASE_URL.rstrip("/"):
+        api_key = env.get("GROQ_API_KEY", "").strip()
+    modelo = env.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL
+    return base_url, api_key, modelo
+
+
 def _es_rate_limit(exc: Exception) -> bool:
     """Detecta 429 sin depender del SDK del proveedor."""
+    if getattr(exc, "status_code", None) == 429:
+        return True
     texto = str(exc).lower()
     return "429" in texto or "rate limit" in texto or "too many requests" in texto
 
 
+def _contenido(respuesta: Any) -> str:
+    """Normaliza la respuesta (o un chunk) del chat a texto plano."""
+    contenido = getattr(respuesta, "content", respuesta)
+    if isinstance(contenido, str):
+        return contenido
+    if isinstance(contenido, list):
+        partes = []
+        for bloque in contenido:
+            if isinstance(bloque, str):
+                partes.append(bloque)
+            elif isinstance(bloque, dict) and isinstance(bloque.get("text"), str):
+                partes.append(bloque["text"])
+        return "".join(partes)
+    if contenido is None:
+        return ""
+    return str(contenido)
+
+
+def _invocar(chat: Any, prompt: str, stream_usage: bool) -> dict[str, Any]:
+    """Una llamada al modelo por streaming, como ``generate_stream`` en produccion.
+
+    Concatena el contenido de los chunks igual que produccion y suma los
+    chunks para recuperar ``finish_reason`` y ``usage`` (que llegan en el
+    ultimo). ``finish_reason == "length"`` es la firma de un modelo de
+    razonamiento que se quedo sin presupuesto de tokens.
+    """
+    kwargs = {"stream_usage": True} if stream_usage else {}
+    partes: list[str] = []
+    agregado: Any = None
+    for chunk in chat.stream(prompt, **kwargs):
+        texto = _contenido(chunk)
+        if texto:
+            partes.append(texto)
+        try:
+            agregado = chunk if agregado is None else agregado + chunk
+        except TypeError:
+            agregado = chunk
+
+    metadata = getattr(agregado, "response_metadata", None)
+    usage = getattr(agregado, "usage_metadata", None)
+    return {
+        "markdown": "".join(partes),
+        "finish_reason": metadata.get("finish_reason") if isinstance(metadata, dict) else None,
+        "usage": dict(usage) if isinstance(usage, dict) else None,
+    }
+
+
+def _ejecutar_una(
+    chat: Any, prompt: str, caso: dict, args: argparse.Namespace
+) -> dict[str, Any]:
+    """Invoca con reintentos ante 429 y puntua. Nunca lanza."""
+    intentos = 0
+    while True:
+        intentos += 1
+        started = time.perf_counter()
+        try:
+            respuesta = _invocar(chat, prompt, args.stream_usage)
+        except Exception as exc:  # noqa: BLE001 -- seguir ante 429/500/timeout
+            mensaje = f"{type(exc).__name__}: {exc}"
+            if _es_rate_limit(exc) and intentos <= args.retries:
+                espera = max(args.sleep, 1.0) * 2**intentos
+                print(f"    rate limit (intento {intentos}): esperando {espera:.1f}s")
+                time.sleep(espera)
+                continue
+            return {"ok": False, "error": mensaje, "intentos": intentos}
+
+        ms = int((time.perf_counter() - started) * 1000)
+        markdown = respuesta["markdown"]
+        resultado: dict[str, Any] = {
+            "intentos": intentos,
+            "latencia_ms": ms,
+            "markdown": markdown,
+            "finish_reason": respuesta["finish_reason"],
+            "usage": respuesta["usage"],
+        }
+        # Una salida vacia no es una propuesta: si contara como exito, tres
+        # vacias darian exacta = acuerdo = citas = 1.0, "reproducibilidad
+        # perfecta" de nada. Produccion la trata igual ("LLM returned no
+        # content").
+        if not markdown.strip():
+            resultado.update(
+                ok=False,
+                error=f"contenido vacio (finish_reason={respuesta['finish_reason']})",
+            )
+            return resultado
+        resultado.update(ok=True, score=score_output(markdown, caso))
+        return resultado
+
+
+def _evaluar_gate(
+    ejecuciones: list[dict],
+    planeadas: int,
+    errores_construccion: list[dict],
+    variabilidad: list[dict],
+    min_ok_rate: float,
+) -> list[str]:
+    """Motivos por los que la corrida no vale como medicion. Vacio = paso."""
+    motivos: list[str] = []
+    exitosas = sum(1 for e in ejecuciones if e.get("ok"))
+    tasa_ok = exitosas / planeadas if planeadas else 0.0
+    if errores_construccion:
+        nombres = ", ".join(e["modelo"] for e in errores_construccion)
+        motivos.append(f"no se pudo construir: {nombres}")
+    if exitosas == 0:
+        motivos.append("ninguna invocacion fue exitosa")
+    elif tasa_ok < min_ok_rate:
+        motivos.append(
+            f"tasa de exito {tasa_ok:.1%} ({exitosas}/{planeadas}) "
+            f"por debajo de --min-ok-rate {min_ok_rate:.0%}"
+        )
+    if not any(v["repeats_ok"] >= 2 for v in variabilidad):
+        motivos.append("ningun par (caso, modelo) tuvo 2 repeats exitosos: no hay metricas")
+    return motivos
+
+
 def ejecutar_corrida(args: argparse.Namespace) -> int:
     """Corre el golden set completo. Un caso que falla no aborta la corrida."""
-    from app.core.proposal_generator import _build_prompt
-
     casos = cargar_casos()
     por_id = {c["id"]: c for c in casos}
-    casos_seleccionados = [por_id[cid] for cid in args.case] if args.case else casos
+    if args.case:
+        desconocidos = [cid for cid in args.case if cid not in por_id]
+        if desconocidos:
+            print(
+                f"--case desconocido: {', '.join(desconocidos)}\n"
+                f"Casos validos: {', '.join(por_id)}",
+                file=sys.stderr,
+            )
+            return 2
+        casos_seleccionados = [por_id[cid] for cid in dict.fromkeys(args.case)]
+    else:
+        casos_seleccionados = casos
 
-    base_url = os.getenv("LLM_BASE_URL", "").strip()
-    api_key = os.getenv("LLM_API_KEY", "").strip()
-
-    faltantes = [
-        nombre
-        for nombre, valor in (("LLM_BASE_URL", base_url), ("LLM_API_KEY", api_key))
-        if not valor
-    ]
-    if faltantes:
+    base_url, api_key, modelo_default = resolver_proveedor(dict(os.environ))
+    if not api_key:
         print(
-            "Faltan variables de entorno: "
-            + ", ".join(faltantes)
-            + "\nDefinelas o usa --dry-run para validar el corpus sin red.",
+            "Falta la API key: defini LLM_API_KEY (o GROQ_API_KEY si usas el "
+            "endpoint default de Groq).\n"
+            "Usa --dry-run para validar el corpus sin red.",
             file=sys.stderr,
         )
         return 2
 
-    modelos = args.models.split(",") if args.models else [os.getenv("LLM_MODEL", "")]
-    modelos = [m.strip() for m in modelos if m.strip()]
+    modelos = args.models.split(",") if args.models else [modelo_default]
+    modelos = list(dict.fromkeys(m.strip() for m in modelos if m.strip()))
     if not modelos:
-        print("Falta LLM_MODEL o --models", file=sys.stderr)
+        print("--models no contiene ningun modelo", file=sys.stderr)
         return 2
 
-    print(f"Proveedor : {base_url}")
-    print(f"Modelos   : {', '.join(modelos)}")
-    print(f"Casos     : {len(casos_seleccionados)}")
-    print(f"Repeats   : {args.repeats}")
+    # Los prompts se arman una vez: son deterministas y su hash va a la
+    # metadata. Si uno no se puede armar, la corrida no tiene sentido.
+    try:
+        prompts = {c["id"]: armar_prompt(c) for c in casos_seleccionados}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ERROR] No se pudo construir el prompt: {exc}", file=sys.stderr)
+        return 1
+
+    planeadas = len(casos_seleccionados) * len(modelos) * args.repeats
+    print(f"Proveedor  : {base_url}")
+    print(f"Modelos    : {', '.join(modelos)}")
+    print(f"Casos      : {len(casos_seleccionados)}")
+    print(f"Repeats    : {args.repeats} (intercalados: repeat > caso > modelo)")
     print(f"Temperatura: {args.temperature}")
-    print(f"Espera    : {args.sleep}s entre llamadas")
-    total = len(casos_seleccionados) * len(modelos) * args.repeats
-    print(f"Total de invocaciones: {total}\n")
+    print(f"Espera     : {args.sleep}s entre llamadas, {args.retries} reintentos ante 429")
+    print(f"Total de invocaciones: {planeadas}\n")
 
-    ejecuciones: list[dict] = []
+    chats: dict[str, Any] = {}
+    errores_construccion: list[dict] = []
     for modelo in modelos:
+        if "groq.com" in base_url and modelo.startswith("gpt-oss"):
+            print(f"[AVISO] Groq publica '{modelo}' como 'openai/{modelo}'.")
         try:
-            chat = construir_modelo(modelo, base_url, api_key, args.temperature)
+            chats[modelo] = construir_modelo(modelo, base_url, api_key, args.temperature)
         except Exception as exc:  # noqa: BLE001 -- un modelo malo no corta todo
-            print(f"[ERROR] No se pudo construir el modelo '{modelo}': {exc}\n")
-            continue
+            mensaje = f"{type(exc).__name__}: {exc}"
+            print(f"[ERROR] No se pudo construir el modelo '{modelo}': {mensaje}")
+            errores_construccion.append({"modelo": modelo, "error": mensaje})
 
-        for caso in casos_seleccionados:
-            for repeat in range(1, args.repeats + 1):
-                marca = f"[{caso['id']} | {modelo} | repeat {repeat}/{args.repeats}]"
-                try:
-                    prompt = _build_prompt(
-                        caso["citations"],
-                        None,
-                        None,
-                        caso["project_name"],
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"{marca} ERROR al armar el prompt: {exc}")
-                    ejecuciones.append(
-                        {
-                            "caso_id": caso["id"],
-                            "modelo": modelo,
-                            "repeat": repeat,
-                            "ok": False,
-                            "error": f"prompt: {exc}",
-                        }
-                    )
-                    continue
+    # Orden intercalado: los repeats de un mismo caso quedan separados por el
+    # resto del corpus, para no medirlos todos bajo las mismas condiciones de
+    # serving (mismo lote, misma maquina, mismos segundos).
+    plan = [
+        (repeat, caso, modelo)
+        for repeat in range(1, args.repeats + 1)
+        for caso in casos_seleccionados
+        for modelo in modelos
+        if modelo in chats
+    ]
+    ejecuciones: list[dict] = []
+    for orden, (repeat, caso, modelo) in enumerate(plan, start=1):
+        marca = f"[{caso['id']} | {modelo} | repeat {repeat}/{args.repeats}]"
+        inicio = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        resultado = _ejecutar_una(chats[modelo], prompts[caso["id"]], caso, args)
+        ejecuciones.append(
+            {
+                "caso_id": caso["id"],
+                "modelo": modelo,
+                "repeat": repeat,
+                "orden": orden,
+                "inicio_utc": inicio,
+                **resultado,
+            }
+        )
+        if resultado["ok"]:
+            score = resultado["score"]
+            estado = "OK " if score["pass_estructural"] else "KO "
+            print(
+                f"{marca} {estado} {score['largo']:>5} chars  "
+                f"{resultado['latencia_ms']:>6} ms  "
+                f"secciones={score['secciones_ok']} orden={score['orden_ok']} "
+                f"preambulo={not score['sin_preambulo']} "
+                f"citas={score['citas_validas']} extra={score['secciones_extra']}"
+            )
+        else:
+            print(f"{marca} FALLO: {resultado['error'][:160]}")
 
-                try:
-                    started = time.perf_counter()
-                    respuesta = chat.invoke(prompt)
-                    markdown = _contenido(respuesta)
-                    ms = int((time.perf_counter() - started) * 1000)
-                    score = score_output(markdown, caso)
-                    ejecuciones.append(
-                        {
-                            "caso_id": caso["id"],
-                            "modelo": modelo,
-                            "repeat": repeat,
-                            "ok": True,
-                            "latencia_ms": ms,
-                            "markdown": markdown,
-                            "score": score,
-                        }
-                    )
-                    estado = "OK " if score["pass_estructural"] else "KO "
-                    print(
-                        f"{marca} {estado} {score['largo']:>5} chars  "
-                        f"{ms:>6} ms  "
-                        f"secciones={score['secciones_ok']} orden={score['orden_ok']} "
-                        f"citas={score['citas_validas']} extra={score['secciones_extra']}"
-                    )
-                except Exception as exc:  # noqa: BLE001 -- seguir ante 429/500/timeout
-                    mensaje = f"{type(exc).__name__}: {exc}"
-                    print(f"{marca} FALLO: {mensaje[:160]}")
-                    ejecuciones.append(
-                        {
-                            "caso_id": caso["id"],
-                            "modelo": modelo,
-                            "repeat": repeat,
-                            "ok": False,
-                            "error": mensaje,
-                        }
-                    )
-                    if _es_rate_limit(exc):
-                        # Backoff: no repetir la invocacion, solo esperar mas
-                        # antes de la siguiente para no encadenar 429.
-                        espera_extra = args.sleep * 2
-                        print(f"    rate limit: esperando {espera_extra:.1f}s")
-                        time.sleep(espera_extra)
-                        continue
-
-                if not args.dry_run and args.sleep > 0:
-                    time.sleep(args.sleep)
+        if args.sleep > 0 and orden < len(plan):
+            time.sleep(args.sleep)
 
     variabilidad = [
         calcular_variabilidad(ejecuciones, caso["id"], modelo)
-        for modelo in modelos
+        for modelo in chats
         for caso in casos_seleccionados
     ]
     resumen = resumir_por_modelo(variabilidad, ejecuciones)
+    for error in errores_construccion:
+        resumen[error["modelo"]] = {"error_construccion": error["error"]}
+    motivos = _evaluar_gate(
+        ejecuciones, planeadas, errores_construccion, variabilidad, args.min_ok_rate
+    )
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    RUTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
-    ruta_json = RUTA_RESULTADOS / f"{timestamp}.json"
+    salida = Path(args.output_dir)
+    salida.mkdir(parents=True, exist_ok=True)
+    ruta_json = salida / f"{timestamp}.json"
     ruta_json.write_text(
         json.dumps(
             {
@@ -552,11 +896,22 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
                     "timestamp": timestamp,
                     "base_url": base_url,
                     "modelos": modelos,
+                    "casos": [c["id"] for c in casos_seleccionados],
                     "repeats": args.repeats,
-                    "temperature": args.temperature,
+                    "orden": "repeat > caso > modelo",
+                    "temperature_solicitada": args.temperature,
+                    "temperature_efectiva": {
+                        m: temperatura_efectiva(m, args.temperature) for m in modelos
+                    },
                     "sleep_s": args.sleep,
+                    "reintentos_429": args.retries,
+                    "min_ok_rate": args.min_ok_rate,
+                    "stream_usage": args.stream_usage,
                     "secciones_requeridas": list(SECCIONES_REQUERIDAS),
+                    "procedencia": procedencia(prompts),
                 },
+                "gate": {"paso": not motivos, "motivos": motivos},
+                "errores_construccion": errores_construccion,
                 "ejecuciones": ejecuciones,
                 "variabilidad": variabilidad,
                 "resumen_por_modelo": resumen,
@@ -569,67 +924,39 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
 
     _imprimir_resumen(resumen, variabilidad, ejecuciones, ruta_json)
 
-    # Exit code: 0 si al menos una invocacion dio "ok"; 1 si TODAS
-    # fallaron. Asi CI puede distinguir "corri pero el LLM dio 0" de
-    # "nunca llego a ejecutarse". Antes del fix B1 el runner llegaba aca
-    # con ``ejecuciones`` lleno de fallos ``prompt: ...`` y devolvia 0
-    # igual -- el harness reportaba "OK" midiendo nada.
-    exitosos = sum(1 for e in ejecuciones if e.get("ok"))
-    if exitosos == 0 and ejecuciones:
-        print(
-            "\n[ERROR] Todas las invocaciones fallaron. "
-            "Revisar errores arriba.",
-            file=sys.stderr,
-        )
+    if motivos:
+        print("\n[ERROR] La corrida no vale como medicion:", file=sys.stderr)
+        for motivo in motivos:
+            print(f"  - {motivo}", file=sys.stderr)
         return 1
     return 0
 
 
-def _contenido(respuesta: Any) -> str:
-    """Normaliza la respuesta del chat a texto plano."""
-    contenido = getattr(respuesta, "content", respuesta)
-    if isinstance(contenido, str):
-        return contenido
-    if isinstance(contenido, list):
-        partes = []
-        for bloque in contenido:
-            if isinstance(bloque, str):
-                partes.append(bloque)
-            elif isinstance(bloque, dict) and isinstance(bloque.get("text"), str):
-                partes.append(bloque["text"])
-        return "".join(partes)
-    return str(contenido)
-
-
 def _fmt(valor: float | None, decimales: int = 3) -> str:
     if valor is None:
-        return "   n/d"
+        return "n/d"
     return f"{valor:.{decimales}f}"
 
 
 def _filtrar_peores(variabilidad: list[dict]) -> dict:
-    """Particiona ``variabilidad`` en pares con variabilidad observada y pares sin datos.
-
-    La regla original (``(v.get("tasa_exacta") or 1.0) < 1.0``) excluia
-    silenciosamente los pares con ``tasa_exacta is None``: cuando todos
-    los repeats fallaron, ``None or 1.0 == 1.0`` y el par quedaba fuera
-    del listado -- al reves de lo util para diagnosticar. Esta funcion
-    separa los dos grupos para que ``_imprimir_resumen`` los muestre
-    como secciones distintas.
+    """Particiona ``variabilidad`` segun cuanto se pudo medir cada par.
 
     Returns:
-        ``{"peor": [...], "all_failed": [...]}``. Las dos listas son
-        disjuntas: ``peor`` tiene tasa_exacta entre [0.0, 1.0); ``all_failed``
-        tiene tasa_exacta == None (0 o 1 repeats_ok). Los pares con
-        tasa_exacta == 1.0 (perfectamente reproducibles) no aparecen en
-        ninguna.
+        ``{"peor": [...], "insuficientes": [...], "all_failed": [...]}``,
+        disjuntas. ``peor``: tasa_exacta en [0.0, 1.0). ``insuficientes``:
+        exactamente un repeat exitoso (no hay pares). ``all_failed``: ningun
+        repeat exitoso. Los pares con tasa_exacta == 1.0 no aparecen.
     """
     peor = [
         v for v in variabilidad
         if v.get("tasa_exacta") is not None and v["tasa_exacta"] < 1.0
     ]
-    all_failed = [v for v in variabilidad if v.get("tasa_exacta") is None]
-    return {"peor": peor, "all_failed": all_failed}
+    sin_pares = [v for v in variabilidad if v.get("tasa_exacta") is None]
+    return {
+        "peor": peor,
+        "insuficientes": [v for v in sin_pares if v.get("repeats_ok", 0) > 0],
+        "all_failed": [v for v in sin_pares if v.get("repeats_ok", 0) == 0],
+    }
 
 
 def _imprimir_resumen(
@@ -638,25 +965,41 @@ def _imprimir_resumen(
     ejecuciones: list[dict],
     ruta_json: Path,
 ) -> None:
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 104)
     print("RESUMEN POR MODELO")
-    print("=" * 78)
+    print("=" * 104)
     print(
-        f"{'modelo':<28} {'struct_ok':>10} {'exacta':>8} {'acuerdo':>9} "
-        f"{'citas':>7} {'desv_lg':>9} {'fallos':>7}"
+        f"{'modelo':<28} {'ok':>7} {'medib':>5} {'struct_ok':>9} {'exacta':>7} "
+        f"{'exac_n':>7} {'simil':>6} {'acuerdo':>7} {'citas':>6} {'desv_lg':>8}"
     )
-    print("-" * 78)
+    print("-" * 104)
     for modelo, stats in resumen.items():
+        if "error_construccion" in stats:
+            print(f"{modelo:<28} NO SE PUDO CONSTRUIR: {stats['error_construccion'][:60]}")
+            continue
+        ok = f"{stats['ejecuciones_ok']}/{stats['ejecuciones']}"
         print(
-            f"{modelo:<28} {_fmt(stats['tasa_pas_estructural']):>10} "
-            f"{_fmt(stats['tasa_exacta']):>8} {_fmt(stats['acuerdo_estructural']):>9} "
-            f"{_fmt(stats['solapamiento_citas']):>7} "
-            f"{_fmt(stats['desvio_largo'], 1):>9} {stats['ejecuciones_fallidas']:>7}"
+            f"{modelo:<28} {ok:>7} {stats['casos_medibles']:>5} "
+            f"{_fmt(stats['tasa_pass_estructural']):>9} "
+            f"{_fmt(stats['tasa_exacta']):>7} {_fmt(stats['tasa_exacta_normalizada']):>7} "
+            f"{_fmt(stats['similitud_media'], 2):>6} "
+            f"{_fmt(stats['acuerdo_estructural']):>7} "
+            f"{_fmt(stats['solapamiento_citas'], 2):>6} "
+            f"{_fmt(stats['desvio_largo'], 1):>8}"
         )
+        if stats["casos_medibles"]:
+            print(
+                f"{'':<28} acuerdo: {stats['casos_pass_siempre']} casos pasan siempre, "
+                f"{stats['casos_falla_siempre']} fallan siempre"
+            )
     print()
+    print("ok         = invocaciones exitosas / planeadas (vacias y errores cuentan como fallo)")
+    print("medib      = casos con 2 o mas repeats exitosos; las medias salen solo de estos")
     print("struct_ok  = tasa de salidas que pasan el chequeo estructural completo")
     print("exacta     = fraccion de pares de repeats identicos byte a byte")
-    print("acuerdo    = fraccion de pares con el mismo pass_estructural")
+    print("exac_n     = idem, ignorando espacios al final de linea y lineas vacias de mas")
+    print("simil      = similitud media entre pares (difflib, 0 a 1)")
+    print("acuerdo    = fraccion de pares con el mismo pass_estructural (ver 'pasan/fallan siempre')")
     print("citas      = Jaccard medio de los marcadores [N] entre pares")
     print("desv_lg    = desviacion estandar del largo, en caracteres")
     print("n/d        = no calculable (menos de 2 repeats exitosos)")
@@ -669,28 +1012,28 @@ def _imprimir_resumen(
                   f"{e.get('error', '')[:110]}")
 
     grupos = _filtrar_peores(variabilidad)
-    peor = grupos["peor"]
-    all_failed = grupos["all_failed"]
-    if peor:
-        print(f"\nPares (caso, modelo) con al menos un repeat distinto: {len(peor)}")
-        for v in peor:
+    if grupos["peor"]:
+        print(f"\nPares (caso, modelo) con al menos un repeat distinto: {len(grupos['peor'])}")
+        for v in grupos["peor"]:
             print(
                 f"  - {v['caso_id']:<13} {v['modelo']:<24} "
                 f"exacta={_fmt(v['tasa_exacta'])} "
+                f"distintas={v['salidas_distintas']}/{v['repeats_ok']} "
                 f"acuerdo={_fmt(v['acuerdo_estructural'])} "
                 f"desv_lg={_fmt(v['desvio_largo'], 1)}"
             )
-    if all_failed:
-        print(
-            f"\nEjecuciones con todos los repeats fallidos (sin variabilidad "
-            f"calculable): {len(all_failed)}"
-        )
-        for v in all_failed:
-            print(
-                f"  - {v['caso_id']:<13} {v['modelo']:<24} "
-                f"repeats_ok={v.get('repeats_ok', 0)} "
-                f"repeats_fallidos={v.get('repeats_fallidos', 0)}"
-            )
+    for clave, titulo in (
+        ("insuficientes", "Pares con un solo repeat exitoso (sin pares que comparar)"),
+        ("all_failed", "Pares con todos los repeats fallidos"),
+    ):
+        if grupos[clave]:
+            print(f"\n{titulo}: {len(grupos[clave])}")
+            for v in grupos[clave]:
+                print(
+                    f"  - {v['caso_id']:<13} {v['modelo']:<24} "
+                    f"repeats_ok={v['repeats_ok']} "
+                    f"repeats_fallidos={v['repeats_fallidos']}"
+                )
 
     print(f"\nDetalle completo: {ruta_json}")
 
@@ -700,6 +1043,13 @@ def _imprimir_resumen(
 # =============================================================================
 
 
+def _fraccion(valor: str) -> float:
+    numero = float(valor)
+    if not 0.0 <= numero <= 1.0:
+        raise argparse.ArgumentTypeError("debe estar entre 0 y 1")
+    return numero
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m evals.runner",
@@ -707,22 +1057,26 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--models",
-        help="Modelos a comparar, separados por coma. Si se omite usa LLM_MODEL.",
+        help=(
+            "Modelos a comparar, separados por coma, con el id exacto del "
+            "proveedor (en Groq: openai/gpt-oss-120b). Si se omite usa "
+            "LLM_MODEL o el modelo default de la app."
+        ),
     )
     parser.add_argument(
         "--repeats",
         type=int,
         default=3,
-        help="Repeticiones del mismo caso para medir variabilidad (default: 3).",
+        help="Repeticiones del mismo caso; minimo 2 para tener pares (default: 3).",
     )
     parser.add_argument(
         "--temperature",
         type=float,
         default=0.0,
         help=(
-            "Temperatura de muestreo (default: 0).Coincide con "
+            "Temperatura de muestreo (default: 0). Coincide con "
             "DEFAULT_LLM_TEMPERATURE de app/core/llm_loader.py, que es lo que "
-            "usa produccion."
+            "usa produccion. La serie o* la ignora."
         ),
     )
     parser.add_argument(
@@ -732,15 +1086,41 @@ def _parser() -> argparse.ArgumentParser:
         help=f"Segundos entre llamadas (default: {SLEEP_POR_DEFECTO}).",
     )
     parser.add_argument(
+        "--retries",
+        type=int,
+        default=REINTENTOS_POR_DEFECTO,
+        help=f"Reintentos ante 429, con backoff exponencial (default: {REINTENTOS_POR_DEFECTO}).",
+    )
+    parser.add_argument(
+        "--min-ok-rate",
+        type=_fraccion,
+        default=MIN_OK_RATE_POR_DEFECTO,
+        help=(
+            "Fraccion minima de invocaciones exitosas para salir con 0 "
+            f"(default: {MIN_OK_RATE_POR_DEFECTO})."
+        ),
+    )
+    parser.add_argument(
+        "--no-stream-usage",
+        dest="stream_usage",
+        action="store_false",
+        help="No pedir el uso de tokens en el stream (para proveedores que no lo soportan).",
+    )
+    parser.add_argument(
         "--case",
         action="append",
         metavar="ID",
         help="Ejecutar solo estos casos. Repetible.",
     )
     parser.add_argument(
+        "--output-dir",
+        default=str(RUTA_RESULTADOS),
+        help="Directorio para el JSON de resultados (default: evals/results/).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Valida el corpus y lista los casos. No llama a la API.",
+        help="Valida el corpus y arma los prompts. No llama a la API.",
     )
     return parser
 
@@ -756,14 +1136,18 @@ def main(argv: list[str] | None = None) -> int:
                 reconfigure(encoding="utf-8", errors="replace")
             except (ValueError, OSError):
                 pass
-    if args.repeats < 1:
-        print("--repeats debe ser >= 1", file=sys.stderr)
+    if args.dry_run:
+        return dry_run(cargar_casos())
+    if args.repeats < 2:
+        print("--repeats debe ser >= 2: con 1 no hay pares para medir variabilidad",
+              file=sys.stderr)
         return 2
     if args.sleep < 0:
         print("--sleep no puede ser negativo", file=sys.stderr)
         return 2
-    if args.dry_run:
-        return dry_run(cargar_casos())
+    if args.retries < 0:
+        print("--retries no puede ser negativo", file=sys.stderr)
+        return 2
     return ejecutar_corrida(args)
 
 
