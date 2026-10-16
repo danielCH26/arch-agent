@@ -428,7 +428,7 @@ class TestNextStepFirstQuestion:
         menciona_usuarios = (
             "usuarios" in pregunta_lower
             or "para quién" in pregunta_lower
-            or "quienes son" in pregunta_lower
+            or "quiénes son" in pregunta_lower
         )
         assert not (menciona_problema and menciona_usuarios), (
             f"FIRST_QUESTION no debe combinar 'problema' y 'usuarios' en "
@@ -501,6 +501,17 @@ class TestRegistroTuteo:
     def test_los_textos_del_agente_no_usan_voseo(self, nombre):
         texto = getattr(elicitation_agent, nombre)
         assert not self._VOSEO.search(texto), self._VOSEO.search(texto).group(0)
+
+    def test_fallback_del_minimo_no_usa_voseo(self):
+        texto = elicitation_agent.MIN_QUESTIONS_FALLBACK
+        assert not self._VOSEO.search(texto), self._VOSEO.search(texto).group(0)
+
+    @pytest.mark.parametrize(
+        "factor, pregunta",
+        [(name, question) for name, _patterns, question in elicitation_agent._VIABILITY_FACTORS],
+    )
+    def test_preguntas_de_viabilidad_no_usan_voseo(self, factor, pregunta):
+        assert not self._VOSEO.search(pregunta), (factor, self._VOSEO.search(pregunta).group(0))
 
 
 class TestNextStepHardRules:
@@ -642,6 +653,18 @@ class TestMissingViabilityFactors:
             }
         ]
         assert _missing(history) == ["presupuesto", "equipo", "plazo"]
+
+    def test_old_team_question_already_answered_is_not_asked_again(self):
+        # Sesión que estaba en curso al hacer el deploy: respondió la versión
+        # vieja (compuesta) de la pregunta del equipo con algo que la regex no
+        # reconoce. No debe recibir la pregunta nueva otra vez.
+        history = [
+            {
+                "pregunta": elicitation_agent._LEGACY_VIABILITY_QUESTIONS["equipo"][0],
+                "respuesta": "3 personas, 2 backend",
+            },
+        ]
+        assert "equipo" not in _missing(history)
 
     def test_accented_words_are_recognized(self):
         history = [

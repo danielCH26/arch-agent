@@ -89,6 +89,14 @@ _VIABILITY_FACTORS = (
     ),
 )
 
+# Pregunta de respaldo cuando el modelo quiere cerrar antes del mínimo y no
+# devolvió ninguna pregunta. Constante (no literal en next_step) para que el
+# test de registro la cubra.
+MIN_QUESTIONS_FALLBACK = (
+    "Cuéntame más sobre los requerimientos no funcionales "
+    "(rendimiento, escalabilidad, seguridad) que tiene este proyecto."
+)
+
 # HU5: "El sistema inicia con pregunta abierta" -- se fuerza determinísticamente
 # (no se le pide al LLM que decida la primera pregunta) para que este criterio
 # de aceptación no dependa de que el modelo se porte bien.
@@ -446,6 +454,19 @@ def _factor_regex(patterns: tuple[str, ...]) -> "re.Pattern[str]":
     return re.compile(r"(?<![a-z0-9])(?:" + "|".join(patterns) + r")(?![a-z])")
 
 
+# Textos anteriores de las preguntas de viabilidad. Una sesión que ya respondió
+# la versión vieja (antes del deploy que la cambió) no debe recibir la nueva
+# otra vez solo porque el texto no coincide: el reconocimiento por "pregunta ya
+# hecha" compara el texto exacto, y la respuesta puede no matchear la regex
+# (p. ej. "3 personas, 2 backend").
+_LEGACY_VIABILITY_QUESTIONS: dict[str, tuple[str, ...]] = {
+    "equipo": (
+        "¿Cuántas personas integran el equipo y qué experiencia o roles "
+        "técnicos tienen disponibles?",
+    ),
+}
+
+
 _VIABILITY_REGEXES = {
     name: _factor_regex(patterns) for name, patterns, _question in _VIABILITY_FACTORS
 }
@@ -479,7 +500,10 @@ def _missing_viability_factors(
     return [
         (name, question)
         for name, _patterns, question in _VIABILITY_FACTORS
-        if _normalize_text(question).strip() not in asked_and_answered
+        if not any(
+            _normalize_text(text).strip() in asked_and_answered
+            for text in (question, *_LEGACY_VIABILITY_QUESTIONS.get(name, ()))
+        )
         and not _VIABILITY_REGEXES[name].search(context)
     ]
 
@@ -567,9 +591,7 @@ def next_step(
         # lo que diga el modelo.
         decision = ElicitationDecision(
             done=False,
-            question=decision.question
-            or "Cuéntame más sobre los requerimientos no funcionales "
-            "(rendimiento, escalabilidad, seguridad) que tiene este proyecto.",
+            question=decision.question or MIN_QUESTIONS_FALLBACK,
             reason="Forzado: aún no se alcanza el mínimo de preguntas "
             f"({len(history)}/{MIN_QUESTIONS}).",
         )
