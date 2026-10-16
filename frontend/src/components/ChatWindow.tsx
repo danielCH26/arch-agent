@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { fetchDiagramHistory } from '../api/diagrams'
 import { chatStore, HISTORY_LIMIT } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
@@ -18,6 +19,30 @@ function toSpokenText(markdown: string): string {
     .replace(/[#*_`>|]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+// Fase en la que se genera y refina el diagrama. "diagram"/"diagrama" son
+// nombres heredados que todavía pueden existir en proyectos viejos.
+const REFINEMENT_PHASES = new Set(['refinamiento', 'diagram', 'diagrama'])
+
+export function isRefinementPhase(phase: string | null | undefined): boolean {
+  return REFINEMENT_PHASES.has((phase ?? '').toLowerCase())
+}
+
+// Mensaje que se manda solo al entrar a Refinamiento si el proyecto todavía no
+// tiene diagramas: el usuario no tiene que pedirlo a mano. Es el mismo texto
+// que antes se escribía en el chat.
+export const AUTO_DIAGRAM_PROMPT = 'genera el diagrama de la propuesta aprobada'
+
+const HISTORY_WAIT_MS = 5000
+
+// loadHistory reemplaza los mensajes de una vez: si el mensaje automático se
+// manda antes de que termine, la carga lo pisaría.
+async function waitForHistoryLoad(timeoutMs = HISTORY_WAIT_MS) {
+  const start = Date.now()
+  while (chatStore.getState().loadingHistory && Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
 }
 
 interface ChatWindowProps {
@@ -41,6 +66,12 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
   // de mensajes como región viva.
   const [announcement, setAnnouncement] = useState('')
   const wasStreaming = useRef(false)
+  const [checkingDiagrams, setCheckingDiagrams] = useState(false)
+  // Proyecto para el que ya se intentó el diagrama automático en esta visita a
+  // Refinamiento (evita repetirlo en cada render o por StrictMode).
+  const autoDiagramFor = useRef<number | null>(null)
+  const phaseRef = useRef(currentPhase)
+  phaseRef.current = currentPhase
 
   useEffect(() => {
     if (isStreaming && !wasStreaming.current) {
@@ -65,6 +96,38 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
     }
     void state.loadHistory(projectId)
   }, [projectId])
+
+  // Refinamiento: al entrar, si el proyecto todavía no tiene ningún diagrama,
+  // se genera solo. Si ya hay diagramas (volver a entrar, F5) no se genera
+  // otro: el historial del chat ya los muestra. Ante cualquier falla no se
+  // hace nada; el usuario todavía puede pedirlo a mano.
+  useEffect(() => {
+    if (!isRefinementPhase(currentPhase)) {
+      autoDiagramFor.current = null
+      setCheckingDiagrams(false)
+      return
+    }
+    if (autoDiagramFor.current === projectId) return
+    if (proposalsStore.getState().activity !== 'idle') return
+    autoDiagramFor.current = projectId
+    setCheckingDiagrams(true)
+
+    void (async () => {
+      try {
+        await waitForHistoryLoad()
+        const diagrams = await fetchDiagramHistory(projectId)
+        if (diagrams.length > 0) return
+        if (!isRefinementPhase(phaseRef.current)) return
+        const state = chatStore.getState()
+        if (state.isStreaming || state.loadingHistory) return
+        await state.sendMessage(projectId, AUTO_DIAGRAM_PROMPT)
+      } catch {
+        // Silencioso a propósito: el usuario puede pedir el diagrama a mano.
+      } finally {
+        setCheckingDiagrams(false)
+      }
+    })()
+  }, [currentPhase, projectId])
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -104,6 +167,12 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} busy={isStreaming} />
         ))}
+
+        {checkingDiagrams && !isStreaming && (
+          <p className="text-center text-xs text-gray-500" data-testid="auto-diagram-checking">
+            Preparando el diagrama de la propuesta aprobada…
+          </p>
+        )}
 
         {isStreaming && (
           <div className="flex items-start gap-2 justify-start">
