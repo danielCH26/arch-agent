@@ -22,7 +22,7 @@ Concretamente:
 2. **Mismo handler**: `SSEStreamCallbackHandler` de `app/api/sse.py`. Sin reescritura.
 3. **Mismos headers**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`. Crítico para no introducir regresiones en el proxy.
 4. **`event: done` extendido** con `{proposal_id, citations}` — la única adición. Es backward-compatible: el frontend de chat ignora el payload porque llega `null` (no `proposal_id`); el frontend de propuestas sabe esperar `proposal_id`.
-5. **`RAG_MIN_SIMILARITY = 0.85`** se re-declara en `app/api/proposals.py` con el mismo valor. En una iteración posterior podría importarse de un módulo compartido `app/core/rag_config.py`; out of scope v1.
+5. **~~`RAG_MIN_SIMILARITY = 0.85` se re-declara en `app/api/proposals.py`~~ (reemplazado en F10, ver *Actualización*).** En v1 el umbral se duplicaba en `proposals.py` y `proposal_generator.py` con el mismo valor que `chat.py`. Hoy el piso de 0.85 vive **solo** en `app/api/chat.py`; la fase de propuesta no lo usa.
 6. **Parser frontend**: `frontend/src/api/proposals.ts` replica la lógica de `frontend/src/api/chat.ts`. La duplicación es aceptable v1 (≈90 LoC) y se unificará en un módulo `frontend/src/api/sse.ts` cuando exista un tercer consumidor.
 
 ## Consecuencias
@@ -37,11 +37,22 @@ Concretamente:
 ### Negativas
 
 - **Acoplamiento conceptual**: si en el futuro el chat cambia su shape (p.ej. añadir `event: progress`), el endpoint de propuestas queda fuera de sync hasta que alguien lo propague. Mitigación: code-review checklist explícito ("¿cambiaste el SSE de chat? ¿propagaste a proposals?").
-- **Re-declarar `RAG_MIN_SIMILARITY`** en dos archivos crea riesgo de divergencia silenciosa. Mitigación: tests que asertan igualdad (`test_rag_threshold_matches_across_modules`).
+- ~~**Re-declarar `RAG_MIN_SIMILARITY`** en dos archivos crea riesgo de divergencia silenciosa; mitigación: un test que aseraba igualdad.~~ Ya no aplica: no hay copias que sincronizar (ver *Actualización*).
 
 ### Neutrales
 
 - **`event: done` con `proposal_id` es asimétrico** (chat emite `null`, proposals emite `{proposal_id, citations}`). El frontend de chat ignora el JSON parse porque nunca lo lee; el frontend de propuestas sí. Documentado en `frontend/src/api/proposals.ts`.
+
+## Actualización (F10 — trade-offs y aprobación, 2026-10-08)
+
+La decisión de reutilizar el patrón SSE **se mantiene**. Cambia solo el punto 5 (el umbral de similitud):
+
+- **Qué cambió.** La consulta de propuesta se arma con el nombre, la descripción y los requerimientos del proyecto, así que siempre está dentro del dominio. Con `multilingual-e5-small` un piso fijo de 0.85 dejaba la lista de patrones vacía, y la tabla de trade-offs necesita al menos 3 opciones. La fase de propuesta ahora trae los `PROPOSAL_RAG_TOP_N` patrones más cercanos (por defecto 3) con un piso **opcional** `PROPOSAL_RAG_MIN_SIMILARITY` (por defecto `0.0`, sin piso).
+- **Qué ya no es cierto.** Las constantes `RAG_MIN_SIMILARITY` de `app/api/proposals.py` y `app/core/proposal_generator.py` se eliminaron. **No hay nada que mantener "en lock-step"**: el único `RAG_MIN_SIMILARITY = 0.85` está en `app/api/chat.py`, donde sí hay preguntas fuera de tema que descartar.
+- **Test.** El test que fijaba las tres constantes en 0.85 se reemplazó por uno que fija el piso del chat (`tests/api/test_proposals.py::TestRAGConstants`). El comportamiento sin piso de la propuesta se cubre en `TestCitationSelection` y `tests/core/test_proposal_generator.py`.
+- **Si se retoma el módulo compartido** (`app/core/rag_config.py`), solo haría falta para el chat y `/api/rag/search`.
+
+El resto del ADR (eventos, handler, headers, `event: done` extendido, parser frontend) sigue vigente.
 
 ## Alternativas consideradas
 
@@ -65,4 +76,5 @@ Rechazado. El equipo aún no la usa; introducirla para F08 añade una dependenci
 - `frontend/src/api/chat.ts:54` — `callbacks.onToken(data.delta || data)`: referencia para el parser de propuestas.
 - `tests/api/test_chat.py::TestSSEFormat` — tests de contrato SSE reutilizados como referencia para `test_proposals.py`.
 - `vite.config.ts:27` — `proxyTimeout: 300_000` confirma que el proxy ya soporta streams largos.
+- `app/core/proposal_generator.py` — `PROPOSAL_RAG_TOP_N`, `PROPOSAL_RAG_MIN_SIMILARITY` (selección de citas sin piso fijo, F10).
 - ADR-001 (LangChain framework), ADR-006 (Chainlit UI reemplazada por React; SSE sigue siendo el transporte).

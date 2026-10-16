@@ -1,0 +1,43 @@
+pattern_name: "Data Lakehouse con capas Medallion (bronce, plata, oro)"
+category: "Flujo de datos"
+complexity: "media"
+description: >
+  Organiza los datos analíticos en capas de calidad creciente sobre un mismo
+  almacenamiento: bronce con datos crudos, plata con datos limpios y
+  conformados, y oro con tablas listas para negocio, reportes y modelos de
+  aprendizaje automático.
+use_cases: >
+  Plataformas de datos modernas que combinan fuentes variadas, análisis de
+  negocio y ciencia de datos sobre un lago de datos, con trazabilidad desde el
+  dato crudo hasta el indicador final (Databricks, Delta Lake, Fabric).
+when_not_to_use: >
+  Proyectos pequeños con pocas fuentes y volumen reducido, donde una base
+  relacional con unas pocas tablas de reporte es más sencilla y barata de
+  mantener que tres capas de datos.
+tradeoffs:
+  ventajas:
+    - "Conservar el dato crudo en la capa bronce permite reprocesar y auditar cualquier transformación desde su origen"
+    - "Las capas de calidad creciente dan trazabilidad clara y separan la limpieza técnica de las reglas de negocio"
+    - "Un mismo almacenamiento sirve a analistas de negocio, científicos de datos y modelos de aprendizaje automático sin copiar los datos"
+    - "Admite datos estructurados y semiestructurados a bajo costo de almacenamiento y escala bien con el volumen"
+  desventajas:
+    - "Mantener tres capas de datos con sus transformaciones y pruebas de calidad añade trabajo de ingeniería de datos continuo"
+    - "Sin gobierno de datos y convenciones claras, el lago se convierte en un pantano de tablas duplicadas y sin dueño"
+    - "Requiere plataformas y herramientas específicas (Spark, Delta Lake) con curva de aprendizaje y costo de cómputo"
+    - "Para proyectos pequeños es sobreingeniería frente a una base de datos analítica sencilla con pocas tablas"
+decision_signals:
+  - pregunta: "¿Combinas datos crudos de muchas fuentes con análisis de negocio y ciencia de datos?"
+    señal_patron: "sí -> Data Lakehouse con capas Medallion (bronce, plata, oro)"
+  - pregunta: "¿Necesitas conservar el dato original para auditar o reprocesar transformaciones?"
+    señal_patron: "sí -> Data Lakehouse con capas Medallion (bronce, plata, oro)"
+  - pregunta: "¿Varios equipos consumen los mismos datos con distintos niveles de calidad?"
+    señal_patron: "sí -> Data Lakehouse con capas Medallion (bronce, plata, oro)"
+quality_attributes: [trazabilidad de datos, calidad progresiva, reutilización analítica, auditabilidad]
+team_fit: "equipo de 3 a 12 personas con perfil de ingeniería de datos y varias fuentes y consumidores de datos"
+example_scenarios:
+  - "Plataforma analítica de una empresa que ingiere logs, CSV y bases de datos y entrega tablas limpias para dashboards y modelos de predicción"
+  - "Proyecto de ciencia de datos con datos crudos de varias fuentes públicas que se limpian por etapas hasta un conjunto listo para entrenamiento"
+  - "Universidad que centraliza datos académicos y financieros con trazabilidad desde el archivo original hasta el indicador del tablero"
+fuentes:
+  - titulo: "What is the medallion lakehouse architecture? (Databricks)"
+    url: "https://www.databricks.com/glossary/medallion-architecture"

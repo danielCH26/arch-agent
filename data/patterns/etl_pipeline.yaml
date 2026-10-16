@@ -1,0 +1,43 @@
+pattern_name: "Pipeline de datos ETL / ELT por lotes"
+category: "Flujo de datos"
+complexity: "media"
+description: >
+  Extrae datos de varias fuentes, los transforma (limpieza, validación,
+  integración) y los carga en un almacén analítico en ejecuciones programadas
+  por lotes, de modo que los reportes y el análisis trabajen sobre datos
+  consistentes y ya preparados.
+use_cases: >
+  Consolidación de datos de sistemas operativos, archivos y APIs en una bodega de
+  datos o base analítica para dashboards, reportes periódicos y análisis, con
+  actualizaciones diarias, semanales o por hora.
+when_not_to_use: >
+  Casos que exigen datos en tiempo real o latencias de segundos, o proyectos con
+  una sola fuente pequeña, donde un reporte directo sobre la base operacional es
+  más simple que montar un pipeline.
+tradeoffs:
+  ventajas:
+    - "Separa la analítica de la base operacional, de modo que las consultas pesadas de reportes no degradan la aplicación transaccional"
+    - "Centraliza la limpieza y la validación de datos, lo que da una única versión confiable para todos los reportes y modelos"
+    - "Las ejecuciones por lotes son simples de programar, repetir y auditar con herramientas conocidas como Airflow, cron o servicios gestionados"
+    - "Permite integrar fuentes heterogéneas (archivos, APIs, bases de datos) en un modelo analítico común"
+  desventajas:
+    - "Los datos llegan con retraso respecto a la fuente porque dependen de la frecuencia del lote, lo que no sirve para decisiones en tiempo real"
+    - "Los pipelines son frágiles ante cambios de esquema en las fuentes y exigen monitorización para detectar cargas fallidas o incompletas"
+    - "Mantener las transformaciones, el versionado y la calidad de datos requiere disciplina de ingeniería de datos que suele subestimarse"
+    - "Reprocesar históricos grandes tras corregir un error puede ser lento y costoso en cómputo"
+decision_signals:
+  - pregunta: "¿Necesitas consolidar datos de varias fuentes en un solo lugar para reportes o análisis?"
+    señal_patron: "sí -> Pipeline de datos ETL / ELT por lotes"
+  - pregunta: "¿Es aceptable que los datos tengan un retraso de horas o de un día?"
+    señal_patron: "sí -> Pipeline de datos ETL / ELT por lotes"
+  - pregunta: "¿Las consultas analíticas pesadas no deben afectar a la aplicación operacional?"
+    señal_patron: "sí -> Pipeline de datos ETL / ELT por lotes"
+quality_attributes: [calidad de datos, consistencia analítica, aislamiento de la carga operacional, auditabilidad]
+team_fit: "equipo de 2 a 8 personas con perfil de datos que construye reportes, dashboards o una bodega de datos"
+example_scenarios:
+  - "Dashboard de ventas que consolida cada noche datos de un ERP, archivos Excel y una API en una base analítica, con equipo de 3 personas"
+  - "Proyecto de inteligencia de negocios que carga fuentes CSV y bases de datos a un modelo dimensional para Power BI"
+  - "Reportes regulatorios mensuales que limpian y unifican información de varios sistemas internos"
+fuentes:
+  - titulo: "Extract, transform, and load (ETL) (Microsoft Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/data-guide/relational-data/etl"

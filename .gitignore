@@ -61,3 +61,5 @@ frontend/.env.local
 # CodeGraph local index (per-worktree, never shared)
 .codegraph/
 .freebuff/
+.patch
+
