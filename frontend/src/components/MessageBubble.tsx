@@ -14,6 +14,9 @@ interface MessageBubbleProps {
   onSendMessage?: SendMessage
   // Hay una respuesta del agente en curso: no se envían mensajes nuevos.
   busy?: boolean
+  // Refinamiento: al aprobar un diagrama se pasa a la fase siguiente en vez de
+  // mandarle "Apruebo el diagrama" al agente (que respondía con un texto largo).
+  onDiagramApproved?: () => void | Promise<void>
 }
 
 type InlineToken =
@@ -525,7 +528,7 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message, projectId, onSendMessage, busy = false }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage, busy = false, onDiagramApproved }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
@@ -554,6 +557,7 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
             projectId={projectId}
             onSendMessage={onSendMessage}
             busy={busy}
+            onDiagramApproved={onDiagramApproved}
           />
         )}
         {!isUser && message.notices?.map((notice, index) => (
@@ -592,11 +596,13 @@ function DiagramAttachments({
   projectId,
   onSendMessage,
   busy,
+  onDiagramApproved,
 }: {
   attachments: Message['attachments']
   assistantContent: string
   projectId?: number
   onSendMessage?: SendMessage
+  onDiagramApproved?: () => void | Promise<void>
   busy: boolean
 }) {
   const [feedbackIndex, setFeedbackIndex] = useState<number | null>(null)
@@ -710,7 +716,11 @@ function DiagramAttachments({
                     type="button"
                     disabled={isSubmitting || busy}
                     onClick={async () => {
-                      if (await recordDecision(index, 'approve')) await send('Apruebo el diagrama, continuemos.')
+                      if (!(await recordDecision(index, 'approve'))) return
+                      // En Refinamiento aprobar cierra la fase y lleva a la siguiente;
+                      // fuera de ella se mantiene el comportamiento anterior.
+                      if (onDiagramApproved) await onDiagramApproved()
+                      else await send('Apruebo el diagrama, continuemos.')
                     }}
                     className="rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
                   >

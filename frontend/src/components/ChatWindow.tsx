@@ -50,9 +50,11 @@ interface ChatWindowProps {
   projectId: number
   phase?: string | null
   onProposalPhaseChanged?: () => void | Promise<void>
+  // Refinamiento: aprobar el diagrama cierra la fase y avanza a Revisión.
+  onDiagramApproved?: () => void | Promise<void>
 }
 
-export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWindowProps) {
+export function ChatWindow({ projectId, phase, onProposalPhaseChanged, onDiagramApproved }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
   // Fase: la que pasa la página o, si no viene, la del proyecto activo.
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
@@ -170,7 +172,14 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         )}
 
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} busy={isStreaming} />
+          <MessageBubble
+            key={message.id}
+            message={message}
+            projectId={projectId}
+            onSendMessage={handleSend}
+            busy={isStreaming}
+            onDiagramApproved={isRefinementPhase(currentPhase) ? onDiagramApproved : undefined}
+          />
         ))}
 
         {checkingDiagrams && !isStreaming && (

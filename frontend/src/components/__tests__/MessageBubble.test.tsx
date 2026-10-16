@@ -240,6 +240,45 @@ describe('MessageBubble', () => {
       expect(screen.queryByRole('button', { name: '❌ Rechazar' })).not.toBeInTheDocument()
     })
 
+    it('en Refinamiento aprobar pasa de fase en vez de mandar un mensaje al agente', async () => {
+      const user = userEvent.setup()
+      const onSendMessage = vi.fn()
+      const onDiagramApproved = vi.fn().mockResolvedValue(undefined)
+      render(
+        <MessageBubble
+          message={{ id: 'message-1', role: 'assistant', content: 'Diagrama', attachments: diagram() }}
+          projectId={1}
+          onSendMessage={onSendMessage}
+          onDiagramApproved={onDiagramApproved}
+        />,
+      )
+
+      await user.click(screen.getByRole('button', { name: '✅ Aprobar' }))
+
+      await waitFor(() => expect(onDiagramApproved).toHaveBeenCalledTimes(1))
+      expect(submitDecisionMock).toHaveBeenCalledWith(1, 'approve', undefined, 'att-1')
+      expect(onSendMessage).not.toHaveBeenCalled()
+    })
+
+    it('si falla el registro de la aprobación no pasa de fase', async () => {
+      const user = userEvent.setup()
+      submitDecisionMock.mockRejectedValueOnce(new Error('boom'))
+      const onDiagramApproved = vi.fn()
+      render(
+        <MessageBubble
+          message={{ id: 'message-1', role: 'assistant', content: 'Diagrama', attachments: diagram() }}
+          projectId={1}
+          onSendMessage={vi.fn()}
+          onDiagramApproved={onDiagramApproved}
+        />,
+      )
+
+      await user.click(screen.getByRole('button', { name: '✅ Aprobar' }))
+
+      await waitFor(() => expect(submitDecisionMock).toHaveBeenCalled())
+      expect(onDiagramApproved).not.toHaveBeenCalled()
+    })
+
     it('aprobar manda el id del diagrama', async () => {
       const user = userEvent.setup()
       const onSendMessage = vi.fn()

@@ -98,6 +98,25 @@ function ChatPageContent() {
     }
   }
 
+  // Refinamiento: aprobar el diagrama en el chat cierra la fase y lleva a
+  // Revisión, sin pasar por "Marcar fase como lista" + "Avanzar fase".
+  const handleDiagramApproved = async () => {
+    setPhaseActionError('')
+    setPhaseActionLoading(true)
+    try {
+      const current = await getProjectPhase(projectId)
+      if (!current.phase_ready) await markReady(projectId)
+      await advancePhase(projectId)
+      await refreshAfterPhaseChange()
+    } catch (err) {
+      setPhaseActionError(
+        err instanceof Error ? err.message : 'El diagrama quedó aprobado, pero no se pudo avanzar de fase. Usa "Avanzar fase".',
+      )
+    } finally {
+      setPhaseActionLoading(false)
+    }
+  }
+
   const handleAdvance = async () => {
     setPhaseActionError('')
     setPhaseActionLoading(true)
@@ -197,6 +216,7 @@ function ChatPageContent() {
               projectId={projectId}
               phase={phase?.current_phase}
               onProposalPhaseChanged={refreshAfterPhaseChange}
+              onDiagramApproved={handleDiagramApproved}
             />
           </div>
         )}
