@@ -114,7 +114,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
 
       {cancelled && !error && !proposal && !busy && (
         <p className="mt-4 text-xs text-gray-500" role="status" data-testid="proposal-cancelled">
-          Generación cancelada. No se guardó nada; puedes volver a generar la propuesta.
+          Generación cancelada. Si ya se estaba guardando, la propuesta aparecerá aquí en unos segundos; si no, puedes volver a generarla.
         </p>
       )}
 
