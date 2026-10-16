@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import re
@@ -14,7 +14,7 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import build_langchain_model, explain_llm_error, LLMConfigError
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
@@ -27,9 +27,6 @@ from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
-
-# El umbral de similitud y su justificacion viven en app/core/rag_config.py
-# (importado arriba). Este archivo solo lo usa.
 
 # Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
 # solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
@@ -563,7 +560,7 @@ async def chat(
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps(explain_llm_error(e), ensure_ascii=False)}\n\n"
         finally:
             # F14: exporta la traza de inmediato en vez de depender solo del
             # ciclo en segundo plano del SDK de Langfuse (PR #79 review).

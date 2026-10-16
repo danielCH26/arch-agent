@@ -2,8 +2,8 @@
 Configuración compartida del pipeline RAG.
 
 Vive en ``app/core/`` -- y no en ``app/api/chat.py`` -- para que las tres capas
-que filtran por relevancia (el chat, la generación de propuestas y el router de
-proposals) importen la MISMA constante sin caer en un import circular. ADR-009
+que filtran por relevancia (el chat y la generación de propuestas, que también
+alimenta las regeneraciones del router de proposals) importen la MISMA constante sin caer en un import circular. ADR-009
 dejó el módulo como refactor pendiente; este es ese refactor.
 """
 
@@ -29,7 +29,7 @@ dejó el módulo como refactor pendiente; este es ese refactor.
 # necesita precisión real en esa zona gris, la solución correcta es un paso de
 # re-ranking (ej. que el LLM juzgue relevancia real de cada candidato, o un
 # cross-encoder), no seguir ajustando este número. Ver
-# docs/QA_criterios_aceptacion_RAG.md.
+# docs/QA_criterios_aceptacion_RAG_final.md.
 #
 # AVISO: este es un CONTRATO DE NEGOCIO, no un número de tuning. Bajarlo cambia
 # qué citas llegan al modelo en TODOS los flujos a la vez (chat, propuestas y

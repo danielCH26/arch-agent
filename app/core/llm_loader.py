@@ -27,44 +27,66 @@ from app.core.encryption import decrypt, EncryptionError
 # temperatura alta convierte cada regeneracion en un producto distinto. Se fija
 # 0.0 de forma explicita en vez de heredar el default del proveedor.
 #
-# No todos los modelos aceptan el parametro. La serie de razonamiento `o*` de
-# OpenAI solo admite temperature=1 y responde 400 ante cualquier otro valor, asi
-# que aca NO se manda: se omite el kwarg y langchain aplica su default de 1, que
-# es el unico valor esos modelos soportan. Ver `_acepta_temperature`.
+# No todos los modelos aceptan el parametro. La serie de razonamiento `o*` y la
+# serie `gpt-5*` (salvo `gpt-5-chat*`) de OpenAI solo admiten temperature=1 y
+# responden 400 ante cualquier otro valor, asi que a esos NO se les manda: se
+# omite el kwarg y el request sale sin `temperature`, con lo que aplica el
+# default de la API (1). Ver `_acepta_temperature`.
 DEFAULT_LLM_TEMPERATURE: float = 0.0
 
 
 # Series de modelos que rechazan `temperature` distinto de 1 (400 de OpenAI).
 #
-# El criterio es el prefijo ``o`` seguido de un digito, NO una lista de nombres.
-# Es la convencion de nomenclatura de toda la familia de razonamiento de OpenAI
-# (letra + generacion): o1, o1-mini, o1-pro, o1-2024-12-17, o3, o3-mini, o3-pro,
-# o4-mini, ... asi una generacion futura (o2, o5) queda cubierta sin tocar el
-# codigo. Ningun modelo ajeno a esa familia entra por accidente: `gpt-4o`,
-# `gpt-4o-mini` y `llama-3.3-70b` no arrancan con `o` + digito.
+# El criterio es la convencion de nomenclatura, NO una lista de nombres:
 #
-# Sobre langchain: `langchain_openai.chat_models.base.ChatOpenAI` tiene su propia
-# guarda (base.py ~1118) que fuerza temperature=1 para `o1*`, pero SOLO cuando el
-# parametro NO viene en `values` -- y la app lo manda explicito, con lo cual la
-# guarda nunca dispara y el 0.0 viaja al request. Para `gpt-5*` no-chat langchain
-# hace `values.pop("temperature")` y descarta el valor en silencio, asi que ese
-# caso lo cubre la libreria y no se replica acá. Ademas la guarda de langchain
-# solo llega a `o1`: no cubre `o3*` ni `o4*`, que fallan igual.
+# - ``o`` + digito: toda la familia de razonamiento (o1, o1-mini, o1-pro,
+#   o1-2024-12-17, o3, o3-mini, o3-pro, o4-mini, ...). Una generacion futura
+#   (o2, o5) queda cubierta sin tocar el codigo. `gpt-4o`, `gpt-4o-mini` y
+#   `llama-3.3-70b` no arrancan con `o` + digito, asi que no entran.
+# - ``gpt-5`` sin ``chat`` en el nombre: gpt-5, gpt-5-mini, gpt-5-nano,
+#   gpt-5.1, ... `gpt-5-chat-latest` si acepta temperatura y queda afuera.
 #
-# Punto de extension: si manana otro proveedor -- u otra familia de OpenAI --
-# tiene la misma restriccion, su patron se agrega ACa. Este es el unico lugar
-# que decide si se manda la temperatura.
+# Asimetria de errores: un falso positivo solo omite la temperatura (el modelo
+# muestrea con el default del provider, inocuo); un falso negativo rompe el
+# request con 400. Por eso la regex prefiere matchear de mas.
 #
-# Formato de los nombres: los providers OpenAI-style suelen prefijar con
-# ``provider/`` (Groq devuelve ``openai/o1-mini`` en ``/v1/models``). La forma
-# ``(?:^|/)o\d`` matchea tanto ``o1-mini`` como ``openai/o1-mini``.
-_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)o\d")
+# Sobre langchain (verificado con langchain-openai 1.6.2,
+# ``ChatOpenAI.validate_temperature``):
+# - Para `o1*` fuerza temperature=1 SOLO si el caller no paso el kwarg. Para
+#   `o3*`/`o4*` no hace nada: si se omite, el valor queda en None, no viaja en
+#   el request y la API aplica su propio default.
+# - Para `gpt-5*` no-chat descarta el valor en silencio, pero decide con
+#   ``model.lower().startswith("gpt-5")``: un nombre con prefijo de provider
+#   (``openai/gpt-5``) no matchea y el 0.0 llegaria al request. Por eso
+#   `gpt-5` se resuelve aca y no se delega a la libreria.
+#
+# Formato de los nombres: los gateways OpenAI-compatibles como OpenRouter
+# exponen los modelos como ``provider/modelo`` (``openai/o1-mini``,
+# ``openai/gpt-5-mini``). El ancla ``(?:^|/)`` matchea tanto el nombre pelado
+# como el prefijado. Esto tambien aplica a cualquier provider: un segmento
+# ``/o\d`` (``anthropic/o3``) omite la temperatura, decision deliberada por la
+# asimetria de errores de arriba.
+#
+# Punto de extension: si manana otra familia tiene la misma restriccion, su
+# patron se agrega ACA. Para nombres arbitrarios que ninguna regex puede
+# adivinar (deployments de Azure tipo ``my-o1-deployment``) esta
+# ``LLM_MODELS_WITHOUT_TEMPERATURE``, ver `_modelos_sin_temperature_env`.
+_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)(?:o\d|gpt-5(?![^/]*chat))")
+
+# Variable de entorno con nombres de modelo (separados por coma, sin distinguir
+# mayusculas) a los que nunca se les manda `temperature`, ademas de los que
+# detecta `_RECHAZA_TEMPERATURE_RE`.
+LLM_MODELS_WITHOUT_TEMPERATURE_ENV = "LLM_MODELS_WITHOUT_TEMPERATURE"
+
+
+def _modelos_sin_temperature_env() -> frozenset[str]:
+    """Nombres listados en ``LLM_MODELS_WITHOUT_TEMPERATURE``, normalizados."""
+    raw = os.getenv(LLM_MODELS_WITHOUT_TEMPERATURE_ENV, "")
+    return frozenset(m.strip().lower() for m in raw.split(",") if m.strip())
 
 
 def _acepta_temperature(model: str) -> bool:
     """¿Este modelo acepta un valor de `temperature` distinto de 1?
-
-    Funcion pura, sin dependencias: facil de testear y de extender.
 
     Args:
         model: nombre del modelo tal como lo eligio el usuario en el wizard,
@@ -72,11 +94,33 @@ def _acepta_temperature(model: str) -> bool:
 
     Returns:
         True si se le puede pasar `temperature` (ej. `gpt-4o-mini`,
-        `llama-3.3-70b`, `openai/gpt-4o-mini`). False si hay que omitir el kwarg
-        para que la libreria aplique su default (ej. `o1`, `o1-mini`, `o3-mini`,
-        `o4-mini`, `openai/o1-mini`).
+        `llama-3.3-70b`, `openai/gpt-4o-mini`, `gpt-5-chat-latest`). False si
+        hay que omitir el kwarg (ej. `o1`, `o3-mini`, `openai/o1-mini`,
+        `gpt-5`, `openai/gpt-5-mini`, o un nombre listado en
+        ``LLM_MODELS_WITHOUT_TEMPERATURE``).
     """
-    return not _RECHAZA_TEMPERATURE_RE.search((model or "").strip().lower())
+    normalizado = (model or "").strip().lower()
+    if normalizado in _modelos_sin_temperature_env():
+        return False
+    return not _RECHAZA_TEMPERATURE_RE.search(normalizado)
+
+
+def explain_llm_error(exc: BaseException) -> str:
+    """Mensaje para el usuario ante un error del provider en request time.
+
+    Si el provider rechazo el parametro `temperature` (400), el texto crudo no
+    dice que hacer; se reemplaza por uno que nombra la causa y la salida
+    (``LLM_MODELS_WITHOUT_TEMPERATURE``). Cualquier otro error pasa tal cual.
+    """
+    texto = str(exc)
+    if "temperature" in texto.lower():
+        return (
+            "El modelo configurado rechazo el parametro 'temperature'. "
+            "Si es un modelo de razonamiento con un nombre no estandar (por "
+            "ejemplo un deployment de Azure), agregalo a la variable de entorno "
+            f"{LLM_MODELS_WITHOUT_TEMPERATURE_ENV}. Detalle del provider: {texto}"
+        )
+    return texto
 
 
 class LLMConfigError(Exception):

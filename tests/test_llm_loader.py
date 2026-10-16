@@ -9,7 +9,9 @@ from unittest.mock import MagicMock, patch
 
 from app.core.llm_loader import (
     DEFAULT_LLM_TEMPERATURE,
+    LLM_MODELS_WITHOUT_TEMPERATURE_ENV,
     _acepta_temperature,
+    explain_llm_error,
     load_user_llm_config,
     save_user_llm_config,
     build_langchain_model,
@@ -310,8 +312,10 @@ class TestAceptaTemperature:
             "gpt-4o-mini",
             "gpt-4o",
             "gpt-4.1",
-            "gpt-5",
+            # gpt-5-chat si acepta temperatura (la restriccion es de gpt-5 no-chat).
             "gpt-5-chat-latest",
+            "openai/gpt-5-chat-latest",
+            "gpt-4.5-preview",
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
             "openai/gpt-4o-mini",
@@ -362,9 +366,9 @@ class TestAceptaTemperature:
     @pytest.mark.parametrize(
         "model",
         [
-            # Prefijos de provider que envia Groq en /v1/models (formato
-            # "openai/o1-mini"): la regex tiene que reconocer el `o\d`
-            # aunque venga precedido de `provider/`.
+            # Formato `provider/modelo` de gateways OpenAI-compatibles como
+            # OpenRouter ("openai/o1-mini"): la regex tiene que reconocer el
+            # `o\d` aunque venga precedido de `provider/`.
             "openai/o1-mini",
             "openai/o1",
             "groq/o1",
@@ -375,8 +379,9 @@ class TestAceptaTemperature:
             # Mayusculas y espacios: la normalizacion debe llegar antes.
             "OpenAI/O1-Mini",
             "  openai/o1-mini  ",
-            # Provider en otro formato (sin slash) que aun empieza por o\d
-            # no deberia colarse: lo que importa es el token despues del slash.
+            # Decision deliberada: cualquier provider cuyo segmento despues
+            # del slash sea `o\d` omite la temperatura. Un falso positivo es
+            # inocuo (se usa el default del provider); un falso negativo es 400.
             "anthropic/o3",
         ],
     )
@@ -401,6 +406,61 @@ class TestAceptaTemperature:
     )
     def test_provider_prefijado_que_no_es_o_digito_si_acepta(self, model):
         assert _acepta_temperature(model) is True
+
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5-pro",
+            "gpt-5.1",
+            "gpt-5-2025-08-07",
+            "GPT-5-MINI",
+            # Con prefijo de provider: la guarda de langchain-openai decide con
+            # startswith("gpt-5") y NO los cubre, por eso se resuelve en la app.
+            "openai/gpt-5",
+            "openai/gpt-5-mini",
+            "openai/gpt-5-nano",
+            "  OpenAI/GPT-5  ",
+        ],
+    )
+    def test_serie_gpt5_no_chat_no_acepta(self, model):
+        assert _acepta_temperature(model) is False
+
+    def test_override_por_env_para_nombres_arbitrarios(self, monkeypatch):
+        """Un deployment de Azure con nombre libre no lo adivina ninguna regex."""
+        assert _acepta_temperature("my-o1-deployment") is True
+
+        monkeypatch.setenv(
+            LLM_MODELS_WITHOUT_TEMPERATURE_ENV, " My-O1-Deployment , otro-razonador,"
+        )
+
+        assert _acepta_temperature("my-o1-deployment") is False
+        assert _acepta_temperature("OTRO-RAZONADOR") is False
+        # Lo que no esta listado sigue la regla de siempre.
+        assert _acepta_temperature("gpt-4o-mini") is True
+
+    def test_override_por_env_vacio_no_cambia_nada(self, monkeypatch):
+        monkeypatch.setenv(LLM_MODELS_WITHOUT_TEMPERATURE_ENV, " , ")
+        assert _acepta_temperature("gpt-4o-mini") is True
+        assert _acepta_temperature("") is True
+
+
+class TestExplainLLMError:
+    def test_error_de_temperature_explica_causa_y_salida(self):
+        exc = Exception(
+            "Error code: 400 - Unsupported value: 'temperature' does not support "
+            "0.0 with this model. Only the default (1) value is supported."
+        )
+        mensaje = explain_llm_error(exc)
+        assert "temperature" in mensaje
+        assert LLM_MODELS_WITHOUT_TEMPERATURE_ENV in mensaje
+        assert "Only the default (1)" in mensaje  # conserva el detalle original
+
+    def test_otros_errores_pasan_tal_cual(self):
+        assert explain_llm_error(Exception("rate limit")) == "rate limit"
 
 
 class TestInitModelTemperature:
@@ -429,13 +489,16 @@ class TestInitModelTemperature:
         assert kwargs["temperature"] == 0.0
         assert DEFAULT_LLM_TEMPERATURE == 0.0
 
-    @pytest.mark.parametrize("model", ["o1", "o1-mini", "o3-mini", "o4-mini"])
+    @pytest.mark.parametrize(
+        "model",
+        ["o1", "o1-mini", "o3-mini", "o4-mini", "gpt-5", "openai/gpt-5-mini"],
+    )
     def test_modelo_serie_o_no_recibe_temperature(self, model):
-        """Sin el kwarg, langchain aplica su default de 1, que es lo valido.
+        """Sin el kwarg el request sale sin `temperature` (o con 1 para `o1*`).
 
-        Mandar 0.0 explicito hace que la guarda interna de langchain (que solo
-        dispara si `temperature` NO viene en `values`) no se aplique, el 0.0
-        viaja al request y OpenAI responde 400 en request time.
+        Para `o1*` langchain fuerza 1 solo si el kwarg no viene; para `o3*`,
+        `o4*` y `gpt-5*` queda en None y la API aplica su default. Mandar 0.0
+        explicito llega al request y OpenAI responde 400.
         """
         from app.core.llm_loader import _init_model
 
