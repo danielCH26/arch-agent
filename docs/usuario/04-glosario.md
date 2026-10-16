@@ -11,22 +11,21 @@ Términos que aparecen en Arch Agent y en esta documentación, ordenados alfabé
 | **Propuesta** | Fase 2. El agente propone una arquitectura justificada, con patrones y trade-offs. |
 | **Refinamiento** | Fase 3. Se genera y ajusta el diagrama de la propuesta aprobada. |
 | **Revisión** | Fase 4 y última. Consulta final de la arquitectura. |
-| **Fase lista (✓)** | Indica que la fase actual fue aprobada y se puede avanzar. |
+| **Fase lista** | La fase actual fue aprobada y se puede avanzar con **Avanzar fase →**. En el chat se indica como "Fase lista para avanzar." y en la tarjeta del proyecto como **Lista para avanzar** (si no, **En progreso**). |
 
 ## Conceptos de la app
 
 | Término | Definición |
 |---------|------------|
-| **Agente** | El asistente de IA de Arch Agent que conversa con vos, hace preguntas y genera propuestas y diagramas. |
-| **Base de conocimiento** | Colección de patrones de arquitectura documentados que el agente consulta para fundamentar sus propuestas. |
-| **Cita** | Referencia, dentro de una propuesta, al patrón de la base de conocimiento que respalda una decisión. |
+| **Agente** | El asistente de IA de Arch Agent que conversa contigo, hace preguntas y genera propuestas y diagramas. |
+| **Base de patrones** | Catálogo de patrones de arquitectura documentados que el agente consulta para fundamentar sus propuestas. Se puede consultar desde la barra lateral. |
+| **Cita** | Referencia, dentro de una propuesta, al patrón de la base de patrones que respalda una decisión. |
 | **Documento de contexto** | Archivo PDF o Markdown que subes a un proyecto para que el agente lo tenga en cuenta. |
 | **Elicitación** | Proceso de descubrir los requerimientos mediante preguntas progresivas. |
-| **Evolución del diseño** | Historial de todas las iteraciones de una propuesta, con el feedback que originó cada una. |
-| **Historial de diagramas** | Panel que lista todas las versiones de diagramas de un proyecto y su estado. Es solo de consulta. |
-| **Iteración** | Nueva versión de una propuesta generada a partir de tu feedback (botón **Modificar**). |
+| **Historial de diagramas** | Panel (botón **Diagramas**) que lista todas las versiones de diagramas de un proyecto y su estado. Es solo de consulta. |
+| **Iteración** | Nueva versión de una propuesta generada a partir de tu feedback (botón **Modificar** → **Generar nueva iteración**). |
 | **Proyecto** | Espacio de trabajo para una idea de producto: contiene la conversación, los documentos, las propuestas y los diagramas. |
-| **Resumen de requerimientos** | Síntesis que genera el agente al final de la elicitación: problema, usuarios, funcionalidades, restricciones y calidad. |
+| **Resumen de requerimientos** | Aparece como **Resumen del proyecto**. Síntesis que genera el agente al final de la elicitación: problema, usuarios, funcionalidades, restricciones y calidad. |
 | **Streaming** | Forma en que se muestran las respuestas: el texto aparece a medida que el modelo lo genera. |
 | **Sufijo (subir con)** | Opción ante un archivo duplicado: guarda el nuevo archivo con otro nombre en lugar de reemplazar el existente. |
 | **Versión (de documento)** | Número que identifica cada reemplazo de un mismo archivo (v1, v2…). |
@@ -35,7 +34,7 @@ Términos que aparecen en Arch Agent y en esta documentación, ordenados alfabé
 
 | Término | Definición |
 |---------|------------|
-| **Atributo de calidad** | Característica no funcional que el sistema debe cumplir: rendimiento, disponibilidad, seguridad, escalabilidad, mantenibilidad, etc. Aparece como **Calidad** en el resumen. |
+| **Atributo de calidad** | Característica no funcional que el sistema debe cumplir: rendimiento, disponibilidad, seguridad, escalabilidad, mantenibilidad, etc. Aparece como **Atributos de calidad** en el resumen. |
 | **Funcionalidad** | Algo concreto que el sistema debe permitir hacer (ej.: "reservar un turno"). |
 | **Requerimiento** | Necesidad o condición que el sistema debe satisfacer. |
 | **Restricción** | Límite impuesto al diseño: presupuesto, plazos, tecnologías obligatorias o prohibidas, normativas. |
@@ -73,13 +72,13 @@ Términos que aparecen en Arch Agent y en esta documentación, ordenados alfabé
 |---------|------------|
 | **API compatible con OpenAI** | Interfaz estándar que ofrecen muchos proveedores; Arch Agent puede usar cualquiera que la implemente. |
 | **API Key** | Clave secreta que te da el proveedor para autenticar las solicitudes. Se guarda cifrada. |
-| **Base URL** | Dirección base de la API del proveedor (ej.: `https://api.openai.com/v1`). |
+| **URL base** (*Base URL*) | Dirección base de la API del proveedor (ej.: `https://api.openai.com/v1`). Es el paso 1 del asistente de configuración. |
 | **LLM** | *Large Language Model*: modelo de lenguaje de gran escala (GPT-4o, Claude, Llama, Qwen…) que impulsa al agente. |
 | **MMLU** | Benchmark que mide el conocimiento general de un modelo. Arch Agent lo usa para clasificar los modelos por calidad. |
 | **Modelo local** | LLM que corre en tu propia máquina (con Ollama o LM Studio), sin enviar datos a terceros. |
-| **Modo degradado** | Respuesta reducida que da la app cuando el modelo no pudo completar una acción (ej.: no soporta tool calling). |
+| **Modo degradado** | Respuesta reducida del agente cuando no pudo completar una acción. Si afecta al diagrama (no se pudo convertir en imagen o tiene componentes sin respaldo), la app muestra un aviso debajo de la respuesta. |
 | **Proveedor** | Servicio que ofrece el LLM (OpenAI, OpenRouter, Groq, Ollama…). |
-| **Tier** | Nivel de calidad asignado a un modelo según su MMLU: **Tier 1 / Recomendado** (≥ 85), **Sin score conocido** (60–85 o desconocido) y bloqueado (< 60). |
+| **Tier** | Nivel de calidad asignado a un modelo según su MMLU: **Tier 1 / Recomendados** (≥ 85), **Sin score conocido** (60–85 o desconocido) y bloqueado (< 60). |
 | **Tool calling** | Capacidad de un modelo de invocar herramientas externas de forma estructurada. Necesaria para generar diagramas. |
 
 ---

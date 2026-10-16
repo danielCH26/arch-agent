@@ -9,8 +9,7 @@ Requerimientos  →  Propuesta  →  Refinamiento  →  Revisión
  (elicitación)    (arquitectura)   (diagrama)
 ```
 
-#Screenshot-página-principal
-<!-- Reemplazar por: ![Página principal de Arch Agent](screenshots/pagina-principal.png) -->
+![Página principal de Arch Agent](screenshots/pagina-principal.png)
 
 ## Contenido
 
@@ -26,4 +25,4 @@ Requerimientos  →  Propuesta  →  Refinamiento  →  Revisión
 
 - Un navegador moderno (Chrome, Edge, Firefox o Safari actualizados).
 - Acceso a la URL de Arch Agent (en una instalación local: **http://localhost:5173**).
-- Un proveedor de LLM compatible con la API de OpenAI (OpenAI, Ollama, LM Studio, OpenRouter, Groq, etc.) y, si el proveedor lo exige, su **API key**.
+- Un proveedor de LLM compatible con la API de OpenAI (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, Groq, etc.) y, si el proveedor lo exige, su **API key**.

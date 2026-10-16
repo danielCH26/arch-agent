@@ -14,13 +14,13 @@
 ## Cuenta y acceso
 
 **¿Qué requisitos tiene la contraseña?**
-Al registrarte, mínimo 6 caracteres. Al cambiarla desde **Perfil**, mínimo 8 caracteres.
+Al menos 8 caracteres, con una letra mayúscula, un número y un carácter especial (por ejemplo `! @ # $ % &`). La regla es la misma al registrarte y al cambiarla desde tu perfil.
 
 **La app me devolvió al login sin que yo cerrara sesión.**
 Tu sesión expiró (por defecto dura 60 minutos). Vuelve a iniciar sesión; tus proyectos y conversaciones se conservan.
 
 **Olvidé mi contraseña.**
-Por ahora no hay recuperación automática por email. Pidele al administrador de tu instalación que te ayude a restablecerla.
+Por ahora no hay recuperación automática por email. Pídele al administrador de tu instalación que te ayude a restablecerla.
 
 **Veo "Ese proyecto ya no está disponible para tu usuario".**
 El proyecto no existe o pertenece a otro usuario. Cada usuario solo ve sus propios proyectos.
@@ -30,12 +30,12 @@ El proyecto no existe o pertenece a otro usuario. Cada usuario solo ve sus propi
 ## Configuración del LLM
 
 **¿Por qué tengo que configurar un LLM?**
-Arch Agent no incluye un modelo propio: usa el proveedor que vos elijas. Sin configuración, el agente no puede hacer preguntas ni generar propuestas.
+Arch Agent no incluye un modelo propio: usa el proveedor que tú elijas. Sin configuración, el agente no puede hacer preguntas ni generar propuestas.
 
 **¿Qué proveedores puedo usar?**
 Cualquiera compatible con la API de OpenAI: OpenAI, OpenRouter, Groq, DeepSeek, Together AI, vLLM, y modelos locales con Ollama o LM Studio. Ver la tabla del [tutorial](02-tutorial.md#3-configurar-el-llm).
 
-**Uso Ollama en mi PC y el paso 1 falla.**
+**Uso Ollama en mi PC y el paso 1 (URL base) falla.**
 Si Arch Agent corre en Docker, `localhost` apunta al contenedor, no a tu PC. Usa `http://host.docker.internal:11434/v1` (o el puerto `1234` para LM Studio) y verifica que Ollama esté corriendo.
 
 **El paso 2 dice que la API key no es válida.**
@@ -44,13 +44,16 @@ Revisa que la copiaste completa, sin espacios, que corresponde al mismo proveedo
 **No encuentro mi modelo en la lista.**
 Puede pasar por dos motivos:
 - Tiene un puntaje MMLU menor a 60 y está bloqueado por baja calidad (por ejemplo, `gpt-3.5-turbo`).
-- Es un modelo personalizado que el proveedor no lista. En ese caso, usa **Cancelar** en el paso 3 y escribe el nombre exacto a mano.
+- Es un modelo personalizado que el proveedor no lista. En ese caso, haz clic en **No encuentro mi modelo — escribir manualmente** en el paso 3 y escribe el nombre exacto.
 
 **¿Qué significa "Sin score conocido"?**
-El modelo no tiene un puntaje de calidad registrado o está entre 60 y 85 de MMLU. Puedes usarlo, pero los resultados pueden ser peores; por eso la app te pide confirmación.
+El modelo no tiene un puntaje de calidad registrado o está entre 60 y 85 de MMLU. Puedes usarlo, pero los resultados pueden ser peores que con un modelo del grupo **Recomendados (Tier 1)**.
 
-**Los diagramas no se generan o veo un aviso de "modo degradado".**
-La generación del diagrama necesita un modelo con buen soporte de *tool calling*. Modelos como `llama3` (Llama 3.0) no lo tienen. Cambia a uno recomendado: `gpt-4o`, `gpt-4o-mini`, `claude-sonnet-4`, `qwen2.5-coder` o `llama-3.1`+.
+**Los diagramas no se generan.**
+La generación del diagrama necesita un modelo con buen soporte de *tool calling*. Modelos como `llama3` (Llama 3.0) no lo tienen. Cambia a uno con buen soporte de *tool calling*, como `gpt-4o`, `gpt-4o-mini`, `claude-sonnet-4`, `qwen2.5-coder` o `llama-3.1` en adelante.
+
+**Debajo del diagrama aparece un aviso.**
+La app avisa cuando el diagrama no se pudo convertir en imagen o cuando incluye componentes que no están respaldados por la documentación consultada. Puedes pedirle al agente que lo vuelva a generar o usar **✏️ Solicitar cambios**.
 
 **Aparece un error del proveedor (por ejemplo, 429) en medio de la elicitación.**
 El proveedor está limitando las solicitudes o no tienes cuota. Espera unos segundos y usa **Reintentar**. Tus respuestas anteriores no se pierden.
@@ -62,17 +65,17 @@ El proveedor está limitando las solicitudes o no tienes cuota. Espera unos segu
 **¿Cuáles son las fases y en qué orden van?**
 Requerimientos → Propuesta → Refinamiento → Revisión. Ver el [glosario](04-glosario.md#fases).
 
-**¿Puedo saltear una fase?**
-No. Cada fase tiene que estar aprobada para que aparezca el botón **Continuar a …**.
+**¿Puedo saltarme una fase?**
+No. El botón **Avanzar fase →** solo se habilita cuando la fase actual está lista ("Fase lista para avanzar."). En Requerimientos y Propuesta la fase queda lista al aprobar el resumen o la propuesta; en Refinamiento y Revisión, con **Marcar fase como lista**.
 
-**¿Qué significa el ✓ en la etiqueta de fase de un proyecto?**
-Que la fase actual ya fue aprobada y el proyecto está listo para avanzar a la siguiente.
+**¿Qué significa "Lista para avanzar" en la tarjeta de un proyecto?**
+Que la fase actual ya fue aprobada y el proyecto puede avanzar a la siguiente. Si dice **En progreso**, la fase todavía no está lista. Con **Continuar** retomas el proyecto.
 
 **No puedo escribir en el chat durante la elicitación.**
-Cuando el agente muestra el resumen de requerimientos, el cuadro de texto se bloquea hasta que decidas con **Aprobar**, **Modificar** o **Rechazar**. Sí puedes seguir adjuntando documentos.
+Cuando el agente muestra el resumen de requerimientos, el cuadro de respuesta desaparece hasta que decidas con **Aprobar**, **Solicitar cambios** o **Rechazar y reiniciar**. Si quieres sumar un documento, súbelo desde **Documentos** y luego usa **Solicitar cambios**.
 
-**¿Qué diferencia hay entre "Modificar" y "Rechazar" en el resumen?**
-**Modificar** conserva lo conversado y ajusta el resumen según tu pedido. **Rechazar** descarta el resumen y reinicia la elicitación.
+**¿Qué diferencia hay entre "Solicitar cambios" y "Rechazar y reiniciar" en el resumen?**
+**Solicitar cambios** conserva lo conversado y ajusta el resumen según tu pedido. **Rechazar y reiniciar** descarta el resumen y reinicia la elicitación desde cero.
 
 **Cerré el navegador en medio de un proyecto. ¿Pierdo lo que hice?**
 No. Al volver a abrir el proyecto se recupera la conversación, el resumen, la propuesta vigente y los diagramas.
@@ -88,7 +91,7 @@ PDF (`.pdf`) y Markdown (`.md`), de hasta 10 MB cada uno.
 El agente los usa como contexto adicional: por ejemplo, actas de reunión, notas del cliente o especificaciones existentes.
 
 **Subí un documento después de que el agente generó el resumen. ¿Lo tiene en cuenta?**
-Usa **Modificar** en el resumen (por ejemplo: *"incorporá lo del acta que acabo de subir"*) para que se regenere con el nuevo documento.
+Usa **Solicitar cambios** en el resumen (por ejemplo: *"incorpora lo del acta que acabo de subir"*) para que se regenere con el nuevo documento.
 
 **Me aparece "Archivo duplicado".**
 Ya existe un archivo con ese nombre en el proyecto. Elige **Reemplazar** (nueva versión), **Subir con sufijo** (archivo aparte) o **Cancelar**.
@@ -97,26 +100,29 @@ Ya existe un archivo con ese nombre en el proyecto. Elige **Reemplazar** (nueva 
 
 ## Propuestas y diagramas
 
-**Hice clic en "Continuar a Propuesta" y no aparece nada.**
+**Hice clic en "Avanzar fase →" y la propuesta no aparece.**
 La propuesta se genera a pedido: haz clic en **Generar propuesta** dentro de la tarjeta.
 
 **La generación de la propuesta falló.**
 Se muestra el error en la tarjeta y el botón **Generar propuesta** vuelve a estar disponible para reintentar.
 
 **¿Cuántas veces puedo iterar una propuesta?**
-Las que necesites. Cada iteración queda guardada en **Evolución del diseño**.
+Hasta el máximo de iteraciones configurado en tu instalación. Al alcanzarlo, la app te pide que apruebes o rechaces la propuesta. La tarjeta muestra siempre la iteración más reciente.
+
+**Rechacé la propuesta y volví a Requerimientos. ¿Por qué?**
+**Rechazar** una propuesta devuelve el proyecto a la fase Requerimientos, porque se interpreta que el problema está en los requerimientos. Si solo quieres ajustar la propuesta, usa **Modificar**.
 
 **¿De dónde salen los patrones que cita la propuesta?**
-De la base de conocimiento de patrones de Arch Agent (capas, hexagonal, clean architecture, monolito modular, microservicios, event-driven, event sourcing, CQRS, API Gateway/BFF, serverless). Las citas te permiten ver en qué se apoya cada decisión.
+De la **Base de patrones** de Arch Agent (puedes consultarla desde la barra lateral) (capas, hexagonal, clean architecture, monolito modular, microservicios, event-driven, event sourcing, CQRS, API Gateway/BFF, serverless). Las citas te permiten ver en qué se apoya cada decisión.
 
 **¿Tengo que pedir el diagrama?**
-No. Al entrar a **Refinamiento** se genera solo. Si vuelves a entrar y ya existe un diagrama, no se regenera.
+Sí. Al entrar a **Refinamiento** escríbele al agente en el chat, por ejemplo: *"Genera el diagrama de la propuesta aprobada"*.
 
 **¿Puedo aprobar o rechazar diagramas desde el Historial de diagramas?**
-No, el historial es solo de consulta. Las decisiones se toman sobre cada diagrama en el chat.
+No, el historial (botón **Diagramas**) es solo de consulta. Las decisiones se toman sobre cada diagrama en el chat.
 
 **El diagrama se ve muy chico.**
-Haz clic sobre él para abrir el visor ampliado y usa los controles de zoom.
+Haz clic sobre él para abrir el visor ampliado y usa los controles **−** y **+**. También puedes usar **Abrir original** para verlo en una pestaña nueva.
 
 ---
 

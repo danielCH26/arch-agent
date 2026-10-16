@@ -22,39 +22,38 @@ Este tutorial recorre Arch Agent de punta a punta con un proyecto de ejemplo: **
 
 ### Crear una cuenta
 
-1. Abre la app (por defecto **http://localhost:5173**) y entra a la pantalla de registro.
+1. Abre la app (por defecto **http://localhost:5173**) y haz clic en **Regístrate**.
 2. Completa:
-   - **Usuario** — tu nombre de usuario para iniciar sesión.
-   - **Email** — una dirección válida.
-   - **Contraseña** — mínimo 6 caracteres. Usa el ícono del ojo para mostrarla u ocultarla.
-   - **Confirmar contraseña** — tiene que coincidir.
-3. Envia el formulario. Si todo es válido, entras directamente al panel de proyectos.
+   - **Nombre de usuario** — entre 3 y 100 caracteres: letras, números o guion bajo.
+   - **Correo electrónico** — una dirección válida.
+   - **Contraseña** — al menos **8 caracteres**, con **una mayúscula**, **un número** y **un carácter especial** (por ejemplo `! @ # $ % &`). Usa el ícono del ojo para mostrarla u ocultarla.
+   - **Repetir contraseña** — tiene que coincidir.
+3. Haz clic en **Registrarse**. Si todo es válido, entras directamente a **Mis proyectos**.
 
-#Screenshot-registro
-![Pantalla de registro](screenshots/Registro.png)
+![Pantalla de registro](screenshots/registro.png)
 
 ### Iniciar sesión
 
-En visitas posteriores ingresa tu **usuario** y **contraseña** en la pantalla de inicio de sesión. La sesión dura un tiempo limitado (por defecto 60 minutos); cuando expira, la app te devuelve al login.
+En visitas posteriores ingresa tu **nombre de usuario** y **contraseña** y haz clic en **Iniciar sesión**. La sesión dura un tiempo limitado (por defecto 60 minutos); cuando expira, la app te devuelve al inicio de sesión.
 
-#Screenshot-inicio-sesion
-![Pantalla de inicio de sesión](screenshots/Inicio-sesion.png)
+![Pantalla de inicio de sesión](screenshots/inicio-sesion.png)
 
 ---
 
 ## 2. Conocer la interfaz
 
-#Screenshot-pagina-principal
-![Página principal con barra lateral y lista de proyectos](screenshots/Pagina-principal.png) -->
+![Página principal con barra lateral y lista de proyectos](screenshots/pagina-principal.png)
 
 | Zona | Qué contiene |
 |------|--------------|
-| **Encabezado** | Logo *Arch Agent* (vuelve a la lista de proyectos), tu nombre de usuario y **Cerrar sesión**. |
-| **Barra lateral — Proyectos** | Tus proyectos. Al hacer clic en uno se despliegan sus secciones **💬 Chat** y **📄 Documentos**. Abajo, el botón **+ Nuevo proyecto**. |
-| **Barra lateral — pie** | **👤 Perfil** y **⚙️ Configuración LLM**. |
-| **Área principal** | La pantalla activa: lista de proyectos, chat, documentos o configuración. |
+| **Barra lateral — navegación** | Logo *ArchAgent* y los accesos **Mis proyectos**, **+ Nuevo proyecto**, **Proyecto actual** (vuelve al chat del último proyecto abierto) y **Base de patrones**. |
+| **Barra lateral — Proyectos** | Tus proyectos. Al hacer clic en uno se despliegan sus secciones **Chat** y **Documentos**. |
+| **Barra lateral — pie** | Tu nombre de usuario (abre tu perfil) y tres íconos: **tema** claro/oscuro, **Configuración LLM** (engranaje) y **Cerrar sesión**. |
+| **Área principal** | La pantalla activa: lista de proyectos, chat, documentos, base de patrones o configuración. |
 
-> En pantallas angostas (celular) la barra lateral se oculta; usa el panel principal de **Proyectos** para navegar.
+En la **Base de patrones** puedes consultar el catálogo de patrones de arquitectura que el agente usa para fundamentar sus propuestas: buscar por nombre o caso de uso, filtrar por categoría y ver el detalle y los trade-offs de cada uno.
+
+> En pantallas angostas (celular) la barra lateral se oculta; ábrela con el botón **☰** de la barra superior.
 
 ---
 
@@ -62,13 +61,13 @@ En visitas posteriores ingresa tu **usuario** y **contraseña** en la pantalla d
 
 Arch Agent no trae un modelo propio: **cada usuario conecta el suyo**. Sin este paso el agente no puede responder.
 
-Entra a **⚙️ Configuración LLM**. El asistente tiene tres pasos:
+Haz clic en el ícono de engranaje del pie de la barra lateral. Se abre **Configuración Global del LLM**: la configuración vale para todos tus proyectos. El asistente tiene tres pasos: **URL base**, **API Key** y **Modelo**.
 
-### Paso 1 — Base URL
+### Paso 1 — URL base
 
-Pega la URL base del proveedor. El asistente verifica que la URL responda como una API compatible con OpenAI.
+Pega la URL base del proveedor y haz clic en **Continuar**. El asistente verifica que la URL responda como una API compatible con OpenAI.
 
-| Proveedor | Base URL |
+| Proveedor | URL base |
 |-----------|----------|
 | OpenAI | `https://api.openai.com/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
@@ -77,43 +76,38 @@ Pega la URL base del proveedor. El asistente verifica que la URL responda como u
 | Together AI | `https://api.together.xyz/v1` |
 | Ollama (local) | `http://host.docker.internal:11434/v1` |
 | LM Studio (local) | `http://host.docker.internal:1234/v1` |
+| vLLM (self-hosted) | `http://host.docker.internal:8000/v1` |
 
-#Screenshot-llm-paso1-base-url
-![Paso 1: Base URL](screenshots/LLM-paso1-base-url.png)
+![Paso 1: URL base](screenshots/llm-paso1-base-url.png)
 
 ### Paso 2 — API Key
 
-Pega la clave del proveedor. El asistente prueba la conexión real. La clave **se guarda cifrada** y solo cuando confirmas el paso 3; después nunca se vuelve a mostrar completa.
+Pega la clave del proveedor y haz clic en **Continuar**. El asistente prueba la conexión real. La clave **se guarda cifrada** y solo cuando confirmas el paso 3; después nunca se vuelve a mostrar completa.
 
-#Screenshot-llm-paso2-api-key
-![Paso 2: API Key](screenshots/LLM-paso2-api-key.png)
+![Paso 2: API Key](screenshots/llm-paso2-api-key.png)
 
 ### Paso 3 — Modelo
 
-Elige el modelo de la lista desplegable. Los modelos están clasificados por calidad (puntaje **MMLU**):
+Elige el modelo de la lista desplegable. Los modelos se agrupan según su calidad (puntaje **MMLU**):
 
-| Etiqueta | Significado | ¿Se puede elegir? |
-|----------|-------------|-------------------|
-| 🟢 **Recomendado** (Tier 1) | MMLU ≥ 85 | Sí, directamente. |
-| 🟡 **Sin score conocido** | MMLU entre 60 y 85, o desconocido | Sí, pero pide confirmación. |
+| Grupo | Significado | ¿Se puede elegir? |
+|-------|-------------|-------------------|
+| **Recomendados (Tier 1)** | MMLU ≥ 85 | Sí, se aprueba automáticamente. |
+| **Sin score conocido** | MMLU entre 60 y 85, o desconocido | Sí, pero sin garantía de calidad. |
 | *(no aparece)* | MMLU < 60 | No: se bloquea por baja calidad. |
 
-¿Tu modelo no está en la lista (por ejemplo, un fine-tune)? Usa **Cancelar** en este paso para que aparezca un campo de texto y escribe el nombre exacto del modelo. Haz clic en **Guardar**.
+¿Tu modelo no está en la lista (por ejemplo, un fine-tune)? Haz clic en **No encuentro mi modelo — escribir manualmente** y escribe el nombre exacto del modelo en el campo de texto (con **Volver al listado** regresas a la lista). Para terminar, haz clic en **Guardar**.
 
-#Screenshot-llm-paso3-modelo
-![Paso 3: selección de modelo](screenshots/Configuracion-LLM.png)
-
-NOTA: Nuevamente, como en el inicio rápido, esto no se encuentra implementado porque todavía se está a la espera de que Daniel implemente a development el score de los modelos
+![Paso 3: selección de modelo](screenshots/configuracion-llm.png)
 
 ### Cambiar la configuración más adelante
 
-Si ya tienes una configuración guardada, verás un **resumen** con dos opciones:
+Si ya tienes una configuración guardada, verás **Tu configuración actual** (URL base, modelo y la API key oculta) con dos opciones:
 
 - **Cambiar modelo** — salta directo al paso 3 manteniendo URL y clave.
 - **Cambiar todo** — vuelve al paso 1.
 
-#Screenshot-llm-resumen
-![Resumen de configuración LLM](screenshots/Resumen-configuracion-LLM.png)
+![Resumen de configuración LLM](screenshots/llm-resumen.png)
 
 ---
 
@@ -124,29 +118,32 @@ Si ya tienes una configuración guardada, verás un **resumen** con dos opciones
 3. **Descripción** (opcional, pero ayuda al agente): `App web para que clínicas pequeñas gestionen turnos, recordatorios y cancelaciones de pacientes.`
 4. Haz clic en **Crear**.
 
-La app abre el **chat** del proyecto, en la fase **Requerimientos**. El nombre del proyecto y su fase actual se ven en la parte superior del chat.
+La app abre el **chat** del proyecto, en la fase **Requerimientos**. Arriba ves el nombre del proyecto y las cuatro fases, con la actual resaltada.
 
-#Screenshot-nuevo-proyecto
-![Diálogo de nuevo proyecto](screenshots/Nuevo-proyecto-turnofacil.png)
+![Diálogo de nuevo proyecto](screenshots/nuevo-proyecto-turnofacil.png)
 
-En la lista de **Proyectos** cada tarjeta muestra el nombre, la descripción y una **etiqueta de fase** (con ✓ cuando la fase actual ya está aprobada).
+En **Mis proyectos** cada tarjeta muestra:
 
-#Screenshot-lista-proyectos
-![Lista de proyectos con etiquetas de fase](screenshots/Lista-proyectos.png)
+- El nombre, la descripción y una etiqueta de estado (**En elicitación**, **Propuesta**, **Refinamiento**, **Revisión** o **Completado**).
+- **Fase:** la fase actual.
+- **Lista para avanzar** (la fase actual ya está aprobada) o **En progreso**.
+- El botón **Continuar** para retomar el proyecto (**Ver arquitectura** si ya está completado).
+
+![Lista de proyectos con su fase y estado](screenshots/lista-proyectos.png)
 
 ---
 
 ## 5. Subir documentos de contexto
 
-Si ya tienes material (actas de reunión, notas, especificaciones), subelo para que el agente lo tenga en cuenta.
+Si ya tienes material (actas de reunión, notas, especificaciones), súbelo para que el agente lo tenga en cuenta.
 
 - **Formatos:** PDF (`.pdf`) y Markdown (`.md`).
 - **Tamaño máximo:** 10 MB por archivo.
 
 Hay dos formas de subirlos:
 
-1. **Desde 📄 Documentos** (barra lateral, dentro del proyecto): arrastra el archivo a la zona punteada o haz clic para elegirlo. Ahí también ves la lista de documentos y puedes eliminarlos.
-2. **Desde el chat**: con el botón de adjuntar junto al cuadro de texto. Funciona incluso cuando el texto está bloqueado esperando que apruebes el resumen.
+1. **Desde Documentos** (barra lateral, dentro del proyecto): se abre **Subida de archivos — {nombre del proyecto}**. Arrastra el archivo a la zona de carga o haz clic para elegirlo. Debajo, en **Documentos subidos**, ves la lista de documentos y puedes eliminarlos.
+2. **Desde el chat** de las fases Propuesta, Refinamiento y Revisión: con el clip junto al cuadro de texto. En la fase Requerimientos el chat no permite adjuntar; usa **Documentos**.
 
 Si subes un archivo con un nombre que ya existe, la app te pregunta qué hacer:
 
@@ -156,13 +153,11 @@ Si subes un archivo con un nombre que ya existe, la app te pregunta qué hacer:
 | **Subir con sufijo** | Guarda el archivo como uno nuevo, con un sufijo en el nombre. |
 | **Cancelar** | No sube nada. |
 
-#Screenshot-documentos
-![Pantalla de documentos del proyecto](screenshots/Documentos.png)
+![Pantalla de subida de archivos del proyecto](screenshots/documentos.png)
 
-#Screenshot-archivo-duplicado
-![Diálogo de archivo duplicado](screenshots/Archivo-duplicado.png)
+![Diálogo de archivo duplicado](screenshots/archivo-duplicado.png)
 
-> **Tip:** si subes un documento nuevo después de que el agente ya generó el resumen de requerimientos, usa **Modificar** en el resumen para que lo incorpore.
+> **Tip:** si subes un documento nuevo después de que el agente ya generó el resumen de requerimientos, usa **Solicitar cambios** en el resumen para que lo incorpore.
 
 ---
 
@@ -172,53 +167,50 @@ El objetivo de esta fase es que el agente entienda **qué** hay que construir. L
 
 ### Responder las preguntas
 
-Al entrar al chat el agente ya te muestra la primera pregunta. Responde en el cuadro **"Escribe un mensaje..."** y envia. Ejemplo de conversación:
+Al entrar al chat verás el aviso *"Voy a hacerte preguntas para entender tu proyecto"*. Haz clic en **Comenzar elicitación** y el agente te muestra la primera pregunta. Responde en el cuadro **"Escribe tu respuesta..."** y presiona Enter (Shift+Enter agrega una línea nueva). Ejemplo de conversación:
 
 > **Agente:** ¿Qué problema resuelve el sistema y para quién?
 >
-> **Vos:** Las clínicas chicas manejan los turnos por teléfono y planillas; se pierden turnos y hay muchas ausencias. Lo usarían recepcionistas, médicos y pacientes.
+> **Tú:** Las clínicas pequeñas manejan los turnos por teléfono y planillas; se pierden turnos y hay muchas ausencias. Lo usarían recepcionistas, médicos y pacientes.
 >
 > **Agente:** ¿Cuáles son las funcionalidades indispensables?
 >
-> **Vos:** Reservar y cancelar turnos online, agenda por profesional, recordatorios por email/WhatsApp y un panel de ausencias.
+> **Tú:** Reservar y cancelar turnos online, agenda por profesional, recordatorios por email/WhatsApp y un panel de ausencias.
 
-Mientras el agente piensa verás tres puntos animados. Responde con el mayor detalle posible: volumen esperado de usuarios, presupuesto, tecnologías obligatorias o prohibidas, requisitos de disponibilidad o seguridad, etc.
+Mientras el agente piensa verás tres puntos animados. Responde con el mayor detalle posible: volumen esperado de usuarios, presupuesto, tecnologías obligatorias o prohibidas, requisitos de disponibilidad o seguridad, etc. Si el proveedor del LLM falla, aparece el error con el enlace **Reintentar**.
 
-#Screenshot-elicitacion
-![Chat de elicitación](screenshots/Elicitacion.png)
+![Chat de elicitación](screenshots/elicitacion.png)
 
 ### Validar el resumen
 
-Cuando el agente tiene suficiente información, muestra un **Resumen de requerimientos para validar** con:
+Cuando el agente tiene suficiente información, muestra el **Resumen del proyecto** con:
 
 - **Problema** y **Usuarios**
 - **Funcionalidades**
 - **Restricciones**
-- **Calidad** (atributos de calidad: rendimiento, disponibilidad, seguridad…)
+- **Atributos de calidad** (rendimiento, disponibilidad, seguridad…)
 
-Debajo aparece la pregunta *"¿El resumen representa las necesidades del proyecto?"* con tres botones:
+Debajo aparece la pregunta **"¿Apruebas este resumen?"** con tres botones:
 
 | Botón | Qué hace |
 |-------|----------|
-| **Aprobar** | Da por buenos los requerimientos. La fase queda lista para avanzar. |
-| **Modificar** | Abre un campo *"¿Qué debe ajustarse?"*. Describe el cambio y haz clic en **Enviar ajuste**; el agente regenera el resumen. |
-| **Rechazar** | Descarta el resumen y reinicia la elicitación desde cero. |
+| **✓ Aprobar** | Da por buenos los requerimientos. La fase queda lista para avanzar. |
+| **✎ Solicitar cambios** | Abre un campo para describir qué te gustaría cambiar. Escribe el ajuste y haz clic en **Enviar cambios**; el agente retoma la conversación y regenera el resumen. |
+| **✕ Rechazar y reiniciar** | Pide confirmación y, si aceptas, descarta el resumen y reinicia la elicitación desde cero (se pierde el progreso de la fase). |
 
-#Screenshot-resumen-requerimientos
-![Resumen de requerimientos con botones de decisión](screenshots/Chat-elicitacion-resumen-Turnofacil.png) -->
+![Resumen de requerimientos con botones de decisión](screenshots/resumen-requerimientos-turnofacil.png)
 
 ### Avanzar de fase
 
-Al aprobar aparece un aviso verde: **"Requerimientos aprobados ✓ Ya puedes continuar a la fase de Propuesta"**. Haz clic en **Continuar a Propuesta**. Si antes de avanzar te acuerdas de algo, usa **Pedir un ajuste**.
+Al aprobar verás **"✓ Resumen aprobado"** y, en la barra superior del chat, el estado cambia a **"Fase lista para avanzar."**. Haz clic en **Avanzar fase →** para pasar a la fase Propuesta.
 
-#Screenshot-avanzar-fase
-![Aviso de fase aprobada con botón Continuar](screenshots/Avanzar-fase.png)
+![Resumen aprobado y botón Avanzar fase](screenshots/avanzar-fase.png)
 
 ---
 
 ## 7. Fase 2 — Propuesta de arquitectura
 
-En esta fase el agente propone **cómo** construirlo, apoyándose en su base de conocimiento de patrones de arquitectura (capas, hexagonal, microservicios, monolito modular, event-driven, CQRS, serverless, etc.).
+En esta fase el agente propone **cómo** construirlo, apoyándose en su base de patrones de arquitectura (capas, hexagonal, microservicios, monolito modular, event-driven, CQRS, serverless, etc.).
 
 ### Generar la propuesta
 
@@ -227,57 +219,66 @@ En la tarjeta **Propuesta de arquitectura** haz clic en **Generar propuesta**. E
 - Estilo/patrón de arquitectura recomendado y su justificación.
 - Componentes principales y sus responsabilidades.
 - **Tabla de trade-offs** comparando alternativas.
-- **Citas** a los patrones de la base de conocimiento que respaldan la decisión.
+- **Citas** a los patrones de la base de patrones que respaldan la decisión, con su porcentaje de similitud.
 
-La etiqueta en la esquina de la tarjeta indica el estado: **Propuesta**, **Aprobada** o **Rechazada**.
+Junto al título se indica el número de **iteración**, y la etiqueta de la esquina muestra el estado: **Pendiente de decisión** mientras no decidas, o **Aprobada**.
 
-#Screenshot-propuesta
-![Tarjeta de propuesta con trade-offs y citas](screenshots/Propuesta.png)
+![Tarjeta de propuesta con trade-offs y citas](screenshots/propuesta.png)
 
 ### Decidir sobre la propuesta
 
-Debajo de la propuesta tenés:
+Debajo de la propuesta tienes:
 
 | Control | Qué hace |
 |---------|----------|
-| **Aprobar** | Acepta la propuesta y habilita el avance a Refinamiento. |
-| **Modificar** | Abre un cuadro para escribir feedback (ej.: *"agregar caché con Redis"*, *"usar PostgreSQL en vez de MongoDB"*). Haz clic en **Iterar propuesta** para generar una nueva versión. |
-| **Rechazar** | Descarta la propuesta. |
-| **Comentario** (opcional) | Nota breve que queda registrada junto con tu decisión de aprobar o rechazar. |
+| **Aprobar** | Acepta la propuesta y deja la fase lista para avanzar. |
+| **Modificar** | Abre el cuadro **"¿Qué debería cambiar?"** para escribir feedback (ej.: *"agregar caché con Redis"*, *"usar PostgreSQL en vez de MongoDB"*). Haz clic en **Generar nueva iteración**. |
+| **Rechazar** | Pide confirmación y **devuelve el proyecto a la fase Requerimientos**; esa propuesta ya no admite más iteraciones. Úsalo solo si los requerimientos están mal; para ajustar la propuesta, usa **Modificar**. |
+| **Comentario opcional** | Nota breve que queda registrada junto con tu decisión de aprobar o rechazar. |
 
-Mientras se genera una nueva iteración, **la versión actual se conserva** en pantalla. Cada iteración muestra arriba el feedback que la originó.
+![Cuadro de feedback para iterar la propuesta](screenshots/feedback-propuesta.png)
 
-#Screenshot-iterar-propuesta
-![Cuadro de feedback para iterar la propuesta](screenshots/Iterar-propuesta.png)
+Mientras se genera una nueva iteración verás **"Generando nueva iteración..."**; si la generación se cancela o falla, **la versión actual se conserva**. Cada iteración muestra arriba, como **Ajuste solicitado**, el feedback que la originó.
 
-![Cuadro de feedback para iterar la propuesta](screenshots/Iterar-propuesta2.png)
+![Nueva iteración generándose a partir del feedback](screenshots/iterar-propuesta.png)
 
-### Evolución del diseño
+![Nueva iteración con el ajuste solicitado](screenshots/iterar-propuesta-2.png)
 
-Cuando hay más de una versión aparece la sección desplegable **"Evolución del diseño (N versiones)"**, donde puedes releer cada iteración anterior y el feedback que la produjo.
+La cantidad de iteraciones tiene un tope; al alcanzarlo, la app te pide que apruebes o rechaces la propuesta.
 
-#Screenshot-evolucion-diseno
-![Historial de iteraciones de la propuesta](screenshots/Evolucion-diseño.png)
+### Iteraciones de la sesión
 
-Con la propuesta aprobada, haz clic en **Continuar a Refinamiento**.
+Cuando generaste más de una iteración, al pie de la tarjeta aparece **"N iteraciones generadas en esta sesión. Se muestra la más reciente."**. La tarjeta siempre muestra la iteración más reciente.
+
+![Aviso de iteraciones generadas en la sesión](screenshots/evolucion-diseno.png)
+
+Con la propuesta aprobada, haz clic en **Avanzar fase →**.
 
 ---
 
 ## 8. Fase 3 — Refinamiento (diagrama)
 
-Al entrar a esta fase **el agente genera automáticamente el diagrama** de la propuesta aprobada (en formato Mermaid, renderizado como imagen). No hace falta pedirlo.
+En esta fase se genera y ajusta el **diagrama** de la propuesta aprobada (en formato Mermaid, convertido en imagen). Al entrar, el chat está vacío: **pídele el diagrama al agente**, por ejemplo:
 
-NOTA: ACTUALMENTE NO LO GENERA AUTOMÁTICAMENTE. Esto se debe evaluar nuevamente cuando esté en development, si se implementó el fix
+> *Genera el diagrama de la propuesta aprobada.*
 
-#Screenshot-diagrama
-![Diagrama generado en el chat](screenshots/Diagrama.png)
+![Diagrama generado en el chat](screenshots/diagrama.png)
+
+Si el diagrama no se pudo convertir en imagen, o incluye componentes que no están respaldados por la documentación consultada, verás un aviso debajo de la respuesta.
 
 ### Ver el diagrama en grande
 
-Haz clic sobre la miniatura para abrir el **visor ampliado**. Usa los botones de **acercar** / **alejar** para ajustar el zoom y cerralo cuando termines.
+Haz clic sobre la imagen para abrir el **visor ampliado**. En la barra de **Controles** tienes:
 
-#Screenshot-visor-diagrama
-![Visor ampliado del diagrama con zoom](screenshots/Visor-diagrama.png)
+| Control | Qué hace |
+|---------|----------|
+| **−** / **+** | Alejan o acercan el diagrama. |
+| **Porcentaje** (ej. 100%) | Muestra el zoom actual. |
+| **200%** | Vuelve al zoom inicial. |
+| **Abrir original** | Abre la imagen en una pestaña nueva. |
+| **Cerrar** | Cierra el visor (también con la tecla Esc). |
+
+![Visor ampliado del diagrama con zoom](screenshots/visor-diagrama.png)
 
 ### Decidir sobre el diagrama
 
@@ -287,52 +288,51 @@ Cada diagrama del chat tiene sus propios botones:
 |-------|----------|
 | **✅ Aprobar** | Registra el diagrama como aprobado. |
 | **❌ Rechazar** | Lo marca como rechazado. |
-| **✏️ Solicitar cambios** | Abre *"¿Qué debe ajustarse en el diagrama?"*; el agente modifica el diagrama existente según tu pedido (no lo rehace desde cero). |
+| **✏️ Solicitar cambios** | Abre *"¿Qué debe ajustarse en el diagrama?"*; describe el cambio y haz clic en **Enviar ajuste**. El agente modifica el diagrama existente según tu pedido (no lo rehace desde cero). |
 
-También puedes seguir conversando con el agente en el chat para hacerle preguntas sobre la arquitectura o pedir aclaraciones.
+También puedes seguir conversando con el agente en el chat (cuadro **"Escribe un mensaje..."**) para hacerle preguntas sobre la arquitectura o pedir aclaraciones.
 
-Cuando la fase está aprobada aparece **Continuar a Revisión**.
+Cuando estés conforme, haz clic en **Marcar fase como lista** y luego en **Avanzar fase →** para pasar a Revisión.
 
 ---
 
 ## 9. Fase 4 — Revisión
 
-Es la última fase del flujo. Por ahora no tiene una pantalla propia: el chat sigue disponible para consultar al agente sobre la arquitectura final, y en la lista de proyectos el proyecto aparece con la etiqueta **Revisión**.
+Es la última fase del flujo. No tiene una pantalla propia: el chat sigue disponible para consultar al agente sobre la arquitectura final.
 
-#Screenshot-revision
-![Proyecto en fase de Revisión](screenshots/Revision.png)
+![Proyecto en fase de Revisión](screenshots/revision.png)
 
-![Proyecto en fase de Revisión dashboard](screenshots/Revision-2.png)
+En **Mis proyectos**, la tarjeta del proyecto muestra la etiqueta **Revisión**:
+
+![Proyecto en fase de Revisión en Mis proyectos](screenshots/revision-2.png)
+
+Cuando termines, haz clic en **Marcar fase como lista**. El proyecto pasa a mostrarse como **Completado** y su botón cambia a **Ver arquitectura**.
 
 ---
 
 ## 10. Historial de diagramas
 
-En la parte superior del chat, el botón **🕘 Historial de diagramas** abre un panel lateral con todas las versiones de diagramas del proyecto y su estado:
+Desde la fase Propuesta en adelante, la barra superior del chat tiene el botón **Diagramas**. Abre el panel **Historial de diagramas**, con todas las versiones de diagramas del proyecto y su estado:
 
 - ✅ **Aprobado**
 - ❌ **Rechazado**
 - ✏️ **Cambios solicitados**
 - **Sin decisión**
 
-El panel es **solo de consulta**: las decisiones se toman en el chat, sobre cada diagrama.
-
-#Screenshot-historial-diagramas
-![Panel de historial de diagramas](screenshots/Historial-diagramas.png)
+El panel es **solo de consulta**: las decisiones se toman en el chat, sobre cada diagrama. Ciérralo con **✕**.
 
 ---
 
 ## 11. Perfil y cuenta
 
-En **👤 Perfil** puedes:
+Haz clic en tu nombre de usuario, en el pie de la barra lateral, para abrir tu perfil. Ahí puedes:
 
-- Ver y editar tu **usuario** y **email** (guarda con **Guardar cambios**), y ver la fecha de **Miembro desde**.
-- **Cambiar la contraseña**: ingresa la actual y la nueva (mínimo **8** caracteres).
+- Ver y editar tu **nombre de usuario** y **correo electrónico** (guarda con **Guardar cambios**), y ver la fecha de **Miembro desde**.
+- **Cambiar la contraseña**: ingresa la actual y la nueva, que debe cumplir las mismas reglas que al registrarte (al menos **8** caracteres, una mayúscula, un número y un carácter especial).
 
-Para salir, usa **Cerrar sesión** en el encabezado.
+Para salir, usa el ícono **Cerrar sesión** del pie de la barra lateral.
 
-#Screenshot-perfil
-![Pantalla de perfil de usuario](screenshots/Perfil.png)
+![Pantalla de perfil de usuario](screenshots/perfil.png)
 
 ---
 

@@ -2,7 +2,7 @@
 
 Asistente IA que guía a equipos de desarrollo en la definición de arquitecturas de software, desde una idea de producto hasta propuestas justificadas con diagramas y trade-offs.
 
-#Screenshot-página-principal
+![Página principal de Arch Agent](docs/usuario/screenshots/pagina-principal.png)
 
 ---
 
@@ -50,9 +50,9 @@ Cuando el stack esté arriba:
 | Postgres | localhost:5432 |
 | Engram (memoria) | http://localhost:7439 |
 
-1. Abrir **http://localhost:5173** y registrate con username + email + password
-2. Te logueas automáticamente y entras en el dashboard de proyectos
-3. Para usar el agente, primero configura tu LLM: **Settings → LLM Config** (ver sección abajo)
+1. Abrir **http://localhost:5173** y registrarse con nombre de usuario, correo electrónico y contraseña (al menos 8 caracteres, con una mayúscula, un número y un carácter especial)
+2. Al registrarte entras automáticamente a **Mis proyectos**
+3. Para usar el agente, primero configura tu LLM: ícono de engranaje en el pie de la barra lateral → **Configuración Global del LLM** (ver sección abajo)
 4. Seguir la [guía de inicio rápido](docs/usuario/01-inicio-rapido.md) para crear tu primer proyecto
 
 ---
@@ -66,14 +66,11 @@ Cuando el stack esté arriba:
 - **Trade-offs** — Tabla comparativa con criterios
 - **Control del usuario** — Aprueba, modifica o rechaza cada propuesta
 
-#Screenshot-elicitacion
-<!-- Reemplazar por: ![Chat de elicitación](docs/usuario/screenshots/elicitacion.png) -->
+![Chat de elicitación](docs/usuario/screenshots/elicitacion.png)
 
-#Screenshot-propuesta
-<!-- Reemplazar por: ![Propuesta de arquitectura con trade-offs](docs/usuario/screenshots/propuesta.png) -->
+![Propuesta de arquitectura con trade-offs](docs/usuario/screenshots/propuesta.png)
 
-#Screenshot-diagrama
-<!-- Reemplazar por: ![Diagrama generado](docs/usuario/screenshots/diagrama.png) -->
+![Diagrama generado](docs/usuario/screenshots/diagrama.png)
 
 ---
 
@@ -94,25 +91,25 @@ Cuando el stack esté arriba:
 | `minio` | Storage S3-compatible para Langfuse | — |
 | `redis` | Cache de Langfuse | — |
 
-> **Nota sobre Engram:** El puerto externo es **7439** (no 7437). Esto evita chocar con tu engram local de Gentle AI si lo tenés corriendo en :7437.
+> **Nota sobre Engram:** El puerto externo es **7439** (no 7437). Esto evita chocar con tu engram local de Gentle AI si lo tienes corriendo en :7437.
 
 ---
 
 ## Configuración de LLM
 
-Cada usuario configura su propio LLM a través de un **wizard obligatorio de 3 pasos** en `Settings → LLM Config`. El sistema soporta cualquier API OpenAI-compatible.
+Cada usuario configura su propio LLM a través de un **wizard obligatorio de 3 pasos** en **Configuración Global del LLM** (ícono de engranaje en el pie de la barra lateral, ruta `/settings/llm`). El sistema soporta cualquier API OpenAI-compatible.
 
 ### Wizard de 3 pasos
 
-1. **Base URL** — Pegas la URL del provider (ej: `https://api.openai.com/v1`). El wizard verifica que el endpoint `/models` existe.
+1. **URL base** — Pegas la URL del provider (ej: `https://api.openai.com/v1`). El wizard verifica que el endpoint `/models` existe.
 2. **API Key** — Pegas tu key. El wizard testea conexión real con Bearer contra `/models`.
 3. **Modelo** — Dropdown filtrado por tier MMLU:
-   - **Tier 1 (MMLU ≥ 85)**: badge verde "Recomendado", seleccionable.
-   - **Tier 2 / sin score (MMLU 60–85 o desconocido)**: badge amber "Sin score conocido", requiere confirmación.
+   - **Tier 1 (MMLU ≥ 85)**: grupo "Recomendados (Tier 1)", se aprueba automáticamente.
+   - **Tier 2 / sin score (MMLU 60–85 o desconocido)**: grupo "Sin score conocido", se guarda con `allow_unknown_model=true`.
    - **Tier bloqueado (MMLU < 60)**: NO aparece en el dropdown (gpt-3.5-turbo, llama-8b).
-   - **Free-text fallback**: botón "Cancelar" en paso 3 revela un input de texto para tipear modelos custom no listados (fine-tunes, etc).
+   - **Free-text fallback**: botón "No encuentro mi modelo — escribir manualmente" en paso 3 revela un input de texto para tipear modelos custom no listados (fine-tunes, etc).
 
-Si ya tienes config guardada, el wizard muestra una **Summary View** con dos botones: "Cambiar modelo" (salta al paso 3 directo) o "Cambiar todo" (vuelve al paso 1).
+Si ya tienes config guardada, el wizard muestra una vista **Tu configuración actual** con dos botones: "Cambiar modelo" (salta al paso 3 directo) o "Cambiar todo" (vuelve al paso 1).
 
 ### Proveedores soportados
 
