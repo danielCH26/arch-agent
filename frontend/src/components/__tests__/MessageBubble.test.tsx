@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MessageBubble } from '../MessageBubble'
+import { DIAGRAM_RETRY_PROMPT, MessageBubble } from '../MessageBubble'
 import { submitDiagramDecision } from '../../api/diagrams'
 import type { Attachment, Message } from '../../stores/chatStore'
 
@@ -273,5 +273,32 @@ describe('MessageBubble', () => {
       expect(screen.getAllByRole('button', { name: '❌ Rechazar' })).toHaveLength(1)
       expect(screen.getByText('Diagrama rechazado.')).toBeInTheDocument()
     })
+  })
+})
+
+describe('diagrama que no se pudo convertir a imagen', () => {
+  const content = ['```mermaid', 'flowchart TD', '  A --> B : "x"', '```'].join('\n')
+
+  it('ofrece volver a generarlo y envía el pedido con sintaxis correcta', async () => {
+    const user = userEvent.setup()
+    const onSendMessage = vi.fn()
+    renderMessage(content, 'assistant', [], onSendMessage)
+
+    await user.click(screen.getByTestId('diagram-retry'))
+
+    expect(onSendMessage).toHaveBeenCalledWith(DIAGRAM_RETRY_PROMPT, 'Volver a generar el diagrama')
+    expect(DIAGRAM_RETRY_PROMPT).toContain('-->|texto|')
+  })
+
+  it('no lo ofrece si el diagrama sí tiene imagen', () => {
+    renderMessage(content, 'assistant', [
+      { id: 'a', kind: 'screenshot', mime: 'image/png', url: '/x.png', filename: 'x.png' },
+    ], vi.fn())
+    expect(screen.queryByTestId('diagram-retry')).not.toBeInTheDocument()
+  })
+
+  it('no lo ofrece en respuestas sin diagrama', () => {
+    renderMessage('Solo texto', 'assistant', [], vi.fn())
+    expect(screen.queryByTestId('diagram-retry')).not.toBeInTheDocument()
   })
 })

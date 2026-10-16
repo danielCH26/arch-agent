@@ -175,8 +175,46 @@ def sanitize_subgraph_statements(code: str) -> str:
     return _SUBGRAPH_PATTERN.sub(_fix, code)
 
 
+# Flecha con etiqueta al estilo de stateDiagram (``A --> B : "texto"``), que
+# los modelos escriben a menudo dentro de un flowchart. En flowchart es un error
+# de sintaxis y el diagrama no se puede renderizar; la forma válida es
+# ``A -->|texto| B``.
+_EDGE_WITH_COLON_LABEL = re.compile(
+    r"^(?P<indent>\s*)(?P<src>[^\s:|]+)\s*(?P<arrow>-->|---|-\.->|==>|--x|--o)\s*"
+    r"(?P<dst>[^\s:|]+)\s*:\s*(?P<label>.+?)\s*;?\s*$"
+)
+
+
+def sanitize_flowchart_edge_labels(code: str) -> str:
+    """Convierte ``A --> B : "texto"`` en ``A -->|texto| B`` en flowcharts.
+
+    Solo toca líneas que son exactamente una flecha con etiqueta tras ``:``;
+    el resto del diagrama queda igual. No aplica a otros tipos de diagrama,
+    donde ``:`` sí es sintaxis válida (``sequenceDiagram``, ``classDiagram``).
+    """
+    if not _is_flowchart(code):
+        return code
+
+    def _fix(line: str) -> str:
+        match = _EDGE_WITH_COLON_LABEL.match(line)
+        if match is None:
+            return line
+        label = match.group("label").strip().strip('"').strip("'").strip()
+        # `|` cerraría la etiqueta antes de tiempo; las comillas sueltas rompen el parser.
+        label = label.replace("|", "/").replace('"', "#quot;")
+        if not label:
+            return f"{match.group('indent')}{match.group('src')} {match.group('arrow')} {match.group('dst')}"
+        return (
+            f"{match.group('indent')}{match.group('src')} {match.group('arrow')}"
+            f"|{label}| {match.group('dst')}"
+        )
+
+    return "\n".join(_fix(line) for line in code.split("\n"))
+
+
 def sanitize_mermaid(code: str) -> str:
     """Aplica todos los sanitizadores conocidos, en orden."""
+    code = sanitize_flowchart_edge_labels(code)
     code = sanitize_mermaid_labels(code)
     code = sanitize_subgraph_statements(code)
     code = sanitize_class_statements(code)

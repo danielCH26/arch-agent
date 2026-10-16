@@ -1,4 +1,5 @@
 from app.core.mermaid_validator import (
+    sanitize_flowchart_edge_labels,
     extract_mermaid_block,
     sanitize_class_statements,
     sanitize_mermaid,
@@ -235,3 +236,39 @@ def test_validate_mermaid_rejects_unrecognized_diagram_type():
 
     assert is_valid is False
     assert "no reconocido" in error
+
+
+# --- Flechas con etiqueta tras ":" (sintaxis de stateDiagram en un flowchart) --
+
+
+def test_sanitize_flowchart_edge_labels_converts_colon_labels():
+    code = (
+        "flowchart TD\n"
+        '    UI_Web --> API_App : "Solicitudes HTTP"\n'
+        "    API_App --> Auth_Module : Validar JWT\n"
+        "    A -.-> B : 'eventos | async'\n"
+        "    C --> D"
+    )
+    assert sanitize_flowchart_edge_labels(code) == (
+        "flowchart TD\n"
+        "    UI_Web -->|Solicitudes HTTP| API_App\n"
+        "    API_App -->|Validar JWT| Auth_Module\n"
+        "    A -.->|eventos / async| B\n"
+        "    C --> D"
+    )
+
+
+def test_sanitize_flowchart_edge_labels_result_is_valid_mermaid():
+    code = 'flowchart TD\n  A --> B : "Token válido"'
+    is_valid, error = validate_mermaid(sanitize_mermaid(code))
+    assert is_valid, error
+
+
+def test_sanitize_flowchart_edge_labels_ignores_other_diagram_types():
+    code = "sequenceDiagram\n  A->>B: hola\n  A --> B : x"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+def test_sanitize_flowchart_edge_labels_leaves_valid_edges_untouched():
+    code = "flowchart LR\n  A -->|ok| B\n  B --> C"
+    assert sanitize_flowchart_edge_labels(code) == code

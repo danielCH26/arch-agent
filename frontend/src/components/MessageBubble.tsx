@@ -37,6 +37,21 @@ const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
 const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
 const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
 
+// Pedido que se envía al pulsar "Volver a generar el diagrama" cuando la
+// respuesta trajo un bloque Mermaid pero no se pudo convertir a imagen.
+export const DIAGRAM_RETRY_PROMPT =
+  'El diagrama anterior no se pudo convertir a imagen. Genera de nuevo el diagrama de la ' +
+  'propuesta aprobada con sintaxis Mermaid flowchart válida: las etiquetas de las flechas van ' +
+  'como A -->|texto| B (nunca "A --> B : texto") y los textos con espacios o acentos entre comillas.'
+
+// Respuesta con diagrama Mermaid que no llegó a tener su imagen (el render
+// falló): se ofrece volver a generarlo en vez de dejar al usuario sin salida.
+export function diagramRenderFailed(message: Pick<Message, 'role' | 'content' | 'attachments'>): boolean {
+  if (message.role !== 'assistant') return false
+  const hasImage = (message.attachments ?? []).length > 0
+  return !hasImage && extractMermaidBlocks(message.content).length > 0
+}
+
 function extractMermaidBlocks(content: string): string[] {
   const explicit = [...content.matchAll(new RegExp(explicitMermaidFencePattern.source, 'gi'))]
     .map((match) => match[1].trim())
@@ -546,6 +561,16 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
             ⚠️ {notice}
           </p>
         ))}
+        {!isUser && onSendMessage && !busy && diagramRenderFailed(message) && (
+          <button
+            type="button"
+            data-testid="diagram-retry"
+            onClick={() => void onSendMessage(DIAGRAM_RETRY_PROMPT, 'Volver a generar el diagrama')}
+            className="mt-2 rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-sm font-medium text-sky-800 hover:bg-sky-100"
+          >
+            Volver a generar el diagrama
+          </button>
+        )}
         {!isUser && renderSources(message.sources)}
       </div>
     </div>

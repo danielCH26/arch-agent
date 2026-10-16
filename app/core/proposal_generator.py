@@ -1340,7 +1340,22 @@ def _select_citations(
 # decisión", "## **Trade-offs y decisión**"): se tolera esa decoracion antes del
 # texto. Se compara sobre texto normalizado (sin acentos, en minusculas).
 _HEADING_DECOR = r"[*_`\d.)\s]*"
-_TRADEOFF_HEADING_TEXT = r"trade[\s-]?offs?\s*(?:y|&)\s*decision\w*"
+# Titulo de la seccion de trade-offs. El prompt pide "Trade-offs y decision",
+# pero los modelos lo reescriben ("Trade-offs", "Decision y trade-offs",
+# "Analisis de trade-offs", "Alternativas consideradas"...). Antes solo se
+# aceptaba la forma exacta y una propuesta completa se descartaba por el titulo
+# (finish_reason=stop, ~5700 caracteres, missing=['Trade-offs y decision']). Lo
+# que importa se sigue validando aparte: tabla con 3 opciones y 3 criterios y
+# punto de decision (_has_tradeoff_comparison / _has_decision_point).
+_TRADEOFF_HEADING_TEXT = (
+    r"(?:"
+    r"(?:(?:analisis|tabla|comparacion|evaluacion)\s+de\s+(?:los\s+)?)?"
+    r"(?:trade[\s-]?offs?|compensaciones|alternativas|opciones)"
+    r"(?:\s+consideradas?|\s+evaluadas?)?"
+    r"(?:\s*(?:y|&|,|/)\s*(?:la\s+)?decision\w*)?"
+    r"|decision\w*\s*(?:y|&|,|/)\s*(?:trade[\s-]?offs?|alternativas|opciones)"
+    r")\b"
+)
 
 _REQUIRED_HEADINGS = (
     ("Componentes", r"componentes?\b"),

@@ -1266,6 +1266,44 @@ def test_missing_sections_tolerates_decorated_tradeoff_headings():
         assert _missing_sections(proposal, source_count=3) == [], heading
 
 
+def test_missing_sections_tolerates_reworded_tradeoff_headings():
+    # Caso real (Groq gpt-oss-20b): propuesta completa (finish_reason=stop,
+    # ~5700 caracteres) descartada solo porque el modelo titulo la seccion de
+    # otra forma. El contenido (tabla + punto de decision) se sigue exigiendo.
+    from app.core.proposal_generator import _missing_sections
+
+    for heading in (
+        "## Trade-offs",
+        "## Decisión y trade-offs",
+        "## Análisis de trade-offs",
+        "## Trade-offs y la decisión",
+        "## Alternativas consideradas",
+        "## Opciones evaluadas y decisión",
+        "## Tradeoffs & decisión",
+    ):
+        proposal = _with_tradeoff_heading(heading)
+        assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_reworded_tradeoff_heading_still_requires_the_table():
+    from app.core.proposal_generator import _missing_sections
+
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    proposal = head + "## Trade-offs\nNo hay comparación todavía.\n"
+
+    assert _missing_sections(proposal, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_unrelated_headings_are_not_taken_as_the_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections
+
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    for heading in ("## Decisión final", "## Riesgos", "## Conclusiones"):
+        assert "Trade-offs y decisión" in _missing_sections(head + heading + "\nx\n"), heading
+
+
 def test_missing_sections_tolerates_numbered_or_bold_headings_for_every_section():
     from app.core.proposal_generator import _missing_sections
 
