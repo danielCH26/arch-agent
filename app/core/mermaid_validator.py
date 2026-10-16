@@ -212,9 +212,75 @@ def sanitize_flowchart_edge_labels(code: str) -> str:
     return "\n".join(_fix(line) for line in code.split("\n"))
 
 
+_SUBGRAPH_ID_PATTERN = re.compile(r"^(\s*subgraph\s+)([A-Za-z_][A-Za-z0-9_]*)(.*)$")
+# Línea que declara un nodo: solo el id, con o sin forma (``X``, ``X["texto"]``,
+# ``X(...)``, ``X{...}``, ``X[(...)]``, ``X((...))``), sin flechas.
+_NODE_DECLARATION_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[\[({>].*)?;?\s*$"
+)
+
+
+def sanitize_subgraph_id_collisions(code: str) -> str:
+    """Renombra el id de un subgraph cuando hay un nodo declarado con el mismo id.
+
+    Los modelos escriben ``subgraph Vacunas["Módulo de Vacunas"]`` y dentro el
+    nodo ``Vacunas``: Mermaid lo rechaza ("Setting Vacunas as parent of
+    Vacunas would create a cycle") y el diagrama no se renderiza. Se renombra
+    solo el subgraph (``Vacunas_grupo``) y se conserva su etiqueta, así las
+    flechas siguen apuntando al nodo. Si el id no se declara como nodo (solo
+    aparece en flechas), se deja: esas flechas apuntan al subgraph a propósito.
+    """
+    if not _is_flowchart(code):
+        return code
+
+    lines = code.split("\n")
+    subgraph_ids = {
+        m.group(2) for line in lines if (m := _SUBGRAPH_ID_PATTERN.match(line))
+    }
+    if not subgraph_ids:
+        return code
+
+    keywords = {"end", "direction", "subgraph", "flowchart", "graph", "class", "classDef", "style", "click", "linkStyle"}
+    declared_nodes = set()
+    for line in lines:
+        if _SUBGRAPH_ID_PATTERN.match(line) or "--" in line or "==" in line:
+            continue
+        m = _NODE_DECLARATION_PATTERN.match(line)
+        if m and m.group(1) not in keywords:
+            declared_nodes.add(m.group(1))
+
+    collisions = subgraph_ids & declared_nodes
+    if not collisions:
+        return code
+
+    taken = subgraph_ids | declared_nodes
+
+    def _new_id(old: str) -> str:
+        candidate, n = f"{old}_grupo", 2
+        while candidate in taken:
+            candidate, n = f"{old}_grupo{n}", n + 1
+        taken.add(candidate)
+        return candidate
+
+    renames = {old: _new_id(old) for old in sorted(collisions)}
+
+    def _fix(line: str) -> str:
+        m = _SUBGRAPH_ID_PATTERN.match(line)
+        if not m or m.group(2) not in renames:
+            return line
+        rest = m.group(3)
+        # Sin etiqueta propia, el título visible seguiría siendo el id original.
+        if not rest.strip().startswith("["):
+            rest = f'["{m.group(2)}"]{rest}'
+        return f"{m.group(1)}{renames[m.group(2)]}{rest}"
+
+    return "\n".join(_fix(line) for line in lines)
+
+
 def sanitize_mermaid(code: str) -> str:
     """Aplica todos los sanitizadores conocidos, en orden."""
     code = sanitize_flowchart_edge_labels(code)
+    code = sanitize_subgraph_id_collisions(code)
     code = sanitize_mermaid_labels(code)
     code = sanitize_subgraph_statements(code)
     code = sanitize_class_statements(code)

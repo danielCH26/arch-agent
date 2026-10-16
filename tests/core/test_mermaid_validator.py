@@ -1,5 +1,6 @@
 from app.core.mermaid_validator import (
     sanitize_flowchart_edge_labels,
+    sanitize_subgraph_id_collisions,
     extract_mermaid_block,
     sanitize_class_statements,
     sanitize_mermaid,
@@ -272,3 +273,40 @@ def test_sanitize_flowchart_edge_labels_ignores_other_diagram_types():
 def test_sanitize_flowchart_edge_labels_leaves_valid_edges_untouched():
     code = "flowchart LR\n  A -->|ok| B\n  B --> C"
     assert sanitize_flowchart_edge_labels(code) == code
+
+
+# --- Subgraph con el mismo id que un nodo (Mermaid: "would create a cycle") ---
+
+
+def test_sanitize_subgraph_id_collisions_renames_only_the_subgraph():
+    code = (
+        "flowchart LR\n"
+        '  subgraph Vacunas["Módulo Registro de Vacunas"]\n'
+        "    Vacunas\n"
+        "  end\n"
+        "  subgraph Reportes\n"
+        '    Reportes["Reportes"]\n'
+        "  end\n"
+        "  API --> Vacunas"
+    )
+    assert sanitize_subgraph_id_collisions(code) == (
+        "flowchart LR\n"
+        '  subgraph Vacunas_grupo["Módulo Registro de Vacunas"]\n'
+        "    Vacunas\n"
+        "  end\n"
+        '  subgraph Reportes_grupo["Reportes"]\n'
+        '    Reportes["Reportes"]\n'
+        "  end\n"
+        "  API --> Vacunas"
+    )
+
+
+def test_sanitize_subgraph_id_collisions_keeps_subgraph_targeted_by_edges():
+    # Un subgraph que solo aparece en flechas es un destino intencional.
+    code = 'flowchart LR\n  subgraph Monolito["Monolito"]\n    A\n  end\n  X --> Monolito'
+    assert sanitize_subgraph_id_collisions(code) == code
+
+
+def test_sanitize_subgraph_id_collisions_ignores_other_diagram_types():
+    code = "sequenceDiagram\n  A->>B: hola"
+    assert sanitize_subgraph_id_collisions(code) == code
