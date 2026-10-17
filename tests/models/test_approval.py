@@ -1,6 +1,6 @@
 """HU10 v2 model tests for ``approvals`` (REQ-SA-27, REQ-SA-16, REQ-SA-30).
 
-Covers the new columns added by migration 0018:
+Covers the new columns added by migration 0020:
     * ``previous_output`` (REQ-SA-16): JSONB NOT NULL with default '{}'.
     * ``payload`` (REQ-SA-30): JSONB nullable for arbitrary request payload.
     * ``payload_hash`` (REQ-SA-30): VARCHAR(32) nullable idempotency key.

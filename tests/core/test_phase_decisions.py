@@ -80,7 +80,7 @@ def test_canonical_payload_hash_changes_with_action():
     h_approve_empty = _canonical_payload_hash("approve", None)
     h_modify_empty = _canonical_payload_hash("modify", None)
     assert h_approve_empty != h_modify_empty
-    # Length must be exactly 32 hex chars (SHA256[:32]) per migration 0018.
+    # Length must be exactly 32 hex chars (SHA256[:32]) per migration 0020.
     assert len(h_approve_empty) == 32
     assert all(c in "0123456789abcdef" for c in h_approve_empty)
 

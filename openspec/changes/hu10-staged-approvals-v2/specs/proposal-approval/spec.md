@@ -53,7 +53,7 @@ None for `proposal-approval` itself. The staged-approvals canonical renames `app
 - Source change delta: `openspec/changes/hu10-staged-approvals-v2/specs/staged-approvals/spec.md`.
 - v1 change-folder delta (SUPERSEDED): `openspec/changes/hu10-staged-approvals/specs/proposal-approval/spec.md`.
 - v2 source requirements that drive the dual-write: REQ-SA-26..36 from `staged-approvals` v2.
-- Migration: `migrations/0018_backfill_project_id_and_extend_index.sql` (additive; mirror write to `proposal_approvals` updates `project_id` via the application layer).
+- Migration: `migrations/0020_backfill_project_id_and_extend_index.sql (renumerada desde 0018)` (additive; mirror write to `proposal_approvals` updates `project_id` via the application layer).
 - F08 endpoint (unchanged): `app/api/proposals.py` (`decide_proposal`, `modify_proposal`).
 - F08 model (unchanged): `app/models/proposal_approval.py` (`ProposalApproval`).
 

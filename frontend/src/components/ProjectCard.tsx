@@ -62,7 +62,8 @@ export function ProjectCard({ project }: ProjectCardProps) {
   }
 
   const badge = statusBadge(project)
-  const isComplete = project.current_phase === 'revision' && project.phase_ready
+  // HU10: el proyecto termina al aprobar la fase final (Cierre), no Revisión.
+  const isComplete = project.current_phase === 'final' && project.phase_ready
 
   return (
     <div className="group rounded-[10px] border border-gray-300 bg-gray-50 p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">

@@ -135,6 +135,10 @@ acceptance gate for the whole flow.
 
 ### Known limitations (not fixed here)
 
+- `POST /api/projects/{id}/proposal/decision` (`decide_project_proposal`) has
+  the same gap: reject does not revert the phase nor change
+  `proposal.lifecycle`. The frontend no longer calls it (`decideProjectProposal`
+  is unused); it belongs in the same follow-up ticket as the item below.
 - `POST /phase/propuesta/decision` is still reachable through the API and still
   does not move `proposal.lifecycle`. The UI no longer offers it on `propuesta`;
   closing it at the API level (reject it for `propuesta`, or delegate to the
@@ -149,8 +153,28 @@ acceptance gate for the whole flow.
 - Other endpoints still return `str(e)` (`elicitation.py`, `chat.py`,
   `llm_config.py`, `documents.py`, `auth.py`). Out of scope for HU10.
 
+## Review round 4 (follow-up re-review + Santi)
+
+| Finding | Fix |
+|---|---|
+| Two migrations with prefix `0018_` (F19's `0018_add_pattern_complexity.sql` and HU10's backfill) | HU10's renumbered to `migrations/0020_backfill_project_id_and_extend_index.sql`. `0019` is taken by the pattern-sources PR (`0019_add_pattern_sources.sql`), so `0020` avoids a second collision. The file is fully idempotent, so a database that already applied it under the old name re-runs it as a no-op. |
+| User docs (F21, `docs/usuario/`) described 4 phases and "Marcar fase como lista" | Updated to the 5-phase flow: decision panel (Aprobar / Modificar / Rechazar → Avanzar) and the Cierre phase (Aprobar / Rechazar only). |
+| `ProjectCard` showed "Ver arquitectura" on `revision` + ready | Now on `final` + ready, same as the "Completado" badge. |
+
+## Walk E2E
+
+Run against the stack in `docker-compose.walk.yml`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.walk.yml -p walk-hu10 up -d --build postgres-app backend
+export WALK_LLM_API_KEY=gsk_...   # nunca se imprime
+python3 scripts/walk_hu10_e2e.py
+docker compose -f docker-compose.yml -f docker-compose.walk.yml -p walk-hu10 down -v
+```
+
+Result: see the PR description (`WALK HU10: PASS` line).
+
 ## Deferred to CI
 
-- Postgres-backed tests (`test_phase_decisions_concurrency.py`, `tests/models/test_approval.py`) need a runner with a live Postgres (re-review B2).
-- The 5-phase walk with a real LLM (`scripts/walk_hu10_e2e.py`) has not been executed yet; it needs credentials.
+- Postgres-backed tests (`test_phase_decisions_concurrency.py`, `tests/models/test_approval.py`) run in CI with the Postgres service container.
 - Re-run `pytest`, `npm run build` and `npm run test:run` on the head commit of this PR.

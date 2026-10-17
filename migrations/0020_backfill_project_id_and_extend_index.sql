@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0018: approvals — backfill project_id, extend index, previous_output
+-- Migration 0020: approvals — backfill project_id, extend index, previous_output
 -- =============================================================================
 -- HU10 v2 (proposal #109, spec REQ-SA-27/REQ-SA-16, design §Data Model).
 --
@@ -30,6 +30,12 @@
 -- NOT EXISTS, UPDATE ... WHERE ... IS NULL). Rollback = DROP COLUMN
 -- previous_output/payload/payload_hash + DROP INDEX ix_approvals_project_phase_created.
 -- No destructive schema drops, no data deletion.
+--
+-- Numeración: nació como 0018_backfill_project_id_and_extend_index.sql y se
+-- renumeró a 0020 porque 0018 ya la usa F19 (0018_add_pattern_complexity.sql)
+-- y 0019 la reserva el PR de fuentes de patrones (0019_add_pattern_sources.sql).
+-- Como todo es idempotente, una base que ya aplicó el nombre viejo puede
+-- volver a correrla con el nombre nuevo sin cambios.
 -- =============================================================================
 
 -- 1. Backfill project_id from sessions for legacy rows.

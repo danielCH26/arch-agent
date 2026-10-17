@@ -23,7 +23,7 @@ class Approval(Base):
     `session_id`, porque `sessions.user_id` es UNIQUE (una fila por
     usuario, no por proyecto, hallazgo de la revisión
     `feature/hu6-diagrama`). Migration 0016 añadió `project_id`; migration
-    0018 hizo el backfill desde `sessions.project_id`.
+    0020 hizo el backfill desde `sessions.project_id`.
     """
 
     __tablename__ = "approvals"
@@ -53,9 +53,9 @@ class Approval(Base):
     phase = Column(String(50), nullable=False)
     decision = Column(String(20), nullable=False)  # 'approved' | 'modified' | 'rejected'
     feedback = Column(Text)
-    # HU10 v2 (migration 0018, REQ-SA-16): snapshot del output previo. El
+    # HU10 v2 (migration 0020, REQ-SA-16): snapshot del output previo. El
     # default '{}' cubre las decisiones que NO son modify (approve/reject)
-    # y las filas anteriores a 0018; las decisiones modify deben poblarlo
+    # y las filas anteriores a 0020; las decisiones modify deben poblarlo
     # explícitamente.
     #
     # JSONB en Postgres y JSON plano en SQLite (mismo patrón que
@@ -63,18 +63,18 @@ class Approval(Base):
     # SQLite (test_chat_history, test_diagrams, test_elicitation) fallaban con
     # CompileError al no poder renderizar JSONB. El ``server_default`` es un
     # literal sin ``::jsonb`` por la misma razón; en Postgres '{}' se convierte
-    # a jsonb solo, y la tabla real la define la migración 0018.
+    # a jsonb solo, y la tabla real la define la migración 0020.
     previous_output = Column(
         JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,
         default=dict,
         server_default=text("'{}'"),
     )
-    # HU10 v2 (migration 0018, REQ-SA-30): payload arbitrario del request.
+    # HU10 v2 (migration 0020, REQ-SA-30): payload arbitrario del request.
     # Nullable porque no todas las decisiones llevan payload (approve sin
     # feedback no tiene payload).
     payload = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
-    # HU10 v2 (migration 0018, REQ-SA-30): SHA256 hex[:32] de
+    # HU10 v2 (migration 0020, REQ-SA-30): SHA256 hex[:32] de
     # canonical_json({action, payload}). Permite que un retry idéntico
     # dentro de 60s retorne 200 idempotent sin INSERT nuevo.
     payload_hash = Column(String(32), nullable=True)

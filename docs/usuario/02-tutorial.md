@@ -120,7 +120,7 @@ Si ya tienes una configuración guardada, verás **Tu configuración actual** (U
 3. **Descripción** (opcional, pero ayuda al agente): `App web para que clínicas pequeñas gestionen turnos, recordatorios y cancelaciones de pacientes.`
 4. Haz clic en **Crear**.
 
-La app abre el **chat** del proyecto, en la fase **Requerimientos**. Arriba ves el nombre del proyecto y las cuatro fases, con la actual resaltada.
+La app abre el **chat** del proyecto, en la fase **Requerimientos**. Arriba ves el nombre del proyecto y las cinco fases, con la actual resaltada.
 
 ![Diálogo de nuevo proyecto](screenshots/nuevo-proyecto-turnofacil.png)
 
@@ -260,7 +260,7 @@ Cuando generaste más de una iteración, al pie de la tarjeta aparece **"N itera
 
 ![Aviso de iteraciones generadas en la sesión](screenshots/evolucion-diseno.png)
 
-Con la propuesta aprobada, haz clic en **Avanzar fase →**.
+Con la propuesta aprobada, debajo del chat aparece el botón **Avanzar**. Haz clic en él para pasar a Refinamiento.
 
 ---
 
@@ -300,13 +300,23 @@ Cada diagrama del chat tiene sus propios botones:
 
 También puedes seguir conversando con el agente en el chat (cuadro **"Escribe un mensaje..."**) para hacerle preguntas sobre la arquitectura o pedir aclaraciones.
 
-Cuando estés conforme, haz clic en **Marcar fase como lista** y luego en **Avanzar fase →** para pasar a Revisión.
+### Aprobar la fase
+
+Debajo del chat aparece el panel **"Decisión pendiente para la fase refinamiento"** con tres botones:
+
+| Botón | Qué hace |
+|-------|----------|
+| **Aprobar** | Da la fase por terminada. Aparece el botón **Avanzar** para pasar a Revisión. |
+| **Modificar** | Pide un ajuste: describe qué cambiar. La fase sigue pendiente. |
+| **Rechazar** | Rechaza el resultado de la fase. Los botones de decisión siguen disponibles. |
+
+Si apruebas y luego cambias de opinión, puedes rechazar: la fase vuelve a quedar pendiente.
 
 ---
 
 ## 9. Fase 4 — Revisión
 
-Es la última fase del flujo. No tiene una pantalla propia: el chat sigue disponible para consultar al agente sobre la arquitectura final.
+El chat sigue disponible para consultar al agente sobre la arquitectura final. Para terminar la fase, usa el mismo panel de decisión (**Aprobar**, **Modificar** o **Rechazar**) y luego **Avanzar** para pasar a Cierre.
 
 ![Proyecto en fase de Revisión](screenshots/revision.png)
 
@@ -314,7 +324,9 @@ En **Mis proyectos**, la tarjeta del proyecto muestra la etiqueta **Revisión**:
 
 ![Proyecto en fase de Revisión en Mis proyectos](screenshots/revision-2.png)
 
-Cuando termines, haz clic en **Marcar fase como lista**. El proyecto pasa a mostrarse como **Completado** y su botón cambia a **Ver arquitectura**.
+### Fase 5 — Cierre
+
+Es la aprobación final del proyecto. Solo tiene **Aprobar** y **Rechazar** (no se pueden pedir modificaciones en esta fase). Al aprobar, el proyecto pasa a mostrarse como **Completado** en **Mis proyectos** y su botón cambia a **Ver arquitectura**.
 
 ---
 

@@ -91,7 +91,7 @@ The endpoint MUST return `{current_phase, phase_ready, pending_decision: {phase,
 For `propuesta` decisions the system MUST write to BOTH `approvals` AND `proposal_approvals` in a single DB transaction; the `proposal_approvals` mirror row MUST carry the same `project_id` as the canonical `approvals` row. **Previously**: dual-write without `project_id` on the mirror row.
 
 ### REQ-SA-18: Read-path index on `project_id`
-Migration 0018 MUST create index `approvals(project_id, phase, created_at DESC)`. **Previously**: v1's session-scoped index cross-contaminated across the same user's projects. F08 migration 0016 added `idx_approvals_project_phase`; v2 migration 0018 adds the extended `ix_approvals_project_phase_created` alongside (no destructive drop).
+Migration 0020 (originalmente 0018) MUST create index `approvals(project_id, phase, created_at DESC)`. **Previously**: v1's session-scoped index cross-contaminated across the same user's projects. F08 migration 0016 added `idx_approvals_project_phase`; v2 migration 0020 adds the extended `ix_approvals_project_phase_created` alongside (no destructive drop).
 
 ## REMOVED Requirements
 
@@ -109,7 +109,7 @@ None. The v2 canonical supersedes v1 in full; no individual v1 REQ is dropped â€
 - Proposal: `openspec/changes/hu10-staged-approvals-v2/proposal.md` (Engram id 109).
 - PR #78 review: Engram id 108 (the 11 findings closed by REQ-SA-26..36).
 - ADR-015: `docs/adr/015-hu10-phase-gate-v2.md` (successor to ADR-014).
-- Migration: `migrations/0018_backfill_project_id_and_extend_index.sql` (idempotent, additive; F08's 0016/0017 already shipped project_id and attachment_id).
+- Migration: `migrations/0020_backfill_project_id_and_extend_index.sql (renumerada desde 0018)` (idempotent, additive; F08's 0016/0017 already shipped project_id and attachment_id).
 
 ## References
 
