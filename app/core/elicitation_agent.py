@@ -809,10 +809,12 @@ def next_step(
                 reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
             )
 
-    if decision.done and len(history) < MAX_QUESTIONS:
+    if decision.done and MIN_QUESTIONS <= len(history) < MAX_QUESTIONS:
         # Checklist de cobertura: el LLM quiere cerrar, pero el código no lo
         # deja si falta una categoría de HU5 o una preocupación del dominio
-        # (ubicación, archivos, pagos...) que el proyecto sugiere.
+        # (ubicación, archivos, pagos...) que el proyecto sugiere. Antes del
+        # mínimo no hace falta: esa regla ya impide cerrar y conserva la
+        # pregunta que propuso el modelo.
         missing = missing_coverage(history, project_description, documents_context)
         if missing:
             category, question = missing[0]
