@@ -164,14 +164,23 @@ def step_register_login(w: Walk) -> None:
         f"{w.base_url}/api/auth/register",
         json={
             "username": w.username,
-            "email": f"{w.username}@walk.local",
+            # email-validator rechaza dominios reservados como ".local"
+            # ("special-use or reserved name") y el backend lo reporta como 409.
+            "email": f"{w.username}@example.com",
             "password": w.password,
         },
     )
     if r.status_code not in (200, 201, 409):
         raise StepFailure(f"register -> {r.status_code}: {r.text[:300]}")
     if r.status_code == 409:
-        w.info("usuario ya existia (409) — continúo con login")
+        # /register responde 409 ante CUALQUIER ValidationError (email,
+        # password, duplicado): se muestra el motivo para no confundir un
+        # registro rechazado con "el usuario ya existe".
+        try:
+            detail = r.json().get("detail")
+        except ValueError:
+            detail = r.text[:200]
+        w.info(f"register 409 ({detail}) — continúo con login")
 
     r = w.client.post(
         f"{w.base_url}/api/auth/login",
