@@ -50,7 +50,10 @@ services:
     environment: !override
       DATABASE_URL: postgresql://walk:walk@postgres-app:5432/walk_hu10
       JWT_SECRET_KEY: walk-secret-key-for-testing-only-32chars
-      ENCRYPTION_KEY: walk-encryption-key-32-chars!!
+      # Clave Fernet valida SOLO para el walk (32 bytes en base64 url-safe =
+      # 44 caracteres). Un string cualquiera hace fallar el cifrado de la API
+      # key en /api/llm/wizard/step2 con un 500.
+      ENCRYPTION_KEY: d2Fsay1odTEwLXRlc3Qtb25seS1mZXJuZXQta2V5ISE=
       PUPPETEER_MCP_URL: http://walk-puppeteer-mcp-unused:8931/mcp
       PYTHONUNBUFFERED: "1"
     ports: !override
