@@ -2,98 +2,133 @@
 
 ## Overview
 
-Este documento describe el pipeline de CI/CD de `arch-agent` y cómo interactuar con él. La estrategia tiene dos ejes: **rapidez en PRs de feature** (tests rápidos con un Postgres efímero) y **confianza cerca de release** (stack completo de Docker Compose + smoke check en PRs a `main`). El deploy a producción está desacoplado del flujo de PRs: nunca deploya al mergear a `main`, solo cuando se pushea un tag semver.
+Este documento describe el pipeline de CI/CD de `arch-agent` y cómo interactuar con él. La estrategia tiene dos ejes: **rapidez en PRs de feature** (tests contra un Postgres+pgvector efímero) y **confianza cerca de release** (stack de Docker Compose, build de las imágenes y frontend en PRs a `main`). El deploy a producción está desacoplado del flujo de PRs: mergear a `main` nunca despliega; solo lo hace un tag semver estable (o un re-deploy manual para rollback).
 
-El pipeline usa GitHub Actions con tres workflows en `.github/workflows/`: `pr-development.yml` para PRs contra `development`, `pr-main.yml` para PRs contra `main` (full-stack), y `deploy-railway.yml` para releases taggeadas. Los tests siguen la convención de commits del repo y OpenSpec sigue siendo la fuente de verdad para cambios de comportamiento.
+Hay tres workflows en `.github/workflows/`:
+
+- `pr-development.yml`: PRs que no apuntan a `main` y pushes a `development`. Reemplaza al antiguo `ci.yml`.
+- `pr-main.yml`: PRs contra `main`.
+- `deploy-railway.yml`: tags `vX.Y.Z` y re-deploys manuales.
+
+OpenSpec sigue siendo la fuente de verdad para cambios de comportamiento.
 
 ## Branch Flow
 
-| Branch | Trigger | Workflow | Qué corre |
-|--------|---------|----------|-----------|
-| `feature/HU*` | push a `development` (PR abierta) | `pr-development.yml` | `pytest` contra Postgres `postgres:16-alpine` como service container (rápido) |
-| `development` | PR abierta contra `main` | `pr-main.yml` (job `test`) | `docker compose up` del stack completo (postgres-app + engram + langfuse-web + deps), luego `pytest` |
-| `main` | PR abierta contra `main` (job `smoke`) | `pr-main.yml` (job `smoke`) | `python -c "from server import app"` — import sanity check |
-| `main` | `git push --tags v*.*.*` | `deploy-railway.yml` | `railway up --detach` con `RAILWAY_TOKEN` |
+| Evento | Workflow | Checks (job names) | Qué corre |
+|--------|----------|--------------------|-----------|
+| PR contra `development` o PR encadenado (base = otra rama de feature) | `pr-development.yml` | `dev-backend-tests`, `dev-frontend-tests` | Backend: service container `pgvector/pgvector:pg16`, `scripts/init_db.py` + `migrations.run_migrations`, `pytest`. Frontend: `npm ci`, `vitest run`, `npm run build` (tsc + vite) |
+| Push a `development` (merge de un PR) | `pr-development.yml` | los mismos | Lo mismo, para que `development` siempre tenga una corrida verde |
+| PR contra `main` | `pr-main.yml` | `main-backend-tests`, `main-frontend-tests`, `main-docker-build` | Backend: `docker compose up --wait` de `postgres-app`, `engram`, `engram-proxy` y `langfuse-web` (+ sus dependencias), probe HTTP de Engram y Langfuse, schema + migraciones sobre `postgres-app`, `pytest`, smoke import `from server import app`. Frontend: igual que en development. Docker: build de `backend/Dockerfile` y `frontend/Dockerfile` (sin push) |
+| Push de tag `vX.Y.Z` | `deploy-railway.yml` | `deploy` | Verifica que el commit esté en `main`, espera la aprobación del environment `production` y corre `railway up --ci --service $RAILWAY_SERVICE` |
+| Manual (`workflow_dispatch`, input `ref`) | `deploy-railway.yml` | `deploy` | Igual que el tag, con el `ref` elegido. Es el camino de rollback |
+
+Los workflows de PR cancelan la corrida anterior de la misma rama al pushear (`concurrency`), tienen `timeout-minutes` y `permissions: contents: read`.
+
+### Bases de datos por lane
+
+Cada lane usa su propio Postgres y no comparten datos:
+
+| Lane | Postgres | `DATABASE_URL` |
+|------|----------|----------------|
+| `pr-development` | service container `pgvector/pgvector:pg16` | `postgresql://test:test@localhost:5432/test` |
+| `pr-main` | `postgres-app` de `docker-compose.yml`, credenciales de `.env.example` | `postgresql://asistente:asistente@localhost:5432/asistente_db` |
+
+Los tests **no deben hardcodear** una base. Los conftest (`tests/conftest.py`, `tests/api/conftest.py`) y los módulos de test usan `os.environ.setdefault(...)`, así que el `DATABASE_URL`, `JWT_*` y `ENCRYPTION_KEY` que exporte el workflow (o el developer) llegan intactos a todos los tests; los defaults solo aplican cuando no hay nada exportado.
+
+### Costo del backend
+
+- `torch` se instala primero desde el índice CPU (`PIP_EXTRA_INDEX_URL` + `pip install torch --index-url .../whl/cpu`), igual que `backend/Dockerfile`. Sin eso `sentence-transformers` baja torch con CUDA (varios GB).
+- El modelo `multilingual-e5-small` (~470 MB) que descarga un test se cachea en `.hf-cache` con `actions/cache` (`HF_HOME`).
+- `EMBEDDINGS_WARMUP=off` evita cargar el modelo al importar la app.
+
+### Lo que `pr-main` no ejercita
+
+Ningún test habla todavía con Engram ni con Langfuse reales (usan mocks). El job levanta esos servicios para validar que `docker-compose.yml` arranca y que responden por HTTP, no para testear integración. Cuando lleguen tests de integración contra Postgres real (#104/#105), ya corren en ambos lanes porque los dos aplican schema + migraciones.
 
 ## Visual Diagram
 
 ```mermaid
 graph LR
-    A[feature/HU*] -->|PR + CI fast| B[development]
-    B -->|PR + CI full stack| C[main]
-    C -->|git tag v*.*.*| D[Railway Deploy]
+    A[feature/*] -->|PR: dev-backend-tests + dev-frontend-tests| B[development]
+    B -->|PR: main-backend-tests + main-frontend-tests + main-docker-build| C[main]
+    C -->|tag vX.Y.Z + aprobación production| D[Railway]
 ```
 
-## Required GitHub Secrets
+## Secrets y variables
 
-Configuralos en: **Settings → Secrets and variables → Actions → New repository secret**.
+Se configuran en **Settings → Secrets and variables → Actions**. Ningún workflow de PR necesita secrets: todos los valores que usan son de CI y salen de `.env.example` o del propio YAML.
 
-| Secret | Propósito | Obligatorio | Dónde obtenerlo |
-|--------|-----------|-------------|-----------------|
-| `RAILWAY_TOKEN` | Auth para `railway up` durante deploys taggeados | **Sí** (para releases) | https://railway.app/account/tokens → Create Token |
-| `LANGFUSE_PUBLIC_KEY` | Autentica el backend con Langfuse | Solo para PR-main full-stack / producción | Langfuse UI → Settings → API Keys (`pk-lf-...`) |
-| `LANGFUSE_SECRET_KEY` | Pareja de la pública, nunca se loggea | Solo para PR-main full-stack / producción | Langfuse UI → Settings → API Keys (`sk-lf-...`) |
-| `ENGRAM_API_KEY` | Auth para Engram HTTP API en producción | Producción (no usado en CI actual) | `gentle-ai engram token create` o dashboard Engram |
-| `OPENAI_API_KEY` | Para tests E2E que pegan contra OpenAI | Tests E2E futuros | https://platform.openai.com/api-keys |
-| `JWT_SECRET` | Override del secret de testing para suites que validan JWT | Solo si removés el default en `tests/conftest.py` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `DATABASE_URL_TEST` | Override opcional del `DATABASE_URL` para usar un Postgres hosted (Neon/Supabase) en vez del service container efímero | Opcional | Tu provider de Postgres |
+| Nombre | Tipo | Lo usa | Dónde obtenerlo |
+|--------|------|--------|-----------------|
+| `RAILWAY_TOKEN` | Secret | `deploy-railway.yml` | Token de **proyecto**: Railway → proyecto → Settings → Tokens ([docs](https://docs.railway.com/guides/cli#tokens)), environment `production`. Los tokens de cuenta/workspace (`railway.app/account/tokens`) van en `RAILWAY_API_TOKEN` y **no** sirven para este workflow |
+| `RAILWAY_SERVICE` | Variable (no secret) | `deploy-railway.yml` | Nombre del servicio backend en Railway. Sin él `railway up` pregunta a qué servicio desplegar y en CI no hay TTY |
 
-> **Tip:** Si todavía no tenés secrets configurados, los workflows `pr-development.yml` y `pr-main.yml` van a funcionar igual — usan defaults hardcodeados o fixtures (`tests/conftest.py` setea `JWT_SECRET_KEY` automáticamente). Los secrets son para endurecer el pipeline o habilitar E2E.
+Las claves de Langfuse (`pk-lf-asistente-prod` / `sk-lf-...`) que ve `pr-main` son las de `.env.example`: Langfuse las crea al arrancar vía `LANGFUSE_INIT_*`, solo existen en esa instancia efímera y no son secrets. Las de producción viven en las variables del servicio en Railway, no en GitHub.
+
+## Configuración única de Railway
+
+1. En el servicio backend, agregar la variable `RAILWAY_DOCKERFILE_PATH=backend/Dockerfile`. `railway up` sube el checkout desde la raíz y, sin esto, Railway autodetecta el build en lugar de usar el Dockerfile.
+2. **No** conectar el repo de GitHub al servicio (o, si ya está, desconectarlo en Service → Settings → Source). Conectado, Railway auto-despliega cada push a la rama enlazada y rompe la regla de "merge a main no despliega". `railway up` no necesita el enlace.
+3. En GitHub, crear el environment `production` (Settings → Environments) con required reviewers. El job de deploy queda en espera hasta que alguien lo apruebe.
+4. Cargar `RAILWAY_TOKEN` y `RAILWAY_SERVICE` como se indica arriba.
+
+La versión del CLI está fijada en `RAILWAY_CLI_VERSION` dentro del workflow. Para subirla, probarla primero con un re-deploy manual.
 
 ## How to cut a release
 
 ```bash
-# 1. Asegurate de estar en main con todo mergeado y green
+# 1. Estar en main, actualizado y con los checks de PR - Main en verde
 git checkout main
-git pull --rebase
+git pull --ff-only
 
-# 2. Creá el tag semver
+# 2. Crear el tag semver estable
 git tag v0.1.0
 
-# 3. Push del tag (esto dispara deploy-railway.yml)
-git push --tags
+# 3. Pushear SOLO ese tag (dispara deploy-railway.yml)
+git push origin v0.1.0
 
-# 4. Verificá el deploy
-#   - GitHub Actions: pestaña Actions → workflow "Deploy to Railway" → debe estar verde
-#   - Railway: https://railway.app → tu proyecto → ver el deploy en curso
+# 4. Aprobar y verificar el deploy
+#   - Actions → "Deploy to Railway" → Review deployments → production → Approve
+#   - El job usa `railway up --ci`: queda rojo si el build falla
+#   - Railway → proyecto → Deployments para ver el rollout
 ```
 
-Convención de tags: `vMAJOR.MINOR.PATCH` (SemVer). Ejemplos válidos: `v0.1.0`, `v1.4.2`, `v2.0.0-rc.1`.
+Convención de tags: `vMAJOR.MINOR.PATCH`. Solo los estables (`v0.1.0`, `v1.4.2`) disparan el deploy; un pre-release como `v2.0.0-rc.1` no matchea el filtro y no despliega. Un tag sobre un commit que no está en `main` hace fallar el job antes de desplegar.
+
+No usar `git push --tags`: empuja todos los tags locales y puede disparar varios deploys (se encolan por `concurrency`, pero igual despliegan).
 
 ## How to roll back
 
-Railway mantiene historial de deploys y permite rollback en un click desde el dashboard.
+**Opción A — Railway UI (la más rápida):**
+1. Railway → proyecto → Deployments.
+2. Buscar el último deploy sano → "Redeploy".
 
-**Opción A — Rollback vía Railway UI (recomendado):**
-1. Ir a https://railway.app → proyecto → Deployments
-2. Buscar el deploy anterior que estaba funcionando
-3. Click → "Redeploy"
+**Opción B — Re-deploy de un tag anterior desde GitHub:**
+1. Actions → "Deploy to Railway" → Run workflow.
+2. En `ref`, poner el tag anterior (por ejemplo `v0.1.2`) → Run, y aprobar el environment.
 
-**Opción B — Re-tag con versión anterior:**
+Sirve para que el historial de Actions refleje qué versión está corriendo. No mueve ni re-crea tags.
+
+**Opción C — Revertir y sacar un tag nuevo:**
 ```bash
-git tag v0.0.9 <commit-sha-del-release-anterior>
-git push --tags --force
-```
-El workflow `deploy-railway.yml` re-dispara con ese tag. Útil si querés que el tag en `main` refleje exactamente qué versión está corriendo.
-
-**Opción C — Revertir el commit y tag nuevo:**
-```bash
-git revert <commit-del-bug>
-git tag v0.1.1
-git push --tags
+git revert <commit-del-bug>   # vía PR a main, como cualquier cambio
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
 ## Branch Protection Checklist
 
-Estas reglas se setean en **GitHub → Settings → Branches → Add rule**. El pipeline NO las enforza por sí solo — son configuración del repo.
+El pipeline no aplica estas reglas por sí solo. `scripts/enable-branch-protection.sh` las aplica vía `gh api` (con `DRY_RUN=1` por defecto) y verifica antes que cada check requerido ya tenga una corrida verde. Leer el encabezado del script antes de correrlo: el `PUT` **reemplaza** la protección existente de la rama (guarda un backup antes).
 
 ### `development`
 
 - [ ] Require a pull request before merging
-- [ ] Require approvals: **0** (es staging, dejamos merge rápido)
+- [ ] Require approvals: **0** (es staging, merge rápido)
 - [ ] Dismiss stale pull request approvals when new commits are pushed
 - [ ] Require status checks to pass before merging
-  - [ ] `test` (del workflow `PR - Development`)
+  - [ ] `dev-backend-tests`
+  - [ ] `dev-frontend-tests`
+  - [ ] Require branches to be up to date: **off** (`strict: false`). Con historia lineal y muchos PRs abiertos, activarlo obliga a rebasear todo cada vez que algo se mergea; los checks corren igual sobre el merge ref del PR
 - [ ] Require linear history
 - [ ] Do not allow force pushes
 - [ ] Do not allow deletions
@@ -101,18 +136,20 @@ Estas reglas se setean en **GitHub → Settings → Branches → Add rule**. El 
 ### `main`
 
 - [ ] Require a pull request before merging
-- [ ] Require approvals: **1** mínimo
+- [ ] Require approvals: **1** mínimo (`MAIN_APPROVALS`)
 - [ ] Dismiss stale pull request approvals when new commits are pushed
 - [ ] Require status checks to pass before merging
-  - [ ] `test` (del workflow `PR - Main`)
-  - [ ] `smoke` (del workflow `PR - Main`)
+  - [ ] `main-backend-tests`
+  - [ ] `main-frontend-tests`
+  - [ ] `main-docker-build`
+  - [ ] Require branches to be up to date: **off** (mismo motivo)
 - [ ] Require linear history
-- [ ] Include administrators (nadie esquiva las reglas, ni el owner)
+- [ ] Include administrators (`MAIN_ENFORCE_ADMINS=true`). Implica que nadie, tampoco el dueño, mergea a `main` un PR propio sin la aprobación de otra persona
 - [ ] Do not allow force pushes
 - [ ] Do not allow deletions
-- [ ] Allow auto-merge: **off** (querés review explícito antes de taggear)
+- [ ] Allow auto-merge: **off** (review explícito antes de taggear)
 
 ### Reglas globales sugeridas
 
-- Default branch: `main`
-- Restringir quién puede pushear tags `v*.*.*` a un team de maintainers (no se puede enforcear via branch protection, pero se puede auditar con `gh api repos/:owner/:repo/tags`)
+- Default branch: `main`.
+- Restringir quién puede crear tags `v*` con un **tag ruleset** (Settings → Rules → Rulesets → New tag ruleset), limitado a maintainers.
