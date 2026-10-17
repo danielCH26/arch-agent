@@ -17,6 +17,7 @@ class TestPhaseConstants:
             "propuesta",
             "refinamiento",
             "revision",
+            "final",  # HU10: quinta fase
         ]
 
     def test_phase_labels(self):
@@ -78,7 +79,7 @@ class TestProjectModels:
         )
         assert out.current_phase == "propuesta"
         assert out.phase_ready is True
-        assert len(out.available_phases) == 4
+        assert len(out.available_phases) == 5  # HU10 agregó 'final'
 
 
 class TestRequireProjectLogic:

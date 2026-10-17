@@ -8,11 +8,10 @@ Los imports de app.api.* se hacen DENTRO de cada test.
 import pytest
 import os
 
-# Configurar entorno antes de cualquier import de app
-# setdefault, NO asignación directa: pisaba el DATABASE_URL de tests/conftest.py al
-# importarse y, en una corrida completa, los tests con Postgres real
-# (tests/test_document_storage.py) se conectaban como "test" y fallaban.
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+# Configurar entorno antes de cualquier import de app.
+# DATABASE_URL NO se fija aquí (HU10 v3): un default "test:test" pisaba el
+# de app.core.database en una corrida completa y rompía los tests con
+# Postgres real (tests/test_document_storage.py) y el skipif de HU10.
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
 os.environ["JWT_ALGORITHM"] = "HS256"
 os.environ["JWT_EXPIRES_MINUTES"] = "60"

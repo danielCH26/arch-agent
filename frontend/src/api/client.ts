@@ -3,6 +3,27 @@ import { redirectToLogin } from './navigation'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
+// El backend responde `detail` como string (errores legacy) o como objeto
+// tipado `{ error: '<codigo>', ... }` (REQ-SA-28 / REQ-SA-34). Castear un
+// objeto a string mostraba "[object Object]" en la UI.
+const DETAIL_ERROR_MESSAGES: Record<string, string> = {
+  phase_mismatch:
+    'La fase del proyecto cambió. Recarga la pantalla e inténtalo de nuevo.',
+  phase_not_approved: 'La fase actual todavía no está aprobada.',
+  validation_error: 'La acción no es válida para esta fase.',
+  internal_error: 'Ocurrió un error inesperado. Inténtalo de nuevo.',
+}
+
+export function detailToMessage(detail: unknown): string | null {
+  if (typeof detail === 'string' && detail) return detail
+  if (detail && typeof detail === 'object') {
+    const d = detail as { error?: unknown; message?: unknown }
+    if (typeof d.message === 'string' && d.message) return d.message
+    if (typeof d.error === 'string') return DETAIL_ERROR_MESSAGES[d.error] ?? null
+  }
+  return null
+}
+
 /** URL absoluta de un endpoint del backend (respeta VITE_API_BASE_URL). */
 export function apiUrl(path: string): string {
   return `${BASE_URL}${path}`
@@ -84,6 +105,13 @@ export function errorMessageFromResponse(status: number, data: unknown): string 
   const detail = (data as { detail?: unknown } | null)?.detail
   if (typeof detail === 'string' && detail.trim() && !FRAMEWORK_DETAILS.has(detail.trim().toLowerCase())) {
     return detail
+  }
+
+  // `detail` tipado `{ error: '<codigo>', ... }` (REQ-SA-28 / REQ-SA-34):
+  // sin esto se mostraba el mensaje genérico del status (o "[object Object]").
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const typed = detailToMessage(detail)
+    if (typed) return typed
   }
 
   if (Array.isArray(detail) && detail.length > 0) {

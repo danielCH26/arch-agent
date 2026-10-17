@@ -433,6 +433,21 @@ async def chat(
         try:
             docs, rag_context = await retrieve_context()
 
+            # REQ-SA-11 (HU10 v2): emit `phase_locked` as the FIRST event when
+            # the project's current phase is ready for a decision. Frontend
+            # ChatWindow consumes this in parallel with the `/phases` fetch
+            # path (REQ-SA-26.1 defense-in-depth: even if the SSE channel is
+            # missed, the surface still mounts from `fetchApprovalsHistory`).
+            if (
+                current_project is not None
+                and current_project.phase_ready
+                and current_project.current_phase is not None
+            ):
+                yield (
+                    f"event: phase_locked\ndata: "
+                    f"{json.dumps({'phase': current_project.current_phase, 'phase_ready': True}, ensure_ascii=False)}\n\n"
+                )
+
             sources = [_doc_to_source(doc) for doc in docs]
             yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
 

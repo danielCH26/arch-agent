@@ -10,8 +10,9 @@ Términos que aparecen en Arch Agent y en esta documentación, ordenados alfabé
 | **Requerimientos** | Fase 1. El agente hace preguntas (elicitación) y arma un resumen de lo que hay que construir. |
 | **Propuesta** | Fase 2. El agente propone una arquitectura justificada, con patrones y trade-offs. |
 | **Refinamiento** | Fase 3. Se genera y ajusta el diagrama de la propuesta aprobada. |
-| **Revisión** | Fase 4 y última. Consulta final de la arquitectura. |
-| **Fase lista** | La fase actual fue aprobada y se puede avanzar con **Avanzar fase →**. En el chat se indica como "Fase lista para avanzar." y en la tarjeta del proyecto como **Lista para avanzar** (si no, **En progreso**). |
+| **Revisión** | Fase 4. Consulta final de la arquitectura antes del cierre. |
+| **Cierre** | Fase 5 y última. Aprobación final del proyecto: solo **Aprobar** o **Rechazar**. Al aprobar, el proyecto queda **Completado**. |
+| **Fase lista** | La fase actual fue aprobada y se puede avanzar (**Avanzar fase →** en Requerimientos; **Avanzar** en el panel de decisión en las demás fases). En el chat se indica como "Fase lista para avanzar." y en la tarjeta del proyecto como **Lista para avanzar** (si no, **En progreso**). |
 
 ## Conceptos de la app
 

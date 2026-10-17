@@ -8,11 +8,16 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Configurar entorno antes de importar la app
-# setdefault, NO asignación directa: pisaba el DATABASE_URL de tests/conftest.py al
-# importarse y, en una corrida completa, los tests con Postgres real
-# (tests/test_document_storage.py) se conectaban como "test" y fallaban.
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+# Configurar entorno antes de importar la app.
+#
+# IMPORTANT: do NOT set DATABASE_URL here. The hard-coded CI URL would
+# defeat the skipif in Postgres-backed tests like
+# ``tests/models/test_approval.py`` and
+# ``tests/core/test_phase_decisions_concurrency.py``. The runner (CI or
+# local) is responsible for setting DATABASE_URL when those tests need
+# to run; otherwise they skip cleanly (HU10 v3 fix). Tampoco lo pisamos:
+# en una corrida completa los tests con Postgres real
+# (tests/test_document_storage.py) se conectarían como "test" y fallarían.
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32ch"
 os.environ["JWT_ALGORITHM"] = "HS256"
 os.environ["JWT_EXPIRES_MINUTES"] = "60"

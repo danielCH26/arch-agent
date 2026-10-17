@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
-import { advancePhase, getProject, getProjectPhase, markReady, PhaseInfo, Project } from '../api/projects'
+import { advancePhase, getProject, getProjectPhase, PhaseInfo, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
 import { ElicitationPanel } from '../components/ElicitationPanel'
@@ -9,7 +9,6 @@ import { PhaseStepper } from '../components/PhaseStepper'
 import { projectsStore } from '../stores/projectsStore'
 
 const ELICITATION_PHASE = 'requerimientos'
-const PROPOSAL_PHASE = 'propuesta'
 
 /**
  * Se vuelve a montar al cambiar de proyecto (`key`), para que ningún render
@@ -85,19 +84,6 @@ function ChatPageContent() {
     projectsStore.getState().setCurrentProject(projectData)
   }, [projectId])
 
-  const handleMarkReady = async () => {
-    setPhaseActionError('')
-    setPhaseActionLoading(true)
-    try {
-      await markReady(projectId)
-      await refreshAfterPhaseChange()
-    } catch (err) {
-      setPhaseActionError(err instanceof Error ? err.message : 'Error al marcar la fase como lista')
-    } finally {
-      setPhaseActionLoading(false)
-    }
-  }
-
   const handleAdvance = async () => {
     setPhaseActionError('')
     setPhaseActionLoading(true)
@@ -128,8 +114,6 @@ function ChatPageContent() {
   }
 
   const isElicitationPhase = phase?.current_phase === ELICITATION_PHASE
-  // En la fase propuesta la fase queda lista al aprobar la propuesta.
-  const isProposalPhase = phase?.current_phase === PROPOSAL_PHASE
 
   return (
     <div className="h-full flex flex-col">
@@ -157,24 +141,20 @@ function ChatPageContent() {
                 Diagramas
               </button>
             )}
-            {!isElicitationPhase && !isProposalPhase && !phase.phase_ready && (
+            {/* HU10 (REQ-SA-23): "Marcar fase como lista" se retiró (mark-ready
+                responde 404). En las fases HU10 la aprobación y "Avanzar" viven
+                en <PhaseActions> dentro del chat; esta barra solo avanza la
+                elicitación (F05 es dueño de `requerimientos`). */}
+            {isElicitationPhase && (
               <button
                 type="button"
-                onClick={handleMarkReady}
-                disabled={phaseActionLoading}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                onClick={handleAdvance}
+                disabled={phaseActionLoading || !phase.phase_ready}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
               >
-                Marcar fase como lista
+                Avanzar fase →
               </button>
             )}
-            <button
-              type="button"
-              onClick={handleAdvance}
-              disabled={phaseActionLoading || !phase.phase_ready}
-              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
-            >
-              Avanzar fase →
-            </button>
           </div>
         </div>
       )}
