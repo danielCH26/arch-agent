@@ -56,6 +56,11 @@ services:
       ENCRYPTION_KEY: d2Fsay1odTEwLXRlc3Qtb25seS1mZXJuZXQta2V5ISE=
       PUPPETEER_MCP_URL: http://walk-puppeteer-mcp-unused:8931/mcp
       PYTHONUNBUFFERED: "1"
+      # El walk prueba HU10, no el retrieval: sin estas dos llamadas extra al
+      # LLM la generacion de la propuesta gasta menos tokens por minuto (plan
+      # gratuito de Groq) y tarda menos.
+      PROPOSAL_QUERY_PROFILE: "off"
+      PROPOSAL_LLM_RERANK: "off"
     ports: !override
       - "18000:8000"
     volumes: !override

@@ -230,31 +230,39 @@ def _pending(w: Walk) -> Optional[dict]:
     return r.json().get("pending_decision")
 
 
+# Respuesta del walk a cada pregunta. Cubre los factores de viabilidad que la
+# elicitacion exige antes de cerrar (presupuesto, equipo, plazo): sin ellos el
+# agente sigue preguntando y nunca genera el resumen que hay que aprobar.
+ELICITATION_ANSWER = (
+    "Un sistema interno de gestion de pedidos para una empresa mediana, usado "
+    "por unos 50 empleados. Presupuesto de 20000 USD, equipo de 3 "
+    "desarrolladores y plazo de 3 meses para el MVP. Sin requerimientos "
+    "exoticos de performance; disponibilidad en horario laboral."
+)
+ELICITATION_MAX_TURNS = int(os.environ.get("WALK_ELICITATION_MAX_TURNS", "14"))
+
+
 def step_elicitation(w: Walk) -> None:
-    """Recorre la elicitacion (MIN 5 preguntas) y aprueba el resumen."""
+    """Responde la elicitacion hasta que el agente la cierre (``done`` con
+    resumen) y aprueba el resumen. Aprobar antes del resumen da 400."""
+    r = w.req("POST", f"/api/projects/{w.project_id}/elicitation/message",
+              json_body={}, expect=(200,))
+    data = r.json()
     turns = 0
-    while True:
-        r = w.req("POST", f"/api/projects/{w.project_id}/elicitation/message",
-                  json_body={}, expect=(200,))
-        data = r.json()
-        history_len = len(data.get("history") or [])
-        if data.get("done"):
-            break
-        if history_len >= 5:
-            # MIN_QUESTIONS alcanzado: la siguiente decision approve es valida.
-            break
+    while not data.get("done"):
         turns += 1
-        if turns > 10:
-            raise StepFailure("elicitacion excedio 10 turnos sin done")
+        if turns > ELICITATION_MAX_TURNS:
+            raise StepFailure(
+                f"elicitacion sin resumen tras {ELICITATION_MAX_TURNS} respuestas"
+            )
         r = w.req("POST", f"/api/projects/{w.project_id}/elicitation/message",
-                  json_body={"answer": "Un sistema interno para un equipo chico, "
-                                      "sin requerimientos exoticos de performance."},
-                  expect=(200,))
-        if r.json().get("done"):
-            break
-    r = w.req("POST", f"/api/projects/{w.project_id}/elicitation/decision",
-              json_body={"decision": "approve"}, expect=(200,))
-    w.step(True, f"elicitacion ({turns} respuestas) -> approve")
+                  json_body={"answer": ELICITATION_ANSWER}, expect=(200,))
+        data = r.json()
+    if not data.get("resumen"):
+        raise StepFailure("la elicitacion termino sin resumen")
+    w.req("POST", f"/api/projects/{w.project_id}/elicitation/decision",
+          json_body={"decision": "approve"}, expect=(200,))
+    w.step(True, f"elicitacion ({turns} respuestas) -> resumen -> approve")
 
 
 def step_advance(w: Walk, from_phase: str, to_phase: str) -> None:
@@ -329,6 +337,35 @@ def step_neg_advance_final(w: Walk) -> None:
 # Flujo principal
 # ---------------------------------------------------------------------------
 
+PROPOSAL_ATTEMPTS = int(os.environ.get("WALK_PROPOSAL_ATTEMPTS", "3"))
+PROPOSAL_RETRY_WAIT_S = float(os.environ.get("WALK_PROPOSAL_RETRY_WAIT_S", "60"))
+
+
+def _generate_proposal_with_retries(w: Walk) -> dict:
+    """Genera la propuesta reintentando los fallos del LLM.
+
+    La generacion depende del proveedor: un 429 por tokens/minuto (plan
+    gratuito de Groq) o una propuesta incompleta llegan como evento SSE
+    ``error`` y no se guarda nada ni se gasta iteracion. Eso no es lo que el
+    walk prueba (HU10), asi que se reintenta esperando a que se libere el
+    limite por minuto.
+    """
+    for attempt in range(1, PROPOSAL_ATTEMPTS + 1):
+        try:
+            return w.sse_done_payload(
+                "POST", "/api/proposals/generate", {"project_id": w.project_id}
+            )
+        except StepFailure as e:
+            if "-> error:" not in str(e) or attempt == PROPOSAL_ATTEMPTS:
+                raise
+            w.info(
+                f"generar propuesta: intento {attempt} fallo ({str(e)[:160]}); "
+                f"reintento en {PROPOSAL_RETRY_WAIT_S:.0f}s"
+            )
+            time.sleep(PROPOSAL_RETRY_WAIT_S)
+    raise StepFailure("generar propuesta: sin intentos")  # pragma: no cover
+
+
 def run(w: Walk, skip_until_phases: bool) -> None:
     step_health(w)
     step_register_login(w)
@@ -342,9 +379,7 @@ def run(w: Walk, skip_until_phases: bool) -> None:
 
     # ---- propuesta (HU10-owned) -----------------------------------------
     step_neg_decision_mismatch(w)
-    done = w.sse_done_payload(
-        "POST", "/api/proposals/generate", {"project_id": w.project_id}
-    )
+    done = _generate_proposal_with_retries(w)
     proposal_id = done.get("proposal_id")
     w.step(proposal_id is not None, f"generar propuesta id={proposal_id}")
 
