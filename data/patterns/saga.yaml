@@ -1,6 +1,8 @@
 pattern_name: "Saga (transacciones distribuidas)"
 category: "Patrón de datos"
 complexity: "alta"
+family: "distribuido"
+level: "complemento"
 description: >
   Coordina una operación de negocio que abarca varios servicios o bases de datos
   como una secuencia de transacciones locales; si un paso falla, ejecuta

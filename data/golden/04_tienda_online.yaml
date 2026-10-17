@@ -1,0 +1,118 @@
+id: tienda-online
+name: Tostadero
+kind: e-commerce
+description: Tienda en línea para vender café de un tostadero local.
+profile:
+  resumen: Tienda en línea de café con pedidos a domicilio.
+  dominio: e-commerce
+  tipo_sistema: aplicación web
+  tipo_proyecto: mvp_prototipo
+  equipo_personas: 2
+  plazo_meses: 4
+  presupuesto_usd: 8000
+resumen:
+  problema: Los pedidos llegan por mensajes y se pierden.
+  usuarios: Clientes que compran café y el dueño del tostadero.
+  funcionalidades:
+    - Catálogo de cafés
+    - Carrito y pagos en línea
+  restricciones:
+    - Presupuesto de 8000 USD
+    - Equipo de 2 desarrolladores
+    - Plazo de 4 meses
+  calidad:
+    - Seguridad en los pagos
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Los pedidos llegan por mensajes y se pierden.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Clientes y el dueño del tostadero.
+  - pregunta: ¿El sistema va a recibir pagos en línea?
+    respuesta: Sí, con la pasarela Wompi.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 8000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 2 desarrolladores.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 4 meses.
+candidates:
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.85}
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.84}
+  - {name: "Serverless (Function-as-a-Service)", similarity: 0.83}
+  - {name: "Microservicios", similarity: 0.86}
+  - {name: "API Gateway + Backend for Frontend (BFF)", similarity: 0.82}
+recorded:
+  proposal: |
+    ## Componentes
+    - Módulo de catálogo
+    - Módulo de pedidos
+    - Integración con Wompi
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Node.js | Lenguaje del equipo | Equipo de 2 desarrolladores |
+    | NestJS | Módulos y validación | Plazo de 4 meses |
+    | PostgreSQL | Pedidos transaccionales | Carrito y pagos |
+    | Wompi | Pasarela de pagos | Pagos en línea |
+
+    ## Patrones
+    - Patrón principal: Monolito modular (Modular Monolith)
+
+    ## Justificación del patrón principal
+    - Motivo de elección: catálogo y pedidos como módulos.
+    - Reflejo en la arquitectura: módulo de catálogo y módulo de pedidos.
+    - Beneficio esperado: un despliegue barato.
+    - Riesgo o costo: picos de tráfico escalan todo junto.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | Monolito modular | Barato | Escala conjunta | Baja | Alto | [1] |
+    | Serverless | Pago por uso | Arranques en frío | Media | Medio | [2] |
+    | API Gateway + BFF | Una API por cliente | Otra pieza que operar | Media | Bajo | [3] |
+    - Recomendación: Monolito modular
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Módulo de catálogo | Productos | PostgreSQL |
+    | Módulo de pedidos | Carrito y pago | Integración con Wompi |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Backend | Node.js + NestJS | Módulos |
+    | Base de datos | PostgreSQL | Transacciones |
+    | Pagos | Wompi | Pasarela local |
+
+    ### 7.3 Consecuencias
+    **Positivas:** barato. **Negativas / costos asumidos:** escala conjunta.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | Pago duplicado | alto | Webhook idempotente |
+
+    ### 7.5 Plan de implementación
+    1. Catálogo. 2. Pedidos. 3. Pagos.
+
+    ### 7.6 Primer sprint
+    - Modelo de productos
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    tienda/
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Habrá envíos a otras ciudades?
+expect:
+  concerns: [pagos, archivos]
+  checks:
+    respeta_restricciones: true
+    cifras_con_origen: true
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

@@ -33,12 +33,14 @@ from app.core.env import env_float, env_int
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
+from app.core.pattern_catalog import pattern_family
 from app.core.query_profile import (
     extract_project_profile,
-    profile_to_constraints_text,
     profile_to_query,
 )
 from app.core.rag import similarity_search
+from app.core.text_norm import normalize_text
+from app.core.viability_rules import COMMON_VIABILITY_RULES
 from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
 from app.models.project import Project
 from app.models.user import User
@@ -516,13 +518,12 @@ class ProposalGenerator:
                 project.description,
                 requirements_text,
                 feedback,
-                # Cifras normalizadas (solo numeros y marcas fijas, nunca texto
-                # libre del LLM) para que las reglas de escala tambien
-                # funcionen cuando el usuario no escribio "equipo de 3 personas".
-                profile_to_constraints_text(profile),
             )
             if part
         )
+        # Las reglas duras de escala leen el perfil estructurado (equipo, plazo,
+        # presupuesto y tipo de proyecto) directamente: ya no se convierte a
+        # texto para que lo relean las regex (ver _profile_scale).
         # Dos pasadas: 1) el orden por similitud + reglas duras define un pool
         # de candidatos; 2) el LLM los reordena y ese orden desempata dentro de
         # las reglas duras (ver _select_citations).
@@ -531,6 +532,7 @@ class ProposalGenerator:
             top_n=max(RERANK_POOL_SIZE, PROPOSAL_RAG_TOP_N),
             explicit_text=explicit_text,
             feedback=feedback,
+            profile=profile,
         )
         ranked = await _within_budget(
             rank_candidates(model, summary_query, pool), work_deadline, "retrieval"
@@ -547,6 +549,7 @@ class ProposalGenerator:
             feedback=feedback,
             llm_ranking=ranked[0] if ranked else None,
             llm_reasons=ranked[1] if ranked else None,
+            profile=profile,
         )
         logger.info(
             "Proposal RAG project_id=%s candidates=%s cited=%s top=%s",
@@ -576,6 +579,7 @@ class ProposalGenerator:
             description=project.description,
             requirements_text=requirements_text,
             documents_text=documents_text,
+            project_kind=_profile_kind(profile),
         )
 
         # 6. Stream LLM tokens + accumulate the full markdown.
@@ -808,6 +812,91 @@ PROPOSAL_SMALL_TEAM_MAX = env_int("PROPOSAL_SMALL_TEAM_MAX", 4, minimum=0)
 PROPOSAL_SMALL_BUDGET_USD = env_float("PROPOSAL_SMALL_BUDGET_USD", 20000.0, minimum=0.0)
 PROPOSAL_SHORT_TIMELINE_MONTHS = env_int("PROPOSAL_SHORT_TIMELINE_MONTHS", 3, minimum=0)
 
+
+# Umbrales de escala por tipo de proyecto (``tipo_proyecto`` del perfil, ver
+# app/core/query_profile.py). Los de arriba (<=4 personas, <=3 meses,
+# <=20000 USD) estaban calibrados al caso académico/MVP; un producto en
+# producción o un proyecto empresarial suele tener apoyo de operación aunque
+# el equipo de desarrollo sea chico, así que la prohibición dura se activa con
+# umbrales más bajos. Se pueden cambiar sin tocar código con
+# PROPOSAL_SCALE_THRESHOLDS (JSON), p. ej.
+#   {"empresarial": {"team_max": 3, "months_max": 2, "budget_usd": 8000}}
+# Las claves que no se den conservan el valor por defecto.
+def _default_scale_thresholds() -> dict[str, dict[str, float]]:
+    base = {
+        "team_max": PROPOSAL_SMALL_TEAM_MAX,
+        "months_max": PROPOSAL_SHORT_TIMELINE_MONTHS,
+        "budget_usd": PROPOSAL_SMALL_BUDGET_USD,
+    }
+    return {
+        "desconocido": dict(base),
+        "mvp_prototipo": dict(base),
+        "academico": dict(base),
+        "producto_en_produccion": {"team_max": 3, "months_max": 2, "budget_usd": 10000.0},
+        "empresarial": {"team_max": 2, "months_max": 2, "budget_usd": 5000.0},
+    }
+
+
+def _load_scale_thresholds() -> dict[str, dict[str, float]]:
+    thresholds = _default_scale_thresholds()
+    raw = os.getenv("PROPOSAL_SCALE_THRESHOLDS", "").strip()
+    if not raw:
+        return thresholds
+    try:
+        overrides = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("PROPOSAL_SCALE_THRESHOLDS no es JSON valido; se usan los valores por defecto")
+        return thresholds
+    if not isinstance(overrides, dict):
+        return thresholds
+    for kind, values in overrides.items():
+        if not isinstance(values, dict):
+            continue
+        current = thresholds.setdefault(str(kind), dict(thresholds["desconocido"]))
+        for key in ("team_max", "months_max", "budget_usd"):
+            value = values.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                current[key] = float(value)
+    return thresholds
+
+
+PROPOSAL_SCALE_THRESHOLDS = _load_scale_thresholds()
+
+
+def scale_thresholds(project_kind: str | None = None) -> dict[str, float]:
+    """Umbrales de escala para un tipo de proyecto (``desconocido`` si no hay)."""
+    return PROPOSAL_SCALE_THRESHOLDS.get(
+        project_kind or "desconocido", PROPOSAL_SCALE_THRESHOLDS["desconocido"]
+    )
+
+
+def _profile_kind(profile: dict | None) -> str | None:
+    return (profile or {}).get("tipo_proyecto") or None
+
+
+def _profile_scale(profile: dict | None) -> tuple[bool, bool]:
+    """``(proyecto_chico, mvp_ajustado)`` leídos del perfil estructurado.
+
+    Antes el perfil se convertía a texto ("equipo de 3 personas; plazo de 2
+    meses") para que las regex de ``_small_scale_signal`` lo volvieran a leer.
+    Ahora las reglas duras usan los números directamente.
+    """
+    if not profile:
+        return False, False
+    limits = scale_thresholds(_profile_kind(profile))
+    team = profile.get("equipo_personas")
+    months = profile.get("plazo_meses")
+    budget = profile.get("presupuesto_usd")
+    small_team = isinstance(team, int) and team <= limits["team_max"]
+    short = isinstance(months, int) and months <= limits["months_max"]
+    small_budget = isinstance(budget, int) and budget <= limits["budget_usd"]
+    small = (
+        small_team
+        or small_budget
+        or profile.get("tipo_proyecto") in {"mvp_prototipo", "academico"}
+    )
+    return small, small_team and short
+
 # "equipo de 4 personas" y tambien "equipo de 4" a secas ("MVP en 3 meses,
 # equipo de 4, presupuesto bajo"). Sin sustantivo, la cifra no debe ir seguida
 # de una unidad de tiempo/dinero ("equipo de 4 meses") ni de otro digito.
@@ -856,23 +945,28 @@ def _parse_min_budget_usd(normalized_text: str) -> float | None:
     return min(amounts) if amounts else None
 
 
-def _small_scale_signal(explicit_text: str | None) -> bool:
-    """True si el proyecto declara equipo chico, presupuesto bajo o un MVP/prototipo."""
+def _small_scale_signal(explicit_text: str | None, project_kind: str | None = None) -> bool:
+    """True si el proyecto declara equipo chico, presupuesto bajo o un MVP/prototipo.
+
+    Lee el texto que escribió el usuario. Cuando hay perfil estructurado, sus
+    números se evalúan aparte (``_profile_scale``) sin pasar por estas regex.
+    """
     if not explicit_text:
         return False
+    limits = scale_thresholds(project_kind)
     normalized = _normalize_text(explicit_text)
     if any(phrase in normalized for phrase in _SMALL_SCALE_PHRASES):
         return True
     team_match = _TEAM_SIZE_RE.search(normalized)
-    if team_match and int(team_match.group(1)) <= PROPOSAL_SMALL_TEAM_MAX:
+    if team_match and int(team_match.group(1)) <= limits["team_max"]:
         return True
     budget = _parse_min_budget_usd(normalized)
-    if budget is not None and budget <= PROPOSAL_SMALL_BUDGET_USD:
+    if budget is not None and budget <= limits["budget_usd"]:
         return True
     return False
 
 
-def _tight_mvp_constraint(explicit_text: str | None) -> bool:
+def _tight_mvp_constraint(explicit_text: str | None, project_kind: str | None = None) -> bool:
     """True para equipo pequeño con plazo corto: no admite distribución pesada.
 
     La señal debe contener ambas restricciones explícitas para no convertir un
@@ -882,12 +976,13 @@ def _tight_mvp_constraint(explicit_text: str | None) -> bool:
     """
     if not explicit_text:
         return False
+    limits = scale_thresholds(project_kind)
     normalized = _normalize_text(explicit_text)
     team_match = _TEAM_SIZE_RE.search(normalized)
-    if not team_match or int(team_match.group(1)) > PROPOSAL_SMALL_TEAM_MAX:
+    if not team_match or int(team_match.group(1)) > limits["team_max"]:
         return False
     timelines = [int(match.group(1)) for match in _TIMELINE_MONTHS_RE.finditer(normalized)]
-    return bool(timelines and min(timelines) <= PROPOSAL_SHORT_TIMELINE_MONTHS)
+    return bool(timelines and min(timelines) <= limits["months_max"])
 
 
 def _is_complex_distributed_pattern(pattern_name: str | None) -> bool:
@@ -906,12 +1001,8 @@ def _is_complex_distributed_pattern(pattern_name: str | None) -> bool:
 
 
 def _normalize_text(text: str | None) -> str:
-    """Minusculas y sin acentos, para comparar texto libre."""
-    return "".join(
-        char
-        for char in unicodedata.normalize("NFD", (text or "").casefold())
-        if unicodedata.category(char) != "Mn"
-    )
+    """Minusculas y sin acentos, para comparar texto libre (ver app/core/text_norm.py)."""
+    return normalize_text(text)
 
 
 def _pattern_aliases(pattern_name: str) -> list[str]:
@@ -1118,6 +1209,67 @@ def _is_comparison_request(feedback: str | None) -> bool:
 AVOID_CHUNK_TYPES = frozenset({"when_not_to_use"})
 
 
+def _diverse_selection(
+    eligible: list[tuple[Any, Document]],
+    limit: int,
+    scale_disqualified: Any,
+) -> list[tuple[Any, Document]]:
+    """Los ``limit`` primeros de ``eligible`` priorizando familias distintas.
+
+    ``eligible`` ya viene ordenado por las reglas duras y el puntaje. El primero
+    (principal) no se toca. Para las demas filas se recorre la lista en orden
+    y se toma primero lo que aporta una familia nueva; lo repetido (o lo que
+    solo organiza el codigo, ``level: codigo``, cuando el principal es un estilo
+    de despliegue) rellena despues. Un patron descartado por escala nunca le
+    gana el lugar a uno viable solo por ser de otra familia. Los patrones sin
+    familia conocida cuentan como distintos (no se penalizan).
+    """
+    if len(eligible) <= limit or limit <= 1:
+        return eligible[:limit]
+
+    def _info(doc: Document) -> dict | None:
+        return pattern_family(doc.metadata.get("pattern_name"))
+
+    primary_key, primary_doc = eligible[0]
+    primary_info = _info(primary_doc)
+    seen = {primary_info["family"]} if primary_info else set()
+    primary_is_deploy = bool(primary_info and primary_info["level"] != "codigo")
+
+    def _adds_diversity(doc: Document) -> bool:
+        info = _info(doc)
+        if info is None:
+            return True
+        if primary_is_deploy and info["level"] == "codigo":
+            return False
+        return info["family"] not in seen
+
+    chosen = [(primary_key, primary_doc)]
+    taken = {primary_key}
+    rest = eligible[1:]
+    for viable_only in (True, False):
+        for key, doc in rest:
+            if len(chosen) >= limit:
+                break
+            if key in taken:
+                continue
+            if viable_only and scale_disqualified(key):
+                continue
+            if not _adds_diversity(doc):
+                continue
+            chosen.append((key, doc))
+            taken.add(key)
+            info = _info(doc)
+            if info:
+                seen.add(info["family"])
+    for key, doc in rest:
+        if len(chosen) >= limit:
+            break
+        if key not in taken:
+            chosen.append((key, doc))
+            taken.add(key)
+    return chosen
+
+
 def _select_citations(
     docs: list[Document],
     top_n: int | None = None,
@@ -1126,6 +1278,7 @@ def _select_citations(
     feedback: str | None = None,
     llm_ranking: list[str] | None = None,
     llm_reasons: dict[str, str] | None = None,
+    profile: dict | None = None,
 ) -> list[dict]:
     """Elige los patrones que mejor encajan y los proyecta al payload de citations.
 
@@ -1159,6 +1312,17 @@ def _select_citations(
     escala descartada que el usuario pidio ahi tambien se cita, marcado
     ``scale_disqualified``, para que la tabla lo muestre como alternativa
     descartada con su razon.
+
+    ``profile`` (perfil estructurado, ver app/core/query_profile.py) alimenta
+    las reglas duras de escala con sus numeros (equipo, plazo, presupuesto) y
+    elige los umbrales segun el tipo de proyecto.
+
+    Diversidad (idea de MMR): las filas de la tabla son alternativas reales,
+    no tres variantes del mismo estilo. Despues del principal se prefieren
+    patrones de una FAMILIA distinta (``family`` en data/patterns/*.yaml:
+    monolitico, distribuido, serverless, datos...) y los que solo organizan el
+    codigo por dentro (``level: codigo``, p. ej. capas o MVC) no ocupan el
+    lugar de una alternativa de despliegue mientras haya otra candidata.
     """
     limit = PROPOSAL_RAG_TOP_N if top_n is None else top_n
     floor = PROPOSAL_RAG_MIN_SIMILARITY if min_similarity is None else min_similarity
@@ -1229,8 +1393,10 @@ def _select_citations(
     # PROPOSAL_SMALL_TEAM_MAX): un patron "alta" complejidad no puede ser
     # principal en un proyecto chico salvo que el usuario lo pida por nombre
     # (stance == "want") o lo mencione explicitamente en sus requerimientos.
-    small_scale = _small_scale_signal(explicit_text)
-    tight_mvp = _tight_mvp_constraint(explicit_text)
+    kind = _profile_kind(profile)
+    profile_small, profile_tight = _profile_scale(profile)
+    small_scale = profile_small or _small_scale_signal(explicit_text, kind)
+    tight_mvp = profile_tight or _tight_mvp_constraint(explicit_text, kind)
 
     def _scale_disqualified(key: Any) -> bool:
         # Esta es una prohibición, no una preferencia: con menos de cinco
@@ -1293,9 +1459,11 @@ def _select_citations(
 
     order_index = {key: position for position, (key, _doc) in enumerate(ordered)}
     eligible = [(key, doc) for key, doc in ordered if _eligible(key, doc)]
-    chosen = eligible[:limit]
-    for key, doc in eligible[limit:]:
-        if not _pinned(key, doc):
+    chosen = _diverse_selection(eligible, limit, _scale_disqualified)
+    chosen.sort(key=lambda item: order_index[item[0]])
+    chosen_keys = {key for key, _doc in chosen}
+    for key, doc in eligible:
+        if key in chosen_keys or not _pinned(key, doc):
             continue
         slot = next(
             (i for i in range(len(chosen) - 1, -1, -1) if not _pinned(*chosen[i])),
@@ -1303,7 +1471,9 @@ def _select_citations(
         )
         if slot is None:
             continue
+        chosen_keys.discard(chosen[slot][0])
         chosen[slot] = (key, doc)
+        chosen_keys.add(key)
     chosen.sort(key=lambda item: order_index[item[0]])
 
     citations: list[dict] = []
@@ -1315,8 +1485,13 @@ def _select_citations(
                 "similarity": doc.metadata.get("similarity"),
                 "snippet": (doc.page_content or "")[:240],
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
+                "fuentes": doc.metadata.get("fuentes") or [],
             }
         )
+        family = pattern_family(doc.metadata.get("pattern_name"))
+        if family:
+            citations[-1]["family"] = family["family"]
+            citations[-1]["level"] = family["level"]
         # Solo si NO es el principal: un patron descartado por escala que aun
         # asi queda primero (unico candidato) no puede presentarse "descartado".
         if len(citations) > 1 and _scale_disqualified(_key):
@@ -1339,7 +1514,22 @@ def _select_citations(
 # decisión", "## **Trade-offs y decisión**"): se tolera esa decoracion antes del
 # texto. Se compara sobre texto normalizado (sin acentos, en minusculas).
 _HEADING_DECOR = r"[*_`\d.)\s]*"
-_TRADEOFF_HEADING_TEXT = r"trade[\s-]?offs?\s*(?:y|&)\s*decision\w*"
+# Titulo de la seccion de trade-offs. El prompt pide "Trade-offs y decision",
+# pero los modelos lo reescriben ("Trade-offs", "Decision y trade-offs",
+# "Analisis de trade-offs", "Alternativas consideradas"...). Antes solo se
+# aceptaba la forma exacta y una propuesta completa se descartaba por el titulo
+# (finish_reason=stop, ~5700 caracteres, missing=['Trade-offs y decision']). Lo
+# que importa se sigue validando aparte: tabla con 3 opciones y 3 criterios y
+# punto de decision (_has_tradeoff_comparison / _has_decision_point).
+_TRADEOFF_HEADING_TEXT = (
+    r"(?:"
+    r"(?:(?:analisis|tabla|comparacion|evaluacion)\s+de\s+(?:los\s+)?)?"
+    r"(?:trade[\s-]?offs?|compensaciones|alternativas|opciones)"
+    r"(?:\s+consideradas?|\s+evaluadas?)?"
+    r"(?:\s*(?:y|&|,|/)\s*(?:la\s+)?decision\w*)?"
+    r"|decision\w*\s*(?:y|&|,|/)\s*(?:trade[\s-]?offs?|alternativas|opciones)"
+    r")\b"
+)
 
 _REQUIRED_HEADINGS = (
     ("Componentes", r"componentes?\b"),
@@ -1391,6 +1581,12 @@ def _missing_sections(markdown: str | None, source_count: int = 0) -> list[str]:
     missing: list[str] = []
     justification_start: int | None = None
     for label, pattern in _REQUIRED_HEADINGS:
+        if label == "Trade-offs y decisión":
+            # Misma regla que _tradeoff_section: despues de la justificacion
+            # (o un ``##`` si no la hay), no cualquier subtitulo "Opciones".
+            if _tradeoff_heading((markdown or "").splitlines()) is None:
+                missing.append(label)
+            continue
         match = re.search(
             r"^[ \t]*#{1,6}[ \t]*" + _HEADING_DECOR + pattern,
             normalized,
@@ -1438,19 +1634,50 @@ def _incomplete_proposal_message(
     )
 
 
+_JUSTIFICATION_HEADING_RE = re.compile(
+    r"^\s*#{1,6}\s+" + _HEADING_DECOR + r"justificacion\b"
+)
+
+
+def _tradeoff_heading(lines: list[str]) -> tuple[int, int] | None:
+    """``(indice, nivel)`` del encabezado de la seccion de trade-offs.
+
+    El titulo se acepta con variantes ("Alternativas consideradas", "Opciones
+    evaluadas"...), y esas palabras tambien pueden ser subtitulos de otra
+    seccion ("### Alternativas descartadas" dentro de Patrones, "## Opciones
+    de despliegue" en Componentes). Si se tomaba el PRIMER encabezado del
+    documento, la tabla se buscaba en esa subseccion y una propuesta valida se
+    descartaba. Por eso:
+      * se busca DESPUES del encabezado de la justificacion (la seccion
+        anterior en el formato obligatorio), igual que ``_missing_sections``;
+      * sin justificacion, solo cuenta un encabezado de nivel 2 (``##``).
+    """
+    normalized = [_normalize_text(line) for line in lines]
+    justification = next(
+        (i for i, line in enumerate(normalized) if _JUSTIFICATION_HEADING_RE.match(line)),
+        None,
+    )
+    start = 0 if justification is None else justification + 1
+    for index in range(start, len(normalized)):
+        match = _TRADEOFF_HEADING_RE.match(normalized[index])
+        if not match:
+            continue
+        level = len(match.group(1))
+        if justification is None and level != 2:
+            continue
+        return index, level
+    return None
+
+
 def _tradeoff_section(markdown: str | None) -> list[str] | None:
     """Lineas de ``## Trade-offs y decisión`` hasta el siguiente encabezado del mismo nivel o superior."""
     if not markdown:
         return None
     lines = markdown.splitlines()
-    start = level = None
-    for index, line in enumerate(lines):
-        match = _TRADEOFF_HEADING_RE.match(_normalize_text(line))
-        if match:
-            start, level = index, len(match.group(1))
-            break
-    if start is None:
+    heading = _tradeoff_heading(lines)
+    if heading is None:
         return None
+    start, level = heading
     section: list[str] = []
     for line in lines[start + 1 :]:
         heading = _HEADING_LEVEL_RE.match(line)
@@ -1884,6 +2111,15 @@ def _build_summary_query(
     return "\n".join(parts)
 
 
+_FAMILY_LABELS = {
+    "monolitico": "monolítico",
+    "distribuido": "distribuido",
+    "serverless": "serverless / servicios gestionados",
+    "datos": "procesamiento de datos",
+    "complemento": "táctica complementaria",
+}
+
+
 def _build_prompt(
     citations: list[dict],
     prior_content: str | None,
@@ -1892,8 +2128,12 @@ def _build_prompt(
     description: str | None = None,
     requirements_text: str | None = None,
     documents_text: str | None = None,
+    project_kind: str | None = None,
 ) -> str:
     """Compose the structured prompt that drives the LLM to produce the 5 sections."""
+    limits = scale_thresholds(project_kind)
+    team_max = int(limits["team_max"])
+    months_max = int(limits["months_max"])
     primary_citation = next(
         (citation for citation in citations if citation.get("source_role") == "primary"),
         citations[0] if citations else None,
@@ -1978,6 +2218,17 @@ def _build_prompt(
                 + (
                     f"\nAjuste al proyecto (análisis previo): {cite['llm_reason']}"
                     if cite.get("llm_reason")
+                    else ""
+                )
+                + (
+                    f"\nFamilia: {_FAMILY_LABELS.get(cite['family'], cite['family'])}"
+                    + (
+                        " (organiza el código por dentro; se combina con un estilo "
+                        "de despliegue, no lo reemplaza)"
+                        if cite.get("level") == "codigo"
+                        else ""
+                    )
+                    if cite.get("family")
                     else ""
                 )
             )
@@ -2112,45 +2363,20 @@ def _build_prompt(
         "- Extrae del resumen y de los documentos el presupuesto, el tamaño y "
         "capacidad del equipo, y el plazo de entrega. Trátalos como límites de "
         "diseño, no como notas informativas.\n"
-        "- PROPORCIONALIDAD: dimensiona la solución al proyecto, no al patrón. "
-        "Un proyecto sencillo (CRUD, pocos usuarios, MVP, prototipo o trabajo "
-        "académico, equipo pequeño o presupuesto bajo) se resuelve con un solo "
-        "despliegue, una sola base de datos y servicios gestionados o de capa "
-        "gratuita. Cada pieza que agregue costo u operación (broker de "
-        "mensajes, API Gateway propio, orquestador tipo Kubernetes, segunda "
-        "base de datos, caché distribuida, service mesh, CQRS, event sourcing, "
-        "observabilidad centralizada) SOLO se incluye si un requisito "
-        "explícito la exige (volumen, disponibilidad, integración). Si no "
-        "hay ese requisito, no la incluyas.\n"
+        # Reglas comunes con la guía del ADR (app/core/viability_rules.py).
+        f"{COMMON_VIABILITY_RULES}"
         "- Mantén Componentes y Tecnologías al mínimo necesario (como "
         "referencia, entre 3 y 6 componentes en un proyecto sencillo; no "
         "más de 6) y prefiere tecnologías open source, conocidas por el "
         "equipo y de bajo costo de operación.\n"
-        "- Tecnologías: como máximo 6 en un proyecto sencillo (lenguaje, "
-        "framework, base de datos y solo lo que un requisito exija). NO listes "
-        "como componente ni tecnología CI/CD, backups, servidor ASGI/WSGI, "
-        "librería de hash, contenedores ni herramientas de despliegue salvo que "
-        "un requisito los pida.\n"
         "- Patrones de complejidad alta (CQRS, event sourcing, orientada a "
         "eventos, microservicios) no son el patrón principal de un proyecto "
         "sencillo salvo que el usuario lo pida; usa capas o monolito modular.\n"
-        "- No agregues capas que el framework ya trae (por ejemplo "
-        "Repository/DAO sobre un ORM, un API Gateway propio dentro de un "
-        "monolito, GraphQL además de REST). Para tareas programadas o "
-        "recordatorios usa el planificador del framework o un cron; una cola "
-        "con broker (Celery + Redis, RabbitMQ...) solo si un requisito exige "
-        "reintentos, volumen alto o procesamiento pesado.\n"
-        "- No inventes métricas (latencias, usuarios concurrentes, "
-        "disponibilidad, SLAs) que no estén en los requerimientos.\n"
         "- Si el patrón principal recuperado es más pesado de lo que el "
         "proyecto necesita, preséntalo igualmente como principal pero aplícalo "
         "en su versión mínima viable. Lo que dejas fuera por costo o tamaño va "
         "en una línea de 'Riesgo o costo' como evolución futura, no en "
         "Componentes.\n"
-        "- Con presupuesto, equipo o plazo sin definir, no inventes cifras. "
-        "Asume presupuesto y equipo pequeños, declara la incertidumbre como "
-        "riesgo o supuesto en la justificación y elige la opción más "
-        "conservadora y viable.\n"
         "- Excepción: si el usuario pide expresamente una tecnología o "
         "componente (en los requerimientos o en los cambios solicitados), "
         "respétalo y señala su costo en 'Riesgo o costo'.\n"
@@ -2184,8 +2410,8 @@ def _build_prompt(
         "y en la recomendación; no uses escenarios ideales de empresas grandes. "
         "Explica cómo la opción recomendada reduce el riesgo de entrega en el "
         "plazo real y conserva seguridad y disponibilidad base.\n"
-        "- Si los requisitos indican equipo de hasta 4 personas Y plazo de hasta "
-        "3 meses, queda PROHIBIDO recomendar microservicios, service mesh, "
+        f"- Si los requisitos indican equipo de hasta {team_max} personas Y plazo de hasta "
+        f"{months_max} meses, queda PROHIBIDO recomendar microservicios, service mesh, "
         "múltiples bases por servicio, Saga o arquitectura distribuida orientada "
         "a eventos. Recomienda monolito modular o una arquitectura limpia/hexagonal "
         "en un despliegue y una base de datos. Las opciones prohibidas solo pueden "
@@ -2200,6 +2426,12 @@ def _build_prompt(
         "de datos y sobrecarga de mantenimiento. No inventes horas, porcentajes o "
         "SLAs si los requisitos no los proporcionan.\n"
         f"{table_rows_rule}"
+        "- Las filas son alternativas REALES: cada [n] trae su familia "
+        "(monolítico, distribuido, serverless, datos...). Compara familias "
+        "distintas como opciones que compiten; un patrón que solo organiza el "
+        "código por dentro (capas, MVC, hexagonal) no compite con un estilo de "
+        "despliegue: si aparece, dilo en 'Ajuste a requisitos' (p. ej. 'se "
+        "puede combinar con la opción recomendada').\n"
         "- Ventajas NO puede contener adjetivos aislados como 'simple', 'flexible' "
         "o 'escalable'. Para cada patrón, transforma el trade-off de RAG en al "
         "menos dos efectos técnicos concretos: mecanismo (por ejemplo límites de "
@@ -2218,7 +2450,14 @@ def _build_prompt(
         "\nFormato OBLIGATORIO (responde exactamente con estas cinco secciones, "
         "en este orden, con esos encabezados):\n\n"
         "## Componentes\n- ...\n\n"
-        "## Tecnologias\n- ...\n\n"
+        "## Tecnologias\n"
+        "Incluye UNA tabla Markdown con una fila por tecnología elegida y las "
+        "columnas `Tecnología`, `Justificación` y `Requisito que lo motiva`. "
+        "La justificación debe explicar el rol técnico y el requisito debe ser "
+        "un requisito concreto del proyecto, no una ventaja genérica.\n"
+        "| Tecnología | Justificación | Requisito que lo motiva |\n"
+        "| --- | --- | --- |\n"
+        "| ... | ... | ... |\n\n"
         "## Patrones\n- ...\n\n"
         "## Justificación del patrón principal\n"
         "- Motivo de elección: explica por qué el patrón principal responde a "

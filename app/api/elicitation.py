@@ -211,6 +211,30 @@ async def send_elicitation_message(
             resumen = elicitation_agent.generate_summary(
                 model, history, project.description or "", callbacks=callbacks, **doc_kwargs
             )
+            # Checklist determinista sobre el resumen: si al resumen le falta
+            # una categoría obligatoria (usuarios, funcionalidades, calidad
+            # dicha por el usuario, presupuesto/equipo/plazo), no se cierra:
+            # se hace esa pregunta. No aplica al llegar al máximo de preguntas.
+            gaps = (
+                elicitation_agent.summary_gaps(
+                    resumen, history, project.description or "", documents_text or None
+                )
+                if len(history) < elicitation_agent.MAX_QUESTIONS
+                else []
+            )
+            if gaps:
+                category, question = gaps[0]
+                logger.info(
+                    "Elicitación project_id=%s: el resumen no cubre %s; se pregunta antes de cerrar",
+                    project_id,
+                    category,
+                )
+                decision = elicitation_agent.ElicitationDecision(
+                    done=False,
+                    question=question,
+                    reason=f"El resumen no cubre la categoría obligatoria: {category}.",
+                )
+                resumen = None
         else:
             resumen = None
     except elicitation_agent.ElicitationLLMError as e:

@@ -81,6 +81,13 @@ jobs:
         # para sembrar; se activará cuando el CI cargue las migraciones.
         run: python -m pytest -q tests --ignore=tests/test_seed_idempotent.py
 
+      - name: Rúbrica golden (propuesta + ADR)
+        # La rúbrica ya se verifica dentro de pytest (tests/eval); este paso
+        # imprime la tabla por caso para leerla en el log del PR cuando cambian
+        # los prompts. Para evaluarla contra un LLM real:
+        #   python scripts/eval_adr_golden.py --live
+        run: python scripts/eval_adr_golden.py
+
   frontend:
     name: Frontend (vitest + build)
     runs-on: ubuntu-latest

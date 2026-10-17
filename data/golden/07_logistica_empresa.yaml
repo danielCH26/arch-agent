@@ -1,0 +1,129 @@
+id: logistica-empresa
+name: Control de flota
+kind: empresa grande
+description: Plataforma de logística para una empresa con 400 camiones; los equipos quieren microservicios por dominio.
+profile:
+  resumen: Seguimiento de la flota, despachos e integración con el ERP.
+  dominio: logistica
+  tipo_sistema: plataforma web y API
+  tipo_proyecto: empresarial
+  equipo_personas: 25
+  plazo_meses: 12
+  presupuesto_usd: 500000
+resumen:
+  problema: Los despachos y el seguimiento de la flota están en tres sistemas que no se hablan.
+  usuarios: Despachadores, conductores y clientes corporativos.
+  funcionalidades:
+    - Seguimiento de camiones en tiempo real
+    - Gestionar despachos
+  restricciones:
+    - Presupuesto de 500000 USD
+    - Equipo de 25 personas en cinco equipos
+    - Plazo de 12 meses
+    - Integración con SAP
+  calidad:
+    - Disponibilidad de 99.9%
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Los despachos y el seguimiento de la flota están en tres sistemas que no se hablan.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Despachadores, conductores y clientes corporativos.
+  - pregunta: ¿El sistema necesita mostrar ubicaciones en un mapa o buscar por cercanía?
+    respuesta: Sí, el GPS de cada camión en un mapa.
+  - pregunta: ¿El sistema debe conectarse con otros sistemas o servicios externos?
+    respuesta: Con SAP para facturación.
+  - pregunta: ¿Qué requerimiento de calidad es el más importante para este sistema (rendimiento, seguridad o disponibilidad)?
+    respuesta: Disponibilidad de 99.9%, la operación es 24/7.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 500000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 25 personas en cinco equipos.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 12 meses.
+candidates:
+  - {name: "Microservicios", similarity: 0.88}
+  - {name: "Arquitectura orientada a eventos (Event-Driven)", similarity: 0.86}
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.84}
+  - {name: "Saga (transacciones distribuidas)", similarity: 0.83}
+  - {name: "API Gateway + Backend for Frontend (BFF)", similarity: 0.82}
+recorded:
+  proposal: |
+    ## Componentes
+    - Servicio de flota
+    - Servicio de despachos
+    - Servicio de integración con SAP
+    - API Gateway
+    - Broker de eventos Kafka
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Java | Experiencia de los equipos | Equipo de 25 personas |
+    | Spring Boot | Servicios por dominio | Cinco equipos |
+    | PostgreSQL | Base por servicio | Despachos |
+    | Kafka | Eventos de posición GPS | Seguimiento en tiempo real |
+    | Kubernetes | Despliegue por equipo | Disponibilidad de 99.9% |
+
+    ## Patrones
+    - Patrón principal: Microservicios
+
+    ## Justificación del patrón principal
+    - Motivo de elección: cinco equipos que despliegan por separado.
+    - Reflejo en la arquitectura: servicio de flota, despachos e integración.
+    - Beneficio esperado: equipos autónomos.
+    - Riesgo o costo: operación distribuida y consistencia eventual.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | Microservicios | Equipos autónomos | Operación | Alta | Alto | [1] |
+    | Monolito modular | Un despliegue | Cinco equipos en un repo | Baja | Medio | [2] |
+    | API Gateway + BFF | Una API por canal | Otra pieza | Media | Medio | [3] |
+    - Recomendación: Microservicios
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Servicio de flota | Posición de camiones | Broker de eventos Kafka |
+    | Servicio de despachos | Asignar viajes | Servicio de flota |
+    | Servicio de integración con SAP | Facturación | Servicio de despachos |
+    | API Gateway | Entrada única | Todos los servicios |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Servicios | Java / Spring Boot | Experiencia |
+    | Datos | PostgreSQL | Base por servicio |
+    | Eventos | Kafka | Posiciones GPS |
+    | Plataforma | Kubernetes | Despliegue por equipo |
+
+    ### 7.3 Consecuencias
+    **Positivas:** equipos autónomos. **Negativas / costos asumidos:** operación distribuida.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | No llegar al 99.9% | alto | Réplicas por servicio |
+
+    ### 7.5 Plan de implementación
+    1. Flota. 2. Despachos. 3. SAP.
+
+    ### 7.6 Primer sprint
+    - Contrato de eventos de posición
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    services/
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Quién opera el clúster?
+expect:
+  concerns: [ubicacion, integraciones, respaldos]
+  checks:
+    respeta_restricciones: true    # equipo grande: los microservicios están permitidos
+    cifras_con_origen: true        # 99.9% viene de los requerimientos
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

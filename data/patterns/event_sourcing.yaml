@@ -1,6 +1,8 @@
 pattern_name: "Event sourcing"
 category: "Patrón de datos"
 complexity: "alta"
+family: "complemento"
+level: "complemento"
 description: >
   Persiste eventos inmutables como fuente de verdad y reconstruye el estado
   actual reproduciendo esos eventos.

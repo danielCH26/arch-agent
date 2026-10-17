@@ -202,5 +202,21 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
 
 function Citations({ citations }: { citations: ProposalCitation[] }) {
   if (!citations.length) return <p className="mt-3 text-xs italic text-gray-500">Sin patrones recuperados de la base vectorial: propuesta basada en el conocimiento general del modelo.</p>
-  return <div className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-600"><p className="font-semibold">Fuentes RAG para los trade-offs:</p>{/* Sin numeración propia: el [n] ya es el número que cita la tabla. */}<ul className="mt-1 list-none space-y-1 pl-0">{citations.map((citation, index) => <li key={`${citation.pattern_id ?? 'pattern'}-${index}`} title={citation.snippet ?? undefined}>[{index + 1}] {citation.pattern_name ?? `Patrón #${citation.pattern_id ?? index + 1}`}{citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}</li>)}</ul></div>
+  return <div className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-600"><p className="font-semibold">Fuentes RAG para los trade-offs:</p>{/* Sin numeración propia: el [n] ya es el número que cita la tabla. */}<ul className="mt-1 list-none space-y-1 pl-0">{citations.map((citation, index) => (
+        <li key={`${citation.pattern_id ?? 'pattern'}-${index}`}>
+          <span title={citation.snippet ?? undefined}>[{index + 1}] {citation.pattern_name ?? `Patrón #${citation.pattern_id ?? index + 1}`}{citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}</span>
+          {/* Fuentes curadas del patrón (libros, papers, docs oficiales): respaldo verificable de la cita. */}
+          {(citation.fuentes?.length ?? 0) > 0 && (
+            <ul className="ml-4 mt-0.5 list-disc space-y-0.5">
+              {citation.fuentes!.map((source) => (
+                <li key={`${source.titulo}-${source.url}`}>
+                  <a className="text-blue-700 underline hover:text-blue-900 dark:text-sky-300" href={source.url} target="_blank" rel="noopener noreferrer">
+                    {source.titulo}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}</ul></div>
 }

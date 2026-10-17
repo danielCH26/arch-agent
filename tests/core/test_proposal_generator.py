@@ -297,6 +297,21 @@ def _pat(name, pid, similarity, complexity=None, chunk_type="summary"):
     )
 
 
+def test_citations_preserve_curated_sources_for_the_ui():
+    from app.core.proposal_generator import _select_citations
+
+    source = {
+        "titulo": "Hexagonal architecture (Alistair Cockburn)",
+        "url": "https://alistair.cockburn.us/hexagonal-architecture/",
+    }
+    doc = _pat("Arquitectura hexagonal", 7, 0.91)
+    doc.metadata["fuentes"] = [source]
+
+    citations = _select_citations([doc], top_n=1, min_similarity=0.0)
+
+    assert citations[0]["fuentes"] == [source]
+
+
 def test_complexity_penalty_prefers_simple_pattern_on_close_similarity():
     from unittest.mock import patch
 
@@ -583,6 +598,15 @@ def test_prompt_caps_technologies_and_blocks_heavy_primary_patterns():
     assert "Tecnologías: como máximo 6" in prompt
     assert "CI/CD, backups" in prompt
     assert "no son el patrón principal de un proyecto sencillo" in prompt
+
+
+def test_prompt_requires_technology_justification_and_motivating_requirement():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+
+    assert "| Tecnología | Justificación | Requisito que lo motiva |" in prompt
+    assert "no una ventaja genérica" in prompt
 
 
 def test_tight_mvp_prohibits_distributed_patterns_as_the_primary_choice():
@@ -1240,6 +1264,44 @@ def test_missing_sections_tolerates_decorated_tradeoff_headings():
     ):
         proposal = _with_tradeoff_heading(heading)
         assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_missing_sections_tolerates_reworded_tradeoff_headings():
+    # Caso real (Groq gpt-oss-20b): propuesta completa (finish_reason=stop,
+    # ~5700 caracteres) descartada solo porque el modelo titulo la seccion de
+    # otra forma. El contenido (tabla + punto de decision) se sigue exigiendo.
+    from app.core.proposal_generator import _missing_sections
+
+    for heading in (
+        "## Trade-offs",
+        "## Decisión y trade-offs",
+        "## Análisis de trade-offs",
+        "## Trade-offs y la decisión",
+        "## Alternativas consideradas",
+        "## Opciones evaluadas y decisión",
+        "## Tradeoffs & decisión",
+    ):
+        proposal = _with_tradeoff_heading(heading)
+        assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_reworded_tradeoff_heading_still_requires_the_table():
+    from app.core.proposal_generator import _missing_sections
+
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    proposal = head + "## Trade-offs\nNo hay comparación todavía.\n"
+
+    assert _missing_sections(proposal, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_unrelated_headings_are_not_taken_as_the_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections
+
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    for heading in ("## Decisión final", "## Riesgos", "## Conclusiones"):
+        assert "Trade-offs y decisión" in _missing_sections(head + heading + "\nx\n"), heading
 
 
 def test_missing_sections_tolerates_numbered_or_bold_headings_for_every_section():
@@ -2363,3 +2425,109 @@ def test_saving_timeout_also_marks_the_cancel_event(monkeypatch):
     assert events[-1][0] == "error"
     assert seen["event"].is_set()
 
+
+
+# --- Revision del PR: encabezado de trade-offs despues de la justificacion ---
+
+
+def test_a_subheading_named_options_before_the_justification_is_not_the_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections, _tradeoff_section
+
+    proposal = _FULL_PROPOSAL.replace(
+        "## Patrones\n",
+        "## Patrones\n### Alternativas descartadas\n- Microservicios: muy caro\n\n"
+        "## Opciones de despliegue\n- Un VPS\n\n",
+    )
+    section = _tradeoff_section(proposal)
+    assert section is not None
+    assert any("| Capas |" in line for line in section)
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_without_justification_only_a_level_two_heading_counts():
+    from app.core.proposal_generator import _tradeoff_section
+
+    body = "## Componentes\n- API\n\n### Opciones\n- nada\n"
+    assert _tradeoff_section(body) is None
+    assert _tradeoff_section(body + "\n## Trade-offs\n| a | b |\n") is not None
+
+
+# --- Diversidad de familias en las filas de la tabla --------------------------
+
+
+def test_tradeoff_rows_prefer_alternatives_from_other_families():
+    from app.core.proposal_generator import _select_citations
+
+    # Caso real: capas, MVC y monolito modular con similitud 0.84-0.85.
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.85, "baja"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.85, "baja"),
+        _pat("MVC / MVVM (Modelo-Vista-Controlador)", 3, 0.84, "baja"),
+        _pat("Serverless (Function-as-a-Service)", 4, 0.80, "media"),
+        _pat("Microservicios", 5, 0.79, "alta"),
+    ]
+    citations = _select_citations(docs, top_n=3, min_similarity=0.0)
+    names = _names(citations)
+
+    assert names[0] == "Monolito modular (Modular Monolith)"
+    assert "Serverless (Function-as-a-Service)" in names
+    assert "Microservicios" in names
+    assert {c["family"] for c in citations} == {"monolitico", "serverless", "distribuido"}
+
+
+def test_a_viable_alternative_beats_a_scale_discarded_one_of_a_new_family():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.85, "baja"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.84, "baja"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.80, "media"),
+        _pat("Microservicios", 4, 0.99, "alta"),
+        _pat("Arquitectura orientada a eventos (Event-Driven)", 5, 0.98, "alta"),
+    ]
+    citations = _select_citations(docs, top_n=3, min_similarity=0.0, explicit_text=_TIGHT)
+    names = _names(citations)
+
+    assert names[0] == "Monolito modular (Modular Monolith)"
+    assert "Serverless (Function-as-a-Service)" in names
+    # Una sola alternativa distribuida (descartada por escala), no las dos.
+    distributed = [c for c in citations if c.get("family") == "distribuido"]
+    assert len(distributed) == 1
+    assert distributed[0]["scale_disqualified"] is True
+
+
+def test_prompt_shows_the_family_of_each_row():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Monolito modular", "source_role": "primary", "family": "monolitico", "level": "despliegue"},
+            {"pattern_name": "Capas", "source_role": "tradeoff_option", "family": "monolitico", "level": "codigo"},
+            {"pattern_name": "Serverless", "source_role": "tradeoff_option", "family": "serverless", "level": "despliegue"},
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+    )
+    assert "Familia: monolítico" in prompt
+    assert "Familia: serverless" in prompt
+    assert "se combina con un estilo de despliegue, no lo reemplaza" in prompt
+    assert "alternativas REALES" in prompt
+
+
+def test_prompt_states_the_thresholds_of_the_project_kind():
+    from app.core.proposal_generator import _build_prompt
+
+    academic = _build_prompt([], None, None, "P", project_kind="academico")
+    enterprise = _build_prompt([], None, None, "P", project_kind="empresarial")
+    assert "equipo de hasta 4 personas Y plazo de hasta 3 meses" in academic
+    assert "equipo de hasta 2 personas Y plazo de hasta 2 meses" in enterprise
+
+
+def test_proposal_and_adr_share_the_viability_rules():
+    from app.core.adr_generator import ADR_SYSTEM_PROMPT
+    from app.core.proposal_generator import _build_prompt
+    from app.core.viability_rules import COMMON_VIABILITY_RULES
+
+    assert COMMON_VIABILITY_RULES in _build_prompt([], None, None, "P")
+    assert COMMON_VIABILITY_RULES in ADR_SYSTEM_PROMPT

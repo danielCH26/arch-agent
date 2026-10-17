@@ -1,6 +1,11 @@
 import { authStore } from '../stores/authStore'
 import { ApiError, apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, safeFetch, streamErrorMessage } from './client'
 
+export interface PatternSource {
+  titulo: string
+  url: string
+}
+
 export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
@@ -12,6 +17,7 @@ export interface ProposalCitation {
     ventajas?: string[]
     desventajas?: string[]
   }
+  fuentes?: PatternSource[]
 }
 
 export type ProposalLifecycle = 'proposed' | 'approved' | 'rejected'

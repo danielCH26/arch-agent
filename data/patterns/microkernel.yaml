@@ -1,6 +1,8 @@
 pattern_name: "Microkernel (arquitectura de plugins)"
 category: "Monolítica"
 complexity: "media"
+family: "monolitico"
+level: "despliegue"
 description: >
   Mantiene un núcleo mínimo con las funciones esenciales y delega las
   capacidades variables o específicas en plugins que se conectan al núcleo

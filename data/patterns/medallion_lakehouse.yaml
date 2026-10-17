@@ -1,6 +1,8 @@
 pattern_name: "Data Lakehouse con capas Medallion (bronce, plata, oro)"
 category: "Flujo de datos"
 complexity: "media"
+family: "datos"
+level: "despliegue"
 description: >
   Organiza los datos analíticos en capas de calidad creciente sobre un mismo
   almacenamiento: bronce con datos crudos, plata con datos limpios y

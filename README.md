@@ -35,6 +35,9 @@ docker compose up -d
 # El backend aplica schema.sql y las migraciones pendientes al arrancar
 # (ver `command` en docker-compose.yml); si cambias migrations/, reconstruye:
 #   docker compose up -d --build backend
+# Si la migración cambia datos curados de patrones (por ejemplo 0018/0019),
+# vuelve a indexarlos inmediatamente después de migrar:
+#   docker compose exec -T backend python scripts/seed_patterns.py
 
 # 3. (Opcional) Setup automatizado: genera JWT y ENCRYPTION_KEY, espera al backend
 bash scripts/setup-local.sh

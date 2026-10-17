@@ -313,6 +313,25 @@ describe('ProposalCard', () => {
     expect(document.querySelector('ol')).toBeNull()
   })
 
+  it('muestra las fuentes curadas del patrón como links externos seguros', async () => {
+    await renderWithProposal(proposalOut({
+      citations: [{
+        pattern_id: 7,
+        pattern_name: 'Hexagonal',
+        similarity: 0.91,
+        fuentes: [{
+          titulo: 'Hexagonal architecture (Alistair Cockburn)',
+          url: 'https://alistair.cockburn.us/hexagonal-architecture/',
+        }],
+      }],
+    }))
+
+    const link = screen.getByRole('link', { name: /Alistair Cockburn/ })
+    expect(link).toHaveAttribute('href', 'https://alistair.cockburn.us/hexagonal-architecture/')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
   it('renderiza la tabla de trade-offs con <br> en las celdas sin partir las filas', async () => {
     await renderWithProposal(proposalOut({
       content:

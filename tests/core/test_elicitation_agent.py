@@ -63,6 +63,12 @@ _RESPUESTA_VIABILIDAD = (
     "Presupuesto de 20000 USD, equipo de 3 desarrolladores y plazo de 3 meses."
 )
 HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
+# Documentos que cubren la checklist completa (usuarios, funcionalidades,
+# calidad y los tres factores de viabilidad): con ellos el modelo puede cerrar.
+_DOCS_COMPLETOS = (
+    "Usuarios: operadores de bodega. Deben poder registrar inventario. "
+    "Seguridad básica. Presupuesto definido. Equipo disponible. Plazo acordado."
+)
 HISTORY_5_VIABLE = HISTORY_1_VIABLE + HISTORY_5[1:]
 
 
@@ -526,7 +532,7 @@ class TestNextStepHardRules:
         decision = next_step(
             model,
             history=HISTORY_5,
-            documents_context="Presupuesto definido. Equipo disponible. Plazo acordado.",
+            documents_context=_DOCS_COMPLETOS,
         )
         assert decision.done is True
 
@@ -535,7 +541,7 @@ class TestNextStepHardRules:
         decision = next_step(
             model,
             history=HISTORY_10,
-            documents_context="Presupuesto definido. Equipo disponible. Plazo acordado.",
+            documents_context=_DOCS_COMPLETOS,
         )
         assert decision.done is True
 
@@ -559,6 +565,7 @@ class TestNextStepHardRules:
             {"pregunta": "presupuesto", "respuesta": "Presupuesto máximo de 20 millones COP."},
             {"pregunta": "equipo", "respuesta": "Equipo de 3 desarrolladores senior."},
             {"pregunta": "plazo", "respuesta": "MVP en 12 semanas."},
+            {"pregunta": "calidad", "respuesta": "Que sea seguro y rápido."},
         ]
         model = _FakeModel(['{"done": true, "question": null, "reason": "ya"}'])
 
@@ -573,7 +580,7 @@ class TestNextStepParsingEdgeCases:
         decision = next_step(
             model,
             history=HISTORY_5,
-            documents_context="Presupuesto definido. Equipo disponible. Plazo acordado.",
+            documents_context=_DOCS_COMPLETOS,
         )
         assert decision.question == "¿otra?"
 
@@ -584,7 +591,7 @@ class TestNextStepParsingEdgeCases:
         decision = next_step(
             model,
             history=HISTORY_5,
-            documents_context="Presupuesto definido. Equipo disponible. Plazo acordado.",
+            documents_context=_DOCS_COMPLETOS,
         )
         assert decision.done is True
 
@@ -617,6 +624,25 @@ class TestGenerateSummary:
         assert set(summary.keys()) == {
             "problema", "usuarios", "funcionalidades", "restricciones", "calidad"
         }
+
+    def test_quality_origin_is_kept_apart_from_the_attribute_list(self):
+        model = _FakeModel(
+            [
+                '{"problema": "x", "usuarios": "y", "funcionalidades": ["a"], '
+                '"restricciones": [], "calidad": ['
+                '{"atributo": "Seguridad", "origen": "dicho"}, '
+                '{"atributo": "Disponibilidad", "origen": "propuesto"}]}'
+            ]
+        )
+        summary = generate_summary(model, history=HISTORY_5)
+        assert summary["calidad"] == ["Seguridad", "Disponibilidad"]
+        assert summary["calidad_origen"] == {
+            "Seguridad": "dicho",
+            "Disponibilidad": "propuesto",
+        }
+
+    def test_summary_prompt_asks_for_the_origin_of_each_quality_attribute(self):
+        assert '"origen": "dicho" | "propuesto"' in elicitation_agent.SUMMARY_SYSTEM_PROMPT
 
 
 # --- Verificación de viabilidad (review #5 y #6) ---------------------------
@@ -762,3 +788,108 @@ class TestViabilityRereview:
     def test_own_llm_team_question_answered_with_headcount_is_not_asked_again(self):
         history = [{"pregunta": "¿Cuántos devs son?", "respuesta": "somos 3"}]
         assert "equipo" not in _missing(history)
+
+
+# --- Checklist de cobertura y preocupaciones del dominio -------------------
+
+from app.core.elicitation_agent import (  # noqa: E402
+    missing_coverage,
+    pending_domain_questions,
+    summary_gaps,
+)
+
+_VIABLE_ANSWERS = [
+    {"pregunta": "presupuesto", "respuesta": "Presupuesto de 20000 USD."},
+    {"pregunta": "equipo", "respuesta": "Equipo de 3 desarrolladores."},
+    {"pregunta": "plazo", "respuesta": "MVP en 3 meses."},
+]
+
+
+class TestCoverageChecklist:
+    def test_the_llm_cannot_close_without_asking_about_quality(self):
+        # Caso real (Anexo A del ADR de mascotas): 10 preguntas, ninguna de
+        # calidad, y el agente cerró igual.
+        history = [
+            {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Vecinos del barrio."},
+            {"pregunta": "¿Qué debe hacer?", "respuesta": "Registrar avisos de mascotas."},
+            *_VIABLE_ANSWERS,
+        ]
+        model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])
+
+        decision = next_step(model, history=history)
+
+        assert decision.done is False
+        assert "calidad" in decision.reason
+        assert "rendimiento" in (decision.question or "")
+        assert not _es_pregunta_compuesta(decision.question)
+
+    def test_answering_the_quality_question_closes_the_category(self):
+        question = missing_coverage([{"pregunta": "p", "respuesta": "usuarios"}])[-1][1]
+        history = [{"pregunta": question, "respuesta": "No lo tenemos claro"}]
+        assert "calidad" not in [name for name, _ in missing_coverage(history)]
+
+    def test_questions_alone_do_not_cover_a_category(self):
+        history = [{"pregunta": "¿Qué tan seguro debe ser?", "respuesta": ""}]
+        assert "calidad" in [name for name, _ in missing_coverage(history)]
+
+    def test_domain_concern_is_asked_before_closing(self):
+        history = [
+            {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Dueños de mascotas perdidas."},
+            {"pregunta": "¿Qué debe hacer?", "respuesta": "Publicar avisos."},
+            {"pregunta": "calidad", "respuesta": "Que sea rápido."},
+            *_VIABLE_ANSWERS,
+        ]
+        model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])
+
+        decision = next_step(model, history=history)
+
+        assert decision.done is False
+        assert "dominio" in decision.reason
+        assert "mapa" in (decision.question or "")
+
+    def test_domain_questions_stop_after_the_limit(self):
+        from app.core.domain_concerns import DOMAIN_CONCERNS
+
+        base = [{"pregunta": "p", "respuesta": "Mascotas perdidas en el barrio"}]
+        assert len(pending_domain_questions(base)) >= 2  # ubicación y archivos
+        asked = [
+            {"pregunta": concern.question, "respuesta": "no"}
+            for concern in DOMAIN_CONCERNS[: elicitation_agent.MAX_DOMAIN_QUESTIONS]
+        ]
+        assert pending_domain_questions(base + asked) == []
+
+    def test_backups_are_not_asked_during_elicitation(self):
+        keys = [key for key, _ in pending_domain_questions([{"pregunta": "p", "respuesta": "Un CRUD simple"}])]
+        assert "respaldos" not in keys
+
+
+class TestSummaryGaps:
+    def _complete(self, **overrides):
+        summary = {
+            "problema": "x",
+            "usuarios": "Operadores",
+            "funcionalidades": ["Registrar inventario"],
+            "restricciones": ["Presupuesto de 20000 USD", "Equipo de 3 personas", "Plazo de 3 meses"],
+            "calidad": ["Seguridad"],
+        }
+        summary.update(overrides)
+        return summary
+
+    def test_complete_summary_has_no_gaps(self):
+        assert summary_gaps(self._complete(), []) == []
+
+    def test_empty_quality_is_a_gap(self):
+        assert [name for name, _ in summary_gaps(self._complete(calidad=[]), [])] == ["calidad"]
+
+    def test_only_proposed_quality_is_a_gap(self):
+        summary = self._complete(calidad_origen={"Seguridad": "propuesto"})
+        assert [name for name, _ in summary_gaps(summary, [])] == ["calidad"]
+
+    def test_missing_budget_in_the_summary_is_a_gap(self):
+        summary = self._complete(restricciones=["Equipo de 3 personas", "Plazo de 3 meses"])
+        assert [name for name, _ in summary_gaps(summary, [])] == ["presupuesto"]
+
+    def test_a_category_already_asked_is_not_asked_again(self):
+        question = summary_gaps(self._complete(calidad=[]), [])[0][1]
+        history = [{"pregunta": question, "respuesta": "no sé"}]
+        assert summary_gaps(self._complete(calidad=[]), history) == []

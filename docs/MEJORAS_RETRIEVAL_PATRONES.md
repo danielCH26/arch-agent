@@ -46,3 +46,6 @@ Solo si el candidato mejora claramente top-1/top-3, migra: cambia `vector(384)` 
 Los 24 casos se redactaron junto con los `example_scenarios`, así que comparten
 vocabulario y la métrica sale inflada. Sirve para comparar versiones; para una
 nota realista agrega 5–10 casos con el estilo del proyecto del profe.
+
+Para evaluar el resultado final (tabla de trade-offs y ADR) y no solo el
+retrieval, ver [EVALUACION_GOLDEN.md](EVALUACION_GOLDEN.md).

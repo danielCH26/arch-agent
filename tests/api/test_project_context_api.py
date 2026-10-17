@@ -148,7 +148,15 @@ class TestElicitationReceivesDocuments:
         mock_build.return_value = MagicMock()
         mock_docs.return_value = ("### Documento: acta.md\nplazo de 8 meses", ["acta.md"])
         mock_next.return_value = elicitation_agent.ElicitationDecision(True, None, "ok")
-        mock_summary.return_value = {"problema": "x"}
+        # Resumen completo: si le faltara una categoría obligatoria el
+        # endpoint no cerraría (checklist de summary_gaps).
+        mock_summary.return_value = {
+            "problema": "x",
+            "usuarios": "Recepcionistas",
+            "funcionalidades": ["Agendar citas"],
+            "restricciones": ["Presupuesto de 5000 USD", "Equipo de 3 personas", "Plazo de 8 meses"],
+            "calidad": ["Seguridad de los datos"],
+        }
 
         result = run(send_elicitation_message(
             project_id=1, body=ElicitationMessageIn(answer="respuesta"), current_user=CURRENT_USER,

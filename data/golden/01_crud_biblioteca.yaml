@@ -1,0 +1,122 @@
+id: crud-biblioteca
+name: Préstamos de la biblioteca
+kind: CRUD pequeño
+description: Sistema web para registrar los préstamos de libros de la biblioteca de la facultad.
+profile:
+  resumen: Registro de préstamos y devoluciones de libros de una biblioteca universitaria.
+  dominio: educacion
+  tipo_sistema: aplicación web
+  tipo_proyecto: academico
+  equipo_personas: 3
+  plazo_meses: 3
+  presupuesto_usd: 2000
+resumen:
+  problema: Los préstamos se anotan en una hoja de cálculo y se pierden registros.
+  usuarios: Bibliotecarios y estudiantes de la facultad.
+  funcionalidades:
+    - Registrar préstamos y devoluciones
+    - Consultar el catálogo de libros
+  restricciones:
+    - Presupuesto de 2000 USD
+    - Equipo de 3 estudiantes
+    - Plazo de 3 meses
+  calidad:
+    - Fácil de usar para los bibliotecarios
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Los préstamos se anotan en una hoja de cálculo y se pierden registros.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Los bibliotecarios y los estudiantes que consultan el catálogo.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: Unos 2000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: Somos 3 estudiantes.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 3 meses, un semestre.
+candidates:
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.86}
+  - {name: "MVC / MVVM (Modelo-Vista-Controlador)", similarity: 0.85}
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.85}
+  - {name: "Microservicios", similarity: 0.82}
+  - {name: "Serverless (Function-as-a-Service)", similarity: 0.80}
+recorded:
+  mermaid: |
+    flowchart TD
+      UI[Capa de presentación] --> BL[Capa de negocio]
+      BL --> DA[Capa de datos]
+      DA --> DB[(PostgreSQL)]
+  proposal: |
+    ## Componentes
+    - Capa de presentación: plantillas de Django
+    - Capa de negocio: préstamos y devoluciones
+    - Capa de datos: ORM de Django sobre PostgreSQL
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Python | Lenguaje que el equipo conoce | Equipo de 3 estudiantes |
+    | Django | Trae ORM, admin y plantillas | Plazo de 3 meses |
+    | PostgreSQL | Base relacional gratuita | Presupuesto de 2000 USD |
+
+    ## Patrones
+    - Patrón principal: Arquitectura en capas (Layered)
+
+    ## Justificación del patrón principal
+    - Motivo de elección: es un CRUD con alcance definido.
+    - Reflejo en la arquitectura: presentación, negocio y datos.
+    - Beneficio esperado: el equipo entrega rápido.
+    - Riesgo o costo: escala como una sola unidad; se dejó fuera la caché.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | Capas | Modelo conocido | Despliegue único | Baja | Alto | [1] |
+    | Serverless | Pago por uso | Arranques en frío | Media | Medio | [2] |
+    | Microservicios | Escala por servicio | Operación distribuida | Alta | Bajo, descartada por equipo y plazo | [3] |
+    - Recomendación: Arquitectura en capas
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Capa de presentación | Pantallas del bibliotecario | Capa de negocio |
+    | Capa de negocio | Reglas de préstamo | Capa de datos |
+    | Capa de datos | Persistencia | PostgreSQL |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Lenguaje | Python | Lo conoce el equipo |
+    | Framework | Django | ORM y admin incluidos |
+    | Base de datos | PostgreSQL | Gratuita |
+
+    ### 7.3 Consecuencias
+    **Positivas:** entrega rápida. **Negativas / costos asumidos:** una sola unidad de despliegue.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | Pérdida de datos | alto | Respaldo diario de la base |
+
+    ### 7.5 Plan de implementación
+    1. MVP de préstamos. 2. Catálogo. 3. Reportes.
+
+    ### 7.6 Primer sprint
+    - Crear el proyecto Django
+    - Modelar libros y préstamos
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    biblioteca/   # proyecto Django
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Se integrará con el sistema de carnés?
+expect:
+  concerns: [respaldos]
+  checks:
+    respeta_restricciones: true
+    cifras_con_origen: true
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

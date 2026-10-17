@@ -1,4 +1,6 @@
 from app.core.mermaid_validator import (
+    sanitize_flowchart_edge_labels,
+    sanitize_subgraph_id_collisions,
     extract_mermaid_block,
     sanitize_class_statements,
     sanitize_mermaid,
@@ -235,3 +237,87 @@ def test_validate_mermaid_rejects_unrecognized_diagram_type():
 
     assert is_valid is False
     assert "no reconocido" in error
+
+
+# --- Flechas con etiqueta tras ":" (sintaxis de stateDiagram en un flowchart) --
+
+
+def test_sanitize_flowchart_edge_labels_converts_colon_labels():
+    code = (
+        "flowchart TD\n"
+        '    UI_Web --> API_App : "Solicitudes HTTP"\n'
+        "    API_App --> Auth_Module : Validar JWT\n"
+        "    A -.-> B : 'eventos | async'\n"
+        "    C --> D"
+    )
+    assert sanitize_flowchart_edge_labels(code) == (
+        "flowchart TD\n"
+        "    UI_Web -->|Solicitudes HTTP| API_App\n"
+        "    API_App -->|Validar JWT| Auth_Module\n"
+        "    A -.->|eventos / async| B\n"
+        "    C --> D"
+    )
+
+
+def test_sanitize_flowchart_edge_labels_result_is_valid_mermaid():
+    code = 'flowchart TD\n  A --> B : "Token válido"'
+    is_valid, error = validate_mermaid(sanitize_mermaid(code))
+    assert is_valid, error
+
+
+def test_sanitize_flowchart_edge_labels_ignores_other_diagram_types():
+    code = "sequenceDiagram\n  A->>B: hola\n  A --> B : x"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+def test_sanitize_flowchart_edge_labels_leaves_valid_edges_untouched():
+    code = "flowchart LR\n  A -->|ok| B\n  B --> C"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+# --- Subgraph con el mismo id que un nodo (Mermaid: "would create a cycle") ---
+
+
+def test_sanitize_subgraph_id_collisions_renames_only_the_subgraph():
+    code = (
+        "flowchart LR\n"
+        '  subgraph Vacunas["Módulo Registro de Vacunas"]\n'
+        "    Vacunas\n"
+        "  end\n"
+        "  subgraph Reportes\n"
+        '    Reportes["Reportes"]\n'
+        "  end\n"
+        "  API --> Vacunas"
+    )
+    assert sanitize_subgraph_id_collisions(code) == (
+        "flowchart LR\n"
+        '  subgraph Vacunas_grupo["Módulo Registro de Vacunas"]\n'
+        "    Vacunas\n"
+        "  end\n"
+        '  subgraph Reportes_grupo["Reportes"]\n'
+        '    Reportes["Reportes"]\n'
+        "  end\n"
+        "  API --> Vacunas"
+    )
+
+
+def test_sanitize_subgraph_id_collisions_keeps_subgraph_targeted_by_edges():
+    # Un subgraph que solo aparece en flechas es un destino intencional.
+    code = 'flowchart LR\n  subgraph Monolito["Monolito"]\n    A\n  end\n  X --> Monolito'
+    assert sanitize_subgraph_id_collisions(code) == code
+
+
+def test_sanitize_subgraph_id_collisions_ignores_other_diagram_types():
+    code = "sequenceDiagram\n  A->>B: hola"
+    assert sanitize_subgraph_id_collisions(code) == code
+
+
+def test_sanitize_edge_labels_keeps_class_syntax_on_the_target_node():
+    # Revisión: `A --> B:::svc` se convertía en `A -->|::svc| B`.
+    code = "flowchart TD\n  A --> B:::svc"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+def test_sanitize_edge_labels_moves_the_label_and_keeps_both_classes():
+    code = 'flowchart TD\n  A:::web --> B:::svc : "HTTP"'
+    assert sanitize_flowchart_edge_labels(code) == "flowchart TD\n  A:::web -->|HTTP| B:::svc"
