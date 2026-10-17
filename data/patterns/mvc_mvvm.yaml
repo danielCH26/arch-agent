@@ -1,0 +1,44 @@
+pattern_name: "MVC / MVVM (Modelo-Vista-Controlador)"
+category: "Monolítica"
+complexity: "baja"
+description: >
+  Separa la interfaz de usuario en modelo (datos y reglas), vista (presentación)
+  y controlador o view-model (coordina entradas y actualiza la vista), de modo
+  que la UI se pueda cambiar o probar sin tocar la lógica de datos.
+use_cases: >
+  Aplicaciones web o móviles con interfaz interactiva, formularios y pantallas
+  que cambian con frecuencia: frameworks como Django, Spring MVC, Laravel,
+  ASP.NET MVC, Angular o aplicaciones Android/Flutter con MVVM.
+when_not_to_use: >
+  Cuando el problema principal no es la interfaz sino el procesamiento de datos,
+  la integración entre sistemas o reglas de negocio muy complejas que necesitan
+  aislarse del framework; allí MVC se queda corto como arquitectura global.
+tradeoffs:
+  ventajas:
+    - "Separación clara entre presentación, datos y coordinación, lo que permite que diseñadores y desarrolladores trabajen en paralelo sin pisarse"
+    - "Es el estilo por defecto de la mayoría de frameworks web, por lo que el equipo lo conoce y la curva de aprendizaje es muy baja"
+    - "Facilita probar el controlador o el view-model de forma aislada sin renderizar la interfaz completa"
+    - "Una misma lógica de modelo puede servir a varias vistas, por ejemplo una web y una app móvil sobre la misma API"
+  desventajas:
+    - "Con aplicaciones grandes los controladores tienden a crecer demasiado (fat controllers) y la lógica de negocio termina mezclada con la coordinación"
+    - "No define cómo organizar el dominio ni la persistencia, así que por sí solo no sirve como arquitectura completa de un sistema complejo"
+    - "Las variantes (MVC, MVP, MVVM) se confunden entre sí y el equipo puede mezclar convenciones sin darse cuenta"
+    - "El enlace bidireccional de MVVM puede volver difíciles de depurar los cambios de estado en pantallas con muchas dependencias"
+decision_signals:
+  - pregunta: "¿El producto es principalmente una aplicación con pantallas, formularios e interacción de usuario?"
+    señal_patron: "sí -> MVC / MVVM (Modelo-Vista-Controlador)"
+  - pregunta: "¿Quieres usar un framework web estándar con convenciones conocidas por todo el equipo?"
+    señal_patron: "sí -> MVC / MVVM (Modelo-Vista-Controlador)"
+  - pregunta: "¿Necesitas cambiar la interfaz con frecuencia sin reescribir la lógica de datos?"
+    señal_patron: "sí -> MVC / MVVM (Modelo-Vista-Controlador)"
+quality_attributes: [simplicidad, modificabilidad de la interfaz, productividad del equipo, familiaridad]
+team_fit: "equipo de 1 a 6 personas, aplicación web o móvil centrada en pantallas, uso de un framework con convenciones MVC"
+example_scenarios:
+  - "Aplicación web con login, formularios y paneles de usuario, hecha por 3 estudiantes con Django o Laravel en un semestre"
+  - "App móvil de seguimiento de hábitos con varias pantallas y lógica sencilla, desarrollada por un equipo de 2 personas"
+  - "Portal institucional con vistas de consulta y administración donde el equipo ya domina un framework MVC"
+fuentes:
+  - titulo: "GUI Architectures (Martin Fowler)"
+    url: "https://martinfowler.com/eaaDev/uiArchs.html"
+  - titulo: "Model-View-ViewModel (Microsoft Learn)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm"

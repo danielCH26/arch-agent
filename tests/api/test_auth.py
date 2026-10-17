@@ -8,12 +8,10 @@ Los imports de app.api.* se hacen DENTRO de cada test.
 import pytest
 import os
 
-# Defaults de entorno para este modulo de tests, ANTES de cualquier import
-# de app. setdefault (no asignacion): si el runner de CI o el developer ya
-# exporto DATABASE_URL, esa valeur gana -- pisarla aqui rompia los guards
-# de skip de los tests Postgres-backed y acoplaba el modulo a una URL
-# hardcoded que solo funcionaba si coincidia con la del workflow
-# (Soomri round-2, B2 del re-review de PR #91).
+# Configurar entorno antes de cualquier import de app
+# setdefault, NO asignación directa: pisaba el DATABASE_URL de tests/conftest.py al
+# importarse y, en una corrida completa, los tests con Postgres real
+# (tests/test_document_storage.py) se conectaban como "test" y fallaban.
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
 os.environ["JWT_ALGORITHM"] = "HS256"

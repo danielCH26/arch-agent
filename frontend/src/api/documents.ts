@@ -1,4 +1,4 @@
-import { apiFetch } from './client'
+import { apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, NETWORK_ERROR_MESSAGE } from './client'
 import { authStore } from '../stores/authStore'
 
 export interface Document {
@@ -63,7 +63,7 @@ export async function uploadDocument(
       url += '&suffix=true'
     }
 
-    xhr.open('POST', url)
+    xhr.open('POST', apiUrl(url))
 
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`)
@@ -82,6 +82,11 @@ export async function uploadDocument(
         return
       }
 
+      if (xhr.status === 401) {
+        reject(handleUnauthorized())
+        return
+      }
+
       // 409: duplicado. Devolvemos DuplicateFileError para que el caller
       // muestre un modal de confirmacion y reintente con overwrite=true.
       if (xhr.status === 409) {
@@ -89,22 +94,21 @@ export async function uploadDocument(
           const body = JSON.parse(xhr.responseText) as DuplicateInfo
           reject(new DuplicateFileError(body))
         } catch {
-          reject(new Error('Duplicate file'))
+          reject(new Error('Ya existe un documento con ese nombre.'))
         }
         return
       }
 
       // Otros errores
       try {
-        const data = JSON.parse(xhr.responseText)
-        reject(new Error((data.detail as string) || 'Upload failed'))
+        reject(new Error(errorMessageFromResponse(xhr.status, JSON.parse(xhr.responseText))))
       } catch {
-        reject(new Error('Upload failed'))
+        reject(new Error(errorMessageFromResponse(xhr.status, null)))
       }
     })
 
     xhr.addEventListener('error', () => {
-      reject(new Error('Network error'))
+      reject(new Error(NETWORK_ERROR_MESSAGE))
     })
 
     xhr.send(formData)

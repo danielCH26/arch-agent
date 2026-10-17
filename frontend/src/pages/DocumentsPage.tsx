@@ -4,6 +4,7 @@ import { getProject, Project } from '../api/projects'
 import { Document, listDocuments } from '../api/documents'
 import { DocumentUploader } from '../components/DocumentUploader'
 import { DocumentList } from '../components/DocumentList'
+import { DocumentsPageSkeleton } from '../components/Skeleton'
 import { projectsStore } from '../stores/projectsStore'
 
 export function DocumentsPage() {
@@ -68,36 +69,29 @@ export function DocumentsPage() {
   }, [id])
 
   if (loading) {
-    return (
-      <div className="flex justify-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
+    return <DocumentsPageSkeleton />
   }
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">
-        Documentos {project && `- ${project.name}`}
+      <h1 className="font-display mb-6 text-2xl text-gray-900 md:text-3xl">
+        Subida de archivos {project && <span className="text-gray-500">— {project.name}</span>}
       </h1>
 
       {error && (
-        <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
+        <div role="alert" className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
           {error}
         </div>
       )}
 
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-lg font-medium text-gray-900 mb-3">Subir documento</h2>
-          <DocumentUploader
-            projectId={projectId}
-            onUploadComplete={fetchDocuments}
-          />
-        </div>
+      <div className="rounded-[10px] border border-gray-200 bg-gray-50 p-6 space-y-6">
+        <DocumentUploader
+          projectId={projectId}
+          onUploadComplete={fetchDocuments}
+        />
 
         <div>
-          <h2 className="text-lg font-medium text-gray-900 mb-3">Documentos existentes</h2>
+          <h2 className="text-xl text-gray-900 mb-3">Documentos subidos</h2>
           <DocumentList documents={documents} onRefresh={fetchDocuments} />
         </div>
       </div>
