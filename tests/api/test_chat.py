@@ -89,6 +89,52 @@ class TestChatEndpointErrors:
         assert "config LLM" in str(err)
 
 
+class TestChatLLMConfigErrors:
+    """Qué ve el usuario cuando su LLM no está listo (409 / 500)."""
+
+    def _call(self, err):
+        from fastapi import HTTPException
+
+        from app.api import chat as chat_module
+
+        probe = MagicMock()
+        probe.__enter__ = MagicMock(return_value=probe)
+        probe.__exit__ = MagicMock(return_value=False)
+        with patch.object(chat_module, "SessionLocal", return_value=probe), patch.object(
+            chat_module, "build_langchain_model", side_effect=err
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    chat_module.chat(
+                        body=chat_module.ChatRequest(project_id=None, message="hola"),
+                        current_user={"user_id": 1, "username": "u"},
+                    )
+                )
+        return exc_info.value
+
+    def test_sin_modelo_le_dice_que_complete_el_paso_3(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("sin modelo", reason="missing"))
+        assert exc.status_code == 409
+        assert "paso 3" in exc.detail
+
+    def test_sin_config_no_expone_detalles_del_backend(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("configura GROQ_API_KEY", reason="not_configured"))
+        assert exc.status_code == 409
+        assert "GROQ_API_KEY" not in exc.detail
+        assert "POST /api/llm/config" not in exc.detail
+
+    def test_falla_al_iniciar_el_modelo_es_500_sin_el_detalle(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("boom: token sk-123", reason="initialization_failed"))
+        assert exc.status_code == 500
+        assert "sk-123" not in exc.detail
+
+
 class TestSSEFormat:
     """Tests del formato SSE emitido por el endpoint."""
 

@@ -10,7 +10,7 @@ from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import build_langchain_model, LLMConfigError, user_facing_message
 from app.core.project_context import load_documents_text
 from app.core.session_store import load_session_state, record_approval_decision, save_session_state
 from app.models.project import Project
@@ -188,10 +188,11 @@ async def send_elicitation_message(
 
     try:
         model = build_langchain_model(user_id)
-    except LLMConfigError:
+    except LLMConfigError as e:
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+            detail=user_facing_message(e),
         )
 
     # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).
