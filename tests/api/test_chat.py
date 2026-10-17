@@ -1128,3 +1128,99 @@ def test_chat_stream_display_message_omitted_keeps_display_content_none(monkeypa
             p.stop()
 
     assert captured == [None]
+
+
+# ---------------------------------------------------------------------------
+# Rechazo de `temperature` por el provider (400): reintento y mensaje al usuario
+# ---------------------------------------------------------------------------
+
+_TEMPERATURE_400 = (
+    "Error code: 400 - Unsupported value: 'temperature' does not support "
+    "0.0 with this model. Only the default (1) value is supported."
+)
+
+
+def _run_chat_with_run_agent(chat_module, fake_run_agent):
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "run_agent", side_effect=fake_run_agent))
+    for p in patches:
+        p.start()
+    try:
+        body = chat_module.ChatRequest(message="hi")
+        current_user = {"user_id": 8, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        return "".join(asyncio.run(_drive()))
+    finally:
+        for p in patches:
+            p.stop()
+
+
+@pytest.fixture()
+def _forget_rejected_models():
+    from app.core import llm_loader
+
+    llm_loader._modelos_sin_temperature_runtime.clear()
+    yield
+    llm_loader._modelos_sin_temperature_runtime.clear()
+
+
+def test_chat_temperature_400_reaches_sse_as_user_message(_forget_rejected_models):
+    """Un 400 de `temperature` lanzado por run_agent llega al SSE con el mensaje
+    de explain_llm_error, no con el texto crudo del provider."""
+    from app.api import chat as chat_module
+    from app.core.llm_loader import TEMPERATURE_REJECTED_MESSAGE
+
+    calls = []
+
+    async def _always_rejects(*_args, **kwargs):
+        calls.append(kwargs["model"])
+        raise Exception(_TEMPERATURE_400)
+        yield  # pragma: no cover
+
+    body_text = _run_chat_with_run_agent(chat_module, _always_rejects)
+
+    assert len(calls) == 2  # intento original + un reintento sin temperature
+    assert body_text.endswith(_error(TEMPERATURE_REJECTED_MESSAGE))
+    assert "LLM_MODELS_WITHOUT_TEMPERATURE" not in body_text
+    assert body_text.count("event: error\n") == 1
+
+
+def test_chat_retries_once_without_temperature_and_answers(_forget_rejected_models):
+    from app.api import chat as chat_module
+
+    calls = []
+
+    async def _rejects_first(*_args, **kwargs):
+        calls.append(kwargs["model"])
+        if len(calls) == 1:
+            raise Exception(_TEMPERATURE_400)
+        yield {"event": "token", "data": "hola"}
+
+    body_text = _run_chat_with_run_agent(chat_module, _rejects_first)
+
+    assert len(calls) == 2
+    assert calls[1] is not calls[0]  # el reintento usa la copia sin temperature
+    assert _token("hola") in body_text
+    assert body_text.endswith(_done())
+    assert "event: error\n" not in body_text
+
+
+def test_chat_does_not_retry_after_tokens_were_sent(_forget_rejected_models):
+    from app.api import chat as chat_module
+
+    calls = []
+
+    async def _fails_midway(*_args, **kwargs):
+        calls.append(kwargs["model"])
+        yield {"event": "token", "data": "parcial"}
+        raise Exception(_TEMPERATURE_400)
+
+    body_text = _run_chat_with_run_agent(chat_module, _fails_midway)
+
+    assert len(calls) == 1  # repetir duplicaria la respuesta ya mostrada
+    assert body_text.count(_token("parcial")) == 1
+    assert "event: error\n" in body_text

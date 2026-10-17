@@ -30,7 +30,13 @@ from sqlalchemy import text
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.env import env_float, env_int
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import (
+    astream_with_temperature_fallback,
+    build_langchain_model,
+    explain_llm_error,
+    is_temperature_rejection,
+    LLMConfigError,
+)
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.query_profile import (
@@ -46,7 +52,8 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 # En la fase de propuesta no hay umbral fijo de similitud (el piso de 0.85,
-# RAG_MIN_SIMILARITY, vive solo en ``app/api/chat.py``). La
+# RAG_MIN_SIMILARITY, vive en ``app/core/rag_config.py`` y solo lo usa el
+# chat). La
 # consulta se arma con el nombre/descripcion/requerimientos del proyecto, asi
 # que siempre esta dentro del dominio: en vez de descartar candidatos por un
 # umbral fijo (que con multilingual-e5-small dejaba la lista vacia), se trae
@@ -183,7 +190,7 @@ def _format_duration(seconds: float) -> str:
 # Los codigos son estables: agregar nuevos esta bien, renombrarlos rompe al front.
 ERR_INVALID_REQUEST = "invalid_request"  # falta project_id / user_id
 ERR_REJECTED = "rejected"  # _ProposalDomainError: causa accionable (max. iteraciones, 409...)
-ERR_LLM_CONFIG = "llm_config"  # configuracion LLM invalida o ausente
+ERR_LLM_CONFIG = "llm_config"  # configuracion LLM invalida o ausente (incluye modelo que rechaza `temperature`)
 ERR_LLM_STREAM = "llm_stream_failed"  # el proveedor fallo (incluye su propio timeout)
 ERR_LLM_EMPTY = "llm_empty"  # el modelo no devolvio contenido
 ERR_INCOMPLETE = "incomplete_proposal"  # cortada por tokens o sin secciones obligatorias
@@ -584,7 +591,11 @@ class ProposalGenerator:
         chars_received = 0
         last_progress_at = perf_counter()
         yield _progress_event("generating", started_at)
-        stream = model.astream(prompt).__aiter__()
+        # Si el provider rechaza `temperature`, se reintenta una vez sin el
+        # parametro antes del primer token (ver llm_loader).
+        stream = astream_with_temperature_fallback(
+            model, lambda m: m.astream(prompt)
+        ).__aiter__()
         try:
             while True:
                 try:
@@ -622,6 +633,11 @@ class ProposalGenerator:
                 self.user_id,
                 exc,
             )
+            if is_temperature_rejection(exc):
+                # Ya se reintento sin `temperature` y no alcanzo: repetir la
+                # peticion no lo arregla, hay que cambiar de modelo.
+                yield _error_event(explain_llm_error(exc), ERR_LLM_CONFIG, retryable=False)
+                return
             yield _error_event(f"LLM stream failed: {exc}", ERR_LLM_STREAM, retryable=True)
             return
         finally:
@@ -639,7 +655,13 @@ class ProposalGenerator:
             # LLM emitted nothing useful -- treat as a hard error so the
             # frontend can show a banner and the user can retry without an
             # empty ``proposed`` row confusing the lifecycle.
-            yield _error_event("LLM returned no content", ERR_LLM_EMPTY)
+            # Con temperatura baja el mismo prompt tiende a dar lo mismo: el
+            # mensaje sugiere otro modelo en vez de solo reintentar.
+            yield _error_event(
+                "El modelo no devolvió contenido. No se guardó ni consumió una "
+                "iteración; prueba con otro modelo en la configuración del LLM.",
+                ERR_LLM_EMPTY,
+            )
             return
 
         # Una propuesta cortada a la mitad (limite de tokens del modelo, stream
@@ -1434,7 +1456,8 @@ def _incomplete_proposal_message(
     return (
         "El modelo dejó la propuesta incompleta: no incluyó todas las "
         f"secciones obligatorias{missing}. No se guardó ni consumió una "
-        "iteración; intenta de nuevo."
+        "iteración. Con el mismo modelo, reintentar suele dar el mismo "
+        "resultado: prueba con otro modelo en la configuración del LLM."
     )
 
 

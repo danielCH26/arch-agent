@@ -14,48 +14,30 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import (
+    astream_with_temperature_fallback,
+    build_langchain_model,
+    explain_llm_error,
+    LLMConfigError,
+)
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
+# RAG_MIN_SIMILARITY y RAG_NEAR_MISS_MARGIN vienen de app/core/rag_config.py,
+# su unico lugar de definicion junto con la evidencia que justifica el 0.85.
+from app.core.rag_config import RAG_MIN_SIMILARITY, RAG_NEAR_MISS_MARGIN
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
-# Umbral MINIMO de similitud para considerar un chunk/patron "relevante".
-# Sin esto, similarity_search() siempre devuelve los top-k mas cercanos
-# aunque ninguno tenga relacion real con la query.
-#
-# Es un UNICO umbral global (no diferenciado por tipo) -- se intento
-# diferenciar por source_type (patrones vs. documentos) pero la evidencia
-# real termino contradiciendolo: un falso positivo de un documento
-# (PDF de matematicas, en una pregunta de microservicios) salio a 83%,
-# por ENCIMA de un verdadero positivo de otro documento real (PDF de
-# grafos/MapReduce, en su propia pregunta, a 80-81%). Con este modelo de
-# embeddings (multilingual-e5-small), la similitud coseno sola no separa
-# limpiamente relevante/irrelevante en la banda 80-88%; no existe un
-# numero (global o por tipo) que acierte siempre en esa zona gris.
-#
-# 0.85 es un punto intermedio elegido con la evidencia acumulada:
-#   Verdaderos positivos medidos: 88% (patron), 89-92% (documento).
-#   Falsos positivos medidos:     75-78%, 81-83% (ambos tipos).
-# Es una heuristica "best effort", no una garantia -- puede ocasionalmente
-# dejar pasar ruido cerca del limite, o descartar un match debil pero
-# legitimo. Si se necesita precision real en esa zona gris, la solucion
-# correcta es un paso de re-ranking (ej. que el LLM juzgue relevancia
-# real de cada candidato, o un cross-encoder), no seguir ajustando este
-# numero -- quedo fuera del alcance de esta HU, ver docs/QA_criterios_aceptacion_RAG.md.
-RAG_MIN_SIMILARITY = 0.85
-
-# Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
-# solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
-# distinto resultado en similarity). No cambia que se cita o no.
-RAG_NEAR_MISS_MARGIN = 0.05
-
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Eventos de run_agent que el usuario ya vio como respuesta: despues de uno de
+# estos, un error del provider no se reintenta (duplicaria la salida).
+_AGENT_OUTPUT_EVENTS = frozenset({"token", "tool_start", "tool_end", "attachment", "done"})
 logger = logging.getLogger(__name__)
 
 DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
@@ -484,14 +466,22 @@ async def chat(
                 finally:
                     db.close()
 
-            async for sse_dict in run_agent(
-                model=model,
-                message=body.message,
-                callbacks=callbacks,
-                rag_documents=docs,
-                user_id=user_id,
-                project_id=body.project_id,
-            ):
+            # Si el provider rechaza `temperature`, se reintenta el turno una
+            # vez sin el parametro, siempre que el usuario no haya visto
+            # todavia ninguna salida (ver llm_loader).
+            agent_events = astream_with_temperature_fallback(
+                model,
+                lambda m: run_agent(
+                    model=m,
+                    message=body.message,
+                    callbacks=callbacks,
+                    rag_documents=docs,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                ),
+                counts_as_output=lambda ev: ev.get("event") in _AGENT_OUTPUT_EVENTS,
+            )
+            async for sse_dict in agent_events:
                 event_name = sse_dict.get("event")
                 payload = sse_dict.get("data")
 
@@ -582,7 +572,7 @@ async def chat(
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps(explain_llm_error(e), ensure_ascii=False)}\n\n"
         finally:
             # F14: exporta la traza de inmediato en vez de depender solo del
             # ciclo en segundo plano del SDK de Langfuse (PR #79 review).
