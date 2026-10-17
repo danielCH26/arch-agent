@@ -21,6 +21,10 @@ Uso (con el stack de docker-compose.walk.yml):
     export WALK_LLM_API_KEY=gsk_...          # requerida; NUNCA se imprime
     python3 scripts/walk_hu10_e2e.py
 
+El primer paso espera a que el backend termine de arrancar (hasta
+WALK_READY_TIMEOUT segundos, 240 por defecto), así que se puede correr justo
+después de ``docker compose up -d``.
+
 Credenciales y endpoints por entorno (WALK_*); re-corrida del bloque de
 fases contra un proyecto existente con WALK_PROJECT_ID + --skip-until-phases.
 
@@ -126,9 +130,33 @@ class StepFailure(Exception):
 # Pasos
 # ---------------------------------------------------------------------------
 
+READY_TIMEOUT = float(os.environ.get("WALK_READY_TIMEOUT", "240"))
+
+
 def step_health(w: Walk) -> None:
-    r = w.client.get(f"{w.base_url}/openapi.json")
-    w.step(r.status_code == 200, "health (openapi.json)")
+    """Espera a que el backend responda antes de empezar.
+
+    ``docker compose up -d`` devuelve en cuanto el contenedor arranca, pero el
+    backend tarda en cargar (modelo de embeddings, migraciones) y mientras
+    tanto corta las conexiones ("Server disconnected without sending a
+    response"). Se reintenta hasta ``WALK_READY_TIMEOUT`` segundos.
+    """
+    deadline = time.monotonic() + READY_TIMEOUT
+    last_error = ""
+    while True:
+        try:
+            r = w.client.get(f"{w.base_url}/openapi.json", timeout=10)
+            if r.status_code == 200:
+                break
+            last_error = f"HTTP {r.status_code}"
+        except httpx.HTTPError as e:
+            last_error = str(e) or type(e).__name__
+        if time.monotonic() >= deadline:
+            raise StepFailure(
+                f"el backend no respondió en {READY_TIMEOUT:.0f}s ({last_error})"
+            )
+        time.sleep(3)
+    w.step(True, "health (openapi.json)")
 
 
 def step_register_login(w: Walk) -> None:
