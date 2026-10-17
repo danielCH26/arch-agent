@@ -44,10 +44,11 @@ def save_pattern_chunks(
     Guarda filename/source_type en chunk_metadata y retorna la cantidad de
     chunks insertados. No modifica architect_patterns.
 
-    Short-circuit: si ``chunks`` esta vacio, NO validamos que el pattern_id
-    exista (no hay nada que asociar). Si ``chunks`` no esta vacio, validamos
-    el pattern_id antes del short-circuit para que un pattern_id invalido
-    siga levantando PatternStorageError (PR #102 round 3, Laura).
+    Short-circuit: el ``pattern_id`` se valida SIEMPRE, incluso cuando
+    ``chunks`` viene vacio. Recien despues, si no hay chunks, se devuelve 0
+    sin insertar nada. Asi ``scripts/ingest_pattern_source.py`` no imprime
+    "Ingesta completada: 0 chunks" para un patron inexistente
+    (PR #102 round 3, Laura).
     """
     if len(chunks) != len(embeddings):
         raise PatternStorageError(
@@ -62,9 +63,7 @@ def save_pattern_chunks(
         if pattern_exists is None:
             raise PatternStorageError(f"pattern_id {pattern_id} no existe")
 
-        # Short-circuit empty input DESPUES de validar pattern_id: si hay
-        # chunks que insertar pero el patron no existe, eso es un error del
-        # caller; si no hay chunks, no hay nada que asociar y devolvemos 0.
+        # Empty input: ya se valido el pattern_id, asi que no hay nada que asociar.
         if not chunks:
             return 0
 

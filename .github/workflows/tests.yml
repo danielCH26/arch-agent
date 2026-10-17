@@ -70,7 +70,6 @@ jobs:
       JWT_SECRET_KEY: ci-test-secret-key-for-testing-only-32ch
       JWT_ALGORITHM: HS256
       JWT_EXPIRES_MINUTES: '60'
-      # Encriptación de credenciales LLM por usuario
       # Encriptación de credenciales LLM por usuario.
       # Clave Fernet válida (urlsafe base64 de 32 bytes) generada con
       # Fernet.generate_key(). La anterior "ci-test-encryption-key-32-chars!!"

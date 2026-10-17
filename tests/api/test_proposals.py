@@ -430,20 +430,45 @@ class TestProposalMaxIterGetter:
             os.environ["PROPOSAL_MAX_ITER"] = self._original
 
     def test_state_exposes_env_iteration_cap(self):
-        """``_proposal_max_iter()`` lee la env var en cada llamada.
+        """El tope llega al frontend por ``ProposalStateOut``, no solo por el getter.
 
-        No requiere ``importlib.reload``, asi que ya no rompe el
-        ``isinstance`` check de ``test_proposals_endpoints.py``.
+        F18 round 4 (PR #102, Soomri round 3 punto 3): el test anterior solo
+        miraba ``_proposal_max_iter()`` y perdia el contrato que realmente
+        importa, que es que ``ProposalStateOut`` exponga el valor vigente.
 
-        El test original de F86 validaba ``ProposalStateOut().max_iterations``,
-        que es el default del field y no respeta la env var. Eso era un
-        test que pasaba por casualidad (el default era 5, no 3). Ahora
-        validamos el getter directamente.
+        Con ``default_factory=proposal_max_iter`` la asercion sobre el modelo
+        funciona sin ``importlib.reload``: el getter corre al construir el
+        modelo. Asi que las dos mitades se prueban juntas.
         """
         os.environ["PROPOSAL_MAX_ITER"] = "3"
-        from app.api.proposals import _proposal_max_iter
 
-        assert _proposal_max_iter() == 3
+        from app.api.proposals import ProposalStateOut
+        from app.core.proposal_generator import proposal_max_iter
+
+        # El getter lee la env var en cada llamada.
+        assert proposal_max_iter() == 3
+
+        # Y el modelo lo expone al frontend sin necesitar reload.
+        state = ProposalStateOut(
+            approved=False,
+            approved_at=None,
+            approval_id=None,
+            proposal_snapshot_chars=0,
+            last_decision=None,
+        )
+        assert state.max_iterations == 3
+
+    def test_proposals_uses_the_generator_getter(self):
+        """Una sola fuente de verdad: ``proposals`` no redefine el tope."""
+        import inspect
+
+        from app.api import proposals
+        from app.core import proposal_generator
+
+        assert proposals.proposal_max_iter is proposal_generator.proposal_max_iter
+        # Y no queda una constante local que pueda divergir.
+        source = inspect.getsource(proposals)
+        assert "_proposal_max_iter" not in source
 
 
 class TestSSEStreamCancellation:

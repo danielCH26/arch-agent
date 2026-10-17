@@ -165,8 +165,14 @@ class TestSimilaritySearchValidation:
 
         # docs is empty because mocks returned empty
         assert docs == []
-        assert metrics["search_ms"] == 0.0
+        # F19 cambio el contrato: ``search_ms`` es el tiempo de pared de toda la
+        # etapa de busqueda, no lo que devuelve la consulta. Por eso ya no
+        # propaga el 0.0 del mock.
+        assert metrics["search_ms"] >= 0
         assert metrics["embedding_ms"] >= 0
+        assert metrics["total_ms"] == pytest.approx(
+            metrics["embedding_ms"] + metrics["search_ms"]
+        )
 
 
 class TestSimilaritySearchEmptyResults:
@@ -198,4 +204,11 @@ class TestSimilaritySearchEmptyResults:
 
         # Empty list returned, not raised
         assert docs == []
-        assert metrics["search_ms"] == 5.0
+        # F19: ``search_ms`` es tiempo de pared de la etapa, no pass-through
+        # del valor que devuelve la consulta. Este test fijaba 5.0 (el return
+        # del mock) y dejo de valer cuando cambio el contrato.
+        assert metrics["search_ms"] >= 0
+        assert metrics["search_ms"] != 5.0
+        assert metrics["total_ms"] == pytest.approx(
+            metrics["embedding_ms"] + metrics["search_ms"]
+        )
