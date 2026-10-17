@@ -29,9 +29,11 @@ from app.core.document_storage import (
     save_document_pending,
 )
 from app.core.embeddings import get_embeddings
+from app.core.env import env_int
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+EMBEDDING_BATCH_SIZE = env_int("EMBEDDING_BATCH_SIZE", 64, minimum=1)
 
 
 # --- Pydantic models ---------------------------------------------------------
@@ -74,7 +76,15 @@ def _process_embeddings_background(doc_id: int, chunks: list) -> None:
     """
     try:
         texts = [f"passage: {c.page_content}" for c in chunks]
-        embeddings = get_embeddings().embed_documents(texts)
+        # BackgroundTasks ejecuta esta función fuera del request. Los textos se
+        # envían en lotes de EMBEDDING_BATCH_SIZE por llamada a embed_documents y
+        # el orden se conserva (lo exige save_chunks_and_mark_processed). Ojo: eso
+        # solo acota cuántos textos entran por llamada; el batch interno de
+        # sentence-transformers (encode, 32 por defecto) no cambia con esta variable.
+        model = get_embeddings()
+        embeddings = []
+        for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+            embeddings.extend(model.embed_documents(texts[start : start + EMBEDDING_BATCH_SIZE]))
         save_chunks_and_mark_processed(doc_id, chunks, embeddings)
         logger.info("Background embeddings completed for doc_id=%d (%d chunks)", doc_id, len(chunks))
     except Exception as e:

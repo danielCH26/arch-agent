@@ -282,6 +282,31 @@ class TestUploadEndpointDuplicates:
         assert result.id == 10
 
 
+class TestEmbeddingBatching:
+    def test_background_embedding_uses_configured_batches_in_order(self, monkeypatch):
+        from app.api import documents
+
+        monkeypatch.setattr(documents, "EMBEDDING_BATCH_SIZE", 2)
+        chunks = [MagicMock(page_content=f"chunk-{index}") for index in range(5)]
+        model = MagicMock()
+        model.embed_documents.side_effect = lambda texts: [[text] for text in texts]
+        saved = {}
+        monkeypatch.setattr(documents, "get_embeddings", lambda: model)
+        monkeypatch.setattr(documents, "save_chunks_and_mark_processed", lambda doc_id, saved_chunks, embeddings: saved.update({"id": doc_id, "chunks": saved_chunks, "embeddings": embeddings}))
+
+        documents._process_embeddings_background(42, chunks)
+
+        assert model.embed_documents.call_count == 3
+        assert [call.args[0] for call in model.embed_documents.call_args_list] == [
+            ["passage: chunk-0", "passage: chunk-1"],
+            ["passage: chunk-2", "passage: chunk-3"],
+            ["passage: chunk-4"],
+        ]
+        assert saved["id"] == 42
+        assert saved["chunks"] == chunks
+        assert saved["embeddings"] == [["passage: chunk-0"], ["passage: chunk-1"], ["passage: chunk-2"], ["passage: chunk-3"], ["passage: chunk-4"]]
+
+
 class TestEmbeddingsAreReal:
     """Verifica que el stub _DummyEmbeddings ya no existe en app/core/embeddings.py.
 

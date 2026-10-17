@@ -13,6 +13,7 @@ separación que ya usa model_classifier.py en este mismo paquete.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+
+_LOGGER = logging.getLogger(__name__)
 
 # Reglas duras que NO dependen del LLM -- evitan que el agente "se rinda"
 # demasiado pronto o se alargue indefinidamente, sin importar lo que
@@ -69,7 +72,11 @@ _VIABILITY_FACTORS = (
             r"unipersonal",
             r"devops",
         ),
-        "¿Cuántas personas integran el equipo y qué experiencia o roles técnicos tienen disponibles?",
+        # Issue #100: un solo aspecto. Antes era "¿Cuántas personas ... y qué
+        # experiencia o roles ...?", una pregunta compuesta que además salta el
+        # guardarraíl (las preguntas de viabilidad se devuelven sin pasar por
+        # el LLM). Los roles se pueden preguntar en un turno posterior.
+        "¿Cuántas personas integran el equipo de desarrollo?",
     ),
     (
         "plazo",
@@ -82,12 +89,26 @@ _VIABILITY_FACTORS = (
     ),
 )
 
+# Pregunta de respaldo cuando el modelo quiere cerrar antes del mínimo y no
+# devolvió ninguna pregunta. Constante (no literal en next_step) para que el
+# test de registro la cubra.
+MIN_QUESTIONS_FALLBACK = (
+    "Cuéntame más sobre los requerimientos no funcionales "
+    "(rendimiento, escalabilidad, seguridad) que tiene este proyecto."
+)
+
 # HU5: "El sistema inicia con pregunta abierta" -- se fuerza determinísticamente
 # (no se le pide al LLM que decida la primera pregunta) para que este criterio
 # de aceptación no dependa de que el modelo se porte bien.
+# Issue #100: una sola dimensión, no compuesta. Esta pregunta no pasa por
+# el guardarraíl _es_pregunta_compuesta() (next_step retorna antes de
+# invocar al LLM), y el detector tampoco atraparía un "para quién es"
+# implícito. Por eso esta constante es la única fuente de verdad de la
+# primera pregunta, y se testea por intención.
+# Registro: tuteo, igual que el resto del producto (frontend y prompts).
 FIRST_QUESTION = (
-    "Para empezar, cuéntame en tus propias palabras: ¿qué problema quieres "
-    "resolver con este sistema, y para quién es?"
+    "Cuéntame en tus propias palabras: ¿qué problema quieres resolver "
+    "con este sistema?"
 )
 
 # HU5: "Se cubren: usuarios, funcionalidades, restricciones, calidad" -- las
@@ -116,6 +137,22 @@ a lo largo de la conversación (no todo en una sola pregunta):
    datos concretos o con la indicación explícita de que aún no se definieron.
 4. Calidad: rendimiento, seguridad, disponibilidad, y cualquier otro \
    requerimiento no funcional relevante.
+
+Reglas de granularidad para cada pregunta (Issue #100):
+- Una pregunta cubre UNA sola dimensión (usuarios, funcionalidades, \
+restricciones o calidad). Nunca dos en la misma pregunta. Dentro de una \
+dimensión, pregunta por un solo aspecto a la vez (por ejemplo, quiénes \
+son los usuarios; cuántos serían, en otra pregunta).
+- Prohibida la pregunta compuesta: no unas dos interrogaciones con "y/e/o" \
+ni apiles varios bloques ¿...? en un mismo turno.
+- Granularidad: la pregunta debe poder responderse en una o dos oraciones. \
+Si la respuesta natural sería una lista, divide en preguntas separadas \
+para los turnos siguientes.
+
+Ejemplos (solo ilustran la regla de arriba, no son preguntas nuevas):
+- MALA (compuesta): "¿Quiénes son los usuarios principales y qué \
+funcionalidades críticas necesitan?"
+- BUENA (granular): "¿Quiénes son los usuarios principales del sistema?"
 
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
@@ -173,6 +210,51 @@ class ElicitationDecision:
     done: bool
     question: Optional[str]
     reason: str
+
+
+# Instrucción correctiva efímera del reintento (Issue #100): solo viaja en
+# el contexto de ESTA llamada -- nunca se persiste en historial ni estado.
+# Incluye la pregunta rechazada: sin ella el modelo tendría que adivinar
+# qué corregir y, con temperatura baja, tendería a repetirla.
+_CORRECCION_PREGUNTA_COMPUESTA = (
+    "Tu pregunta anterior combinaba varios temas en una sola pregunta: "
+    "\"{pregunta_rechazada}\". "
+    "Devuelve en el mismo JSON UNA sola pregunta sobre UN solo tema, "
+    "sin 'y' que una dos interrogaciones."
+)
+
+
+# Palabras interrogativas (con tilde) que abren una segunda pregunta tras un
+# conector. Se exige la tilde a propósito: sin ella "que", "como", "cuando"
+# o "donde" son conjunciones/relativos muy comunes ("... y como
+# administradores", "... o cuando sea posible") y darían falsos positivos.
+_INTERROG = (
+    r"(?:(?:por|para|a|con)\s+)?"
+    r"(?:qué|quién(?:es)?|cuál(?:es)?|cuánt[oa]s?|cómo|cuándo|dónde)"
+)
+_CONECTOR_INTERROG = re.compile(rf"\b(?:y|e|o)\s+{_INTERROG}\b", re.IGNORECASE)
+
+
+def _es_pregunta_compuesta(question: str) -> bool:
+    """
+    Detector determinista de preguntas compuestas (Issue #100). Marca como
+    compuesta una pregunta que:
+
+    1. Tiene 2 o más cierres '?': cada bloque interrogativo termina en '?',
+       así que 2 o más cierres = 2 o más preguntas apiladas en un turno.
+    2. Une dos interrogaciones con un conector y/e/o seguido de una palabra
+       interrogativa, aunque haya un solo '?' ("¿Quiénes son los usuarios y
+       qué funcionalidades necesitan?").
+
+    Heurística deliberadamente angosta para evitar falsos positivos: una
+    sola pregunta con "y" interno legítimo entre sustantivos ("¿Qué
+    frameworks y bases de datos usan?") NO se marca -- "y bases" no es "y"
+    + palabra interrogativa. Ese caso lo cubren las reglas del prompt.
+    """
+    if not isinstance(question, str):
+        # Fail-open: un tipo inesperado no debe romper el flujo del agente.
+        return False
+    return question.count("?") >= 2 or bool(_CONECTOR_INTERROG.search(question))
 
 
 def _history_to_text(history: list[dict]) -> str:
@@ -246,6 +328,102 @@ def _invoke_json(
         ) from e
 
 
+def _decision_from_data(data: dict) -> ElicitationDecision:
+    return ElicitationDecision(
+        done=bool(data["done"]),
+        question=data.get("question"),
+        reason=data.get("reason", ""),
+    )
+
+
+def _reintentar_pregunta_granular(
+    model: BaseChatModel,
+    decision: ElicitationDecision,
+    context: str,
+    callbacks: Optional[list[Any]],
+) -> ElicitationDecision:
+    """
+    Guardarraíl determinista (Issue #100): si la pregunta del modelo es
+    evidentemente compuesta, se reintenta UNA sola vez agregando una
+    instrucción correctiva (que incluye la pregunta rechazada) al contexto.
+
+    Fail-open total: ante CUALQUIER falla del reintento (error de
+    invocación o de parseo, JSON que no es un objeto, contenido con una
+    forma inesperada, o una pregunta inválida o todavía compuesta) se
+    devuelve la pregunta original con un warning -- nunca se eleva un
+    error al usuario.
+    """
+    correccion = _CORRECCION_PREGUNTA_COMPUESTA.format(
+        pregunta_rechazada=decision.question
+    )
+    try:
+        data = _invoke_json(
+            model,
+            NEXT_STEP_SYSTEM_PROMPT,
+            f"{context}\n\n{correccion}",
+            callbacks=callbacks,
+            # run_name distinto al de la llamada principal para que Langfuse
+            # pueda medir cada cuánto se dispara el guardarraíl. La
+            # instrucción correctiva sigue siendo efímera: solo viaja en
+            # este contexto, nunca se persiste.
+            run_name="elicitation-next-step-retry",
+        )
+    except Exception as e:  # noqa: BLE001 -- fail-open: nada debe llegar al usuario
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta falló al invocar o parsear la "
+            "respuesta (%s: %s); se devuelve la pregunta original: %s",
+            type(e).__name__,
+            e,
+            decision.question,
+        )
+        return decision
+
+    if not isinstance(data, dict):
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió un JSON que no es un "
+            "objeto (%s); se devuelve la pregunta original: %s",
+            type(data).__name__,
+            decision.question,
+        )
+        return decision
+
+    if "done" not in data:
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió un JSON sin la clave "
+            "'done'; se devuelve la pregunta original: %s",
+            decision.question,
+        )
+        return decision
+
+    reintentada = _decision_from_data(data)
+    if reintentada.done:
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió done=true; se "
+            "devuelve la pregunta original: %s",
+            decision.question,
+        )
+        return decision
+
+    nueva = reintentada.question
+    if not isinstance(nueva, str) or not nueva.strip():
+        _LOGGER.warning(
+            "Reintento de pregunta compuesta devolvió una pregunta vacía o "
+            "que no es texto (%s); se devuelve la pregunta original: %s",
+            type(nueva).__name__,
+            decision.question,
+        )
+        return decision
+
+    if _es_pregunta_compuesta(nueva):
+        _LOGGER.warning(
+            "Pregunta compuesta devuelta pese al reintento correctivo: %s",
+            decision.question,
+        )
+        return decision
+
+    return reintentada
+
+
 def _documents_section(documents_context: Optional[str]) -> str:
     if not documents_context or not documents_context.strip():
         return ""
@@ -274,6 +452,19 @@ def _normalize_text(text: Optional[str]) -> str:
 def _factor_regex(patterns: tuple[str, ...]) -> "re.Pattern[str]":
     """Regex con límites de palabra que no cuentan dígitos a la izquierda."""
     return re.compile(r"(?<![a-z0-9])(?:" + "|".join(patterns) + r")(?![a-z])")
+
+
+# Textos anteriores de las preguntas de viabilidad. Una sesión que ya respondió
+# la versión vieja (antes del deploy que la cambió) no debe recibir la nueva
+# otra vez solo porque el texto no coincide: el reconocimiento por "pregunta ya
+# hecha" compara el texto exacto, y la respuesta puede no matchear la regex
+# (p. ej. "3 personas, 2 backend").
+_LEGACY_VIABILITY_QUESTIONS: dict[str, tuple[str, ...]] = {
+    "equipo": (
+        "¿Cuántas personas integran el equipo y qué experiencia o roles "
+        "técnicos tienen disponibles?",
+    ),
+}
 
 
 _VIABILITY_REGEXES = {
@@ -309,7 +500,10 @@ def _missing_viability_factors(
     return [
         (name, question)
         for name, _patterns, question in _VIABILITY_FACTORS
-        if _normalize_text(question).strip() not in asked_and_answered
+        if not any(
+            _normalize_text(text).strip() in asked_and_answered
+            for text in (question, *_LEGACY_VIABILITY_QUESTIONS.get(name, ()))
+        )
         and not _VIABILITY_REGEXES[name].search(context)
     ]
 
@@ -369,11 +563,7 @@ def next_step(
     if "done" not in data:
         raise ElicitationAgentError(f"Falta la clave 'done' en la respuesta del modelo: {data}")
 
-    decision = ElicitationDecision(
-        done=bool(data["done"]),
-        question=data.get("question"),
-        reason=data.get("reason", ""),
-    )
+    decision = _decision_from_data(data)
 
     # Regla dura complementaria al prompt: el LLM no puede cerrar ni saltarse
     # los límites que condicionan coste, complejidad y entrega. Solo se aplica
@@ -401,9 +591,7 @@ def next_step(
         # lo que diga el modelo.
         decision = ElicitationDecision(
             done=False,
-            question=decision.question
-            or "Cuéntame más sobre los requerimientos no funcionales "
-            "(rendimiento, escalabilidad, seguridad) que tiene este proyecto.",
+            question=decision.question or MIN_QUESTIONS_FALLBACK,
             reason="Forzado: aún no se alcanza el mínimo de preguntas "
             f"({len(history)}/{MIN_QUESTIONS}).",
         )
@@ -414,6 +602,16 @@ def next_step(
             question=None,
             reason=f"Forzado: se alcanzó el máximo de preguntas ({MAX_QUESTIONS}).",
         )
+
+    if (
+        not decision.done
+        and decision.question
+        and _es_pregunta_compuesta(decision.question)
+    ):
+        # Issue #100: guardarraíl determinista contra preguntas compuestas.
+        # Va después de las reglas duras para no gastar un reintento en una
+        # pregunta que igual sería descartada (ej. máximo alcanzado).
+        decision = _reintentar_pregunta_granular(model, decision, context, callbacks)
 
     return decision
 

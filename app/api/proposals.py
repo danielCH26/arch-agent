@@ -22,7 +22,12 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.dependencies import get_current_user
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
-from app.core.proposal_generator import ProposalGenerator
+from app.core.env import env_float
+from app.core.proposal_generator import (
+    PROPOSAL_MAX_ITER,  # noqa: F401  re-export: development lo expone aqui
+    ProposalGenerator,
+    proposal_max_iter,
+)
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
 from app.models.approval import Approval
@@ -31,8 +36,10 @@ from app.models.project import Project
 from app.models.session import UserSession
 
 logger = logging.getLogger(__name__)
-# El mínimo evita un bucle de comentarios si se configura accidentalmente 0.
-SSE_HEARTBEAT_SECONDS = max(1.0, float(os.getenv("SSE_HEARTBEAT_SECONDS", "15")))
+# Mínimo 1 s: con 0 (o negativo) el heartbeat sería un bucle de comentarios. Como
+# el resto de ``env_float``, un valor por debajo del mínimo vuelve al default (15 s)
+# con un warning, en lugar de recortarse en silencio.
+SSE_HEARTBEAT_SECONDS = env_float("SSE_HEARTBEAT_SECONDS", 15.0, minimum=1.0)
 
 def _proposal_reject_reverts_to() -> str:
     """Read the env var at call time so tests don't need to reload the module.
@@ -45,21 +52,11 @@ def _proposal_reject_reverts_to() -> str:
     keeps the same semantics without the reload footgun.
     """
     return os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
-def _proposal_max_iter() -> int:
-    """Read the iteration cap from env at call time.
 
-    F18 round 3 (rebase conflict): F86 introduced
-    ``TestProposalStateMaxIterations`` with ``importlib.reload`` to
-    re-read the env var. That reload also reloaded the module's
-    ``ProposalOut`` class, breaking the ``isinstance`` checks in
-    ``test_proposals_endpoints.py``. The same fix as
-    ``_proposal_reject_reverts_to`` applies: read the env var at call
-    time so the class identity stays stable across reloads.
 
-    The return type is ``int`` (parsed from the env var); default is 5
-    to match the previous constant.
-    """
-    return int(os.getenv("PROPOSAL_MAX_ITER", "5"))
+# PROPOSAL_MAX_ITER no se define aca: vive en proposal_generator como
+# proposal_max_iter(), que lee la env var en cada llamada y conserva el
+# ``minimum=1`` de development. Importarlo evita tener dos fuentes de verdad.
 PHASE = AVAILABLE_PHASES[1]  # "propuesta"
 MAX_SNAPSHOT_CHARS = 20_000
 
@@ -100,9 +97,9 @@ class ProposalStateOut(BaseModel):
     proposal_snapshot_chars: int
     last_decision: Optional[str]
     # Tope de iteraciones vigente en este deploy: el frontend lo lee de aquí
-    # en lugar de duplicar el literal. F18 round 3: default_factory porque
-    # ``PROPOSAL_MAX_ITER`` ahora es una funcion getter (``_proposal_max_iter``).
-    max_iterations: int = Field(default_factory=_proposal_max_iter)
+    # en lugar de duplicar el literal. F18: ``default_factory`` porque el tope
+    # es un getter (``proposal_max_iter``) que lee la env var en cada llamada.
+    max_iterations: int = Field(default_factory=proposal_max_iter)
 
 
 class ProposalOut(BaseModel):
@@ -347,14 +344,34 @@ def _raise_if_iteration_cap_reached(db: Session, *, project_id: int) -> None:
         .order_by(Proposal.iteration.desc())
         .first()
     )
-    if latest is not None and int(latest.iteration) >= _proposal_max_iter():
+    max_iterations = proposal_max_iter()
+    if latest is not None and int(latest.iteration) >= max_iterations:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Has alcanzado el máximo de iteraciones ({_proposal_max_iter()})",
+            detail=f"Has alcanzado el máximo de iteraciones ({max_iterations})",
         )
 
 
-@router.post("/api/proposals/generate")
+_GENERATE_RESPONSES = {
+    status.HTTP_409_CONFLICT: {
+        "description": (
+            "Se alcanzó PROPOSAL_MAX_ITER. Se responde ANTES de abrir el stream "
+            "SSE, como JSON normal (`detail`), no como evento `error`."
+        ),
+    },
+}
+_MODIFY_RESPONSES = {
+    status.HTTP_409_CONFLICT: {
+        "description": (
+            "Antes de abrir el stream SSE: la propuesta no está en estado "
+            "`proposed`, alcanzó PROPOSAL_MAX_ITER o ya no es la última "
+            "iteración del proyecto (existe una posterior)."
+        ),
+    },
+}
+
+
+@router.post("/api/proposals/generate", responses=_GENERATE_RESPONSES)
 async def generate_proposal(
     body: GenerateRequest,
     current_user: dict = Depends(get_current_user),
@@ -384,7 +401,7 @@ async def generate_proposal(
     )
 
 
-@router.post("/api/proposals/{proposal_id}/modify")
+@router.post("/api/proposals/{proposal_id}/modify", responses=_MODIFY_RESPONSES)
 async def modify_proposal(
     proposal_id: int,
     body: ModifyRequest,
@@ -409,10 +426,11 @@ async def modify_proposal(
                     "y no se puede modificar."
                 ),
             )
-        if prior.iteration >= _proposal_max_iter():
+        max_iterations = proposal_max_iter()
+        if prior.iteration >= max_iterations:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Has alcanzado el máximo de iteraciones ({_proposal_max_iter()})",
+                detail=f"Has alcanzado el máximo de iteraciones ({max_iterations})",
             )
         latest = (
             db.query(Proposal)
