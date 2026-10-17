@@ -656,6 +656,47 @@ class TestSendElicitationMessage:
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
+    def test_502_with_actionable_message_when_model_rejects_temperature(
+        self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save
+    ):
+        """Un 400 de `temperature` no es un limite de tasa: reintentar no lo
+        arregla, asi que no debe mostrarse el mensaje de "intenta de nuevo en
+        unos segundos" del 503."""
+        from app.core.llm_loader import TEMPERATURE_REJECTED_MESSAGE
+
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
+                "pending_question": "pregunta pendiente",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.return_value = MagicMock()
+        provider_error = Exception(
+            "Error code: 400 - Unsupported value: 'temperature' does not support 0.0"
+        )
+        llm_error = elicitation_agent.ElicitationLLMError(
+            f"La llamada al modelo falló: {provider_error}"
+        )
+        llm_error.__cause__ = provider_error
+        mock_next_step.side_effect = llm_error
+
+        with pytest.raises(HTTPException) as exc_info:
+            run(send_elicitation_message(
+                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
+                current_user=CURRENT_USER,
+            ))
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == TEMPERATURE_REJECTED_MESSAGE
+        assert "límite de tasa" not in exc_info.value.detail
+
+    @patch("app.api.elicitation.save_session_state")
+    @patch("app.api.elicitation.elicitation_agent.next_step")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
     def test_502_when_model_returns_invalid_json(
         self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save
     ):

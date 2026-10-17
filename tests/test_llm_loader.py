@@ -7,11 +7,23 @@ Issue: #7 - HU12 Configuración de LLM
 import pytest
 from unittest.mock import MagicMock, patch
 
+import asyncio
+import logging
+
+from app.core import llm_loader
 from app.core.llm_loader import (
     DEFAULT_LLM_TEMPERATURE,
     LLM_MODELS_WITHOUT_TEMPERATURE_ENV,
+    LLM_TEMPERATURE_ENV,
+    TEMPERATURE_REJECTED_MESSAGE,
     _acepta_temperature,
+    ainvoke_with_temperature_fallback,
+    astream_with_temperature_fallback,
     explain_llm_error,
+    invoke_with_temperature_fallback,
+    is_temperature_rejection,
+    llm_temperature,
+    without_temperature,
     load_user_llm_config,
     save_user_llm_config,
     build_langchain_model,
@@ -24,8 +36,10 @@ from app.core.llm_loader import (
 def clear_cache():
     """Limpia el cache antes y después de cada test."""
     clear_session_cache()
+    llm_loader._modelos_sin_temperature_runtime.clear()
     yield
     clear_session_cache()
+    llm_loader._modelos_sin_temperature_runtime.clear()
 
 
 class FakeUser:
@@ -448,19 +462,190 @@ class TestAceptaTemperature:
         assert _acepta_temperature("") is True
 
 
+_TEMPERATURE_400 = (
+    "Error code: 400 - Unsupported value: 'temperature' does not support "
+    "0.0 with this model. Only the default (1) value is supported."
+)
+
+
+class TestIsTemperatureRejection:
+    def test_400_de_openai(self):
+        assert is_temperature_rejection(Exception(_TEMPERATURE_400)) is True
+
+    def test_status_code_400_del_sdk(self):
+        exc = Exception("'temperature' must be 1")
+        exc.status_code = 400
+        assert is_temperature_rejection(exc) is True
+
+    def test_la_palabra_sola_no_alcanza(self):
+        # Falso positivo que el chequeo anterior (solo "temperature") aceptaba.
+        assert is_temperature_rejection(Exception("timeout leyendo temperature_logs")) is False
+
+    def test_otros_errores(self):
+        assert is_temperature_rejection(Exception("Error code: 429 - rate limit")) is False
+
+    def test_recorre_la_cadena_de_causas(self):
+        try:
+            try:
+                raise Exception(_TEMPERATURE_400)
+            except Exception as inner:
+                raise RuntimeError("La llamada al modelo fallo") from inner
+        except RuntimeError as outer:
+            assert is_temperature_rejection(outer) is True
+
+
 class TestExplainLLMError:
-    def test_error_de_temperature_explica_causa_y_salida(self):
-        exc = Exception(
-            "Error code: 400 - Unsupported value: 'temperature' does not support "
-            "0.0 with this model. Only the default (1) value is supported."
-        )
-        mensaje = explain_llm_error(exc)
-        assert "temperature" in mensaje
-        assert LLM_MODELS_WITHOUT_TEMPERATURE_ENV in mensaje
-        assert "Only the default (1)" in mensaje  # conserva el detalle original
+    def test_error_de_temperature_da_un_mensaje_para_el_usuario(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="app.core.llm_loader"):
+            mensaje = explain_llm_error(Exception(_TEMPERATURE_400))
+        assert mensaje == TEMPERATURE_REJECTED_MESSAGE
+        # El usuario no tiene acceso al .env: la variable va al log, no al mensaje.
+        assert LLM_MODELS_WITHOUT_TEMPERATURE_ENV not in mensaje
+        assert LLM_MODELS_WITHOUT_TEMPERATURE_ENV in caplog.text
+        assert "Only the default (1)" in caplog.text  # detalle del provider, para el operador
 
     def test_otros_errores_pasan_tal_cual(self):
         assert explain_llm_error(Exception("rate limit")) == "rate limit"
+
+
+class TestLLMTemperatureEnv:
+    def test_sin_env_usa_el_default(self, monkeypatch):
+        monkeypatch.delenv(LLM_TEMPERATURE_ENV, raising=False)
+        assert llm_temperature() == DEFAULT_LLM_TEMPERATURE
+
+    def test_env_valida_sobrescribe(self, monkeypatch):
+        monkeypatch.setenv(LLM_TEMPERATURE_ENV, "0.6")
+        assert llm_temperature() == 0.6
+
+    @pytest.mark.parametrize("raw", ["abc", "-0.1", "2.5"])
+    def test_env_invalida_vuelve_al_default(self, monkeypatch, raw):
+        monkeypatch.setenv(LLM_TEMPERATURE_ENV, raw)
+        assert llm_temperature() == DEFAULT_LLM_TEMPERATURE
+
+    @patch("app.core.llm_loader.init_chat_model")
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_init_model_manda_la_temperatura_del_env(self, mock_load, mock_init, monkeypatch):
+        from app.core.llm_loader import UserLLMConfig
+
+        monkeypatch.setenv(LLM_TEMPERATURE_ENV, "0.6")
+        mock_load.return_value = UserLLMConfig(
+            user_id=1, base_url="https://api.groq.com/openai/v1", model="qwen/qwen3-32b", api_key="k"
+        )
+        mock_init.return_value = MagicMock()
+        build_langchain_model(1)
+        assert mock_init.call_args.kwargs["temperature"] == 0.6
+
+
+class _FakeChatModel:
+    """Doble minimo de ChatOpenAI: rechaza `temperature` mientras la tenga."""
+
+    def __init__(self, model_name="my-o1-deployment", temperature=0.0, chunks=("a", "b")):
+        self.model_name = model_name
+        self.temperature = temperature
+        self.chunks = chunks
+
+    def model_copy(self, update):
+        return _FakeChatModel(self.model_name, update.get("temperature"), self.chunks)
+
+    def _check(self):
+        if self.temperature is not None:
+            raise Exception(_TEMPERATURE_400)
+
+    def invoke(self, *_args, **_kwargs):
+        self._check()
+        return "ok"
+
+    async def ainvoke(self, *_args, **_kwargs):
+        self._check()
+        return "ok"
+
+    async def astream(self, *_args, **_kwargs):
+        self._check()
+        for chunk in self.chunks:
+            yield chunk
+
+
+def _collect(agen):
+    async def _run():
+        return [item async for item in agen]
+
+    return asyncio.run(_run())
+
+
+class TestRetryWithoutTemperature:
+    def test_invoke_reintenta_sin_temperature_y_recuerda_el_modelo(self):
+        assert invoke_with_temperature_fallback(_FakeChatModel(), ["hola"]) == "ok"
+        # El modelo queda recordado: el proximo build ya no manda el parametro.
+        assert _acepta_temperature("my-o1-deployment") is False
+
+    def test_ainvoke_reintenta_sin_temperature(self):
+        assert asyncio.run(ainvoke_with_temperature_fallback(_FakeChatModel(), "p")) == "ok"
+
+    def test_otros_errores_no_se_reintentan(self):
+        model = MagicMock()
+        model.invoke.side_effect = Exception("Error code: 429 - rate limit")
+        with pytest.raises(Exception, match="429"):
+            invoke_with_temperature_fallback(model, ["hola"])
+        assert model.invoke.call_count == 1
+
+    def test_sin_temperature_que_quitar_no_hay_reintento(self):
+        model = _FakeChatModel(temperature=None)
+        assert without_temperature(model, Exception(_TEMPERATURE_400)) is None
+
+    def test_doble_sin_model_copy_no_hay_reintento(self):
+        class _SinCopia:
+            temperature = 0.0
+            model_name = "x"
+
+        assert without_temperature(_SinCopia(), Exception(_TEMPERATURE_400)) is None
+        assert _acepta_temperature("x") is True
+
+    @patch("app.core.llm_loader.init_chat_model")
+    @patch("app.core.llm_loader.load_user_llm_config")
+    def test_despues_del_rechazo_el_build_omite_temperature(self, mock_load, mock_init):
+        from app.core.llm_loader import UserLLMConfig
+
+        invoke_with_temperature_fallback(_FakeChatModel(model_name="My-O1-Deployment"), [])
+        mock_load.return_value = UserLLMConfig(
+            user_id=1, base_url="x", model="my-o1-deployment", api_key="k"
+        )
+        mock_init.return_value = MagicMock()
+        build_langchain_model(1)
+        assert "temperature" not in mock_init.call_args.kwargs
+
+    def test_stream_reintenta_antes_de_la_primera_salida(self):
+        items = _collect(
+            astream_with_temperature_fallback(_FakeChatModel(), lambda m: m.astream("p"))
+        )
+        assert items == ["a", "b"]
+
+    def test_stream_no_reintenta_despues_de_emitir(self):
+        async def _falla_a_mitad(_model):
+            yield "a"
+            raise Exception(_TEMPERATURE_400)
+
+        with pytest.raises(Exception, match="temperature"):
+            _collect(astream_with_temperature_fallback(_FakeChatModel(), _falla_a_mitad))
+
+    def test_stream_ignora_lo_que_no_cuenta_como_salida(self):
+        intentos = []
+
+        async def _stream(model):
+            intentos.append(model.temperature)
+            yield {"event": "degraded"}
+            if model.temperature is not None:
+                raise Exception(_TEMPERATURE_400)
+            yield {"event": "token"}
+
+        items = _collect(
+            astream_with_temperature_fallback(
+                _FakeChatModel(),
+                _stream,
+                counts_as_output=lambda ev: ev["event"] == "token",
+            )
+        )
+        assert intentos == [0.0, None]
+        assert items[-1] == {"event": "token"}
 
 
 class TestInitModelTemperature:

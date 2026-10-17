@@ -14,26 +14,30 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, explain_llm_error, LLMConfigError
+from app.core.llm_loader import (
+    astream_with_temperature_fallback,
+    build_langchain_model,
+    explain_llm_error,
+    LLMConfigError,
+)
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
-# RAG_MIN_SIMILARITY viene de app/core/rag_config.py, que es su unico lugar de
-# definicion junto con la evidencia que justifica el 0.85.
-from app.core.rag_config import RAG_MIN_SIMILARITY
+# RAG_MIN_SIMILARITY y RAG_NEAR_MISS_MARGIN vienen de app/core/rag_config.py,
+# su unico lugar de definicion junto con la evidencia que justifica el 0.85.
+from app.core.rag_config import RAG_MIN_SIMILARITY, RAG_NEAR_MISS_MARGIN
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
-# Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
-# solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
-# distinto resultado en similarity). No cambia que se cita o no.
-RAG_NEAR_MISS_MARGIN = 0.05
-
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Eventos de run_agent que el usuario ya vio como respuesta: despues de uno de
+# estos, un error del provider no se reintenta (duplicaria la salida).
+_AGENT_OUTPUT_EVENTS = frozenset({"token", "tool_start", "tool_end", "attachment", "done"})
 logger = logging.getLogger(__name__)
 
 DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
@@ -462,14 +466,22 @@ async def chat(
                 finally:
                     db.close()
 
-            async for sse_dict in run_agent(
-                model=model,
-                message=body.message,
-                callbacks=callbacks,
-                rag_documents=docs,
-                user_id=user_id,
-                project_id=body.project_id,
-            ):
+            # Si el provider rechaza `temperature`, se reintenta el turno una
+            # vez sin el parametro, siempre que el usuario no haya visto
+            # todavia ninguna salida (ver llm_loader).
+            agent_events = astream_with_temperature_fallback(
+                model,
+                lambda m: run_agent(
+                    model=m,
+                    message=body.message,
+                    callbacks=callbacks,
+                    rag_documents=docs,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                ),
+                counts_as_output=lambda ev: ev.get("event") in _AGENT_OUTPUT_EVENTS,
+            )
+            async for sse_dict in agent_events:
                 event_name = sse_dict.get("event")
                 payload = sse_dict.get("data")
 

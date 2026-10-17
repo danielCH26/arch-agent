@@ -4,10 +4,11 @@ Carga de configuración LLM del usuario y construcción del modelo LangChain.
 Issue: #7 - HU12 Configuración de LLM
 """
 
+import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, AsyncIterator, Callable, Optional, TypeVar
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -15,6 +16,10 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.core.encryption import decrypt, EncryptionError
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 # Temperatura de muestreo para TODO modelo que construye la app.
@@ -27,12 +32,32 @@ from app.core.encryption import decrypt, EncryptionError
 # temperatura alta convierte cada regeneracion en un producto distinto. Se fija
 # 0.0 de forma explicita en vez de heredar el default del proveedor.
 #
+# Lo que 0.0 NO garantiza:
+# - Determinismo. Reduce la variacion, pero ni OpenAI ni Groq aseguran la misma
+#   salida para el mismo prompt (batching, hardware, versiones del modelo). Si
+#   hace falta reproducibilidad estricta, lo siguiente a evaluar es mandar
+#   `seed` (ChatOpenAI lo soporta; no todo provider compatible lo acepta).
+# - Estabilidad con `o*` / `gpt-5*`: a esos no se les manda temperatura (ver
+#   abajo), muestrean con 1 y el golden set NO queda estable con ellos.
+# - Que "reintentar" cambie el resultado: con decodificacion greedy el mismo
+#   prompt tiende a dar la misma salida, por eso los mensajes de error ante una
+#   respuesta invalida sugieren cambiar de modelo y no solo reintentar.
+#
+# Los modelos de razonamiento que SI aceptan el parametro (`qwen/qwen3-32b`,
+# `deepseek-r1-distill-*`, `openai/gpt-oss-*` en Groq/Ollama) tambien reciben
+# 0.0, y Groq recomienda 0.5-0.7 para ellos (evita repeticiones y salidas
+# incoherentes). Para esos despliegues la temperatura se sobrescribe con la
+# variable de entorno ``LLM_TEMPERATURE`` (ver `llm_temperature`).
+#
 # No todos los modelos aceptan el parametro. La serie de razonamiento `o*` y la
 # serie `gpt-5*` (salvo `gpt-5-chat*`) de OpenAI solo admiten temperature=1 y
 # responden 400 ante cualquier otro valor, asi que a esos NO se les manda: se
 # omite el kwarg y el request sale sin `temperature`, con lo que aplica el
 # default de la API (1). Ver `_acepta_temperature`.
 DEFAULT_LLM_TEMPERATURE: float = 0.0
+
+# Variable de entorno que sobrescribe `DEFAULT_LLM_TEMPERATURE` (float 0-2).
+LLM_TEMPERATURE_ENV = "LLM_TEMPERATURE"
 
 
 # Series de modelos que rechazan `temperature` distinto de 1 (400 de OpenAI).
@@ -50,8 +75,10 @@ DEFAULT_LLM_TEMPERATURE: float = 0.0
 # muestrea con el default del provider, inocuo); un falso negativo rompe el
 # request con 400. Por eso la regex prefiere matchear de mas.
 #
-# Sobre langchain (verificado con langchain-openai 1.6.2,
-# ``ChatOpenAI.validate_temperature``):
+# Sobre langchain -- SOLO como contexto: la logica de este modulo no depende de
+# esto, porque decide aca si manda o no el kwarg. Observado en langchain-openai
+# 1.6.2 (``ChatOpenAI.validate_temperature``); `requirements.txt` admite otras
+# 1.x y el detalle puede cambiar entre versiones:
 # - Para `o1*` fuerza temperature=1 SOLO si el caller no paso el kwarg. Para
 #   `o3*`/`o4*` no hace nada: si se omite, el valor queda en None, no viaja en
 #   el request y la API aplica su propio default.
@@ -79,6 +106,38 @@ _RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)(?:o\d|gpt-5(?![^/]*chat))")
 LLM_MODELS_WITHOUT_TEMPERATURE_ENV = "LLM_MODELS_WITHOUT_TEMPERATURE"
 
 
+# Modelos que el provider rechazo por `temperature` en ESTE proceso (ver
+# `without_temperature`). Es el respaldo automatico de la regex y de la variable
+# de entorno: ante el primer 400 se reintenta sin el parametro y el modelo queda
+# recordado hasta que el proceso reinicie. Clave = nombre normalizado; un falso
+# positivo (otro provider con el mismo nombre) solo omite la temperatura.
+_modelos_sin_temperature_runtime: set[str] = set()
+
+
+def llm_temperature() -> float:
+    """Temperatura a mandar: ``LLM_TEMPERATURE`` si es valida, si no el default.
+
+    Se lee en cada llamada (igual que ``LLM_MODELS_WITHOUT_TEMPERATURE``) para
+    que un cambio en el ``.env`` aplique sin reimportar el modulo.
+    """
+    raw = os.getenv(LLM_TEMPERATURE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_LLM_TEMPERATURE
+    try:
+        valor = float(raw)
+    except ValueError:
+        valor = -1.0
+    if not 0.0 <= valor <= 2.0:
+        logger.warning(
+            "%s=%r invalida (se espera un numero entre 0 y 2); se usa %s",
+            LLM_TEMPERATURE_ENV,
+            raw,
+            DEFAULT_LLM_TEMPERATURE,
+        )
+        return DEFAULT_LLM_TEMPERATURE
+    return valor
+
+
 def _modelos_sin_temperature_env() -> frozenset[str]:
     """Nombres listados en ``LLM_MODELS_WITHOUT_TEMPERATURE``, normalizados."""
     raw = os.getenv(LLM_MODELS_WITHOUT_TEMPERATURE_ENV, "")
@@ -102,25 +161,169 @@ def _acepta_temperature(model: str) -> bool:
     normalizado = (model or "").strip().lower()
     if normalizado in _modelos_sin_temperature_env():
         return False
+    if normalizado in _modelos_sin_temperature_runtime:
+        return False
     return not _RECHAZA_TEMPERATURE_RE.search(normalizado)
+
+
+# Mensaje para el usuario final cuando el provider rechaza `temperature` y el
+# reintento automatico sin el parametro tampoco alcanzo. Quien configura el LLM
+# en el wizard es un usuario de la app, sin acceso al `.env` del servidor: el
+# nombre de la variable de entorno va al log (para el operador), no aca.
+TEMPERATURE_REJECTED_MESSAGE = (
+    "El modelo configurado no admite el parámetro de temperatura. Elige otro "
+    "modelo en la configuración del LLM o avisa al administrador."
+)
+
+# Marcas de que un error que menciona `temperature` es un rechazo del
+# parametro y no, por ejemplo, un texto que solo lo cita.
+_RECHAZO_MARCAS = ("400", "unsupported", "not support", "invalid")
+
+
+def _cadena_de_causas(exc: BaseException) -> list[BaseException]:
+    """`exc` y sus causas (``__cause__`` / ``__context__``), sin ciclos."""
+    vistas: list[BaseException] = []
+    actual: Optional[BaseException] = exc
+    while actual is not None and all(actual is not v for v in vistas):
+        vistas.append(actual)
+        actual = actual.__cause__ or actual.__context__
+    return vistas
+
+
+def is_temperature_rejection(exc: BaseException) -> bool:
+    """¿El provider rechazo el parametro `temperature`?
+
+    Exige que el mensaje mencione ``temperature`` Y que sea un 400 (por
+    ``status_code`` o por el texto) o diga ``unsupported``/``invalid``: la
+    palabra sola no alcanza. Recorre la cadena de causas porque los call
+    sites envuelven el error del SDK (ej. ``ElicitationLLMError``).
+    """
+    for e in _cadena_de_causas(exc):
+        texto = str(e).lower()
+        if "temperature" not in texto:
+            continue
+        if getattr(e, "status_code", None) == 400:
+            return True
+        if any(marca in texto for marca in _RECHAZO_MARCAS):
+            return True
+    return False
 
 
 def explain_llm_error(exc: BaseException) -> str:
     """Mensaje para el usuario ante un error del provider en request time.
 
-    Si el provider rechazo el parametro `temperature` (400), el texto crudo no
-    dice que hacer; se reemplaza por uno que nombra la causa y la salida
-    (``LLM_MODELS_WITHOUT_TEMPERATURE``). Cualquier otro error pasa tal cual.
+    Si el provider rechazo el parametro `temperature`, devuelve
+    `TEMPERATURE_REJECTED_MESSAGE` y deja el detalle tecnico (con el nombre de
+    ``LLM_MODELS_WITHOUT_TEMPERATURE``) en el log. Cualquier otro error pasa tal
+    cual.
     """
-    texto = str(exc)
-    if "temperature" in texto.lower():
-        return (
-            "El modelo configurado rechazo el parametro 'temperature'. "
-            "Si es un modelo de razonamiento con un nombre no estandar (por "
-            "ejemplo un deployment de Azure), agregalo a la variable de entorno "
-            f"{LLM_MODELS_WITHOUT_TEMPERATURE_ENV}. Detalle del provider: {texto}"
+    if is_temperature_rejection(exc):
+        logger.warning(
+            "El provider rechazo 'temperature' y el reintento sin el parametro "
+            "no alcanzo. Si es un modelo de razonamiento con nombre no estandar, "
+            "agregarlo a %s. Detalle: %s",
+            LLM_MODELS_WITHOUT_TEMPERATURE_ENV,
+            exc,
         )
-    return texto
+        return TEMPERATURE_REJECTED_MESSAGE
+    return str(exc)
+
+
+def without_temperature(model: Any, exc: BaseException) -> Optional[Any]:
+    """Copia de `model` sin `temperature` si `exc` es un rechazo del parametro.
+
+    Ademas recuerda el modelo en memoria para que los proximos
+    `build_langchain_model` ya no manden el parametro. Devuelve None si no hay
+    nada que reintentar: el error es otro, el modelo ya no mandaba temperatura
+    o no se puede copiar (ej. un doble de test).
+    """
+    if not is_temperature_rejection(exc):
+        return None
+    if getattr(model, "temperature", None) is None:
+        return None
+    nombre = str(getattr(model, "model_name", None) or getattr(model, "model", "") or "")
+    try:
+        copia = model.model_copy(update={"temperature": None})
+    except Exception:  # noqa: BLE001 -- sin copia no hay reintento; se propaga el error original
+        return None
+    if nombre:
+        _modelos_sin_temperature_runtime.add(nombre.strip().lower())
+    logger.warning(
+        "El modelo %r rechazo 'temperature'; se reintenta sin el parametro y se "
+        "recuerda hasta reiniciar el proceso. Para fijarlo, agregarlo a %s. "
+        "Detalle: %s",
+        nombre,
+        LLM_MODELS_WITHOUT_TEMPERATURE_ENV,
+        exc,
+    )
+    return copia
+
+
+def invoke_with_temperature_fallback(model: Any, *args: Any, **kwargs: Any) -> Any:
+    """``model.invoke`` con UN reintento sin `temperature` si el provider la rechaza."""
+    try:
+        return model.invoke(*args, **kwargs)
+    except Exception as exc:
+        fallback = without_temperature(model, exc)
+        if fallback is None:
+            raise
+    return fallback.invoke(*args, **kwargs)
+
+
+async def ainvoke_with_temperature_fallback(model: Any, *args: Any, **kwargs: Any) -> Any:
+    """``model.ainvoke`` con UN reintento sin `temperature` si el provider la rechaza."""
+    try:
+        return await model.ainvoke(*args, **kwargs)
+    except Exception as exc:
+        fallback = without_temperature(model, exc)
+        if fallback is None:
+            raise
+    return await fallback.ainvoke(*args, **kwargs)
+
+
+async def _aclose_quietly(stream: Any) -> None:
+    aclose = getattr(stream, "aclose", None)
+    if aclose is not None:
+        try:
+            await aclose()
+        except Exception:  # noqa: BLE001 -- best-effort
+            pass
+
+
+async def astream_with_temperature_fallback(
+    model: Any,
+    open_stream: Callable[[Any], AsyncIterator[_T]],
+    *,
+    counts_as_output: Callable[[_T], bool] = lambda _item: True,
+) -> AsyncIterator[_T]:
+    """Stream con UN reintento sin `temperature` si el provider la rechaza.
+
+    ``open_stream(model)`` abre el stream (``model.astream(prompt)``,
+    ``run_agent(model=model, ...)``). Solo reintenta si todavia no salio nada
+    que cuente como salida (``counts_as_output``): una vez que el usuario vio
+    tokens, repetir el stream duplicaria la respuesta y el error se propaga.
+    """
+    stream = open_stream(model)
+    emitted = False
+    try:
+        async for item in stream:
+            if counts_as_output(item):
+                emitted = True
+            yield item
+        return
+    except Exception as exc:
+        fallback = None if emitted else without_temperature(model, exc)
+        if fallback is None:
+            raise
+    finally:
+        await _aclose_quietly(stream)
+
+    stream = open_stream(fallback)
+    try:
+        async for item in stream:
+            yield item
+    finally:
+        await _aclose_quietly(stream)
 
 
 class LLMConfigError(Exception):
@@ -266,7 +469,7 @@ def _init_model(config: UserLLMConfig) -> BaseChatModel:
     # valor valido es 1 y mandarle 0.0 produce un 400 en request time (que
     # aflora como SSE `event: error` sin explicar la causa).
     if _acepta_temperature(config.model):
-        kwargs["temperature"] = DEFAULT_LLM_TEMPERATURE
+        kwargs["temperature"] = llm_temperature()
 
     try:
         model = init_chat_model(**kwargs)

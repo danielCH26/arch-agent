@@ -6,10 +6,20 @@ la evidencia que lo justifica tengan un único lugar de definición, importable
 desde cualquier capa sin caer en un import circular. ADR-009 dejó el módulo
 como refactor pendiente; este es ese refactor.
 
-Hoy el único consumidor es el chat. La generación de propuestas NO aplica este
-piso: su consulta siempre está dentro del dominio del proyecto y trae los
-``PROPOSAL_RAG_TOP_N`` patrones más cercanos, con un piso propio y opcional
-(``PROPOSAL_RAG_MIN_SIMILARITY``, ver ``app/core/proposal_generator.py``).
+Consumidores (este docstring es el único lugar donde se lista):
+
+- Chat (``app/api/chat.py``): ÚNICO que aplica el piso. Descarta lo que queda
+  por debajo y loguea los near-miss.
+- Generación de propuestas: NO aplica este piso. Su consulta siempre está dentro
+  del dominio del proyecto y trae los ``PROPOSAL_RAG_TOP_N`` patrones más
+  cercanos, con un piso propio y opcional (``PROPOSAL_RAG_MIN_SIMILARITY``, ver
+  ``app/core/proposal_generator.py``).
+- ``/api/rag/search`` (y ``/patterns/search``, ``/documents/search``): NO aplica
+  el piso, por decisión. Es el endpoint de diagnóstico: devuelve los top-k con
+  su ``similarity`` cruda justamente para poder ver qué quedó por debajo de
+  0.85 (los near-miss del chat se reproducen ahí). Filtrarlo escondería esa
+  información; quien lo use para algo más que diagnosticar debe aplicar
+  ``RAG_MIN_SIMILARITY`` del lado del cliente.
 """
 
 # Umbral MÍNIMO de similitud para considerar un chunk/patrón "relevante".
@@ -40,3 +50,8 @@ piso: su consulta siempre está dentro del dominio del proyecto y trae los
 # qué citas del RAG llegan al modelo en el chat. Si hay que moverlo, se mueve acá
 # y en un solo lugar.
 RAG_MIN_SIMILARITY: float = 0.85
+
+# Margen por debajo de RAG_MIN_SIMILARITY que el chat loguea como "near-miss"
+# -- solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
+# distinto resultado en similarity). No cambia que se cita o no.
+RAG_NEAR_MISS_MARGIN: float = 0.05
