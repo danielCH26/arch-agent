@@ -70,6 +70,10 @@ input::-ms-clear {
 .dark .bg-white\/70 {
   background-color: rgb(var(--surface) / 0.7);
 }
+/* Filas alternas de tablas en mensajes (p. ej. trade-offs). */
+.dark .odd\:bg-white:nth-child(odd) {
+  background-color: rgb(var(--surface));
+}
 
 /* Controles que solo se revelan al pasar el ratón (p. ej. eliminar proyecto).
    En dispositivos sin hover (celular, tablet) quedan siempre visibles. */
