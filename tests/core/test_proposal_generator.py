@@ -2425,3 +2425,28 @@ def test_saving_timeout_also_marks_the_cancel_event(monkeypatch):
     assert events[-1][0] == "error"
     assert seen["event"].is_set()
 
+
+
+# --- Revision del PR: encabezado de trade-offs despues de la justificacion ---
+
+
+def test_a_subheading_named_options_before_the_justification_is_not_the_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections, _tradeoff_section
+
+    proposal = _FULL_PROPOSAL.replace(
+        "## Patrones\n",
+        "## Patrones\n### Alternativas descartadas\n- Microservicios: muy caro\n\n"
+        "## Opciones de despliegue\n- Un VPS\n\n",
+    )
+    section = _tradeoff_section(proposal)
+    assert section is not None
+    assert any("| Capas |" in line for line in section)
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_without_justification_only_a_level_two_heading_counts():
+    from app.core.proposal_generator import _tradeoff_section
+
+    body = "## Componentes\n- API\n\n### Opciones\n- nada\n"
+    assert _tradeoff_section(body) is None
+    assert _tradeoff_section(body + "\n## Trade-offs\n| a | b |\n") is not None

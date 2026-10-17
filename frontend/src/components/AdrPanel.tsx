@@ -32,7 +32,19 @@ function downloadMarkdown(markdown: string, filename: string) {
   document.body.appendChild(link)
   link.click()
   link.remove()
-  URL.revokeObjectURL(url)
+  // Firefox y Safari pueden cancelar la descarga si la URL se revoca en el
+  // mismo tick del click: se libera un momento después.
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// El diagrama que usa el ADR (mismo adjunto que su Mermaid). Para ADR viejos,
+// sin ese dato, el aprobado más reciente o el último generado.
+export function pickAdrDiagram(diagrams: DiagramVersion[], attachmentId?: string | null): DiagramVersion | null {
+  if (attachmentId) {
+    const exact = diagrams.find((d) => d.id === attachmentId)
+    if (exact) return exact
+  }
+  return diagrams.find((d) => d.decision === 'approve') ?? diagrams[0] ?? null
 }
 
 function formatDate(iso: string | null): string {
@@ -58,9 +70,9 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
-  // Imagen del diagrama aprobado (o el último): el ADR lo trae como código
-  // Mermaid, que en el panel se vería como texto.
-  const [diagram, setDiagram] = useState<DiagramVersion | null>(null)
+  // Imágenes de los diagramas del proyecto: el ADR trae el diagrama como
+  // código Mermaid, que en el panel se vería como texto.
+  const [diagrams, setDiagrams] = useState<DiagramVersion[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -77,8 +89,8 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
         if (!cancelled) setLoading(false)
       })
     fetchDiagramHistory(projectId)
-      .then((diagrams) => {
-        if (!cancelled) setDiagram(diagrams.find((d) => d.decision === 'approve') ?? diagrams[0] ?? null)
+      .then((list) => {
+        if (!cancelled) setDiagrams(list)
       })
       .catch(() => undefined)
     return () => {
@@ -128,6 +140,7 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
   const markdown = adr?.markdown ?? null
   const completed = Boolean(adr?.approved_at)
   const busy = generating || approving || loading
+  const diagram = pickAdrDiagram(diagrams, adr?.diagram_attachment_id)
 
   return (
     <section
@@ -209,11 +222,16 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
         </div>
       )}
 
-      {showChanges && !completed && (
+      {showChanges && (
         <div className="mt-3 space-y-2" data-testid="adr-changes-form">
           <label htmlFor={`adr-changes-${projectId}`} className="block text-sm font-medium text-gray-800 dark:text-gray-200">
             ¿Qué quieres cambiar en el ADR?
           </label>
+          {completed && (
+            <p className="text-xs text-amber-800" data-testid="adr-reopen-note">
+              El ADR ya está aprobado: al aplicar los cambios el proyecto se reabre y tendrás que aprobarlo otra vez.
+            </p>
+          )}
           <textarea
             id={`adr-changes-${projectId}`}
             value={changes}
@@ -242,6 +260,15 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
           className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800"
         >
           <span className="mr-auto font-medium">✅ Proyecto completado. El ADR quedó aprobado.</span>
+          <button
+            type="button"
+            data-testid="adr-reopen"
+            disabled={busy}
+            onClick={() => setShowChanges((value) => !value)}
+            className="rounded-lg border border-green-300 px-3 py-1.5 hover:bg-green-100 disabled:opacity-50"
+          >
+            Pedir cambios (reabre el proyecto)
+          </button>
           <button
             type="button"
             onClick={() => navigate('/projects', { state: { openCreate: true } })}

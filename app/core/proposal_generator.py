@@ -1407,6 +1407,12 @@ def _missing_sections(markdown: str | None, source_count: int = 0) -> list[str]:
     missing: list[str] = []
     justification_start: int | None = None
     for label, pattern in _REQUIRED_HEADINGS:
+        if label == "Trade-offs y decisión":
+            # Misma regla que _tradeoff_section: despues de la justificacion
+            # (o un ``##`` si no la hay), no cualquier subtitulo "Opciones".
+            if _tradeoff_heading((markdown or "").splitlines()) is None:
+                missing.append(label)
+            continue
         match = re.search(
             r"^[ \t]*#{1,6}[ \t]*" + _HEADING_DECOR + pattern,
             normalized,
@@ -1454,19 +1460,50 @@ def _incomplete_proposal_message(
     )
 
 
+_JUSTIFICATION_HEADING_RE = re.compile(
+    r"^\s*#{1,6}\s+" + _HEADING_DECOR + r"justificacion\b"
+)
+
+
+def _tradeoff_heading(lines: list[str]) -> tuple[int, int] | None:
+    """``(indice, nivel)`` del encabezado de la seccion de trade-offs.
+
+    El titulo se acepta con variantes ("Alternativas consideradas", "Opciones
+    evaluadas"...), y esas palabras tambien pueden ser subtitulos de otra
+    seccion ("### Alternativas descartadas" dentro de Patrones, "## Opciones
+    de despliegue" en Componentes). Si se tomaba el PRIMER encabezado del
+    documento, la tabla se buscaba en esa subseccion y una propuesta valida se
+    descartaba. Por eso:
+      * se busca DESPUES del encabezado de la justificacion (la seccion
+        anterior en el formato obligatorio), igual que ``_missing_sections``;
+      * sin justificacion, solo cuenta un encabezado de nivel 2 (``##``).
+    """
+    normalized = [_normalize_text(line) for line in lines]
+    justification = next(
+        (i for i, line in enumerate(normalized) if _JUSTIFICATION_HEADING_RE.match(line)),
+        None,
+    )
+    start = 0 if justification is None else justification + 1
+    for index in range(start, len(normalized)):
+        match = _TRADEOFF_HEADING_RE.match(normalized[index])
+        if not match:
+            continue
+        level = len(match.group(1))
+        if justification is None and level != 2:
+            continue
+        return index, level
+    return None
+
+
 def _tradeoff_section(markdown: str | None) -> list[str] | None:
     """Lineas de ``## Trade-offs y decisión`` hasta el siguiente encabezado del mismo nivel o superior."""
     if not markdown:
         return None
     lines = markdown.splitlines()
-    start = level = None
-    for index, line in enumerate(lines):
-        match = _TRADEOFF_HEADING_RE.match(_normalize_text(line))
-        if match:
-            start, level = index, len(match.group(1))
-            break
-    if start is None:
+    heading = _tradeoff_heading(lines)
+    if heading is None:
         return None
+    start, level = heading
     section: list[str] = []
     for line in lines[start + 1 :]:
         heading = _HEADING_LEVEL_RE.match(line)

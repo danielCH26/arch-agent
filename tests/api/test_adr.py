@@ -57,7 +57,7 @@ def client():
     from app.api.adr import router
     from app.api.dependencies import get_current_user
 
-    _FakeSession.store = {"project": SimpleNamespace(phase_ready=False)}
+    _FakeSession.store = {"project": SimpleNamespace(phase_ready=False, current_phase="revision")}
     record = MagicMock()
     app = FastAPI()
     app.include_router(router)
@@ -155,3 +155,64 @@ def test_aprobar_termina_el_proyecto_y_pedir_cambios_lo_reabre(client):
         reopened = http.post("/api/projects/5/adr", json={"feedback": "Agregar auditoría"}).json()
     assert reopened["approved_at"] is None
     assert project.phase_ready is False
+
+
+def test_post_con_cambios_sin_propuesta_aprobada_no_guarda_nada(client):
+    """Revisión: antes se registraba el modify y se hacía commit antes del 409."""
+    http, record = client
+    project = _FakeSession.store["project"]
+    project.phase_ready = True
+    with patch(
+        "app.api.adr.collect_adr_context",
+        side_effect=AdrNotReadyError("Todavía no hay una propuesta aprobada."),
+    ):
+        response = http.post("/api/projects/5/adr", json={"feedback": "Usar Redis"})
+
+    assert response.status_code == 409
+    record.assert_not_called()
+    assert project.phase_ready is True
+
+
+@pytest.mark.parametrize("phase", ["requerimientos", "propuesta", "refinamiento"])
+def test_generar_y_aprobar_fuera_de_revision_es_409(client, phase):
+    http, record = client
+    project = _FakeSession.store["project"]
+    project.current_phase = phase
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()):
+        generated = http.post("/api/projects/5/adr")
+        approved = http.post("/api/projects/5/adr/approve")
+
+    assert generated.status_code == 409
+    assert approved.status_code == 409
+    assert "Revisión" in approved.json()["detail"]
+    record.assert_not_called()
+    assert project.phase_ready is False
+
+
+def test_aprobar_vuelve_a_armar_el_markdown_como_aceptado_sin_llamar_al_llm(client):
+    http, _ = client
+    guide = "\n\n".join(
+        f"### 7.{i} {name}\nContenido." for i, name in enumerate(
+            ("Componentes y responsabilidades", "Stack tecnológico recomendado", "Consecuencias",
+             "Riesgos y mitigaciones", "Plan de implementación", "Primer sprint",
+             "Estructura inicial del repositorio", "Preguntas abiertas"), 1)
+    )
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
+        "app.api.adr.build_langchain_model", return_value=object()
+    ), patch("app.api.adr.generate_llm_sections", new=AsyncMock(return_value=guide)):
+        created = http.post("/api/projects/5/adr").json()
+
+    assert "| Estado | Propuesto (pendiente de aprobación) |" in created["markdown"]
+
+    llm = AsyncMock(side_effect=AssertionError("no debe llamar al LLM al aprobar"))
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
+        "app.api.adr.generate_llm_sections", new=llm
+    ):
+        approved = http.post("/api/projects/5/adr/approve").json()
+
+    assert "| Estado | Aceptado |" in approved["markdown"]
+    assert "| Aprobado |" in approved["markdown"]
+    assert "### 7.6 Primer sprint" in approved["markdown"]
+    assert approved["guide_complete"] is True
+    stored = http.get("/api/projects/5/adr").json()
+    assert stored["markdown"] == approved["markdown"]

@@ -25,8 +25,10 @@ from app.api.dependencies import get_current_user
 from app.api.projects import _require_project
 from app.core.adr_generator import (
     ADR_STATE_KEY,
+    AdrContext,
     AdrNotReadyError,
     collect_adr_context,
+    extract_guide_section,
     generate_llm_sections,
     render_adr_markdown,
 )
@@ -60,6 +62,8 @@ class AdrOut(BaseModel):
     feedback_history: list[str] = []
     # ISO del momento en que se aprobó el ADR (proyecto terminado), o None.
     approved_at: Optional[str] = None
+    # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
+    diagram_attachment_id: Optional[str] = None
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -107,7 +111,31 @@ def _out(stored: dict) -> AdrOut:
         guide_complete=bool(stored.get("guide_complete")),
         feedback_history=list(stored.get("feedback_history") or []),
         approved_at=stored.get("approved_at"),
+        diagram_attachment_id=stored.get("diagram_attachment_id"),
     )
+
+
+def _require_revision_phase(db, project_id: int) -> Project:
+    """El ADR se genera, cambia y aprueba solo en la fase Revisión.
+
+    Sin esto ``/approve`` podía marcar como lista cualquier otra fase.
+    """
+    project = db.get(Project, project_id)
+    if project is None or getattr(project, "current_phase", None) != REVISION_PHASE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El ADR se revisa en la fase Revisión. Avanza el proyecto hasta esa fase primero.",
+        )
+    return project
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 @router.get("/{project_id}/adr", response_model=AdrOut)
@@ -132,9 +160,10 @@ async def generate_adr(
     """Genera el ADR con lo decidido hasta ahora.
 
     Con ``feedback`` se registra un "modify" en la fase Revisión, se suma al
-    historial de cambios y el LLM lo aplica. Pedir cambios reabre el proyecto
-    si ya estaba aprobado. 409 si todavía no hay una propuesta aprobada. Si el
-    LLM no está configurado o falla, el ADR se genera igual sin la guía.
+    historial de cambios y el LLM lo aplica. Pedir cambios (o regenerar) reabre
+    el proyecto si ya estaba aprobado. 409 si el proyecto no está en Revisión o
+    si todavía no hay una propuesta aprobada; en ese caso NO se guarda nada.
+    Si el LLM no está configurado o falla, el ADR se genera igual sin la guía.
     """
     user_id = int(current_user["user_id"])
     _require_project(user_id, project_id)
@@ -142,13 +171,20 @@ async def generate_adr(
 
     db = SessionLocal()
     try:
+        project = _require_revision_phase(db, project_id)
+        # Primero se valida (sin escribir nada): antes se registraba el
+        # "modify" y se hacía commit, y si después faltaba la propuesta
+        # aprobada el 409 dejaba una fila suelta en `approvals`.
+        try:
+            collect_adr_context(db, user_id=user_id, project_id=project_id)
+        except AdrNotReadyError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
         stored = _stored_adr(
             db.query(UserSession).filter(UserSession.user_id == user_id).first(), project_id
         )
         history = list(stored.get("feedback_history") or [])
         if feedback:
-            # Se registra antes de juntar el contexto para que aparezca en el
-            # historial de decisiones del propio ADR.
             record_approval_decision(
                 db,
                 user_id=user_id,
@@ -160,15 +196,15 @@ async def generate_adr(
             history.append(feedback)
         # Un ADR nuevo (con o sin cambios) vuelve a necesitar aprobación: el
         # proyecto deja de estar terminado hasta que se apruebe otra vez.
-        project = db.get(Project, project_id)
-        if project is not None:
-            project.phase_ready = False
+        project.phase_ready = False
         db.commit()
-        try:
-            ctx = collect_adr_context(db, user_id=user_id, project_id=project_id)
-        except AdrNotReadyError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        # Se junta otra vez para que el "modify" recién registrado aparezca en
+        # el historial de decisiones del propio ADR.
+        ctx = collect_adr_context(db, user_id=user_id, project_id=project_id)
         ctx.revision_feedback = history
+    except HTTPException:
+        db.rollback()
+        raise
     finally:
         # La llamada al LLM puede tardar: no se mantiene la conexión abierta.
         db.close()
@@ -193,6 +229,10 @@ async def generate_adr(
         "markdown": markdown,
         "generated_at": _iso(generated_at),
         "guide_complete": guide is not None,
+        # La guía se guarda aparte para volver a armar el documento al
+        # aprobarlo sin llamar otra vez al LLM.
+        "guide": guide,
+        "diagram_attachment_id": ctx.diagram_attachment_id,
         "feedback_history": history,
         # Un ADR nuevo vuelve a necesitar aprobación.
         "approved_at": None,
@@ -214,14 +254,41 @@ async def generate_adr(
     return _out(new_stored)
 
 
+def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
+    """Vuelve a armar el ADR ya aprobado, sin LLM.
+
+    Antes ``/approve`` solo guardaba ``approved_at``: el ``.md`` descargado
+    seguía diciendo "Propuesto" y el historial no tenía la fila de la
+    aprobación. Se reutiliza la guía (sección 7) ya redactada; para los ADR
+    guardados antes de este cambio se recupera del propio markdown.
+    """
+    guide = stored.get("guide")
+    if guide is None and stored.get("guide_complete"):
+        guide = extract_guide_section(stored.get("markdown"))
+    ctx.revision_feedback = list(stored.get("feedback_history") or [])
+    ctx.approved_at = approved_at
+    generated_at = _parse_iso(stored.get("generated_at")) or datetime.now(tz=timezone.utc)
+    updated = dict(stored)
+    updated["markdown"] = render_adr_markdown(ctx, llm_sections=guide, generated_at=generated_at)
+    updated["guide"] = guide
+    updated["diagram_attachment_id"] = ctx.diagram_attachment_id
+    updated["approved_at"] = approved_at
+    return updated
+
+
 @router.post("/{project_id}/adr/approve", response_model=AdrOut)
 async def approve_adr(project_id: int, current_user: dict = Depends(get_current_user)):
-    """Aprueba el ADR: el proyecto queda terminado (fase lista)."""
+    """Aprueba el ADR: el proyecto queda terminado (fase lista).
+
+    El documento se vuelve a armar con el estado "Aceptado", la fecha de
+    aprobación y la fila de la aprobación en el historial de decisiones.
+    """
     user_id = int(current_user["user_id"])
     _require_project(user_id, project_id)
 
     db = SessionLocal()
     try:
+        project = _require_revision_phase(db, project_id)
         session_row = _session_row(db, user_id)
         stored = _stored_adr(session_row, project_id)
         if not stored.get("markdown"):
@@ -238,11 +305,15 @@ async def approve_adr(project_id: int, current_user: dict = Depends(get_current_
                 feedback=None,
                 project_id=project_id,
             )
-            stored["approved_at"] = _iso(datetime.now(tz=timezone.utc))
+            # record_approval_decision hace flush: la aprobación ya está en la
+            # sesión y aparece en el historial del ADR que se arma aquí.
+            try:
+                ctx = collect_adr_context(db, user_id=user_id, project_id=project_id)
+            except AdrNotReadyError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            stored = _rerender_approved(stored, ctx, _iso(datetime.now(tz=timezone.utc)))
             _save_adr(session_row, project_id, stored)
-        project = db.get(Project, project_id)
-        if project is not None:
-            project.phase_ready = True
+        project.phase_ready = True
         db.commit()
         return _out(stored)
     except HTTPException:

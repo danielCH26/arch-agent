@@ -125,11 +125,23 @@ class TestRenderAdr:
         assert "Todavía no se generó un diagrama" in md
         assert "```mermaid" not in md
 
-    def test_estado_segun_la_fase(self):
-        assert "| Estado | Aceptado |" in render_adr_markdown(_ctx(current_phase="final"), llm_sections=None)
-        assert "| Estado | Propuesto |" in render_adr_markdown(
-            _ctx(diagram_approved=False), llm_sections=None
+    def test_estado_segun_la_aprobacion_del_adr(self):
+        # Revisión: dependía de current_phase == "final", una fase que no existe
+        # en este flujo; el ADR aprobado se descargaba como "Propuesto".
+        approved = render_adr_markdown(
+            _ctx(approved_at="2026-10-17T15:00:00+00:00"), llm_sections=None
         )
+        assert "| Estado | Aceptado |" in approved
+        assert "| Aprobado | 2026-10-17 |" in approved
+        pending = render_adr_markdown(_ctx(), llm_sections=None)
+        assert "| Estado | Propuesto (pendiente de aprobación) |" in pending
+        assert "| Aprobado |" not in pending
+
+    def test_extract_guide_section_recupera_la_guia(self):
+        from app.core.adr_generator import extract_guide_section
+
+        assert extract_guide_section(render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)) == LLM_GUIDE
+        assert extract_guide_section(render_adr_markdown(_ctx(), llm_sections=None)) is None
 
 
 class TestCleanLlmSections:
@@ -148,6 +160,14 @@ class TestCleanLlmSections:
     def test_rechaza_respuestas_incompletas_o_vacias(self):
         assert clean_llm_sections(LLM_GUIDE.replace("Primer sprint", "Otra cosa")) is None
         assert clean_llm_sections("") is None
+
+    def test_acepta_titulos_sin_tildes_ni_mayusculas(self):
+        # Revisión: "tecnologico" sin tilde descartaba toda la sección 7.
+        text = (
+            LLM_GUIDE.replace("Stack tecnológico recomendado", "Stack tecnologico recomendado")
+            .replace("Plan de implementación", "PLAN DE IMPLEMENTACION")
+        )
+        assert clean_llm_sections(text) is not None
 
 
 class _FakeModel:
@@ -261,7 +281,22 @@ class TestCollectAdrContext:
         # El aprobado (A --> B), no el más reciente (X --> Y).
         assert ctx.mermaid == "flowchart TD\n  A --> B"
         assert ctx.diagram_approved is True
+        assert ctx.diagram_attachment_id == "att-1"
         assert [d.phase for d in ctx.decisions] == ["diagram", "propuesta"]
+
+    def test_un_diagrama_aprobado_y_despues_rechazado_ya_no_cuenta(self, db):
+        from app.models.approval import Approval
+
+        _seed(db)
+        db.add(Approval(session_id=1, project_id=5, phase="diagram", decision="rejected", attachment_id="att-1"))
+        db.commit()
+
+        ctx = collect_adr_context(db, user_id=1, project_id=5)
+
+        assert ctx.diagram_approved is False
+        # Sin aprobado vigente se usa el último generado.
+        assert ctx.mermaid == "flowchart TD\n  X --> Y"
+        assert ctx.diagram_attachment_id == "att-2"
 
     def test_sin_propuesta_aprobada_no_hay_adr(self, db):
         _seed(db, approved=False)

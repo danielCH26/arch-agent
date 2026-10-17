@@ -179,9 +179,15 @@ def sanitize_subgraph_statements(code: str) -> str:
 # los modelos escriben a menudo dentro de un flowchart. En flowchart es un error
 # de sintaxis y el diagrama no se puede renderizar; la forma válida es
 # ``A -->|texto| B``.
+#
+# El nodo puede llevar una clase (``B:::svc``). Antes ``dst`` cortaba en el
+# primer ``:`` y ``A --> B:::svc`` se convertía en ``A -->|::svc| B``. Ahora la
+# clase es parte del nodo y el ``:`` de la etiqueta no puede ir seguido de otro.
+_NODE_WITH_CLASS = r"[^\s:|]+(?::::[\w-]+)?"
 _EDGE_WITH_COLON_LABEL = re.compile(
-    r"^(?P<indent>\s*)(?P<src>[^\s:|]+)\s*(?P<arrow>-->|---|-\.->|==>|--x|--o)\s*"
-    r"(?P<dst>[^\s:|]+)\s*:\s*(?P<label>.+?)\s*;?\s*$"
+    r"^(?P<indent>\s*)(?P<src>" + _NODE_WITH_CLASS + r")\s*"
+    r"(?P<arrow>-->|---|-\.->|==>|--x|--o)\s*"
+    r"(?P<dst>" + _NODE_WITH_CLASS + r")\s*:(?!:)\s*(?P<label>.+?)\s*;?\s*$"
 )
 
 

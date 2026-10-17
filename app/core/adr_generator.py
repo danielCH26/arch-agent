@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -31,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.core.env import env_float, env_int
 from app.core.mermaid_validator import extract_mermaid_block
+from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
@@ -110,6 +112,12 @@ class AdrContext:
     decisions: list[AdrDecision] = field(default_factory=list)
     # Cambios pedidos en la fase Revisión ("Solicitar cambios"), en orden.
     revision_feedback: list[str] = field(default_factory=list)
+    # ISO del momento en que se aprobó el ADR (lo pone el endpoint /approve).
+    # El estado del documento sale de aquí, no de la fase del proyecto.
+    approved_at: Optional[str] = None
+    # Captura del diagrama que se usó: el panel muestra esa misma imagen, así
+    # la imagen y el Mermaid del ADR son siempre el mismo diagrama.
+    diagram_attachment_id: Optional[str] = None
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -130,9 +138,14 @@ def _content_to_text(content: Any) -> str:
 
 def _approved_mermaid(
     db: Session, *, user_id: int, project_id: int
-) -> tuple[Optional[str], bool]:
+) -> tuple[Optional[str], bool, Optional[str]]:
     """Mermaid del diagrama aprobado más reciente; si ninguno está aprobado, el
-    del último diagrama generado. Devuelve ``(codigo, aprobado)``."""
+    del último diagrama generado. Devuelve ``(codigo, aprobado, attachment_id)``.
+
+    "Aprobado" es la ÚLTIMA decisión de cada diagrama (``latest_diagram_decisions``,
+    la misma que usa el historial de diagramas del panel): un diagrama que se
+    aprobó y después se rechazó ya no cuenta como aprobado.
+    """
     rows = (
         db.query(Message)
         .filter(
@@ -144,32 +157,32 @@ def _approved_mermaid(
         .limit(200)
         .all()
     )
-    approved_ids = {
-        row.attachment_id
-        for row in db.query(Approval)
-        .filter(
-            Approval.project_id == project_id,
-            Approval.phase == DIAGRAM_PHASE,
-            Approval.attachment_id.isnot(None),
-        )
-        .order_by(Approval.id.asc())
-        .all()
-        if row.decision in ("approved", "approve")
-    }
-
-    fallback: Optional[str] = None
+    candidates: list[tuple[str, list[str]]] = []
     for row in rows:
         code = extract_mermaid_block(row.content or "")
         if not code:
             continue
-        attachment_ids = {
-            att.get("id") for att in (row.attachments or []) if isinstance(att, dict)
-        }
-        if approved_ids & attachment_ids:
-            return code, True
-        if fallback is None:
-            fallback = code
-    return fallback, False
+        attachments = [
+            att for att in (row.attachments or []) if isinstance(att, dict) and att.get("id")
+        ]
+        # La captura (kind=screenshot) es la que lista el historial de
+        # diagramas del panel: se usa esa para que coincidan.
+        screenshots = [att for att in attachments if att.get("kind") == "screenshot"]
+        candidates.append((code, [str(att["id"]) for att in (screenshots or attachments)]))
+    if not candidates:
+        return None, False, None
+
+    decisions = latest_diagram_decisions(
+        db,
+        project_id=project_id,
+        attachment_ids=[att_id for _code, ids in candidates for att_id in ids],
+    )
+    for code, ids in candidates:
+        approved = next((att_id for att_id in ids if decisions.get(att_id) == "approve"), None)
+        if approved:
+            return code, True, approved
+    code, ids = candidates[0]
+    return code, False, (ids[0] if ids else None)
 
 
 def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrContext:
@@ -202,7 +215,7 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         project_state = raw if isinstance(raw, dict) else {}
     elicitation = project_state.get(ELICITATION_PHASE) or {}
 
-    mermaid, diagram_approved = _approved_mermaid(
+    mermaid, diagram_approved, diagram_attachment_id = _approved_mermaid(
         db, user_id=user_id, project_id=project_id
     )
 
@@ -234,6 +247,7 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         citations=list(proposal.citations or []),
         mermaid=mermaid,
         diagram_approved=diagram_approved,
+        diagram_attachment_id=diagram_attachment_id,
         decisions=decisions,
     )
 
@@ -330,9 +344,46 @@ def _elicitation_annex(preguntas_respuestas: list[dict]) -> str:
 
 
 def _status(ctx: AdrContext) -> str:
-    if ctx.current_phase == "final":
+    """Estado del ADR según su aprobación (``approved_at``).
+
+    Antes dependía de ``current_phase == "final"``, una fase que no existe en
+    este flujo (termina en Revisión): un ADR aprobado se descargaba diciendo
+    "Aceptado (pendiente de cierre)" o "Propuesto".
+    """
+    if ctx.approved_at:
         return "Aceptado"
-    return "Aceptado (pendiente de cierre)" if ctx.diagram_approved else "Propuesto"
+    return "Propuesto (pendiente de aprobación)"
+
+
+def _approved_date(ctx: AdrContext) -> str:
+    try:
+        return datetime.fromisoformat(str(ctx.approved_at)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(ctx.approved_at or "—")
+
+
+_FALLBACK_NOTICE = (
+    "> **Aviso:** no se pudo redactar esta parte con el modelo de lenguaje "
+    "(límite de uso, tiempo de espera o respuesta incompleta). El resto del "
+    "documento está completo. Usa **Regenerar ADR** para intentarlo de nuevo."
+)
+
+
+def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
+    """La guía (sección 7) tal como quedó en un ADR ya generado.
+
+    Sirve para volver a armar el documento al aprobarlo sin llamar al LLM.
+    ``None`` si el ADR no la tiene (salió con el aviso de respaldo).
+    """
+    if not markdown:
+        return None
+    match = re.search(
+        r"^## 7\. Guía para empezar\s*\n(.*?)(?=^## Anexo A\.|\Z)", markdown, re.S | re.M
+    )
+    body = match.group(1).strip() if match else ""
+    if not body or body.startswith("> **Aviso:**"):
+        return None
+    return body
 
 
 def render_adr_markdown(
@@ -369,14 +420,8 @@ def render_adr_markdown(
         else ""
     )
 
-    if llm_sections and llm_sections.strip():
-        guide = llm_sections.strip()
-    else:
-        guide = (
-            "> **Aviso:** no se pudo redactar esta parte con el modelo de lenguaje "
-            "(límite de uso, tiempo de espera o respuesta incompleta). El resto del "
-            "documento está completo. Usa **Regenerar ADR** para intentarlo de nuevo."
-        )
+    guide = llm_sections.strip() if llm_sections and llm_sections.strip() else _FALLBACK_NOTICE
+    approved_row = f"| Aprobado | {_approved_date(ctx)} |\n" if ctx.approved_at else ""
 
     return f"""# ADR-001: Arquitectura de {ctx.project_name}
 
@@ -384,7 +429,7 @@ def render_adr_markdown(
 |---|---|
 | Estado | {_status(ctx)} |
 | Fecha | {generated_at.strftime('%Y-%m-%d')} |
-| Proyecto | {_cell(ctx.project_name)} |
+{approved_row}| Proyecto | {_cell(ctx.project_name)} |
 | Fase actual | {PHASE_LABELS.get(ctx.current_phase or '', ctx.current_phase or '—')} |
 | Propuesta | {iterations} |
 | Generado por | ArchAgent |
@@ -551,10 +596,22 @@ def clean_llm_sections(text: str) -> Optional[str]:
     if fenced:
         body = fenced.group(1).strip()
     body = re.sub(r"^#{1,2}\s+(?!#)", "### ", body, flags=re.M)
-    lowered = body.lower()
-    if not body or any(section.lower() not in lowered for section in LLM_SECTIONS):
+    # Sin acentos ni mayúsculas: "Stack tecnologico" vale igual que "Stack
+    # tecnológico". Antes una tilde de menos descartaba toda la sección 7
+    # después de haber gastado los tokens.
+    normalized = _normalize(body)
+    if not body or any(_normalize(section) not in normalized for section in LLM_SECTIONS):
         return None
     return body
+
+
+def _normalize(text: str) -> str:
+    """Minúsculas y sin acentos (misma idea que ``proposal_generator._normalize_text``)."""
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", (text or "").casefold())
+        if unicodedata.category(char) != "Mn"
+    )
 
 
 async def generate_llm_sections(

@@ -310,3 +310,14 @@ def test_sanitize_subgraph_id_collisions_keeps_subgraph_targeted_by_edges():
 def test_sanitize_subgraph_id_collisions_ignores_other_diagram_types():
     code = "sequenceDiagram\n  A->>B: hola"
     assert sanitize_subgraph_id_collisions(code) == code
+
+
+def test_sanitize_edge_labels_keeps_class_syntax_on_the_target_node():
+    # Revisión: `A --> B:::svc` se convertía en `A -->|::svc| B`.
+    code = "flowchart TD\n  A --> B:::svc"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+def test_sanitize_edge_labels_moves_the_label_and_keeps_both_classes():
+    code = 'flowchart TD\n  A:::web --> B:::svc : "HTTP"'
+    assert sanitize_flowchart_edge_labels(code) == "flowchart TD\n  A:::web -->|HTTP| B:::svc"

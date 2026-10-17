@@ -9,6 +9,8 @@ export interface AdrOut {
   feedback_history: string[]
   // Momento en que se aprobó el ADR (proyecto terminado), o null.
   approved_at: string | null
+  // Adjunto del diagrama que usa el ADR, para mostrar esa misma imagen.
+  diagram_attachment_id?: string | null
 }
 
 const adrPath = (projectId: number) => `/api/projects/${encodeURIComponent(String(projectId))}/adr`

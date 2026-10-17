@@ -9,7 +9,7 @@ vi.mock('../../api/diagrams', async (importOriginal) => {
   return { ...actual, fetchDiagramHistory: vi.fn() }
 })
 
-import { AdrPanel, adrFilename } from '../AdrPanel'
+import { AdrPanel, adrFilename, pickAdrDiagram } from '../AdrPanel'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
 
@@ -151,6 +151,46 @@ describe('AdrPanel', () => {
     await waitFor(() => expect(screen.getByTestId('adr-diagram')).toBeInTheDocument())
     expect(screen.getByAltText('Diagrama de la arquitectura del proyecto')).toHaveAttribute('src', '/aprobado.png')
     expect(screen.getByText('Diagrama aprobado')).toBeInTheDocument()
+  })
+
+  it('muestra la misma imagen que el diagrama del ADR', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, diagram_attachment_id: 'b' })
+    vi.mocked(fetchDiagramHistory).mockResolvedValue([
+      { message_id: 2, id: 'b', url: '/del-adr.png', filename: null, created_at: '', decision: null },
+      { message_id: 1, id: 'a', url: '/aprobado-antes.png', filename: null, created_at: '', decision: 'approve' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-diagram')).toBeInTheDocument())
+    expect(screen.getByAltText('Diagrama de la arquitectura del proyecto')).toHaveAttribute('src', '/del-adr.png')
+  })
+
+  it('pickAdrDiagram usa el aprobado o el último si el ADR no dice cuál', () => {
+    const list = [
+      { message_id: 2, id: 'b', url: '/b.png', filename: null, created_at: '', decision: null },
+      { message_id: 1, id: 'a', url: '/a.png', filename: null, created_at: '', decision: 'approve' as const },
+    ]
+    expect(pickAdrDiagram(list, 'b')?.url).toBe('/b.png')
+    expect(pickAdrDiagram(list, 'no-existe')?.url).toBe('/a.png')
+    expect(pickAdrDiagram(list, null)?.url).toBe('/a.png')
+    expect(pickAdrDiagram([], null)).toBeNull()
+  })
+
+  it('un ADR aprobado se puede reabrir pidiendo cambios', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, approved_at: '2026-10-16T16:00:00+00:00' })
+    vi.mocked(generateAdr).mockResolvedValue({ ...ADR, feedback_history: ['Agregar auditoría'] })
+
+    renderPanel()
+    await userEvent.click(await screen.findByTestId('adr-reopen'))
+    expect(screen.getByTestId('adr-reopen-note')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('¿Qué quieres cambiar en el ADR?'), 'Agregar auditoría')
+    await userEvent.click(screen.getByTestId('adr-send-changes'))
+
+    expect(generateAdr).toHaveBeenCalledWith(5, 'Agregar auditoría')
+    // Reabierto: vuelve a pedir aprobación.
+    expect(await screen.findByTestId('adr-approve')).toBeInTheDocument()
+    expect(screen.queryByTestId('adr-completed')).not.toBeInTheDocument()
   })
 
   it('arma un nombre de archivo seguro', () => {

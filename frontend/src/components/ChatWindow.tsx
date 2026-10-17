@@ -72,7 +72,8 @@ export function ChatWindow({
   const proposalStreaming = proposalsStore((s) => s.activity === 'generating' || s.activity === 'modifying')
   const showProposalCard = currentPhase === 'propuesta' || proposalStreaming
   // Revisión (y Cierre, para volver a descargarlo): el ADR del proyecto.
-  const showAdrPanel = currentPhase === 'revision' || currentPhase === 'final'
+  // El flujo termina en Revisión: ahí vive el ADR (no hay fase 'final').
+  const showAdrPanel = currentPhase === 'revision'
   const projectName = projectsStore((s) => (s.currentProject?.id === projectId ? s.currentProject?.name : null))
   const messagesEndRef = useRef<HTMLDivElement>(null)
   // Anuncios para lectores de pantalla: la respuesta llega por fragmentos,
