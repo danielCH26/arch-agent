@@ -109,7 +109,7 @@ class TestLoadUserLLMConfig:
 
     @patch("app.core.llm_loader.SessionLocal")
     def test_partial_config_without_model_ok_for_wizard(self, mock_session_local):
-        """Soomri round-2: con ``allow_default=False`` (los endpoints del
+        """Con ``allow_default=False`` (los endpoints del
         wizard), una config parcial (base_url + key, sin modelo) se devuelve
         con ``model=""`` para que step3 la complete. El chequeo de modelo
         vacio solo corre en el camino de chat (``allow_default=True``),

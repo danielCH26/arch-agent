@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import re
@@ -14,7 +14,7 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import build_langchain_model, LLMConfigError, user_facing_message
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
@@ -234,7 +234,7 @@ async def chat(
         404 ╬ô├ç├╢ project not found or not owned
         409 ╬ô├ç├╢ LLM not configured for user
 
-    F11 changes (issue #13, design.md Γö¼┬║6.5):
+    F11 changes (issue #13, design.md §6.5):
       - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
         callbacks=..., rag_documents=...)`` which drives a
         ``create_agent`` runtime.
@@ -256,7 +256,7 @@ async def chat(
     AFTER the commit. Either store degrades gracefully when the other is down.
     """
     if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacΓö£┬ío")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacío")
 
     user_id = current_user["user_id"]
 
@@ -307,14 +307,16 @@ async def chat(
     try:
         model = build_langchain_model(user_id)
     except LLMConfigError as e:
-        if e.reason == "initialization_failed":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            )
+        # El detalle técnico va al log; al usuario, un mensaje según el motivo
+        # (p. ej. "te falta elegir el modelo" si dejó el wizard en el paso 3).
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+                if e.reason == "initialization_failed"
+                else status.HTTP_409_CONFLICT
+            ),
+            detail=user_facing_message(e),
         )
 
     # Build SSE streaming handler + optional Langfuse callback
@@ -397,7 +399,7 @@ async def chat(
         """
         SSE generator that yields events as they arrive from the agent runtime.
 
-        Ordering (design.md Γö¼┬║5.2):
+        Ordering (design.md §5.2):
           sources -> (tool_start/tool_end)* -> token*N -> done
 
         ``sources`` is emitted by this route BEFORE the agent runs (the agent
@@ -559,7 +561,7 @@ async def chat(
             if not emitted_done:
                 # Defensive: if ``run_agent`` returned without yielding
                 # ``done`` or ``error``, fire ``done`` to keep the FE
-                # contract stable (design.md Γö¼┬║9).
+                # contract stable (design.md §9).
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)

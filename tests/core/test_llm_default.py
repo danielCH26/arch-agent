@@ -33,13 +33,6 @@ def _patch_user(monkeypatch, user):
     """Parchea la sesion de DB para que devuelva `user` sin tocar Postgres."""
     from app.core import llm_loader
 
-    class _Result:
-        def get(self, _model, _user_id):
-            return user
-
-        def close(self):
-            pass
-
     class _Session:
         def get(self, _model, _user_id):
             return user
@@ -60,23 +53,27 @@ class TestConstantesDelDefault:
         # Production, no Preview. Ver la nota de descarte de qwen3.8-27b en #98.
         assert DEFAULT_LLM_MODEL == "openai/gpt-oss-120b"
 
-    def test_el_default_no_viene_del_entorno(self):
-        """La URL del default es constante, no se overridea por env.
+    def test_el_default_no_viene_del_entorno(self, monkeypatch):
+        """La URL y el modelo del default son constantes, no se overridean por env.
 
-        Si fuera configurable, alguien la podria apuntar a cualquier endpoint
-        y el default del sistema dejaria de ser un default.
+        Si fueran configurables, alguien podria apuntarlos a cualquier
+        endpoint y el default del sistema dejaria de ser un default. Se llama a
+        ``_load_system_default`` con las variables de entorno seteadas: si la
+        funcion las leyera, este test falla (antes solo comparaba la constante
+        consigo misma y no detectaba nada).
         """
-        import os
+        from app.core.llm_loader import _load_system_default
 
-        original = os.environ.get("LLM_BASE_URL")
-        os.environ["LLM_BASE_URL"] = "https://evil.example.com/v1"
-        try:
-            assert DEFAULT_LLM_BASE_URL == "https://api.groq.com/openai/v1"
-        finally:
-            if original is None:
-                os.environ.pop("LLM_BASE_URL", None)
-            else:
-                os.environ["LLM_BASE_URL"] = original
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
+        monkeypatch.setenv("LLM_BASE_URL", "https://evil.example.com/v1")
+        monkeypatch.setenv("LLM_MODEL", "modelo-del-entorno")
+
+        default = _load_system_default(user_id=1)
+
+        assert default is not None
+        assert default.base_url == DEFAULT_LLM_BASE_URL
+        assert default.model == DEFAULT_LLM_MODEL
+        assert default.source == "system_default"
 
 
 class TestFallbackAlDefault:
@@ -311,8 +308,10 @@ class TestUsuarioDesconocido:
         monkeypatch.setattr(llm_loader, "SessionLocal", lambda: _Session())
         monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
 
-        with pytest.raises(LLMConfigError):
+        with pytest.raises(LLMConfigError) as exc:
             load_user_llm_config(user_id=999)
+        # Motivo propio: no se confunde con "missing" (falta el modelo).
+        assert exc.value.reason == "user_not_found"
 
 
 class TestAllowDefault:
@@ -345,3 +344,23 @@ class TestAllowDefault:
 
         assert config.source == "system_default"
         assert config.api_key == "gsk_test_default"
+
+
+class TestMensajeParaElUsuario:
+    """Lo que ve el usuario final (chat, elicitacion, propuestas)."""
+
+    def test_quien_dejo_el_wizard_en_el_paso_3_sabe_que_le_falta_el_modelo(self):
+        from app.core.llm_loader import user_facing_message
+
+        mensaje = user_facing_message(LLMConfigError("x", reason="missing"))
+        assert "paso 3" in mensaje
+        assert "modelo" in mensaje
+
+    def test_no_expone_detalles_del_backend(self):
+        from app.core.llm_loader import user_facing_message
+
+        for reason in ("missing", "not_configured", "decryption_failed",
+                       "initialization_failed", "user_not_found", "otro"):
+            mensaje = user_facing_message(LLMConfigError("GROQ_API_KEY detalle", reason=reason))
+            assert "GROQ_API_KEY" not in mensaje
+            assert "POST /api" not in mensaje

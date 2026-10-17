@@ -616,7 +616,7 @@ class TestSendElicitationMessage:
                 "resumen": None,
             }}}
         }
-        mock_build_model.side_effect = LLMConfigError("sin config")
+        mock_build_model.side_effect = LLMConfigError("sin modelo", reason="missing")
 
         with pytest.raises(HTTPException) as exc_info:
             run(send_elicitation_message(
@@ -625,6 +625,8 @@ class TestSendElicitationMessage:
             ))
 
         assert exc_info.value.status_code == 409
+        # Quien dejó el wizard en el paso 3 sabe qué le falta.
+        assert "paso 3" in exc_info.value.detail
 
     @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.elicitation_agent.next_step")

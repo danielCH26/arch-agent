@@ -7,6 +7,7 @@ Issue: #7 - HU12 Configuración de LLM
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -104,15 +105,57 @@ def _acepta_temperature(model: str) -> bool:
 
 
 class LLMConfigError(Exception):
-    """El usuario no tiene configuración LLM válida."""
+    """El usuario no tiene configuración LLM válida.
+
+    ``reason`` distingue el modo de falla:
+      - ``"not_configured"``: el usuario no tiene base_url + api_key y no hay
+        LLM por defecto (o el caller no lo permite).
+      - ``"missing"``: tiene base_url + api_key pero no eligió modelo (paso 3
+        del wizard).
+      - ``"decryption_failed"``: la API key guardada no se puede desencriptar.
+      - ``"user_not_found"``: el ``user_id`` no existe.
+      - ``"initialization_failed"``: langchain no pudo construir el modelo.
+
+    El mensaje (``str(exc)``) es para logs y para el wizard. A un usuario final
+    se le muestra ``user_facing_message(exc)``, que no expone detalles del
+    backend (por ejemplo, el nombre de la variable ``GROQ_API_KEY``).
+    """
 
     def __init__(self, message: str, reason: str = "missing"):
         super().__init__(message)
-        # Sub-tipo del error. Call sites pueden inspeccionarlo para
-        # distinguir entre "no config" y otros modos de falla.
-        # Valores esperados: "missing", "decryption_failed", "user_not_found",
-        # "initialization_failed".
         self.reason = reason
+
+
+_USER_FACING_MESSAGES = {
+    "missing": (
+        "Te falta elegir el modelo: completa el paso 3 de la configuración del "
+        "LLM para seguir usando tu propia API key."
+    ),
+    "not_configured": (
+        "No hay un modelo de lenguaje configurado. Configura tu proveedor en la "
+        "sección de configuración del LLM."
+    ),
+    "decryption_failed": (
+        "No se pudo leer la API key guardada. Vuelve a ingresarla en la "
+        "configuración del LLM."
+    ),
+    "initialization_failed": (
+        "No se pudo iniciar el modelo configurado. Revisa el modelo elegido en "
+        "la configuración del LLM."
+    ),
+    "user_not_found": "Usuario no encontrado.",
+}
+
+
+def user_facing_message(exc: "LLMConfigError") -> str:
+    """Mensaje para el usuario final según ``exc.reason``.
+
+    Lo usan chat, elicitación y propuestas. En particular, quien completó los
+    pasos 1 y 2 del wizard pero no el 3 (``reason="missing"``) recibe un
+    mensaje que le dice que le falta elegir el modelo, en vez del genérico.
+    """
+    return _USER_FACING_MESSAGES.get(exc.reason, _USER_FACING_MESSAGES["not_configured"])
+
 
 @dataclass
 class UserLLMConfig:
@@ -168,43 +211,33 @@ def load_user_llm_config(user_id: int, allow_default: bool = True) -> UserLLMCon
     """
     Carga la configuración LLM del usuario desde la DB.
 
+    Orden de resolución:
+      1. Si el usuario tiene base_url + api_key, se usa SU config (la propia
+         siempre gana). Si además le falta el modelo:
+           - con ``allow_default=True`` (chat, elicitación, propuestas) se
+             lanza ``reason="missing"``: no se completa con el modelo del
+             default, porque mezclar su endpoint con un modelo de Groq da un
+             400 en el primer request;
+           - con ``allow_default=False`` (wizard: step3 y available-models) se
+             devuelve con ``model=""``, porque esos endpoints existen justo
+             para el momento en que todavía no eligió modelo.
+      2. Si no tiene base_url + api_key y ``allow_default=True``, se usa el
+         LLM por defecto del backend (si ``GROQ_API_KEY`` está definida).
+      3. Si no, ``reason="not_configured"``.
+
     Args:
         user_id: ID del usuario.
-        allow_default: si True (default), cae al LLM del sistema cuando el
-            usuario no tiene config completa. Si False, propaga
-            ``LLMConfigError(reason="not_configured")`` en su lugar. Los
-            endpoints del wizard (step3, available-models) lo pasan en False
-            porque necesitan que el usuario complete los pasos antes de
-            continuar; el camino de chat lo deja en True para que un usuario
-            nuevo pueda hablar sin tener que configurar nada.
+        allow_default: si es False, nunca se cae al LLM del sistema y una
+            config sin modelo se devuelve tal cual (``model=""``).
 
     Returns:
-        UserLLMConfig con la API key ya desencriptada y el model (puede
-        ser vacio si el user no completo todavia el step3 del wizard).
+        UserLLMConfig con la API key ya desencriptada.
 
     Raises:
-        LLMConfigError: si el usuario no tiene config o está corrupta.
-            El atributo ``reason`` distingue los modos:
-              - ``"not_configured"``: no hay config del usuario y (si
-                ``allow_default=False``) tampoco se pidio fallback al sistema.
-            ``"- decryption_failed"``: la API key en DB no se puede desencriptar.
-            ``"- missing"``: hay base_url + api_key del usuario pero falta el
-                modelo. Antes del fix B3 se completaba con el del default, lo
-                que mezclaba el endpoint del usuario con un id de modelo que
-                ese provider no reconoce (400 silencioso al primer request).
-            ``"- initialization_failed"``: error al construir el chat model.
-
-    Nota historica: antes esta funcion requeria que `llm_model` estuviera
-    seteado, pero eso rompe el flujo del wizard: despues de step2 el
-    user tiene base_url + api_key guardadas pero todavia no eligio
-    modelo, asi que available-models (que se llama justo despues de
-    step2) falla con 404. Por eso ahora solo exigimos base_url +
-    api_key. La validacion de model vacio se hace mas adelante (en
-    build_langchain_model, que es donde realmente importa).
-
-    Desde #98, si al usuario le falta cualquiera de los tres campos, se intenta
-    el LLM por defecto del backend. El default es el ULTIMO recurso: solo aplica
-    cuando la config del usuario esta incompleta, nunca la pisa.
+        LLMConfigError: con ``reason`` ``"user_not_found"``,
+            ``"not_configured"``, ``"decryption_failed"`` o ``"missing"`` (ver
+            la clase). ``"initialization_failed"`` no sale de aquí: lo lanza
+            ``build_langchain_model`` al construir el modelo.
     """
     db = SessionLocal()
     try:
@@ -213,7 +246,7 @@ def load_user_llm_config(user_id: int, allow_default: bool = True) -> UserLLMCon
             # Un user_id que no existe es un bug o un ataque, no "usuario sin
             # configurar". Darle el default abriria la puerta a que cualquier
             # id desbordado reciba el LLM del sistema.
-            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+            raise LLMConfigError(f"Usuario {user_id} no encontrado", reason="user_not_found")
 
         if not user.llm_base_url or not user.encrypted_api_key:
             if allow_default:
@@ -242,16 +275,11 @@ def load_user_llm_config(user_id: int, allow_default: bool = True) -> UserLLMCon
             # Mezclar el modelo del default con el endpoint del usuario
             # genera un 400 (modelo Groq contra endpoint OpenAI, por
             # ejemplo). En el camino de chat no hay como completarlo:
-            # error claro.
+            # error claro (``user_facing_message`` le dice que elija modelo).
             #
-            # Soomri round-2 (bloqueante sobre d58d3ca): con
-            # ``allow_default=False`` (los endpoints del wizard: step3 y
-            # available-models) la config parcial se devuelve con
-            # ``model=""`` -- esos endpoints existen justamente para el
-            # momento en que el usuario todavia no eligio modelo. Chequear
-            # siempre reintroducia el bug historico: nadie podia terminar
-            # el wizard. El docstring "Nota historica" de esta funcion lo
-            # documenta; d58d3ca lo revirtio sin querer.
+            # Con ``allow_default=False`` (wizard: step3 y available-models)
+            # NO se chequea: la config parcial vuelve con ``model=""``. Si se
+            # chequeara siempre, nadie podría terminar el wizard.
             raise LLMConfigError(
                 f"Usuario {user_id} completo los pasos 1 y 2 pero no el 3. "
                 "Elegi un modelo antes de continuar.",
@@ -291,19 +319,12 @@ def build_langchain_model(
     Raises:
         LLMConfigError: si no se puede construir el modelo
     """
-    import time
-
-    # 1. Verificar cache. El default del sistema se resuelve SIEMPRE fresco
-    #    (ver `_load_system_default`): cacheado por user_id, un usuario que lo
-    #    recibiera y despues completara el wizard seguiria viendo el default
-    #    hasta que expirara el TTL.
+    # 1. Verificar cache. Solo contiene configs del usuario (``source ==
+    #    "user"``, ver el paso 4): el default del sistema se resuelve siempre
+    #    fresco (ver `_load_system_default`).
     if not force_reload and user_id in _session_cache:
         cached_config, expires_at = _session_cache[user_id]
         if time.time() < expires_at:
-            if cached_config.source == "system_default":
-                fresh = _load_system_default(user_id)
-                if fresh is not None:
-                    return _init_model(fresh)
             return _init_model(cached_config)
 
     # 2. Cargar config fresca desde DB (con fallback al default del sistema)
@@ -311,6 +332,8 @@ def build_langchain_model(
 
     # 3. Observabilidad: el origen va al log, la key nunca. Sin esto no hay
     #    forma de saber cuanto trafico consume la cuenta del operador (#98).
+    #    Ojo con el volumen: las configs del default no se cachean, así que
+    #    esta línea sale en CADA request de un usuario que usa el default.
     _LOGGER.info(
         "llm_config resuelta: source=%s model=%s base_url=%s",
         config.source,
@@ -403,7 +426,7 @@ def save_user_llm_config(
     try:
         user = db.get(User, user_id)
         if user is None:
-            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+            raise LLMConfigError(f"Usuario {user_id} no encontrado", reason="user_not_found")
 
         user.llm_base_url = base_url
         user.llm_model = model
@@ -427,7 +450,7 @@ def update_user_base_url_only(user_id: int, base_url: str) -> None:
     try:
         user = db.get(User, user_id)
         if user is None:
-            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+            raise LLMConfigError(f"Usuario {user_id} no encontrado", reason="user_not_found")
         user.llm_base_url = base_url
         db.commit()
     finally:
@@ -448,7 +471,7 @@ def update_user_credentials(user_id: int, base_url: str, api_key: str) -> None:
     try:
         user = db.get(User, user_id)
         if user is None:
-            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+            raise LLMConfigError(f"Usuario {user_id} no encontrado", reason="user_not_found")
         user.llm_base_url = base_url
         user.encrypted_api_key = encrypt(api_key)
         db.commit()
@@ -468,7 +491,7 @@ def update_user_model_only(user_id: int, model: str) -> None:
     try:
         user = db.get(User, user_id)
         if user is None:
-            raise LLMConfigError(f"Usuario {user_id} no encontrado")
+            raise LLMConfigError(f"Usuario {user_id} no encontrado", reason="user_not_found")
         user.llm_model = model
         db.commit()
     finally:

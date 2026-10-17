@@ -30,7 +30,7 @@ from sqlalchemy import text
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.env import env_float, env_int
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import build_langchain_model, LLMConfigError, user_facing_message
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.query_profile import (
@@ -429,7 +429,12 @@ class ProposalGenerator:
                 "context",
             )
         except LLMConfigError as exc:
-            yield _error_event(str(exc), ERR_LLM_CONFIG)
+            # str(exc) puede nombrar detalles del backend (GROQ_API_KEY): va
+            # al log, y por SSE llega el mismo mensaje genérico del chat.
+            logger.warning(
+                "LLM no disponible para user_id=%s: %s (%s)", self.user_id, exc, exc.reason
+            )
+            yield _error_event(user_facing_message(exc), ERR_LLM_CONFIG)
             return
 
         # 3. Build summary query for RAG. Con perfil estructurado (dominio,

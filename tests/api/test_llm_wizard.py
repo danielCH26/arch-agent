@@ -684,8 +684,8 @@ class TestAvailableModelsEndpoint:
         """User con base_url + api_key pero sin modelo: available-models
         funciona con las credenciales DEL USUARIO, sin caer al default.
 
-        Restaura el comportamiento original (regresion introducida por
-        d58d3ca y detectada por Soomri round-2): available-models se llama
+        Restaura el comportamiento original (regresion de una version previa
+        de este PR): available-models se llama
         justo despues de step2 para mostrar la lista de modelos, cuando
         ``llm_model`` todavia es None. El loader con
         ``allow_default=False`` debe devolver la config parcial (con
@@ -738,9 +738,9 @@ class TestAvailableModelsEndpoint:
     def test_step3_saves_model_for_mid_wizard_user(
         self, mock_session, mock_update
     ):
-        """Soomri round-2 bloqueante: un user con base_url + api_key y
-        ``llm_model=None`` debe poder completar step3. d58d3ca hacia que
-        el loader levantara ``reason="missing"`` para este caso y step3
+        """Un user con base_url + api_key y ``llm_model=None`` debe poder
+        completar step3. Una version previa de este PR hacia que el loader
+        levantara ``reason="missing"`` para este caso y step3
         respondia 404 'Completá los pasos 1 y 2 primero' sin persistir
         nada -- nadie podia terminar el wizard."""
         from app.core.encryption import encrypt
