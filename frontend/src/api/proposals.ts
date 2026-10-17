@@ -12,6 +12,28 @@ export interface ProposalCitation {
     ventajas?: string[]
     desventajas?: string[]
   }
+  // HU8: número [n] con el que la propuesta cita la fuente y datos para verificarla.
+  index?: number
+  category?: string | null
+  chunk_type?: string | null
+  source?: ProposalCitationSource
+  verify_url?: string | null
+}
+
+export interface ProposalCitationSource {
+  type: 'curated_catalog' | 'source_upload'
+  label: string
+  filename: string | null
+}
+
+/** HU8: la propuesta cita patrones si declara el patrón principal recuperado y lo justifica. */
+export interface ProposalJustification {
+  cites_patterns: boolean
+  declared_primary: string | null
+  primary_pattern_id: number | null
+  primary_pattern_name: string | null
+  primary_in_sources: boolean
+  justified: boolean
 }
 
 export type ProposalLifecycle = 'proposed' | 'approved' | 'rejected'
@@ -26,6 +48,7 @@ export interface ProposalOut {
   feedback: string | null
   lifecycle: ProposalLifecycle
   created_at: string
+  justification?: ProposalJustification | null
 }
 
 export interface ProjectProposalState {
@@ -99,7 +122,8 @@ interface ProposalStreamCallbacks {
   onSources: (citations: ProposalCitation[]) => void
   /** Opcional: un front/consumidor que no muestre progreso puede omitirlo. */
   onProgress?: (progress: ProposalProgress) => void
-  onDone: (proposalId: number, citations: ProposalCitation[]) => void
+  /** `iteration`: número que guardó el backend (no se calcula en el cliente). */
+  onDone: (proposalId: number, citations: ProposalCitation[], iteration?: number) => void
   /**
    * `status`: código HTTP cuando el error viene de la respuesta (p. ej. 409).
    * `info` solo llega si el error vino del evento SSE `error` estructurado.
@@ -154,8 +178,9 @@ function parseEvent(rawEvent: string, callbacks: ProposalStreamCallbacks): boole
   }
   if (name === 'done') {
     try {
-      const parsed = JSON.parse(payload) as { proposal_id: number; citations?: ProposalCitation[] }
-      callbacks.onDone(parsed.proposal_id, parsed.citations ?? [])
+      const parsed = JSON.parse(payload) as { proposal_id: number; citations?: ProposalCitation[]; iteration?: number }
+      if (typeof parsed.iteration === 'number') callbacks.onDone(parsed.proposal_id, parsed.citations ?? [], parsed.iteration)
+      else callbacks.onDone(parsed.proposal_id, parsed.citations ?? [])
     } catch { callbacks.onError('La propuesta terminó con un formato inválido.') }
     return true
   }
@@ -242,10 +267,14 @@ export function createProposalStream(
   return () => controller.abort()
 }
 
-export function decideProposal(proposalId: number, decision: ProposalDecision, comment?: string) {
+/**
+ * `projectId`: proyecto abierto en la UI. El backend responde 409 si la
+ * propuesta es de otro proyecto, en vez de decidir sobre el proyecto dueño.
+ */
+export function decideProposal(proposalId: number, decision: ProposalDecision, comment?: string, projectId?: number) {
   return apiFetch<ProposalDecisionResponse>(`/api/proposals/${proposalId}/decide`, {
     method: 'POST',
-    body: JSON.stringify({ decision, comment }),
+    body: JSON.stringify({ decision, comment, project_id: projectId }),
   })
 }
 

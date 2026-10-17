@@ -31,6 +31,7 @@ from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.env import env_float, env_int
 from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.pattern_justification import source_for, verify_url_for
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.query_profile import (
@@ -1315,6 +1316,13 @@ def _select_citations(
                 "similarity": doc.metadata.get("similarity"),
                 "snippet": (doc.page_content or "")[:240],
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
+                # HU8: numero [n] con el que el prompt presenta la fuente y
+                # datos para que el usuario la verifique en la UI.
+                "index": len(citations) + 1,
+                "category": doc.metadata.get("category"),
+                "chunk_type": doc.metadata.get("chunk_type"),
+                "source": source_for(doc.metadata),
+                "verify_url": verify_url_for(doc.metadata.get("pattern_id")),
             }
         )
         # Solo si NO es el principal: un patron descartado por escala que aun
