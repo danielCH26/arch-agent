@@ -1,0 +1,213 @@
+{
+  "metadata": {
+    "timestamp": "20261015-215826",
+    "base_url": "https://api.groq.com/openai/v1",
+    "modelos": [
+      "m1"
+    ],
+    "repeats": 1,
+    "temperature": 0.0,
+    "sleep_s": 0.0,
+    "secciones_requeridas": [
+      "Componentes",
+      "Tecnologías",
+      "Patrones"
+    ]
+  },
+  "ejecuciones": [
+    {
+      "caso_id": "hex-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "mono-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "mono-002",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "micro-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "evt-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "cpl-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "mob-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "vacio-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "vacio-002",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    },
+    {
+      "caso_id": "fuera-001",
+      "modelo": "m1",
+      "repeat": 1,
+      "ok": false,
+      "error": "RuntimeError: rate limit eterno"
+    }
+  ],
+  "variabilidad": [
+    {
+      "caso_id": "hex-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "mono-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "mono-002",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "micro-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "evt-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "cpl-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "mob-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "vacio-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "vacio-002",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    },
+    {
+      "caso_id": "fuera-001",
+      "modelo": "m1",
+      "repeats_ok": 0,
+      "repeats_fallidos": 1,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0,
+      "largo_medio": 0.0
+    }
+  ],
+  "resumen_por_modelo": {
+    "m1": {
+      "casos": 10,
+      "ejecuciones_ok": 0,
+      "ejecuciones_fallidas": 10,
+      "tasa_pas_estructural": null,
+      "tasa_exacta": null,
+      "acuerdo_estructural": null,
+      "solapamiento_citas": null,
+      "desvio_largo": 0.0
+    }
+  }
+}

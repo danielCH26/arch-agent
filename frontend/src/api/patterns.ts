@@ -23,6 +23,16 @@ export interface PatternSourceChunk {
   chunk_metadata: { filename?: string; source_type?: string; [key: string]: unknown } | null
 }
 
+/** HU8: detalle del patrón citado, destino de `verify_url` en una propuesta. */
+export interface PatternDetail extends Pattern {
+  decision_signals: unknown[] | null
+  chunks: { id: number; chunk_type: string; chunk_text: string; source: string }[]
+}
+
+export function getPatternDetail(patternId: number) {
+  return apiFetch<PatternDetail>(`/api/patterns/${patternId}`)
+}
+
 export function listPatterns(limit = 200, offset = 0) {
   return apiFetch<PatternList>(`/api/patterns?limit=${limit}&offset=${offset}`)
 }
