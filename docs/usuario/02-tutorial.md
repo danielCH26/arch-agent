@@ -51,6 +51,8 @@ En visitas posteriores ingresa tu **nombre de usuario** y **contraseña** y haz 
 | **Barra lateral — pie** | Tu nombre de usuario (abre tu perfil) y tres íconos: **tema** claro/oscuro, **Configuración LLM** (engranaje) y **Cerrar sesión**. |
 | **Área principal** | La pantalla activa: lista de proyectos, chat, documentos, base de patrones o configuración. |
 
+![Barra lateral con la navegación y la lista de proyectos](screenshots/historial-proyectos.png)
+
 En la **Base de patrones** puedes consultar el catálogo de patrones de arquitectura que el agente usa para fundamentar sus propuestas: buscar por nombre o caso de uso, filtrar por categoría y ver el detalle y los trade-offs de cada uno.
 
 > En pantallas angostas (celular) la barra lateral se oculta; ábrela con el botón **☰** de la barra superior.
@@ -212,6 +214,10 @@ Al aprobar verás **"✓ Resumen aprobado"** y, en la barra superior del chat, e
 
 En esta fase el agente propone **cómo** construirlo, apoyándose en su base de patrones de arquitectura (capas, hexagonal, microservicios, monolito modular, event-driven, CQRS, serverless, etc.).
 
+Puedes consultar esa base en cualquier momento desde **Base de patrones** en la barra lateral: cada patrón muestra su categoría, descripción, casos de uso, trade-offs (ventajas y desventajas) y cuándo no usarlo.
+
+![Base de patrones con el detalle de API Gateway + BFF](screenshots/base-patrones.png)
+
 ### Generar la propuesta
 
 En la tarjeta **Propuesta de arquitectura** haz clic en **Generar propuesta**. El texto aparece a medida que se genera (*streaming*). La propuesta incluye normalmente:
@@ -221,9 +227,11 @@ En la tarjeta **Propuesta de arquitectura** haz clic en **Generar propuesta**. E
 - **Tabla de trade-offs** comparando alternativas.
 - **Citas** a los patrones de la base de patrones que respaldan la decisión, con su porcentaje de similitud.
 
+Si el agente no encuentra patrones relacionados en la base de patrones, al pie de la propuesta verás el aviso **"Sin patrones recuperados de la base vectorial: propuesta basada en el conocimiento general del modelo"**. En ese caso la propuesta no trae citas con porcentaje de similitud y los patrones que menciona salen del conocimiento general del modelo.
+
 Junto al título se indica el número de **iteración**, y la etiqueta de la esquina muestra el estado: **Pendiente de decisión** mientras no decidas, o **Aprobada**.
 
-![Tarjeta de propuesta con trade-offs y citas](screenshots/propuesta.png)
+![Final de la tarjeta de propuesta con los patrones candidatos y los botones Aprobar, Modificar y Rechazar](screenshots/propuesta.png)
 
 ### Decidir sobre la propuesta
 
@@ -319,7 +327,13 @@ Desde la fase Propuesta en adelante, la barra superior del chat tiene el botón 
 - ✏️ **Cambios solicitados**
 - **Sin decisión**
 
+Cada versión muestra la miniatura del diagrama, la fecha y hora en que se generó y su estado.
+
+![Panel Historial de diagramas con las versiones generadas para el proyecto](screenshots/historial-diagrama.png)
+
 El panel es **solo de consulta**: las decisiones se toman en el chat, sobre cada diagrama. Ciérralo con **✕**.
+
+![Final del panel con el aviso de que solo se consulta el historial](screenshots/historial-diagrama2.png)
 
 ---
 
