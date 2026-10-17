@@ -94,9 +94,23 @@ _PROGRESS_STAGES = {
 _GEN_START, _GEN_END = 20, 92
 
 # Default maximum number of iterations per project. Mirrors the design
-# (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
-# at request time so ops can tune it without code changes.
-PROPOSAL_MAX_ITER = env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
+# (§5 + §17 #6). Per-project override is not yet implemented.
+def proposal_max_iter() -> int:
+    """Devuelve el tope de iteraciones leyendo la env var en cada llamada.
+
+    F18 (PR #102): esto era una constante de módulo evaluada al importar. Los
+    tests needing ``importlib.reload`` para tomar un valor nuevo, y ese reload
+    redefinía las clases del módulo, rompiendo los ``isinstance`` de
+    ``test_proposals_endpoints.py``. Leer por ``env_int`` en cada llamada deja
+    el tope ajustable por request sin perder la validación de ``development``
+    (``minimum=1``).
+    """
+    return env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
+
+
+# Para los callers que solo necesitan un valor de proceso. Donde el valor se
+# lea durante un request, usar ``proposal_max_iter()``.
+PROPOSAL_MAX_ITER = proposal_max_iter()
 
 # Engram port per ADR-008: the memory mirror is best-effort, never blocking
 # (REQ-9 / SCN-10). Override for tests/dev with ENGRAM_URL.
@@ -2403,9 +2417,10 @@ def _persist_proposal_and_log(
             )
             iteration = (max_iter.iteration + 1) if max_iter else 1
 
-        if iteration > PROPOSAL_MAX_ITER:
+        max_iterations = proposal_max_iter()
+        if iteration > max_iterations:
             raise _ProposalDomainError(
-                f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})"
+                f"Has alcanzado el máximo de iteraciones ({max_iterations})"
             )
 
         latest = (
