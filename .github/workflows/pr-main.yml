@@ -1,0 +1,151 @@
+# =============================================================================
+# PR - Main — gate completo antes de promover a main (= lo que se taggea y despliega)
+#
+# Checks que produce (contexts de branch protection):
+#   main-backend-tests   levanta postgres-app + engram + langfuse-web con
+#                        docker compose (valida que el stack de
+#                        docker-compose.yml arranca), aplica schema +
+#                        migraciones sobre postgres-app, corre pytest y el
+#                        smoke import de server.py
+#   main-frontend-tests  vitest + build (tsc + vite); un hotfix directo a main
+#                        también pasa por tsc
+#   main-docker-build    construye backend/Dockerfile y frontend/Dockerfile,
+#                        que es lo que realmente se despliega
+#
+# Todos los valores de entorno salen de .env.example: son de CI, no secretos.
+# =============================================================================
+name: PR - Main
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-main-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: main-backend-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      # Credenciales de postgres-app según .env.example. Los conftest usan
+      # setdefault, así que este DATABASE_URL llega intacto a todos los tests.
+      DATABASE_URL: postgresql://asistente:asistente@localhost:5432/asistente_db
+      JWT_SECRET_KEY: test-secret-key-for-testing-only-32chars
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      EMBEDDINGS_WARMUP: "off"
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      PUPPETEER_UPLOADS_DIR: ${{ runner.temp }}/uploads
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # El servicio backend declara env_file: .env y compose falla al cargar
+      # el proyecto si no existe, aunque ese servicio no se levante.
+      - name: Prepare .env from .env.example
+        run: cp .env.example .env
+
+      # --wait espera los healthchecks de los servicios pedidos y de sus
+      # dependencias (langfuse-db, clickhouse, minio, redis) y falla si alguno
+      # queda unhealthy. engram-proxy publica engram en el host (7439 → 7437 →
+      # 7438); no lo arrastra nadie, por eso se pide explícito.
+      - name: Start stack (postgres-app, engram, langfuse-web)
+        run: docker compose up -d --wait --wait-timeout 300 postgres-app engram engram-proxy langfuse-web
+
+      # El healthcheck de engram termina en `|| exit 0` (siempre "healthy"),
+      # así que se comprueba desde el host a través de engram-proxy.
+      - name: Probe Engram and Langfuse from the host
+        run: |
+          curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://localhost:7439/health
+          curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://localhost:3000/api/public/health
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .hf-cache
+          key: hf-${{ runner.os }}-multilingual-e5-small
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Apply schema + migrations
+        run: |
+          python scripts/init_db.py
+          python -m migrations.run_migrations
+
+      - name: Run tests
+        run: python -m pytest tests -v --tb=short
+
+      - name: Smoke import
+        run: python -c "from server import app; print('OK')"
+
+      - name: Stack logs on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --tail=100
+
+  frontend:
+    name: main-frontend-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # igual que frontend/Dockerfile
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Unit tests (vitest)
+        run: npm run test:run
+
+      - name: Build (tsc + vite)
+        run: npm run build
+
+  docker-build:
+    name: main-docker-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
