@@ -19,10 +19,13 @@ Tipos de chunk:
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from app.core.text_norm import normalize_text
 
 PATTERNS_DIR = Path(__file__).resolve().parents[2] / "data" / "patterns"
 
@@ -43,6 +46,43 @@ def load_patterns(patterns_dir: Path | None = None) -> list[dict[str, Any]]:
         yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in sorted(directory.glob("*.yaml"))
     ]
+
+
+# Familia del patron (campo ``family`` del YAML): agrupa estilos que compiten
+# entre si. Sirve para que la tabla de trade-offs compare alternativas REALES
+# (un monolito contra un estilo distribuido o serverless) y no tres variantes
+# del mismo estilo con similitud parecida (capas, MVC y monolito modular).
+VALID_FAMILIES = ("monolitico", "distribuido", "serverless", "datos", "complemento")
+# Nivel (campo ``level``): ``despliegue`` = como se despliega el sistema;
+# ``codigo`` = como se organiza el codigo por dentro (capas, MVC, hexagonal,
+# clean); se combina con un estilo de despliegue, no compite con el.
+# ``complemento`` = tactica que se suma a otro estilo (CQRS, Saga, BFF...).
+VALID_LEVELS = ("despliegue", "codigo", "complemento")
+
+
+@lru_cache(maxsize=1)
+def _families_by_name() -> dict[str, dict[str, str]]:
+    families: dict[str, dict[str, str]] = {}
+    for pattern in load_patterns():
+        family = pattern.get("family")
+        level = pattern.get("level")
+        if family in VALID_FAMILIES and level in VALID_LEVELS:
+            families[normalize_text(pattern["pattern_name"])] = {
+                "family": family,
+                "level": level,
+            }
+    return families
+
+
+def pattern_family(pattern_name: str | None) -> dict[str, str] | None:
+    """``{"family": ..., "level": ...}`` del patron, o None si no esta en el catalogo.
+
+    Se lee del YAML (no de la base) para no necesitar una migracion: el nombre
+    del patron es el mismo en ``architect_patterns`` y en data/patterns/.
+    """
+    if not pattern_name:
+        return None
+    return _families_by_name().get(normalize_text(pattern_name))
 
 
 def build_pattern_chunks(pattern: dict[str, Any]) -> dict[str, str]:

@@ -9,6 +9,9 @@ export interface AdrOut {
   feedback_history: string[]
   // Momento en que se aprobó el ADR (proyecto terminado), o null.
   approved_at: string | null
+  // Avisos de la revisión automática de la guía (cifras o tecnologías que no
+  // salen de lo decidido). Opcional: los ADR guardados antes no lo traen.
+  guide_warnings?: string[]
   // Adjunto del diagrama que usa el ADR, para mostrar esa misma imagen.
   diagram_attachment_id?: string | null
 }

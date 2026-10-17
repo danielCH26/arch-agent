@@ -22,6 +22,8 @@ from typing import Any, Optional
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.core.domain_concerns import concern_by_question, uncovered_concerns
+
 _LOGGER = logging.getLogger(__name__)
 
 # Reglas duras que NO dependen del LLM -- evitan que el agente "se rinda"
@@ -179,6 +181,11 @@ un documento, verifica que sea relevante para el problema y alcance del \
 proyecto; ignora contenido ajeno. Si un documento relevante contradice una \
 respuesta anterior, prioriza el documento (es más reciente).
 
+En "calidad" distingue el origen de cada atributo: "dicho" si el usuario lo \
+pidió o lo describió en sus respuestas o documentos, "propuesto" si lo \
+infieres tú como recomendable sin que el usuario lo haya dicho. No conviertas \
+un atributo propuesto en dicho.
+
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
 {
@@ -186,9 +193,13 @@ forma exacta:
   "usuarios": str,
   "funcionalidades": [str, ...],
   "restricciones": [str, ...],
-  "calidad": [str, ...]
+  "calidad": [{"atributo": str, "origen": "dicho" | "propuesto"}, ...]
 }
 """
+
+# Origen de un atributo de calidad en el resumen.
+QUALITY_ORIGIN_SAID = "dicho"
+QUALITY_ORIGIN_PROPOSED = "propuesto"
 
 
 class ElicitationAgentError(Exception):
@@ -508,6 +519,218 @@ def _missing_viability_factors(
     ]
 
 
+# Checklist determinista de cobertura (HU5: "Se cubren: usuarios,
+# funcionalidades, restricciones, calidad"). El prompt ya lo pide, pero el
+# ``done`` lo decidía el LLM solo: en un caso real cerró con 10 preguntas sin
+# ninguna sobre calidad. Ahora, cuando el modelo quiere cerrar, el código
+# revisa la conversación y, si falta una categoría, hace la pregunta en vez de
+# cerrar. Las restricciones obligatorias (presupuesto, equipo, plazo) ya las
+# cubre ``_missing_viability_factors``.
+#
+# Igual que la viabilidad: cuentan las respuestas, la descripción y los
+# documentos, no el texto de las preguntas. Pero si el agente ya preguntó por
+# la categoría y el usuario respondió (aunque sea "no sé"), queda cubierta.
+_COVERAGE_CATEGORIES = (
+    (
+        "usuarios",
+        (
+            r"usuari\w*", r"clientes?", r"pacientes?", r"estudiantes?", r"alumnos?",
+            r"administrador\w*", r"operador\w*", r"empleados?", r"vendedor\w*",
+            r"docentes?", r"profesores?", r"personal\s+de\s+\w+", r"duenos?",
+            r"propietari\w+", r"ciudadanos?", r"visitantes?",
+        ),
+        (r"usuari", r"quien", r"quienes"),
+        "¿Quiénes van a usar el sistema?",
+    ),
+    (
+        "funcionalidades",
+        (
+            r"funcionalidad\w*", r"funciones?", r"debe\s+(?:poder|permitir)\w*",
+            r"permit\w+", r"registrar\w*", r"gestionar\w*", r"consultar\w*",
+            r"reservar\w*", r"publicar\w*", r"buscar\w*", r"reportes?",
+            r"administrar\w*", r"crear\w*", r"agendar\w*", r"vender\w*",
+        ),
+        (r"funcionalidad", r"funcion", r"que debe hacer", r"que debe poder"),
+        "¿Qué es lo más importante que el sistema debe permitir hacer?",
+    ),
+    (
+        "calidad",
+        (
+            r"rendimiento", r"seguridad", r"segur[oa]s?", r"disponib\w+", r"escalab\w+",
+            r"tiempo\s+de\s+respuesta", r"latencia", r"privacidad", r"respaldos?",
+            r"backups?", r"cifrad\w+", r"usabilidad", r"accesib\w+", r"concurren\w+",
+            r"uptime", r"confiab\w+", r"mantenib\w+", r"auditor\w+", r"rapid\w+",
+            r"lent\w+", r"caidas?", r"24/7",
+        ),
+        (
+            r"rendimiento", r"seguridad", r"calidad", r"no funcional", r"disponib",
+            r"escalab",
+        ),
+        "¿Qué requerimiento de calidad es el más importante para este sistema (rendimiento, seguridad o disponibilidad)?",
+    ),
+)
+
+_COVERAGE_REGEXES = {
+    name: _factor_regex(patterns) for name, patterns, _asked, _question in _COVERAGE_CATEGORIES
+}
+
+# Como mucho este número de preguntas de dominio forzadas por el código en una
+# elicitación (ubicación, archivos, pagos...). Las demás preocupaciones sin
+# respuesta llegan al ADR como preguntas abiertas obligatorias (sección 7.8).
+MAX_DOMAIN_QUESTIONS = 2
+
+
+def _user_context(
+    history: list[dict], project_description: str, documents_context: Optional[str]
+) -> str:
+    answers_text = "\n".join(str(item.get("respuesta") or "") for item in history)
+    return " ".join(
+        part for part in (project_description, documents_context or "", answers_text) if part
+    )
+
+
+def _answered_questions(history: list[dict]) -> list[str]:
+    return [
+        _normalize_text(str(item.get("pregunta") or ""))
+        for item in history
+        if str(item.get("respuesta") or "").strip()
+    ]
+
+
+def missing_coverage(
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Categorías de HU5 (usuarios, funcionalidades, calidad) que faltan.
+
+    Devuelve ``[(categoria, pregunta)]`` en el orden de la checklist.
+    """
+    context = _normalize_text(_user_context(history, project_description, documents_context))
+    asked = _answered_questions(history)
+    missing = []
+    for name, _patterns, asked_markers, question in _COVERAGE_CATEGORIES:
+        if _COVERAGE_REGEXES[name].search(context):
+            continue
+        if any(re.search(marker, text) for marker in asked_markers for text in asked):
+            continue
+        missing.append((name, question))
+    return missing
+
+
+def pending_domain_questions(
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Preguntas de dominio (``app/core/domain_concerns.py``) que conviene hacer.
+
+    Solo las que el proyecto sugiere y el usuario no mencionó; las que aplican
+    a todo sistema (respaldos) no se preguntan aquí, van al ADR. Respeta
+    ``MAX_DOMAIN_QUESTIONS``: si el agente ya hizo ese número, no hay más.
+    """
+    asked_keys = {
+        concern.key
+        for item in history
+        if str(item.get("respuesta") or "").strip()
+        for concern in [concern_by_question(str(item.get("pregunta") or ""))]
+        if concern is not None
+    }
+    if len(asked_keys) >= MAX_DOMAIN_QUESTIONS:
+        return []
+    text = _user_context(history, project_description, documents_context)
+    return [
+        (concern.key, concern.question)
+        for concern in uncovered_concerns(text, text, include_always=False)
+        if concern.key not in asked_keys
+    ]
+
+
+def summary_gaps(
+    resumen: Optional[dict],
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Checklist determinista sobre el RESUMEN estructurado.
+
+    Último control antes de cerrar: si el resumen que armó el LLM quedó sin
+    usuarios, sin funcionalidades, sin atributos de calidad dichos por el
+    usuario o sin presupuesto/equipo/plazo, se devuelve la pregunta que falta.
+    Una categoría cuya pregunta ya se hizo y se respondió no se vuelve a pedir
+    (el usuario puede haber dicho "no sé"): así no hay bucles.
+    """
+    resumen = resumen if isinstance(resumen, dict) else {}
+    asked = _answered_questions(history)
+    gaps: list[tuple[str, str]] = []
+    for name, _patterns, asked_markers, question in _COVERAGE_CATEGORIES:
+        value = resumen.get(name)
+        if name == "calidad":
+            filled = any(
+                QUALITY_ORIGIN_SAID == (resumen.get("calidad_origen") or {}).get(item, QUALITY_ORIGIN_SAID)
+                for item in _as_str_list(value)
+            )
+        elif isinstance(value, list):
+            filled = bool(_as_str_list(value))
+        else:
+            filled = bool(str(value or "").strip())
+        if filled:
+            continue
+        if any(re.search(marker, text) for marker in asked_markers for text in asked):
+            continue
+        gaps.append((name, question))
+    restrictions = " ".join(_as_str_list(resumen.get("restricciones")))
+    for factor, question in _missing_viability_factors(
+        history,
+        f"{project_description} {restrictions}",
+        documents_context,
+    ):
+        gaps.append((factor, question))
+    return gaps
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def normalize_summary(data: Any) -> dict:
+    """Deja el resumen con la forma que usa el resto del sistema.
+
+    ``calidad`` sigue siendo una lista de textos (la leen la propuesta, el ADR y
+    el frontend), y el origen de cada atributo va aparte en
+    ``calidad_origen`` (``{atributo: "dicho" | "propuesto"}``). Acepta también
+    la forma vieja (lista de textos): sin origen se asume "dicho".
+    """
+    if not isinstance(data, dict):
+        return {}
+    summary = dict(data)
+    raw_quality = summary.get("calidad")
+    if not isinstance(raw_quality, list):
+        return summary
+    quality: list[str] = []
+    origins: dict[str, str] = {}
+    for item in raw_quality:
+        if isinstance(item, dict):
+            name = str(item.get("atributo") or item.get("nombre") or "").strip()
+            origin = str(item.get("origen") or "").strip().lower()
+        else:
+            name, origin = str(item or "").strip(), QUALITY_ORIGIN_SAID
+        if not name:
+            continue
+        quality.append(name)
+        origins[name] = (
+            QUALITY_ORIGIN_PROPOSED if origin.startswith("propu") else QUALITY_ORIGIN_SAID
+        )
+    summary["calidad"] = quality
+    if any(isinstance(item, dict) for item in raw_quality):
+        summary["calidad_origen"] = origins
+    return summary
+
+
 def next_step(
     model: BaseChatModel,
     history: list[dict],
@@ -586,6 +809,27 @@ def next_step(
                 reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
             )
 
+    if decision.done and len(history) < MAX_QUESTIONS:
+        # Checklist de cobertura: el LLM quiere cerrar, pero el código no lo
+        # deja si falta una categoría de HU5 o una preocupación del dominio
+        # (ubicación, archivos, pagos...) que el proyecto sugiere.
+        missing = missing_coverage(history, project_description, documents_context)
+        if missing:
+            category, question = missing[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Falta cubrir la categoría obligatoria: {category}.",
+            )
+        domain = pending_domain_questions(history, project_description, documents_context)
+        if domain and len(history) < MAX_QUESTIONS - 1:
+            concern, question = domain[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Falta una preocupación del dominio: {concern}.",
+            )
+
     if len(history) < MIN_QUESTIONS and decision.done:
         # Regla dura: no se puede terminar antes del mínimo, sin importar
         # lo que diga el modelo.
@@ -633,10 +877,12 @@ def generate_summary(
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
         f"{_documents_section(documents_context)}"
     )
-    return _invoke_json(
-        model,
-        SUMMARY_SYSTEM_PROMPT,
-        context,
-        callbacks=callbacks,
-        run_name="elicitation-summary",
+    return normalize_summary(
+        _invoke_json(
+            model,
+            SUMMARY_SYSTEM_PROMPT,
+            context,
+            callbacks=callbacks,
+            run_name="elicitation-summary",
+        )
     )

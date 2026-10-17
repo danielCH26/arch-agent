@@ -193,6 +193,14 @@ describe('AdrPanel', () => {
     expect(screen.queryByTestId('adr-completed')).not.toBeInTheDocument()
   })
 
+  it('muestra los avisos de la revisión automática de la guía', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, guide_warnings: ['Tecnologías en 7.2 que la propuesta aprobada no nombra: Gunicorn'] })
+
+    renderPanel()
+
+    expect(await screen.findByTestId('adr-guide-warnings')).toHaveTextContent('Gunicorn')
+  })
+
   it('arma un nombre de archivo seguro', () => {
     expect(adrFilename('Clínica Médica 2.0')).toBe('ADR-clinica-medica-2-0.md')
     expect(adrFilename(null)).toBe('ADR-proyecto.md')

@@ -30,6 +30,7 @@ from app.core.adr_generator import (
     collect_adr_context,
     extract_guide_section,
     generate_llm_sections,
+    lint_adr_guide,
     render_adr_markdown,
 )
 from app.core.database import SessionLocal
@@ -62,6 +63,9 @@ class AdrOut(BaseModel):
     feedback_history: list[str] = []
     # ISO del momento en que se aprobó el ADR (proyecto terminado), o None.
     approved_at: Optional[str] = None
+    # Avisos del lint de la guía (cifras o tecnologías que no salen de lo
+    # decidido). También van dentro del markdown, en la sección 7.
+    guide_warnings: list[str] = []
     # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
     diagram_attachment_id: Optional[str] = None
 
@@ -111,6 +115,7 @@ def _out(stored: dict) -> AdrOut:
         guide_complete=bool(stored.get("guide_complete")),
         feedback_history=list(stored.get("feedback_history") or []),
         approved_at=stored.get("approved_at"),
+        guide_warnings=list(stored.get("guide_warnings") or []),
         diagram_attachment_id=stored.get("diagram_attachment_id"),
     )
 
@@ -232,6 +237,7 @@ async def generate_adr(
         # La guía se guarda aparte para volver a armar el documento al
         # aprobarlo sin llamar otra vez al LLM.
         "guide": guide,
+        "guide_warnings": lint_adr_guide(ctx, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
         "feedback_history": history,
         # Un ADR nuevo vuelve a necesitar aprobación.
@@ -271,6 +277,7 @@ def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
     updated = dict(stored)
     updated["markdown"] = render_adr_markdown(ctx, llm_sections=guide, generated_at=generated_at)
     updated["guide"] = guide
+    updated["guide_warnings"] = lint_adr_guide(ctx, guide)
     updated["diagram_attachment_id"] = ctx.diagram_attachment_id
     updated["approved_at"] = approved_at
     return updated

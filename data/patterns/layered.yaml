@@ -1,6 +1,8 @@
 pattern_name: "Arquitectura en capas (Layered)"
 category: "Monolítica"
 complexity: "baja"
+family: "monolitico"
+level: "codigo"
 description: >
   Organiza el sistema en capas horizontales (presentación, lógica de negocio,
   acceso a datos), cada una dependiendo solo de la capa inmediatamente inferior.

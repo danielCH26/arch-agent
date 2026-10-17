@@ -185,6 +185,10 @@ def profile_to_query(profile: dict[str, Any] | None, fallback: str) -> str:
 def profile_to_constraints_text(profile: dict[str, Any] | None) -> str:
     """Frases con el formato que reconocen las heuristicas de escala.
 
+    Ya no se usa en la generacion de propuestas: las reglas duras leen el
+    perfil estructurado directamente (``proposal_generator._profile_scale``).
+    Se conserva para scripts y comparaciones.
+
     ``_small_scale_signal`` / ``_tight_mvp_constraint`` (proposal_generator) usan
     regex sobre el texto del usuario ("equipo de 3 personas", "4 meses",
     "mvp"). Cuando el requerimiento lo dice de otra forma ("somos tres

@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -30,9 +29,16 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
+from app.core.domain_concerns import DomainConcern, concern_by_question, uncovered_concerns
 from app.core.env import env_float, env_int
 from app.core.mermaid_validator import extract_mermaid_block
 from app.core.session_store import latest_diagram_decisions
+from app.core.text_norm import normalize_text
+from app.core.viability_rules import (
+    ASSUMPTION_MARK,
+    COMMON_VIABILITY_RULES,
+    GUIDE_ASSUMPTION_RULES,
+)
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
@@ -115,8 +121,8 @@ class AdrContext:
     # ISO del momento en que se aprobó el ADR (lo pone el endpoint /approve).
     # El estado del documento sale de aquí, no de la fase del proyecto.
     approved_at: Optional[str] = None
-    # Captura del diagrama que se usó: el panel muestra esa misma imagen, así
-    # la imagen y el Mermaid del ADR son siempre el mismo diagrama.
+    # Adjunto (captura) del diagrama que se usó: el panel muestra esa imagen,
+    # así la imagen y el Mermaid del ADR son siempre el mismo diagrama.
     diagram_attachment_id: Optional[str] = None
 
 
@@ -165,10 +171,11 @@ def _approved_mermaid(
         attachments = [
             att for att in (row.attachments or []) if isinstance(att, dict) and att.get("id")
         ]
-        # La captura (kind=screenshot) es la que lista el historial de
-        # diagramas del panel: se usa esa para que coincidan.
+        # La captura del diagrama (kind=screenshot) es la que lista el
+        # historial de diagramas del panel; se usa esa para que coincidan.
         screenshots = [att for att in attachments if att.get("kind") == "screenshot"]
-        candidates.append((code, [str(att["id"]) for att in (screenshots or attachments)]))
+        ids = [str(att["id"]) for att in (screenshots or attachments)]
+        candidates.append((code, ids))
     if not candidates:
         return None, False, None
 
@@ -357,22 +364,214 @@ def _status(ctx: AdrContext) -> str:
 
 def _approved_date(ctx: AdrContext) -> str:
     try:
-        return datetime.fromisoformat(str(ctx.approved_at)).strftime("%Y-%m-%d")
+        value = datetime.fromisoformat(str(ctx.approved_at))
     except (TypeError, ValueError):
         return str(ctx.approved_at or "—")
+    return value.strftime("%Y-%m-%d")
 
 
-_FALLBACK_NOTICE = (
-    "> **Aviso:** no se pudo redactar esta parte con el modelo de lenguaje "
-    "(límite de uso, tiempo de espera o respuesta incompleta). El resto del "
-    "documento está completo. Usa **Regenerar ADR** para intentarlo de nuevo."
+# Restos de la interfaz que la propuesta trae para la fase Propuesta
+# ("- Punto de decisión: ¿Aprueba los trade-offs?"). En el ADR la decisión ya
+# está tomada: esas líneas sobran.
+_UI_LEFTOVER_RE = re.compile(
+    r"^\s*[-*+]?\s*[*_]*punto\s+de\s+decision[*_]*\s*:.*$|^.*¿\s*aprueba[sn]?\b.*\?\s*$",
+    re.MULTILINE,
 )
+
+
+def strip_ui_leftovers(markdown: str) -> str:
+    """Quita del texto heredado las preguntas dirigidas a la interfaz."""
+    lines = [
+        line
+        for line in (markdown or "").splitlines()
+        if not _UI_LEFTOVER_RE.match(normalize_text(line))
+    ]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _quality_items(resumen: dict) -> list[str]:
+    """Atributos de calidad marcando los que propuso el agente (no el usuario)."""
+    origins = resumen.get("calidad_origen") if isinstance(resumen.get("calidad_origen"), dict) else {}
+    return [
+        f"{item} _(propuesto por el agente, no lo pidió el usuario)_"
+        if origins.get(item) == "propuesto"
+        else item
+        for item in _as_list(resumen.get("calidad"))
+    ]
+
+
+# --- Preocupaciones del dominio ------------------------------------------------
+
+
+def _user_said_text(ctx: AdrContext) -> str:
+    answers = " ".join(
+        str(item.get("respuesta") or "")
+        for item in ctx.preguntas_respuestas
+        if isinstance(item, dict)
+    )
+    return f"{ctx.project_description} {answers} {' '.join(ctx.revision_feedback)}"
+
+
+def _requirements_text(ctx: AdrContext) -> str:
+    resumen = ctx.resumen or {}
+    parts = [
+        ctx.project_description,
+        str(resumen.get("problema") or ""),
+        str(resumen.get("usuarios") or ""),
+        " ".join(_as_list(resumen.get("funcionalidades"))),
+        " ".join(_as_list(resumen.get("restricciones"))),
+        " ".join(_as_list(resumen.get("calidad"))),
+    ]
+    return " ".join(p for p in parts if p) + " " + _user_said_text(ctx)
+
+
+def open_domain_concerns(ctx: AdrContext) -> list[DomainConcern]:
+    """Preocupaciones del dominio relevantes que nadie respondió.
+
+    Van como preguntas abiertas OBLIGATORIAS en 7.8: no dependen de que el LLM
+    se acuerde de que una app de mascotas perdidas necesita mapas. Una
+    preocupación cuya pregunta se hizo en la elicitación cuenta como
+    respondida aunque la respuesta haya sido "no".
+    """
+    answered = {
+        concern.key
+        for item in ctx.preguntas_respuestas
+        if isinstance(item, dict) and str(item.get("respuesta") or "").strip()
+        for concern in [concern_by_question(str(item.get("pregunta") or ""))]
+        if concern is not None
+    }
+    project_text = _requirements_text(ctx)
+    said = _user_said_text(ctx) + " " + " ".join(_as_list((ctx.resumen or {}).get("restricciones")))
+    return [
+        concern
+        for concern in uncovered_concerns(project_text, said)
+        if concern.key not in answered
+    ]
+
+
+# --- Lint de la guía -----------------------------------------------------------
+
+# Cifras que suelen inventarse en la guía: porcentajes (SLA, disponibilidad),
+# dinero, capacidad de servidores y latencias. Los plazos ("2 semanas") no se
+# revisan: el plan de implementación los necesita y son estimaciones.
+_FIGURE_RE = re.compile(
+    r"(?:us\$|\$|usd\s*)\s?\d[\d.,]*\s*(?:k|mil)?"
+    r"|\d[\d.,]*\s*(?:%|usd|dolares|cop|pesos|vcpus?|cpus?|nucleos|gb|mb|tb|ms|rps|req/s)(?![a-z])"
+    r"|\bsla\b[^|\n]{0,20}?\d[\d.,]*\s*%?",
+)
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _numbers(text: str) -> set[str]:
+    return {n.replace(",", ".") for n in _NUMBER_RE.findall(text)}
+
+
+def _section_lines(guide: str, number: str) -> list[str]:
+    """Líneas de la subsección ``### 7.<n>`` de la guía."""
+    lines = guide.splitlines()
+    out: list[str] = []
+    inside = False
+    for line in lines:
+        if re.match(r"^\s*#{1,6}\s", line):
+            inside = bool(re.match(rf"^\s*#{{1,6}}\s*{re.escape(number)}\b", line))
+            continue
+        if inside:
+            out.append(line)
+    return out
+
+
+def _table_column(lines: list[str], header_prefix: str) -> list[str]:
+    rows = [line for line in lines if line.strip().startswith("|")]
+    if len(rows) < 2:
+        return []
+    headers = [normalize_text(cell).strip(" *`") for cell in rows[0].strip().strip("|").split("|")]
+    index = next((i for i, h in enumerate(headers) if h.startswith(header_prefix)), None)
+    if index is None:
+        return []
+    values = []
+    for row in rows[2:]:
+        cells = row.strip().strip("|").split("|")
+        if index < len(cells):
+            values.append(cells[index].strip())
+    return values
+
+
+_TECH_WORD_RE = re.compile(r"[a-z][a-z0-9+#.-]{2,}")
+_TECH_STOPWORDS = {
+    "para", "con", "del", "los", "las", "una", "uno", "por", "base", "datos",
+    "servidor", "framework", "libreria", "gestionado", "gestionada", "servicio",
+    "nube", "capa", "the", "and",
+}
+
+
+def lint_adr_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    """Revisión barata y determinista de la guía (sección 7) contra lo decidido.
+
+    Devuelve avisos legibles. Revisa:
+      * cifras (porcentajes, dinero, capacidad, latencias) que no aparecen en
+        los requerimientos, las respuestas ni la propuesta;
+      * tecnologías de 7.2 que la propuesta aprobada no nombra;
+      * restos de la interfaz ("Punto de decisión: ¿Aprueba...?").
+    Lo que el modelo ya marcó ``(supuesto)`` no se avisa.
+    """
+    if not guide:
+        return []
+    warnings: list[str] = []
+    # Origen válido de una cifra: cualquier número de los requerimientos (y de
+    # los cambios pedidos), o una cifra con unidad de la propuesta. De la
+    # propuesta no se toman números sueltos: las citas [1]..[3] y la
+    # numeración de listas harían pasar "2 vCPU" o "3 GB".
+    requirements = normalize_text(
+        " ".join([_requirements_text(ctx), " ".join(ctx.proposal_feedback_history)])
+    )
+    proposal_figures = " ".join(
+        m.group(0) for m in _FIGURE_RE.finditer(normalize_text(ctx.proposal_markdown))
+    )
+    source_numbers = _numbers(requirements) | _numbers(proposal_figures)
+
+    figures: list[str] = []
+    for line in guide.splitlines():
+        if ASSUMPTION_MARK in line or "supuesto" in normalize_text(line):
+            continue
+        for match in _FIGURE_RE.finditer(normalize_text(line)):
+            figure = match.group(0).strip()
+            if not (_numbers(figure) & source_numbers) and figure not in figures:
+                figures.append(figure)
+    if figures:
+        warnings.append(
+            "Cifras que no salen de los requerimientos ni de la propuesta: "
+            + ", ".join(f"«{f}»" for f in figures)
+        )
+
+    proposal = normalize_text(ctx.proposal_markdown + " " + " ".join(ctx.proposal_feedback_history))
+    new_tech: list[str] = []
+    for cell in _table_column(_section_lines(guide, "7.2"), "tecnolog"):
+        if ASSUMPTION_MARK in cell or not cell.strip(" -—"):
+            continue
+        for part in re.split(r"[/,+;]| y ", re.sub(r"[*_`]", "", cell)):
+            words = [
+                w for w in _TECH_WORD_RE.findall(normalize_text(re.sub(r"\(.*?\)", "", part)))
+                if w not in _TECH_STOPWORDS
+            ]
+            if words and not any(w in proposal for w in words):
+                name = part.strip()
+                if name and name not in new_tech:
+                    new_tech.append(name)
+    if new_tech:
+        warnings.append(
+            "Tecnologías en 7.2 que la propuesta aprobada no nombra: "
+            + ", ".join(new_tech)
+        )
+
+    if any(_UI_LEFTOVER_RE.match(normalize_text(line)) for line in guide.splitlines()):
+        warnings.append("La guía repite preguntas de la interfaz (\"¿Aprueba…?\").")
+    return warnings
 
 
 def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
     """La guía (sección 7) tal como quedó en un ADR ya generado.
 
-    Sirve para volver a armar el documento al aprobarlo sin llamar al LLM.
+    Sirve para volver a armar el documento sin llamar al LLM (al aprobarlo).
     ``None`` si el ADR no la tiene (salió con el aviso de respaldo).
     """
     if not markdown:
@@ -380,10 +579,45 @@ def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
     match = re.search(
         r"^## 7\. Guía para empezar\s*\n(.*?)(?=^## Anexo A\.|\Z)", markdown, re.S | re.M
     )
-    body = match.group(1).strip() if match else ""
+    if not match:
+        return None
+    body = match.group(1)
+    # Lo que agrega el armado (aviso del lint y preguntas obligatorias) se
+    # vuelve a calcular: se quita para no duplicarlo.
+    body = re.split(r"^> \*\*Revisión automática:\*\*", body, maxsplit=1, flags=re.M)[0]
+    body = re.split(r"^\*\*Preguntas abiertas obligatorias", body, maxsplit=1, flags=re.M)[0]
+    body = body.strip()
     if not body or body.startswith("> **Aviso:**"):
         return None
     return body
+
+
+def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
+    if llm_sections and llm_sections.strip():
+        guide = llm_sections.strip()
+    else:
+        guide = (
+            "> **Aviso:** no se pudo redactar esta parte con el modelo de lenguaje "
+            "(límite de uso, tiempo de espera o respuesta incompleta). El resto del "
+            "documento está completo. Usa **Regenerar ADR** para intentarlo de nuevo."
+        )
+    blocks = [guide]
+    concerns = open_domain_concerns(ctx)
+    if concerns:
+        heading = "" if llm_sections else "### 7.8 Preguntas abiertas\n\n"
+        blocks.append(
+            f"{heading}**Preguntas abiertas obligatorias** (preocupaciones habituales "
+            "en este tipo de proyecto que nadie respondió todavía):\n\n"
+            + "\n".join(f"- **{c.label}:** {c.open_question}" for c in concerns)
+        )
+    warnings = lint_adr_guide(ctx, llm_sections)
+    if warnings:
+        blocks.append(
+            "> **Revisión automática:** estos datos de la guía no salen de lo "
+            "decidido; tómalos como supuestos y confírmalos antes de usarlos.\n"
+            + "\n".join(f"> - {w}" for w in warnings)
+        )
+    return "\n\n".join(blocks)
 
 
 def render_adr_markdown(
@@ -420,8 +654,9 @@ def render_adr_markdown(
         else ""
     )
 
-    guide = llm_sections.strip() if llm_sections and llm_sections.strip() else _FALLBACK_NOTICE
+    guide = _guide_block(ctx, llm_sections)
     approved_row = f"| Aprobado | {_approved_date(ctx)} |\n" if ctx.approved_at else ""
+    proposal = strip_ui_leftovers(ctx.proposal_markdown)
 
     return f"""# ADR-001: Arquitectura de {ctx.project_name}
 
@@ -459,14 +694,14 @@ def render_adr_markdown(
 
 ### Atributos de calidad
 
-{_bullets(_as_list(resumen.get('calidad')))}
+{_bullets(_quality_items(resumen))}
 
 ## 3. Decisión
 
 La arquitectura aprobada es la de la propuesta siguiente ({iterations.lower()}),
 incluida completa con su análisis de trade-offs y la opción elegida.
 
-{_demote_headings(ctx.proposal_markdown) or '_La propuesta aprobada no tiene contenido._'}{feedback}
+{_demote_headings(proposal) or '_La propuesta aprobada no tiene contenido._'}{feedback}
 
 ## 4. Diagrama de arquitectura
 
@@ -507,6 +742,8 @@ que se te dan. No cambies la arquitectura elegida ni propongas otra: tu \
 trabajo es bajarla a tierra. Si un dato no está (presupuesto, tamaño del \
 equipo, plazo), dilo como supuesto en vez de inventarlo.
 
+REGLAS DE VIABILIDAD (las mismas que siguió la propuesta; obligatorias):
+{common_rules}{assumption_rules}
 Responde SOLO con markdown, sin texto antes ni después, con EXACTAMENTE \
 estas secciones, en este orden, cada una con un título de nivel 3 (###):
 
@@ -537,8 +774,9 @@ Un bloque de código con el árbol de carpetas propuesto y una línea por \
 carpeta explicando qué va ahí.
 
 ### 7.8 Preguntas abiertas
-Decisiones que el equipo todavía tiene que tomar o datos que faltan.
-"""
+Decisiones que el equipo todavía tiene que tomar o datos que faltan. Incluye \
+SIEMPRE las preocupaciones del dominio que se te indiquen como pendientes.
+""".format(common_rules=COMMON_VIABILITY_RULES, assumption_rules=GUIDE_ASSUMPTION_RULES)
 
 
 def _adr_prompt(ctx: AdrContext) -> str:
@@ -560,8 +798,16 @@ def _adr_prompt(ctx: AdrContext) -> str:
         f"Restricciones: {_as_list(resumen.get('restricciones'))}\n"
         f"Atributos de calidad: {_as_list(resumen.get('calidad'))}\n\n"
         f"Respuestas de la elicitación:\n{respuestas or '(sin respuestas)'}\n\n"
-        f"Propuesta aprobada:\n{proposal}\n\n"
+        f"Propuesta aprobada:\n{strip_ui_leftovers(proposal)}\n\n"
         f"Diagrama aprobado (Mermaid):\n{ctx.mermaid or '(sin diagrama)'}\n"
+        + (
+            "\nPreocupaciones del dominio sin respuesta (inclúyelas en 7.8 y no "
+            "las resuelvas tú con una decisión):\n"
+            + "\n".join(f"- {c.label}: {c.open_question}" for c in open_domain_concerns(ctx))
+            + "\n"
+            if open_domain_concerns(ctx)
+            else ""
+        )
         + (
             "\nCambios pedidos por el equipo al revisar el ADR (aplícalos en tu "
             "respuesta; el más reciente manda si se contradicen):\n"
@@ -596,22 +842,13 @@ def clean_llm_sections(text: str) -> Optional[str]:
     if fenced:
         body = fenced.group(1).strip()
     body = re.sub(r"^#{1,2}\s+(?!#)", "### ", body, flags=re.M)
-    # Sin acentos ni mayúsculas: "Stack tecnologico" vale igual que "Stack
-    # tecnológico". Antes una tilde de menos descartaba toda la sección 7
-    # después de haber gastado los tokens.
-    normalized = _normalize(body)
-    if not body or any(_normalize(section) not in normalized for section in LLM_SECTIONS):
+    # Sin acentos ni mayúsculas: "Stack tecnologico" vale igual que
+    # "Stack tecnológico". Antes una tilde de menos descartaba toda la
+    # sección 7 después de haber gastado los tokens.
+    normalized = normalize_text(body)
+    if not body or any(normalize_text(section) not in normalized for section in LLM_SECTIONS):
         return None
     return body
-
-
-def _normalize(text: str) -> str:
-    """Minúsculas y sin acentos (misma idea que ``proposal_generator._normalize_text``)."""
-    return "".join(
-        char
-        for char in unicodedata.normalize("NFD", (text or "").casefold())
-        if unicodedata.category(char) != "Mn"
-    )
 
 
 async def generate_llm_sections(

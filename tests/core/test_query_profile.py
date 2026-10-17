@@ -122,3 +122,61 @@ def test_extract_profile_can_be_disabled(monkeypatch):
             raise AssertionError("no debe llamarse")
 
     assert _run(qp.extract_project_profile(Never(), "texto")) is None
+
+
+def test_hard_scale_rules_read_the_structured_profile_directly():
+    from app.core.proposal_generator import _profile_scale
+
+    assert _profile_scale(_profile()) == (True, False)  # 3 personas, 4 meses
+    assert _profile_scale(_profile(plazo_meses=2)) == (True, True)
+    assert _profile_scale(None) == (False, False)
+
+
+def test_scale_thresholds_depend_on_the_project_kind():
+    from app.core.proposal_generator import _profile_scale, scale_thresholds
+
+    assert scale_thresholds("academico")["team_max"] == 4
+    assert scale_thresholds("empresarial")["team_max"] < scale_thresholds("academico")["team_max"]
+    # 4 personas y 3 meses: ajustado para un proyecto académico, no para uno empresarial.
+    academic = _profile(tipo_proyecto="academico", equipo_personas=4, plazo_meses=3)
+    enterprise = _profile(tipo_proyecto="empresarial", equipo_personas=4, plazo_meses=3, presupuesto_usd=None)
+    assert _profile_scale(academic)[1] is True
+    assert _profile_scale(enterprise) == (False, False)
+
+
+def test_scale_thresholds_can_be_overridden_with_json(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setenv("PROPOSAL_SCALE_THRESHOLDS", '{"empresarial": {"team_max": 6}}')
+    loaded = gen._load_scale_thresholds()
+    assert loaded["empresarial"]["team_max"] == 6
+    assert loaded["empresarial"]["months_max"] == 2  # lo que no se da conserva el default
+    monkeypatch.setenv("PROPOSAL_SCALE_THRESHOLDS", "no es json")
+    assert gen._load_scale_thresholds()["empresarial"]["team_max"] == 2
+
+
+def test_select_citations_uses_the_profile_without_text_regexes():
+    from langchain_core.documents import Document
+
+    from app.core.proposal_generator import _select_citations
+
+    def pat(name, pid, sim, complexity):
+        return Document(
+            page_content=name,
+            metadata={"pattern_id": pid, "pattern_name": name, "chunk_type": "summary",
+                      "similarity": sim, "complexity": complexity},
+        )
+
+    docs = [
+        pat("Microservicios", 1, 0.98, "alta"),
+        pat("Monolito modular (Modular Monolith)", 2, 0.80, "baja"),
+        pat("Arquitectura en capas (Layered)", 3, 0.79, "baja"),
+    ]
+    # El texto no dice nada de escala ("somos tres", sin cifras reconocibles);
+    # el perfil sí.
+    citations = _select_citations(
+        docs, top_n=3, min_similarity=0.0, explicit_text="Somos pocos y tenemos un cuatrimestre",
+        profile=_profile(equipo_personas=3, plazo_meses=2),
+    )
+    assert citations[0]["pattern_name"] == "Monolito modular (Modular Monolith)"
+    assert citations[-1]["pattern_name"] == "Microservicios"

@@ -2450,3 +2450,84 @@ def test_without_justification_only_a_level_two_heading_counts():
     body = "## Componentes\n- API\n\n### Opciones\n- nada\n"
     assert _tradeoff_section(body) is None
     assert _tradeoff_section(body + "\n## Trade-offs\n| a | b |\n") is not None
+
+
+# --- Diversidad de familias en las filas de la tabla --------------------------
+
+
+def test_tradeoff_rows_prefer_alternatives_from_other_families():
+    from app.core.proposal_generator import _select_citations
+
+    # Caso real: capas, MVC y monolito modular con similitud 0.84-0.85.
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.85, "baja"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.85, "baja"),
+        _pat("MVC / MVVM (Modelo-Vista-Controlador)", 3, 0.84, "baja"),
+        _pat("Serverless (Function-as-a-Service)", 4, 0.80, "media"),
+        _pat("Microservicios", 5, 0.79, "alta"),
+    ]
+    citations = _select_citations(docs, top_n=3, min_similarity=0.0)
+    names = _names(citations)
+
+    assert names[0] == "Monolito modular (Modular Monolith)"
+    assert "Serverless (Function-as-a-Service)" in names
+    assert "Microservicios" in names
+    assert {c["family"] for c in citations} == {"monolitico", "serverless", "distribuido"}
+
+
+def test_a_viable_alternative_beats_a_scale_discarded_one_of_a_new_family():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.85, "baja"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.84, "baja"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.80, "media"),
+        _pat("Microservicios", 4, 0.99, "alta"),
+        _pat("Arquitectura orientada a eventos (Event-Driven)", 5, 0.98, "alta"),
+    ]
+    citations = _select_citations(docs, top_n=3, min_similarity=0.0, explicit_text=_TIGHT)
+    names = _names(citations)
+
+    assert names[0] == "Monolito modular (Modular Monolith)"
+    assert "Serverless (Function-as-a-Service)" in names
+    # Una sola alternativa distribuida (descartada por escala), no las dos.
+    distributed = [c for c in citations if c.get("family") == "distribuido"]
+    assert len(distributed) == 1
+    assert distributed[0]["scale_disqualified"] is True
+
+
+def test_prompt_shows_the_family_of_each_row():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Monolito modular", "source_role": "primary", "family": "monolitico", "level": "despliegue"},
+            {"pattern_name": "Capas", "source_role": "tradeoff_option", "family": "monolitico", "level": "codigo"},
+            {"pattern_name": "Serverless", "source_role": "tradeoff_option", "family": "serverless", "level": "despliegue"},
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+    )
+    assert "Familia: monolítico" in prompt
+    assert "Familia: serverless" in prompt
+    assert "se combina con un estilo de despliegue, no lo reemplaza" in prompt
+    assert "alternativas REALES" in prompt
+
+
+def test_prompt_states_the_thresholds_of_the_project_kind():
+    from app.core.proposal_generator import _build_prompt
+
+    academic = _build_prompt([], None, None, "P", project_kind="academico")
+    enterprise = _build_prompt([], None, None, "P", project_kind="empresarial")
+    assert "equipo de hasta 4 personas Y plazo de hasta 3 meses" in academic
+    assert "equipo de hasta 2 personas Y plazo de hasta 2 meses" in enterprise
+
+
+def test_proposal_and_adr_share_the_viability_rules():
+    from app.core.adr_generator import ADR_SYSTEM_PROMPT
+    from app.core.proposal_generator import _build_prompt
+    from app.core.viability_rules import COMMON_VIABILITY_RULES
+
+    assert COMMON_VIABILITY_RULES in _build_prompt([], None, None, "P")
+    assert COMMON_VIABILITY_RULES in ADR_SYSTEM_PROMPT

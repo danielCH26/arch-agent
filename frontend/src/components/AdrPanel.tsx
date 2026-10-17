@@ -141,6 +141,7 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
   const completed = Boolean(adr?.approved_at)
   const busy = generating || approving || loading
   const diagram = pickAdrDiagram(diagrams, adr?.diagram_attachment_id)
+  const warnings = adr?.guide_warnings ?? []
 
   return (
     <section
@@ -309,6 +310,17 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
           La guía práctica (sección 7) no se pudo redactar con el modelo. El resto del documento está completo;
           puedes regenerarlo para intentarlo de nuevo.
         </p>
+      )}
+
+      {markdown && warnings.length > 0 && (
+        <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="adr-guide-warnings">
+          <p className="font-medium">Revisión automática de la guía: confirma estos datos antes de usarlos.</p>
+          <ul className="mt-1 list-disc pl-5">
+            {warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {markdown && diagram && (

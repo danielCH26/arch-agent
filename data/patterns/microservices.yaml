@@ -1,6 +1,8 @@
 pattern_name: "Microservicios"
 category: "Distribuida"
 complexity: "alta"
+family: "distribuido"
+level: "despliegue"
 description: >
   Divide el sistema en servicios pequeños e independientes, cada uno con su
   propia base de datos y ciclo de despliegue, comunicados por red.

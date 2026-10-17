@@ -137,11 +137,25 @@ class TestRenderAdr:
         assert "| Estado | Propuesto (pendiente de aprobación) |" in pending
         assert "| Aprobado |" not in pending
 
-    def test_extract_guide_section_recupera_la_guia(self):
-        from app.core.adr_generator import extract_guide_section
+    def test_no_hereda_las_preguntas_de_la_interfaz(self):
+        ctx = _ctx(
+            proposal_markdown=(
+                "## Trade-offs y decisión\n\n- Recomendación: Monolito modular\n"
+                "- Punto de decisión: ¿Aprueba los trade-offs?\n"
+            )
+        )
+        md = render_adr_markdown(ctx, llm_sections=LLM_GUIDE)
+        assert "Recomendación: Monolito modular" in md
+        assert "Punto de decisión" not in md
+        assert "¿Aprueba" not in md
 
-        assert extract_guide_section(render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)) == LLM_GUIDE
-        assert extract_guide_section(render_adr_markdown(_ctx(), llm_sections=None)) is None
+    def test_marca_los_atributos_de_calidad_propuestos_por_el_agente(self):
+        resumen = dict(_ctx().resumen)
+        resumen["calidad"] = ["Seguridad", "Disponibilidad"]
+        resumen["calidad_origen"] = {"Seguridad": "dicho", "Disponibilidad": "propuesto"}
+        md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
+        assert "- Seguridad\n" in md
+        assert "- Disponibilidad _(propuesto por el agente" in md
 
 
 class TestCleanLlmSections:
@@ -168,6 +182,86 @@ class TestCleanLlmSections:
             .replace("Plan de implementación", "PLAN DE IMPLEMENTACION")
         )
         assert clean_llm_sections(text) is not None
+
+
+class TestDomainConcernsAndLint:
+    def test_las_preocupaciones_del_dominio_sin_respuesta_van_a_preguntas_abiertas(self):
+        ctx = _ctx(
+            project_name="Huellitas",
+            project_description="App para reportar mascotas perdidas",
+            resumen={"problema": "Encontrar mascotas perdidas", "funcionalidades": ["Publicar avisos"]},
+        )
+        md = render_adr_markdown(ctx, llm_sections=LLM_GUIDE)
+        assert "**Preguntas abiertas obligatorias**" in md
+        assert "**Ubicación y mapas:**" in md
+        assert "**Respaldos de los datos:**" in md
+
+    def test_una_preocupacion_preguntada_en_la_elicitacion_no_se_repite(self):
+        from app.core.domain_concerns import DOMAIN_CONCERNS
+
+        ubicacion = next(c for c in DOMAIN_CONCERNS if c.key == "ubicacion")
+        ctx = _ctx(
+            project_description="App para reportar mascotas perdidas",
+            preguntas_respuestas=[{"pregunta": ubicacion.question, "respuesta": "No hace falta"}],
+        )
+        md = render_adr_markdown(ctx, llm_sections=LLM_GUIDE)
+        assert "**Ubicación y mapas:**" not in md
+
+    def test_sin_guia_las_preguntas_obligatorias_salen_igual(self):
+        ctx = _ctx(project_description="App para reportar mascotas perdidas")
+        md = render_adr_markdown(ctx, llm_sections=None)
+        assert "### 7.8 Preguntas abiertas" in md
+        assert "**Ubicación y mapas:**" in md
+
+    def test_lint_avisa_cifras_y_tecnologias_que_no_salen_de_lo_decidido(self):
+        from app.core.adr_generator import lint_adr_guide
+
+        guide = LLM_GUIDE.replace(
+            "Contenido de Stack tecnológico recomendado.",
+            "| Capa | Tecnología | Por qué |\n|---|---|---|\n"
+            "| Backend | Django | Lo pide la propuesta |\n"
+            "| Servidor | Gunicorn | Producción |\n"
+            "| Despliegue | Docker (supuesto) | Portabilidad |\n",
+        ).replace(
+            "Contenido de Riesgos y mitigaciones.",
+            "Disponibilidad con SLA 99 %. Servidor de 2 vCPU / 4 GB por $150 al mes.",
+        )
+        ctx = _ctx(proposal_markdown="## Tecnologias\n- Django\n- PostgreSQL")
+        warnings = lint_adr_guide(ctx, guide)
+        joined = " ".join(warnings)
+        assert "Gunicorn" in joined
+        assert "Docker" not in joined  # marcado como supuesto
+        assert "Django" not in joined
+        assert "2 vcpu" in joined
+        assert "4 gb" in joined
+        assert "$150" in joined
+
+    def test_lint_no_avisa_cifras_que_estan_en_los_requerimientos(self):
+        from app.core.adr_generator import lint_adr_guide
+
+        guide = LLM_GUIDE.replace("Contenido de Consecuencias.", "Presupuesto de 20000 USD respetado.")
+        assert lint_adr_guide(_ctx(), guide) == []
+
+    def test_el_adr_incluye_el_aviso_del_lint(self):
+        guide = LLM_GUIDE.replace("Contenido de Consecuencias.", "Costo estimado de $900 al mes.")
+        md = render_adr_markdown(_ctx(), llm_sections=guide)
+        assert "> **Revisión automática:**" in md
+        assert "$900" in md
+
+    def test_extract_guide_section_recupera_la_guia_sin_lo_agregado(self):
+        from app.core.adr_generator import extract_guide_section
+
+        ctx = _ctx(project_description="App para reportar mascotas perdidas")
+        md = render_adr_markdown(ctx, llm_sections=LLM_GUIDE)
+        assert extract_guide_section(md) == LLM_GUIDE
+        assert extract_guide_section(render_adr_markdown(ctx, llm_sections=None)) is None
+
+    def test_el_prompt_de_la_guia_hereda_las_reglas_de_viabilidad(self):
+        from app.core.adr_generator import ADR_SYSTEM_PROMPT
+
+        assert "CI/CD" in ADR_SYSTEM_PROMPT
+        assert "No inventes métricas" in ADR_SYSTEM_PROMPT
+        assert "(supuesto)" in ADR_SYSTEM_PROMPT
 
 
 class _FakeModel:

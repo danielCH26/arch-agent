@@ -1,6 +1,8 @@
 pattern_name: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)"
 category: "Flujo de datos"
 complexity: "alta"
+family: "datos"
+level: "despliegue"
 description: >
   Combina o unifica el procesamiento por lotes y en tiempo real: Lambda mantiene
   una capa batch para precisión histórica y una capa de velocidad para datos

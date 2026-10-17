@@ -1,0 +1,121 @@
+id: clinica-citas
+name: Agenda Salud
+kind: datos personales
+description: Agenda de citas en línea para una clínica de salud con tres sedes.
+profile:
+  resumen: Agenda de citas médicas con recordatorios.
+  dominio: salud
+  tipo_sistema: aplicación web
+  tipo_proyecto: producto_en_produccion
+  equipo_personas: 4
+  plazo_meses: 6
+  presupuesto_usd: 30000
+resumen:
+  problema: Las citas se agendan por teléfono y hay muchas inasistencias.
+  usuarios: Pacientes, recepcionistas y médicos.
+  funcionalidades:
+    - Agendar y cancelar citas
+    - Recordatorios por correo
+  restricciones:
+    - Presupuesto de 30000 USD
+    - Equipo de 4 desarrolladores
+    - Plazo de 6 meses
+  calidad:
+    - Privacidad de la historia clínica
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Las citas se agendan por teléfono y hay muchas inasistencias.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Pacientes, recepcionistas y médicos.
+  - pregunta: ¿Qué es lo más importante que el sistema debe permitir hacer?
+    respuesta: Agendar citas y enviar recordatorios por correo un día antes.
+  - pregunta: ¿Qué datos personales o sensibles va a guardar el sistema?
+    respuesta: Datos de contacto y el motivo de consulta; la historia clínica sigue en el sistema actual.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 30000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 4 desarrolladores.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 6 meses.
+candidates:
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.86}
+  - {name: "Arquitectura hexagonal (Puertos y Adaptadores)", similarity: 0.85}
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.84}
+  - {name: "Microservicios", similarity: 0.84}
+  - {name: "Serverless (Function-as-a-Service)", similarity: 0.79}
+recorded:
+  proposal: |
+    ## Componentes
+    - Módulo de agenda
+    - Módulo de pacientes
+    - Módulo de notificaciones
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Python | Lenguaje del equipo | Equipo de 4 desarrolladores |
+    | FastAPI | API rápida de construir | Plazo de 6 meses |
+    | PostgreSQL | Datos relacionales | Agenda de citas |
+    | React | Interfaz para pacientes | Agendar y cancelar citas |
+
+    ## Patrones
+    - Patrón principal: Monolito modular (Modular Monolith)
+
+    ## Justificación del patrón principal
+    - Motivo de elección: tres módulos con límites claros.
+    - Reflejo en la arquitectura: agenda, pacientes y notificaciones.
+    - Beneficio esperado: un despliegue, módulos aislados.
+    - Riesgo o costo: no escala módulos por separado.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | Monolito modular | Límites claros | Disciplina | Baja | Alto | [1] |
+    | Serverless | Pago por uso | Depuración local | Media | Medio | [2] |
+    | Microservicios | Escala por servicio | Operación | Alta | Bajo | [3] |
+    - Recomendación: Monolito modular
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Módulo de agenda | Citas | Módulo de pacientes |
+    | Módulo de pacientes | Datos de contacto | PostgreSQL |
+    | Módulo de notificaciones | Recordatorios por correo | Módulo de agenda |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Backend | Python / FastAPI | API |
+    | Base de datos | PostgreSQL | Relacional |
+    | Frontend | React | Interfaz |
+
+    ### 7.3 Consecuencias
+    **Positivas:** un despliegue. **Negativas / costos asumidos:** escala conjunta.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | Fuga de datos | alto | Cifrado en tránsito y roles |
+
+    ### 7.5 Plan de implementación
+    1. Agenda. 2. Recordatorios. 3. Sedes.
+
+    ### 7.6 Primer sprint
+    - Modelo de citas
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    agenda/
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Qué proveedor de correo se usará?
+expect:
+  concerns: [datos_personales, notificaciones, respaldos]
+  checks:
+    respeta_restricciones: true
+    cifras_con_origen: true
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

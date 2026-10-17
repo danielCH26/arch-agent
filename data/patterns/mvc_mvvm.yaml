@@ -1,6 +1,8 @@
 pattern_name: "MVC / MVVM (Modelo-Vista-Controlador)"
 category: "Monolítica"
 complexity: "baja"
+family: "monolitico"
+level: "codigo"
 description: >
   Separa la interfaz de usuario en modelo (datos y reglas), vista (presentación)
   y controlador o view-model (coordina entradas y actualiza la vista), de modo

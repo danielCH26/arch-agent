@@ -1,6 +1,8 @@
 pattern_name: "Arquitectura orientada a servicios (SOA)"
 category: "Distribuida"
 complexity: "alta"
+family: "distribuido"
+level: "despliegue"
 description: >
   Expone las capacidades de negocio como servicios reutilizables con contratos
   bien definidos que se integran, normalmente mediante un bus de servicios o una

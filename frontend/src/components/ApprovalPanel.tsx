@@ -56,6 +56,26 @@ function resumenLabel(key: string): string {
   return RESUMEN_LABELS[key.toLowerCase()] ?? key.replace(/_/g, ' ')
 }
 
+// `calidad_origen` dice si cada atributo de calidad lo pidió el usuario
+// ("dicho") o lo propuso el agente ("propuesto"). No se muestra como un campo
+// aparte: marca los atributos propuestos dentro de "Atributos de calidad".
+export function resumenEntries(resumen: Record<string, unknown>): [string, unknown][] {
+  const origins = resumen.calidad_origen
+  const originMap =
+    origins && typeof origins === 'object' && !Array.isArray(origins) ? (origins as Record<string, unknown>) : {}
+  return Object.entries(resumen)
+    .filter(([key]) => key !== 'calidad_origen')
+    .map(([key, value]): [string, unknown] => {
+      if (key !== 'calidad' || !Array.isArray(value)) return [key, value]
+      return [
+        key,
+        value.map((item: unknown) =>
+          typeof item === 'string' && originMap[item] === 'propuesto' ? `${item} (propuesto por el agente)` : item,
+        ),
+      ]
+    })
+}
+
 export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelProps) {
   const [mode, setMode] = useState<'idle' | 'modify' | 'confirmReject'>('idle')
   const [feedback, setFeedback] = useState('')
@@ -90,7 +110,7 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
     <div className="rounded-lg border border-gray-200 bg-white p-4">
       <h2 className="font-semibold text-gray-900">Resumen del proyecto</h2>
       <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
-        {Object.entries(resumen).map(([key, value]) => (
+        {resumenEntries(resumen).map(([key, value]) => (
           <div key={key}>
             <dt className="text-base font-bold uppercase tracking-wide text-gray-800">{resumenLabel(key)}</dt>
             <dd className="mt-1 text-sm leading-relaxed text-gray-700"><ResumenValue value={value} /></dd>

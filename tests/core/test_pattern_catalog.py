@@ -67,3 +67,31 @@ def test_eval_cases_only_reference_existing_patterns():
     assert len(cases) >= 20
     for case in cases:
         assert {case["esperado"], *case.get("aceptables", [])} <= names, case["id"]
+
+
+def test_every_pattern_declares_a_valid_family_and_level():
+    from app.core.pattern_catalog import VALID_FAMILIES, VALID_LEVELS
+
+    for pattern in load_patterns():
+        name = pattern["pattern_name"]
+        assert pattern.get("family") in VALID_FAMILIES, name
+        assert pattern.get("level") in VALID_LEVELS, name
+
+
+def test_code_organization_patterns_are_not_deployment_styles():
+    from app.core.pattern_catalog import pattern_family
+
+    for name in (
+        "Arquitectura en capas (Layered)",
+        "MVC / MVVM (Modelo-Vista-Controlador)",
+        "Arquitectura hexagonal (Puertos y Adaptadores)",
+        "Clean Architecture",
+    ):
+        assert pattern_family(name)["level"] == "codigo", name
+    assert pattern_family("Monolito modular (Modular Monolith)") == {
+        "family": "monolitico",
+        "level": "despliegue",
+    }
+    assert pattern_family("Microservicios")["family"] == "distribuido"
+    assert pattern_family("Serverless (Function-as-a-Service)")["family"] == "serverless"
+    assert pattern_family("Patrón inventado") is None

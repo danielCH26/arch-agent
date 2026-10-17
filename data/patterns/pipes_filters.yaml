@@ -1,6 +1,8 @@
 pattern_name: "Pipes and Filters (tuberías y filtros)"
 category: "Flujo de datos"
 complexity: "baja"
+family: "datos"
+level: "codigo"
 description: >
   Descompone un procesamiento en etapas independientes (filtros) conectadas por
   canales (tuberías); cada filtro recibe datos, los transforma y los entrega al

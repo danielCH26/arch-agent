@@ -22,6 +22,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.core.pattern_catalog import (  # noqa: E402
     PATTERNS_DIR,
     build_pattern_chunks,
+    VALID_FAMILIES,
+    VALID_LEVELS,
     load_patterns as _load_catalog,
 )
 from seed_common import connect_db, log  # noqa: E402
@@ -36,6 +38,13 @@ def load_patterns() -> list[dict]:
         log(f"No se encontraron archivos .yaml en {PATTERNS_DIR}", "ERROR")
         sys.exit(1)
     for pattern in patterns:
+        if pattern.get("family") not in VALID_FAMILIES or pattern.get("level") not in VALID_LEVELS:
+            log(
+                f"{pattern['pattern_name']}: family={pattern.get('family')!r} / "
+                f"level={pattern.get('level')!r} no son validos ({VALID_FAMILIES} / "
+                f"{VALID_LEVELS}); la tabla de trade-offs no podra diversificar con el",
+                "WARN",
+            )
         if pattern.get("complexity") not in VALID_COMPLEXITY:
             log(
                 f"{pattern['pattern_name']}: complexity={pattern.get('complexity')!r} "
