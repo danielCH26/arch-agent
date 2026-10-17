@@ -22,7 +22,7 @@ docker compose exec backend python scripts/seed_patterns.py
 Resultado esperado del seed:
 
 ```text
-Patrones procesados: 10. Chunks (re)generados: 40
+Patrones procesados: 19. Chunks (re)generados: 114
 ```
 
 Si aparece `No se encontraron archivos .yaml en /app/data/patterns`, reconstruir backend otra vez con:
@@ -45,7 +45,7 @@ Resultado esperado:
 ```text
  total_patrones
 ----------------
-             10
+             19
 ```
 
 Verificar nombres:
@@ -127,15 +127,17 @@ Ejecutar:
 docker compose exec postgres-app psql -U asistente -d asistente_db -c "SELECT chunk_type, COUNT(*) FROM architect_pattern_chunks GROUP BY chunk_type ORDER BY chunk_type;"
 ```
 
-Resultado esperado:
+Resultado esperado (6 tipos x 19 patrones = 114 chunks):
 
 ```text
  chunk_type        | count
 -------------------+-------
- decision_signals  |    10
- summary           |    10
- tradeoffs         |    10
- when_not_to_use   |    10
+ decision_signals  |    19
+ fit               |    19
+ scenarios         |    19
+ summary           |    19
+ tradeoffs         |    19
+ when_not_to_use   |    19
 ```
 
 Validar que ningún chunk quedó sin embedding:
@@ -229,7 +231,7 @@ Invoke-RestMethod `
 
 Resultado esperado:
 
-- Devuelve una lista de 10 patrones.
+- Devuelve una lista de 19 patrones.
 - Cada patrón incluye `id`, `pattern_name`, `category`, `description`, `use_cases`, `tradeoffs` y `when_not_to_use`.
 - `tradeoffs` llega como objeto JSON, no como texto plano.
 

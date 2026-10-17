@@ -14,7 +14,7 @@ Esperado: no imprime errores.
 .\venv\Scripts\python.exe -c "import yaml, pathlib; files=sorted(pathlib.Path('data/patterns').glob('*.yaml')); data=[yaml.safe_load(f.read_text(encoding='utf-8')) for f in files]; print(len(files)); print([d['pattern_name'] for d in data])"
 ```
 
-Esperado: imprime `10` y la lista de patrones cargados desde `data/patterns`.
+Esperado: imprime `19` y la lista de patrones cargados desde `data/patterns`.
 
 ```powershell
 .\venv\Scripts\python.exe -c "import server; print('server ok')"
@@ -63,10 +63,10 @@ docker compose exec backend python scripts/seed_patterns.py
 Esperado: log similar a:
 
 ```text
-Patrones procesados: 10. Chunks (re)generados: 40
+Patrones procesados: 19. Chunks (re)generados: 114
 ```
 
-El total esperado es `10 patrones x 4 chunks`.
+El total esperado es `19 patrones x 6 chunks` (`summary`, `tradeoffs`, `when_not_to_use`, `decision_signals`, `scenarios`, `fit`).
 
 Verificar conteos:
 
@@ -79,7 +79,15 @@ GROUP BY chunk_type
 ORDER BY chunk_type;
 ```
 
-Esperado: `architect_patterns` mantiene 10 filas y cada `chunk_type` (`summary`, `tradeoffs`, `when_not_to_use`, `decision_signals`) tiene 10 filas.
+Esperado: `architect_patterns` mantiene 19 filas y cada `chunk_type` (`summary`, `tradeoffs`, `when_not_to_use`, `decision_signals`, `scenarios`, `fit`) tiene 19 filas (114 chunks en total).
+
+El RAG busca en `architect_pattern_chunks`, no en `architect_patterns`; confirma que todos tienen embedding:
+
+```sql
+SELECT count(*) AS total, count(embedding) AS con_embedding FROM architect_pattern_chunks;
+```
+
+Esperado: `total` = 114 y `con_embedding` = `total`.
 
 ## 4. Endpoint de catálogo
 
