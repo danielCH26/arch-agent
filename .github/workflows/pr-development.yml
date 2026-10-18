@@ -59,8 +59,6 @@ jobs:
       EMBEDDINGS_WARMUP: "off"
       # Un test descarga multilingual-e5-small (~470 MB): se cachea entre corridas.
       HF_HOME: ${{ github.workspace }}/.hf-cache
-      # El default (/app/uploads) es la ruta del contenedor, no del runner.
-      PUPPETEER_UPLOADS_DIR: ${{ runner.temp }}/uploads
 
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +89,11 @@ jobs:
           python -m migrations.run_migrations
 
       - name: Run tests
+        env:
+          # El default (/app/uploads) es la ruta del contenedor, no del runner.
+          # Va en el env del paso y no en el del job porque el contexto
+          # `runner` solo existe dentro de steps (actionlint lo marca).
+          PUPPETEER_UPLOADS_DIR: ${{ runner.temp }}/uploads
         run: python -m pytest tests -v --tb=short
 
   frontend:
