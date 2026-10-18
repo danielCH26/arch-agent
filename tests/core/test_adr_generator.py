@@ -519,3 +519,65 @@ class TestDatosDelUsuario:
         resumen = dict(_ctx().resumen)
         resumen["datos_viabilidad"] = {"equipo": "4 devs, 3 front y 1 PM"}
         assert "3 front y 1 PM" in _adr_prompt(_ctx(resumen=resumen))
+
+
+class TestCorreccionDeLaGuia:
+    """Segunda pasada: el LLM corrige lo que encontró la revisión automática."""
+
+    BAD = LLM_GUIDE.replace("Contenido de Consecuencias.", "Costo de $900 al mes.")
+
+    class _Seq:
+        def __init__(self, *responses):
+            self.responses = list(responses)
+            self.configs = []
+            self.prompts = []
+
+        async def ainvoke(self, messages, config=None):
+            self.configs.append(config)
+            self.prompts.append(messages[-1].content)
+            item = self.responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return type("Msg", (), {"content": item})()
+
+    def test_corrige_y_usa_la_version_con_menos_avisos(self):
+        from app.core.adr_generator import generate_guide
+
+        model = self._Seq(self.BAD, LLM_GUIDE)
+        guide, repaired = asyncio.run(generate_guide(model, _ctx()))
+
+        assert repaired is True
+        assert guide == LLM_GUIDE
+        assert model.configs[1]["run_name"] == "adr-guide-repair"
+        assert "$900" in model.prompts[1]  # el aviso viaja en el pedido de corrección
+
+    def test_si_la_correccion_no_mejora_se_queda_la_original(self):
+        from app.core.adr_generator import generate_guide
+
+        model = self._Seq(self.BAD, self.BAD)
+        guide, repaired = asyncio.run(generate_guide(model, _ctx()))
+        assert (guide, repaired) == (self.BAD, False)
+
+    def test_si_la_correccion_falla_se_queda_la_original(self):
+        from app.core.adr_generator import generate_guide
+
+        model = self._Seq(self.BAD, RuntimeError("429"))
+        guide, repaired = asyncio.run(generate_guide(model, _ctx()))
+        assert (guide, repaired) == (self.BAD, False)
+
+    def test_sin_avisos_no_hay_segunda_llamada(self):
+        from app.core.adr_generator import generate_guide
+
+        model = self._Seq(LLM_GUIDE)
+        guide, repaired = asyncio.run(generate_guide(model, _ctx()))
+        assert (guide, repaired) == (LLM_GUIDE, False)
+        assert len(model.configs) == 1
+
+    def test_se_puede_desactivar(self, monkeypatch):
+        from app.core import adr_generator
+
+        monkeypatch.setattr(adr_generator, "ADR_GUIDE_REPAIR", False)
+        model = self._Seq(self.BAD)
+        guide, repaired = asyncio.run(adr_generator.generate_guide(model, _ctx()))
+        assert (guide, repaired) == (self.BAD, False)
+        assert len(model.configs) == 1

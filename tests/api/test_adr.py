@@ -110,8 +110,8 @@ def test_post_con_guia_del_llm_marca_guide_complete(client):
     with patch("app.api.adr.collect_adr_context", return_value=_ctx()), patch(
         "app.api.adr.build_langchain_model", return_value=object()
     ), patch(
-        "app.api.adr.generate_llm_sections",
-        new=AsyncMock(return_value="### 7.1 Componentes y responsabilidades\nx"),
+        "app.api.adr.generate_guide",
+        new=AsyncMock(return_value=("### 7.1 Componentes y responsabilidades\nx", False)),
     ):
         response = http.post("/api/projects/5/adr")
     assert response.status_code == 200
@@ -199,14 +199,14 @@ def test_aprobar_vuelve_a_armar_el_markdown_como_aceptado_sin_llamar_al_llm(clie
     )
     with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
         "app.api.adr.build_langchain_model", return_value=object()
-    ), patch("app.api.adr.generate_llm_sections", new=AsyncMock(return_value=guide)):
+    ), patch("app.api.adr.generate_guide", new=AsyncMock(return_value=(guide, False))):
         created = http.post("/api/projects/5/adr").json()
 
     assert "| Estado | Propuesto (pendiente de aprobación) |" in created["markdown"]
 
     llm = AsyncMock(side_effect=AssertionError("no debe llamar al LLM al aprobar"))
     with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
-        "app.api.adr.generate_llm_sections", new=llm
+        "app.api.adr.generate_guide", new=llm
     ):
         approved = http.post("/api/projects/5/adr/approve").json()
 

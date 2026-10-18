@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -62,6 +63,11 @@ ADR_LLM_TIMEOUT_S = env_float("ADR_LLM_TIMEOUT_S", 120.0, minimum=5.0)
 # propuesta completa igual; al modelo le alcanza con el resumen para redactar
 # el plan, y así la llamada cabe en planes con límite de tokens por minuto.
 ADR_PROPOSAL_PROMPT_MAX_CHARS = env_int("ADR_PROPOSAL_PROMPT_MAX_CHARS", 8000, minimum=1000)
+# Segunda pasada de la guía: si la revisión automática (lint_adr_guide)
+# encuentra problemas, se le pide al LLM que corrija SOLO esos puntos. Una sola
+# pasada, y se usa solo si queda con menos avisos. ADR_GUIDE_REPAIR=off la
+# desactiva (ahorra tokens; los avisos quedan igual en el documento).
+ADR_GUIDE_REPAIR = os.getenv("ADR_GUIDE_REPAIR", "on").strip().lower() not in {"off", "0", "false", "no"}
 
 PHASE_LABELS = {
     "requerimientos": "Requerimientos",
@@ -1162,3 +1168,95 @@ async def generate_llm_sections(
     if sections is None:
         _LOGGER.warning("ADR: la respuesta del LLM no trae todas las secciones")
     return sections
+
+
+_REPAIR_INSTRUCTIONS = """\
+Una revisión automática encontró estos problemas en la guía que escribiste:
+{warnings}
+
+Corrige SOLO esos puntos y devuelve la guía completa (7.1 a 7.8) con el mismo \
+formato y las mismas secciones. Para cada tipo de problema:
+- Cifras o tecnologías que no salen de lo decidido: quítalas o márcalas \
+  `(supuesto)`; no inventes otras.
+- Componentes que no están en el diagrama: usa los nombres del diagrama.
+- Riesgo de impacto alto sin tarea en el primer sprint: agrega en 7.6 una \
+  tarea concreta que lo ataque.
+- Preguntas repetidas: deja una sola.
+- Etiquetas internas (RAG, [n], similitud): reemplázalas por texto que \
+  entienda una persona.
+No cambies lo que no tiene problemas.
+
+Guía a corregir:
+{guide}
+"""
+
+
+async def repair_llm_sections(
+    model: BaseChatModel,
+    ctx: AdrContext,
+    guide: str,
+    warnings: list[str],
+    *,
+    callbacks: Optional[list[Any]] = None,
+) -> Optional[str]:
+    """Segunda pasada: el LLM corrige los problemas que encontró el lint.
+
+    Devuelve la guía corregida SOLO si está completa y tiene menos avisos que
+    la original; si no (o si el LLM falla), ``None`` y se usa la original.
+    Nunca lanza.
+    """
+    if not warnings:
+        return None
+    prompt = _adr_prompt(ctx) + "\n\n" + _REPAIR_INSTRUCTIONS.format(
+        warnings="\n".join(f"- {w}" for w in warnings), guide=guide
+    )
+    messages = [SystemMessage(content=ADR_SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    config: dict[str, Any] = {"run_name": "adr-guide-repair"}
+    if callbacks:
+        config["callbacks"] = callbacks
+    try:
+        response = await asyncio.wait_for(
+            model.ainvoke(messages, config=config), timeout=ADR_LLM_TIMEOUT_S
+        )
+    except Exception as exc:  # noqa: BLE001 -- se queda la guía original
+        _LOGGER.warning("ADR: la corrección de la guía falló (%s: %s)", type(exc).__name__, exc)
+        return None
+    repaired = clean_llm_sections(_message_text(response))
+    if repaired is None:
+        _LOGGER.warning("ADR: la guía corregida vino incompleta; se usa la original")
+        return None
+    remaining = lint_adr_guide(ctx, repaired)
+    if len(remaining) >= len(warnings):
+        _LOGGER.info(
+            "ADR: la corrección no redujo los avisos (%s -> %s); se usa la original",
+            len(warnings),
+            len(remaining),
+        )
+        return None
+    _LOGGER.info("ADR: guía corregida (%s -> %s avisos)", len(warnings), len(remaining))
+    return repaired
+
+
+async def generate_guide(
+    model: BaseChatModel,
+    ctx: AdrContext,
+    *,
+    callbacks: Optional[list[Any]] = None,
+) -> tuple[Optional[str], bool]:
+    """Guía del ADR con su revisión: ``(guia, corregida)``.
+
+    1. El LLM redacta la guía (``generate_llm_sections``).
+    2. ``lint_adr_guide`` la revisa contra lo decidido y contra el resto del
+       documento.
+    3. Si hay avisos y ``ADR_GUIDE_REPAIR`` está activo, una segunda llamada
+       corrige solo esos puntos (``repair_llm_sections``). Los avisos que
+       queden se muestran igual en el documento.
+    """
+    guide = await generate_llm_sections(model, ctx, callbacks=callbacks)
+    if guide is None or not ADR_GUIDE_REPAIR:
+        return guide, False
+    warnings = lint_adr_guide(ctx, guide)
+    if not warnings:
+        return guide, False
+    repaired = await repair_llm_sections(model, ctx, guide, warnings, callbacks=callbacks)
+    return (repaired, True) if repaired is not None else (guide, False)

@@ -29,7 +29,7 @@ from app.core.adr_generator import (
     AdrNotReadyError,
     collect_adr_context,
     extract_guide_section,
-    generate_llm_sections,
+    generate_guide,
     lint_adr_guide,
     render_adr_markdown,
 )
@@ -215,6 +215,7 @@ async def generate_adr(
         db.close()
 
     guide: Optional[str] = None
+    guide_repaired = False
     try:
         model = build_langchain_model(user_id)
     except LLMConfigError:
@@ -223,7 +224,8 @@ async def generate_adr(
     if model is not None:
         handler = get_langfuse_handler()
         callbacks = [handler] if handler is not None else None
-        guide = await generate_llm_sections(model, ctx, callbacks=callbacks)
+        # Redacción + revisión automática + una pasada de corrección si hace falta.
+        guide, guide_repaired = await generate_guide(model, ctx, callbacks=callbacks)
         if callbacks:
             flush_langfuse()
 
@@ -237,6 +239,8 @@ async def generate_adr(
         # La guía se guarda aparte para volver a armar el documento al
         # aprobarlo sin llamar otra vez al LLM.
         "guide": guide,
+        # True si la guía pasó por la segunda llamada de corrección.
+        "guide_repaired": guide_repaired,
         "guide_warnings": lint_adr_guide(ctx, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
         "feedback_history": history,

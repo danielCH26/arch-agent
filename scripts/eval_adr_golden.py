@@ -71,7 +71,7 @@ def _text(message) -> str:
 
 
 async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None]:
-    from app.core.adr_generator import generate_llm_sections
+    from app.core.adr_generator import generate_guide
     from app.core.proposal_generator import _build_prompt, _profile_kind
 
     citations = select_rows(case)
@@ -85,7 +85,8 @@ async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None]:
         project_kind=_profile_kind(case.profile or None),
     )
     proposal = _text(await model.ainvoke(prompt))
-    guide = await generate_llm_sections(model, build_context(case, proposal, citations))
+    # Igual que en la app: redacción + revisión + corrección si hace falta.
+    guide, _repaired = await generate_guide(model, build_context(case, proposal, citations))
     return proposal, guide
 
 
