@@ -140,6 +140,13 @@ a lo largo de la conversación (no todo en una sola pregunta):
 4. Calidad: rendimiento, seguridad, disponibilidad, y cualquier otro \
    requerimiento no funcional relevante.
 
+Además, antes de cerrar confirma lo que más decide la arquitectura \
+(una pregunta por tema):
+- Plataforma: si se usa desde el navegador, desde una app móvil o ambos.
+- Habilidades del equipo: qué lenguajes o tecnologías domina.
+- Fuente de los datos: si los ingresan los usuarios o vienen de otro \
+  sistema, de sensores o de una fuente externa en tiempo real.
+
 Reglas de granularidad para cada pregunta (Issue #100):
 - Una pregunta cubre UNA sola dimensión (usuarios, funcionalidades, \
 restricciones o calidad). Nunca dos en la misma pregunta. Dentro de una \
@@ -186,6 +193,13 @@ pidió o lo describió en sus respuestas o documentos, "propuesto" si lo \
 infieres tú como recomendable sin que el usuario lo haya dicho. No conviertas \
 un atributo propuesto en dicho.
 
+En "restricciones" conserva las cifras y la composición del equipo tal como \
+las dijo el usuario (por ejemplo "4 personas: 3 front y 1 PM"); no las \
+reinterpretes ni las resumas a un solo número.
+
+En "contexto_tecnico" usa las palabras del usuario; si no lo dijo, escribe \
+"no definido".
+
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
 {
@@ -193,7 +207,8 @@ forma exacta:
   "usuarios": str,
   "funcionalidades": [str, ...],
   "restricciones": [str, ...],
-  "calidad": [{"atributo": str, "origen": "dicho" | "propuesto"}, ...]
+  "calidad": [{"atributo": str, "origen": "dicho" | "propuesto"}, ...],
+  "contexto_tecnico": {"plataforma": str, "habilidades_equipo": str, "fuentes_de_datos": str}
 }
 """
 
@@ -570,8 +585,50 @@ _COVERAGE_CATEGORIES = (
     ),
 )
 
+# Lo que más decide la arquitectura y la elicitación no preguntaba: sin estos
+# datos las lagunas reaparecían como "preguntas abiertas" al final del ADR,
+# cuando la decisión ya estaba tomada (plataforma, habilidades del equipo y de
+# dónde salen los datos). Se exigen solo en el chequeo de cierre de la
+# conversación, no sobre el resumen (no son campos de HU5).
+_DRIVER_CATEGORIES = (
+    (
+        "plataforma",
+        (
+            r"web", r"movil\w*", r"android", r"ios", r"escritorio", r"navegador\w*",
+            r"celular\w*", r"tablet\w*", r"pwa", r"smartphones?",
+        ),
+        (r"web", r"movil", r"plataforma", r"dispositivo", r"navegador"),
+        "¿Los usuarios van a usar el sistema desde el navegador web, desde una app móvil o desde ambos?",
+    ),
+    (
+        "habilidades",
+        (
+            r"experiencia", r"sabemos", r"saben", r"conoce\w*", r"domina\w*", r"manej\w+",
+            r"python", r"java", r"javascript", r"typescript", r"react", r"angular",
+            r"vue", r"node(?:\.?js)?", r"django", r"flask", r"fastapi", r"spring",
+            r"laravel", r"php", r"kotlin", r"swift", r"flutter", r"\.net", r"c#",
+            r"golang", r"ruby", r"rails",
+        ),
+        (r"experiencia", r"tecnolog", r"lenguaje", r"habilidad", r"conoce", r"domina"),
+        "¿Qué lenguajes o tecnologías domina el equipo?",
+    ),
+    (
+        "fuente_datos",
+        (
+            r"fuentes?\s+de\s+datos", r"tiempo\s+real", r"sensor\w*", r"apis?",
+            r"integra\w+", r"importa\w*", r"excel", r"hojas?\s+de\s+calculo",
+            r"manual\w*", r"a\s+mano", r"proviene\w*", r"vienen?\s+de",
+            r"(?:los\s+)?(?:cargan|ingresan|registran|digitan|suben)",
+            r"base\s+de\s+datos\s+(?:existente|actual)", r"sistema\s+(?:actual|existente)",
+        ),
+        (r"de\s+donde", r"fuente", r"origen\s+de\s+los\s+datos", r"tiempo\s+real"),
+        "¿De dónde salen los datos que el sistema muestra: los ingresan los usuarios o vienen de otro sistema o fuente externa?",
+    ),
+)
+
 _COVERAGE_REGEXES = {
-    name: _factor_regex(patterns) for name, patterns, _asked, _question in _COVERAGE_CATEGORIES
+    name: _factor_regex(patterns)
+    for name, patterns, _asked, _question in (*_COVERAGE_CATEGORIES, *_DRIVER_CATEGORIES)
 }
 
 # Como mucho este número de preguntas de dominio forzadas por el código en una
@@ -602,14 +659,16 @@ def missing_coverage(
     project_description: str = "",
     documents_context: Optional[str] = None,
 ) -> list[tuple[str, str]]:
-    """Categorías de HU5 (usuarios, funcionalidades, calidad) que faltan.
+    """Categorías que faltan: las de HU5 (usuarios, funcionalidades, calidad)
+    y las que deciden la arquitectura (plataforma, habilidades del equipo,
+    fuente de los datos).
 
     Devuelve ``[(categoria, pregunta)]`` en el orden de la checklist.
     """
     context = _normalize_text(_user_context(history, project_description, documents_context))
     asked = _answered_questions(history)
     missing = []
-    for name, _patterns, asked_markers, question in _COVERAGE_CATEGORIES:
+    for name, _patterns, asked_markers, question in (*_COVERAGE_CATEGORIES, *_DRIVER_CATEGORIES):
         if _COVERAGE_REGEXES[name].search(context):
             continue
         if any(re.search(marker, text) for marker in asked_markers for text in asked):
@@ -862,6 +921,55 @@ def next_step(
     return decision
 
 
+def viability_facts(
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> dict[str, str]:
+    """Presupuesto, equipo y plazo con las PALABRAS del usuario.
+
+    El resumen del LLM a veces los pierde o los reinterpreta: un "4 devs, 3
+    front y 1 PM" terminaba como "Equipo: no definido" en el ADR o como "4
+    desarrolladores backend" en la propuesta. Aquí se guarda el texto tal
+    cual: la respuesta a la pregunta del factor (si se hizo) o la primera
+    respuesta, descripción o documento que lo menciona.
+    """
+    facts: dict[str, str] = {}
+    for name, _patterns, question in _VIABILITY_FACTORS:
+        questions = {
+            _normalize_text(text).strip()
+            for text in (question, *_LEGACY_VIABILITY_QUESTIONS.get(name, ()))
+        }
+        answer = next(
+            (
+                str(item.get("respuesta") or "").strip()
+                for item in history
+                if _normalize_text(str(item.get("pregunta") or "")).strip() in questions
+                and str(item.get("respuesta") or "").strip()
+            ),
+            "",
+        )
+        if not answer:
+            candidates = [str(item.get("respuesta") or "") for item in history]
+            candidates += [project_description or "", documents_context or ""]
+            for text in candidates:
+                sentences = re.split(r"(?<=[.;\n])\s+", text)
+                hit = next(
+                    (
+                        sentence.strip()
+                        for sentence in sentences
+                        if _VIABILITY_REGEXES[name].search(_normalize_text(sentence))
+                    ),
+                    "",
+                )
+                if hit:
+                    answer = hit
+                    break
+        if answer:
+            facts[name] = answer[:300]
+    return facts
+
+
 def generate_summary(
     model: BaseChatModel,
     history: list[dict],
@@ -879,7 +987,7 @@ def generate_summary(
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
         f"{_documents_section(documents_context)}"
     )
-    return normalize_summary(
+    summary = normalize_summary(
         _invoke_json(
             model,
             SUMMARY_SYSTEM_PROMPT,
@@ -888,3 +996,9 @@ def generate_summary(
             run_name="elicitation-summary",
         )
     )
+    facts = viability_facts(history, project_description, documents_context)
+    if facts:
+        # Las palabras del usuario viajan aparte, sin pasar por el LLM, hasta
+        # la propuesta y el ADR (ver format_requirements_summary).
+        summary["datos_viabilidad"] = facts
+    return summary

@@ -29,7 +29,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
-from app.core.domain_concerns import DomainConcern, concern_by_question, uncovered_concerns
+from app.core.domain_concerns import (
+    DomainConcern,
+    concern_by_question,
+    concern_mentioned,
+    uncovered_concerns,
+)
 from app.core.env import env_float, env_int
 from app.core.mermaid_validator import extract_mermaid_block
 from app.core.session_store import latest_diagram_decisions
@@ -421,17 +426,27 @@ def _requirements_text(ctx: AdrContext) -> str:
         " ".join(_as_list(resumen.get("funcionalidades"))),
         " ".join(_as_list(resumen.get("restricciones"))),
         " ".join(_as_list(resumen.get("calidad"))),
+        " ".join(str(v) for v in _dict_values(resumen.get("contexto_tecnico"))),
+        " ".join(str(v) for v in _dict_values(resumen.get("datos_viabilidad"))),
     ]
     return " ".join(p for p in parts if p) + " " + _user_said_text(ctx)
 
 
-def open_domain_concerns(ctx: AdrContext) -> list[DomainConcern]:
+def _dict_values(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    return [str(v).strip() for v in value.values() if str(v or "").strip()]
+
+
+def open_domain_concerns(ctx: AdrContext, addressed_text: str = "") -> list[DomainConcern]:
     """Preocupaciones del dominio relevantes que nadie respondió.
 
     Van como preguntas abiertas OBLIGATORIAS en 7.8: no dependen de que el LLM
     se acuerde de que una app de mascotas perdidas necesita mapas. Una
     preocupación cuya pregunta se hizo en la elicitación cuenta como
-    respondida aunque la respuesta haya sido "no".
+    respondida aunque la respuesta haya sido "no". ``addressed_text`` (la
+    propuesta y la guía) también la cubre: si la guía ya habla de respaldos,
+    no se agrega una pregunta genérica que repite lo mismo.
     """
     answered = {
         concern.key
@@ -446,6 +461,7 @@ def open_domain_concerns(ctx: AdrContext) -> list[DomainConcern]:
         concern
         for concern in uncovered_concerns(project_text, said)
         if concern.key not in answered
+        and not (addressed_text and concern_mentioned(concern, addressed_text))
     ]
 
 
@@ -565,6 +581,93 @@ def lint_adr_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
 
     if any(_UI_LEFTOVER_RE.match(normalize_text(line)) for line in guide.splitlines()):
         warnings.append("La guía repite preguntas de la interfaz (\"¿Aprueba…?\").")
+    warnings.extend(_coherence_warnings(ctx, guide))
+    return warnings
+
+
+# Etiquetas internas del sistema que no deben llegar al documento del usuario.
+_INTERNAL_LABEL_RE = re.compile(
+    r"\brag\b|\bchunks?\b|\bembeddings?\b|\bsimilitud\b|\bsin fuente\b|\[\d+\]"
+)
+_WORD_RE = re.compile(r"[a-z]{6,}")
+_NAME_STOPWORDS = {"del", "los", "las", "con", "para", "por", "una", "uno", "the", "and"}
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Palabras de un nombre de componente para buscarlo en el diagrama
+    ("API" -> ["api"]; "Servicio de notificaciones" -> ["servicio", "notificaciones"])."""
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]{3,}", normalize_text(re.sub(r"[*_`]", "", name)))
+        if token not in _NAME_STOPWORDS
+    ]
+
+
+def _risk_rows(guide: str) -> list[tuple[str, str, str]]:
+    """``(riesgo, impacto, mitigacion)`` de la tabla de 7.4."""
+    lines = _section_lines(guide, "7.4")
+    risks = _table_column(lines, "riesgo")
+    impacts = _table_column(lines, "impacto")
+    mitigations = _table_column(lines, "mitigaci")
+    rows = []
+    for index, risk in enumerate(risks):
+        impact = impacts[index] if index < len(impacts) else ""
+        mitigation = mitigations[index] if index < len(mitigations) else ""
+        rows.append((risk.strip(), normalize_text(impact).strip(" *_"), mitigation.strip()))
+    return rows
+
+
+def _coherence_warnings(ctx: AdrContext, guide: str) -> list[str]:
+    """Pasada final de coherencia entre las partes del documento.
+
+    Cada sección se escribe por separado (datos, propuesta, guía del LLM) y
+    nadie revisaba que cuadraran. Aquí se comprueba, sin LLM:
+      * que los componentes de 7.1 estén en el diagrama;
+      * que el primer sprint (7.6) ataque los riesgos de impacto alto;
+      * que no haya preguntas repetidas en 7.8;
+      * que no se cuelen etiquetas internas (RAG, [n], similitud...).
+    """
+    warnings: list[str] = []
+    if ctx.mermaid:
+        diagram = normalize_text(ctx.mermaid)
+        missing = [
+            component
+            for component in _table_column(_section_lines(guide, "7.1"), "componente")
+            if component.strip(" -—")
+            and not any(word in diagram for word in _name_tokens(component))
+        ]
+        if missing:
+            warnings.append(
+                "Componentes de 7.1 que no aparecen en el diagrama: " + ", ".join(missing)
+            )
+
+    sprint = normalize_text(" ".join(_section_lines(guide, "7.6")))
+    if sprint.strip():
+        for risk, impact, mitigation in _risk_rows(guide):
+            if not impact.startswith("alto"):
+                continue
+            words = set(_WORD_RE.findall(normalize_text(f"{risk} {mitigation}")))
+            if words and not any(word in sprint for word in words):
+                warnings.append(
+                    f"El primer sprint no incluye nada sobre el riesgo de impacto alto «{risk}»."
+                )
+
+    questions = [
+        normalize_text(re.sub(r"[*_`¿?]", "", item.group(1))).strip()
+        for line in _section_lines(guide, "7.8")
+        for item in [re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.+)$", line)]
+        if item
+    ]
+    repeated = sorted({q for q in questions if questions.count(q) > 1 and q})
+    if repeated:
+        warnings.append("Preguntas repetidas en 7.8: " + "; ".join(repeated))
+
+    labels = sorted({m.group(0) for m in _INTERNAL_LABEL_RE.finditer(normalize_text(guide))})
+    if labels:
+        warnings.append(
+            "Etiquetas internas del sistema en la guía (no le dicen nada al lector): "
+            + ", ".join(labels)
+        )
     return warnings
 
 
@@ -602,7 +705,9 @@ def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
             "documento está completo. Usa **Regenerar ADR** para intentarlo de nuevo."
         )
     blocks = [guide]
-    concerns = open_domain_concerns(ctx)
+    concerns = open_domain_concerns(
+        ctx, addressed_text=f"{llm_sections or ''} {ctx.proposal_markdown}"
+    )
     if concerns:
         heading = "" if llm_sections else "### 7.8 Preguntas abiertas\n\n"
         blocks.append(
@@ -613,8 +718,9 @@ def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
     warnings = lint_adr_guide(ctx, llm_sections)
     if warnings:
         blocks.append(
-            "> **Revisión automática:** estos datos de la guía no salen de lo "
-            "decidido; tómalos como supuestos y confírmalos antes de usarlos.\n"
+            "> **Revisión automática:** puntos de la guía que no salen de lo "
+            "decidido o que no cuadran con el resto del documento. Revísalos "
+            "antes de usarlo.\n"
             + "\n".join(f"> - {w}" for w in warnings)
         )
     return "\n\n".join(blocks)
@@ -646,19 +752,32 @@ def _plain(text: str) -> str:
 
 
 def _viability_lines(ctx: AdrContext) -> list[str]:
-    restricciones = _as_list((ctx.resumen or {}).get("restricciones"))
+    """Presupuesto, equipo y plazo: primero las palabras del usuario
+    (``datos_viabilidad``), después lo que dejó el resumen en restricciones."""
+    resumen = ctx.resumen or {}
+    literal = resumen.get("datos_viabilidad") if isinstance(resumen.get("datos_viabilidad"), dict) else {}
+    restricciones = _as_list(resumen.get("restricciones"))
     lines = []
     for label, pattern in _VIABILITY_MARKERS:
-        found = next((r for r in restricciones if pattern.search(normalize_text(r))), None)
+        found = str(literal.get(label.lower()) or "").strip() or next(
+            (r for r in restricciones if pattern.search(normalize_text(r))), None
+        )
         lines.append(f"**{label}:** {_plain(found) if found else 'no definido'}")
     return lines
 
 
+_IMPACT_ORDER = {"alto": 0, "alta": 0, "medio": 1, "media": 1, "bajo": 2, "baja": 2}
+
+
 def _summary_risks(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    # De mayor a menor impacto: el que puede tumbar el proyecto va primero.
+    rows = sorted(
+        (row for row in _risk_rows(guide or "") if _plain(row[0])),
+        key=lambda row: _IMPACT_ORDER.get(row[1].split()[0] if row[1] else "", 3),
+    )
     risks = [
-        _plain(cell)
-        for cell in _table_column(_section_lines(guide or "", "7.4"), "riesgo")
-        if _plain(cell)
+        f"{_plain(risk)} (impacto {impact.split()[0]})" if impact else _plain(risk)
+        for risk, impact, _mitigation in rows
     ][:3]
     if not risks:
         match = _PROPOSAL_RISK_RE.search(ctx.proposal_markdown or "")
@@ -668,7 +787,10 @@ def _summary_risks(ctx: AdrContext, guide: Optional[str]) -> list[str]:
 
 
 def _summary_pending(ctx: AdrContext, guide: Optional[str]) -> list[str]:
-    pending = [c.label for c in open_domain_concerns(ctx)]
+    pending = [
+        c.label
+        for c in open_domain_concerns(ctx, addressed_text=f"{guide or ''} {ctx.proposal_markdown}")
+    ]
     for line in _section_lines(guide or "", "7.8"):
         item = re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.+)$", line)
         if item and _plain(item.group(1)) and len(pending) < 6:
@@ -725,6 +847,49 @@ def executive_summary(ctx: AdrContext, guide: Optional[str]) -> str:
     )
 
 
+_TECH_CONTEXT_LABELS = (
+    ("plataforma", "Plataforma"),
+    ("habilidades_equipo", "Habilidades del equipo"),
+    ("fuentes_de_datos", "Fuente de los datos"),
+)
+
+
+def _technical_context_block(resumen: dict) -> str:
+    """Contexto técnico y datos de viabilidad con las palabras del usuario.
+
+    Son los datos que deciden la arquitectura (plataforma, habilidades, fuente
+    de los datos, equipo real); antes se perdían entre fases.
+    """
+    blocks = []
+    tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
+    items = [
+        f"**{label}:** {str(tecnico.get(key)).strip()}"
+        for key, label in _TECH_CONTEXT_LABELS
+        if str(tecnico.get(key) or "").strip()
+    ]
+    if items:
+        blocks.append("### Contexto técnico\n\n" + _bullets(items))
+    datos = resumen.get("datos_viabilidad") if isinstance(resumen.get("datos_viabilidad"), dict) else {}
+    items = [
+        f"**{key.capitalize()}:** «{str(value).strip()}»"
+        for key, value in datos.items()
+        if str(value or "").strip()
+    ]
+    if items:
+        blocks.append("### Datos de viabilidad (palabras del usuario)\n\n" + _bullets(items))
+    return ("\n" + "\n\n".join(blocks) + "\n") if blocks else ""
+
+
+def _reader_labels(markdown: str) -> str:
+    """Cambia etiquetas internas de la propuesta por otras que entienda el lector.
+
+    La tabla de trade-offs trae la columna "Fuente RAG" y filas "Sin fuente
+    RAG": son nombres del sistema. En el ADR los [n] remiten a la sección 5.
+    """
+    text = re.sub(r"Sin fuente RAG", "Criterio general", markdown or "", flags=re.IGNORECASE)
+    return re.sub(r"Fuente RAG", "Referencia (sección 5)", text, flags=re.IGNORECASE)
+
+
 def render_adr_markdown(
     ctx: AdrContext,
     *,
@@ -761,7 +926,7 @@ def render_adr_markdown(
 
     guide = _guide_block(ctx, llm_sections)
     approved_row = f"| Aprobado | {_approved_date(ctx)} |\n" if ctx.approved_at else ""
-    proposal = strip_ui_leftovers(ctx.proposal_markdown)
+    proposal = _reader_labels(strip_ui_leftovers(ctx.proposal_markdown))
 
     return f"""# ADR-001: Arquitectura de {ctx.project_name}
 
@@ -802,7 +967,7 @@ def render_adr_markdown(
 ### Atributos de calidad
 
 {_bullets(_quality_items(resumen))}
-
+{_technical_context_block(resumen)}
 ## 3. Decisión
 
 La arquitectura aprobada es la de la propuesta siguiente ({iterations.lower()}),
@@ -866,7 +1031,11 @@ con las restricciones (presupuesto, equipo, plazo).
 Dos listas: **Positivas** y **Negativas / costos asumidos**.
 
 ### 7.4 Riesgos y mitigaciones
-Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Mitigación.
+Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Mitigación, ordenada \
+de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
+confirmó (de dónde salen los datos, una integración, la plataforma) es de \
+impacto ALTO y va primero: es lo que puede tumbar el proyecto. Cada riesgo \
+debe ser de ESTE proyecto, no una lista genérica.
 
 ### 7.5 Plan de implementación
 Fases numeradas (MVP primero) con objetivo, entregables y criterio de \
@@ -874,7 +1043,9 @@ terminado de cada una.
 
 ### 7.6 Primer sprint
 Lista de 6 a 10 tareas concretas y accionables para la primera o segunda \
-semana, en orden.
+semana, en orden. Incluye al menos una tarea que ataque cada riesgo de \
+impacto alto de 7.4 (por ejemplo, validar la fuente de datos antes de \
+construir encima).
 
 ### 7.7 Estructura inicial del repositorio
 Un bloque de código con el árbol de carpetas propuesto y una línea por \
@@ -882,7 +1053,11 @@ carpeta explicando qué va ahí.
 
 ### 7.8 Preguntas abiertas
 Decisiones que el equipo todavía tiene que tomar o datos que faltan. Incluye \
-SIEMPRE las preocupaciones del dominio que se te indiquen como pendientes.
+SIEMPRE las preocupaciones del dominio que se te indiquen como pendientes, \
+sin repetir una pregunta con otras palabras.
+
+En todo el texto: usa los mismos nombres de componentes que el diagrama, y \
+no escribas etiquetas internas del sistema (RAG, [n], similitud, chunk).
 """.format(common_rules=COMMON_VIABILITY_RULES, assumption_rules=GUIDE_ASSUMPTION_RULES)
 
 
@@ -903,16 +1078,22 @@ def _adr_prompt(ctx: AdrContext) -> str:
         f"Usuarios: {resumen.get('usuarios') or '(no especificado)'}\n"
         f"Funcionalidades: {_as_list(resumen.get('funcionalidades'))}\n"
         f"Restricciones: {_as_list(resumen.get('restricciones'))}\n"
-        f"Atributos de calidad: {_as_list(resumen.get('calidad'))}\n\n"
+        f"Atributos de calidad: {_as_list(resumen.get('calidad'))}\n"
+        f"Contexto técnico: {resumen.get('contexto_tecnico') or '(no definido)'}\n"
+        "Datos de viabilidad con las palabras del usuario (úsalos tal cual, no "
+        f"reinterpretes la composición del equipo): {resumen.get('datos_viabilidad') or '(no hay)'}\n\n"
         f"Respuestas de la elicitación:\n{respuestas or '(sin respuestas)'}\n\n"
         f"Propuesta aprobada:\n{strip_ui_leftovers(proposal)}\n\n"
         f"Diagrama aprobado (Mermaid):\n{ctx.mermaid or '(sin diagrama)'}\n"
         + (
             "\nPreocupaciones del dominio sin respuesta (inclúyelas en 7.8 y no "
             "las resuelvas tú con una decisión):\n"
-            + "\n".join(f"- {c.label}: {c.open_question}" for c in open_domain_concerns(ctx))
+            + "\n".join(
+                f"- {c.label}: {c.open_question}"
+                for c in open_domain_concerns(ctx, addressed_text=ctx.proposal_markdown)
+            )
             + "\n"
-            if open_domain_concerns(ctx)
+            if open_domain_concerns(ctx, addressed_text=ctx.proposal_markdown)
             else ""
         )
         + (

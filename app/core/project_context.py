@@ -58,6 +58,34 @@ def format_requirements_summary(resumen: dict | None) -> str:
         block = _format_list(title, resumen.get(key))
         if block:
             parts.append(block)
+    tecnico = resumen.get("contexto_tecnico")
+    if isinstance(tecnico, dict):
+        items = [
+            f"{label}: {str(tecnico.get(key)).strip()}"
+            for key, label in (
+                ("plataforma", "Plataforma"),
+                ("habilidades_equipo", "Habilidades del equipo"),
+                ("fuentes_de_datos", "Fuente de los datos"),
+            )
+            if str(tecnico.get(key) or "").strip()
+        ]
+        block = _format_list("Contexto técnico", items)
+        if block:
+            parts.append(block)
+    datos = resumen.get("datos_viabilidad")
+    if isinstance(datos, dict) and datos:
+        # Texto literal del usuario (ver elicitation_agent.viability_facts): la
+        # propuesta y el ADR lo usan tal cual en vez de reinterpretarlo.
+        items = [
+            f"{key.capitalize()}: {str(value).strip()}"
+            for key, value in datos.items()
+            if str(value or "").strip()
+        ]
+        block = _format_list(
+            "Datos de viabilidad (palabras textuales del usuario; no los reinterpretes)", items
+        )
+        if block:
+            parts.append(block)
     return "\n".join(parts)
 
 

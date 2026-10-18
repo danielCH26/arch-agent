@@ -427,3 +427,95 @@ class TestResumenEjecutivo:
         summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
         assert "- Caída del proveedor" in summary
         assert "- ¿Quién opera el servidor?" in summary
+
+
+class TestCoherenciaFinal:
+    """Pasada final: el documento se revisa contra sí mismo."""
+
+    def _guide(self, **replacements):
+        guide = LLM_GUIDE
+        for old, new in replacements.items():
+            guide = guide.replace(f"Contenido de {old}.", new)
+        return guide
+
+    def test_componentes_que_no_estan_en_el_diagrama(self):
+        from app.core.adr_generator import lint_adr_guide
+
+        guide = self._guide(**{
+            "Componentes y responsabilidades": "| Componente | Responsabilidad | Se comunica con |\n|---|---|---|\n"
+            "| API | Reglas | DB |\n| Servicio de notificaciones | Avisos | API |",
+        })
+        warnings = " ".join(lint_adr_guide(_ctx(), guide))
+        assert "no aparecen en el diagrama: Servicio de notificaciones" in warnings
+
+    def test_el_sprint_debe_atacar_los_riesgos_altos(self):
+        from app.core.adr_generator import lint_adr_guide
+
+        guide = self._guide(**{
+            "Riesgos y mitigaciones": "| Riesgo | Impacto | Mitigación |\n|---|---|---|\n"
+            "| La fuente de datos de sensores no existe | alto | Validar proveedor |\n"
+            "| Curva de aprendizaje | medio | Pares |",
+            "Primer sprint": "- Crear el repositorio\n- Pantalla de login",
+        })
+        warnings = " ".join(lint_adr_guide(_ctx(), guide))
+        assert "riesgo de impacto alto «La fuente de datos de sensores no existe»" in warnings
+        assert "Curva de aprendizaje" not in warnings
+
+        ok_guide = guide.replace("- Pantalla de login", "- Validar el proveedor de sensores")
+        assert "riesgo de impacto alto" not in " ".join(lint_adr_guide(_ctx(), ok_guide))
+
+    def test_preguntas_repetidas_y_etiquetas_internas(self):
+        from app.core.adr_generator import lint_adr_guide
+
+        guide = self._guide(**{
+            "Preguntas abiertas": "- ¿Qué proveedor de mapas?\n- **¿Qué proveedor de mapas?**",
+            "Consecuencias": "Se eligió por la evidencia RAG [2].",
+        })
+        warnings = " ".join(lint_adr_guide(_ctx(), guide))
+        assert "Preguntas repetidas en 7.8" in warnings
+        assert "Etiquetas internas" in warnings and "rag" in warnings
+
+    def test_una_preocupacion_que_la_guia_ya_trata_no_se_repite(self):
+        guide = self._guide(**{"Riesgos y mitigaciones": "Respaldo diario automático de la base."})
+        md = render_adr_markdown(_ctx(), llm_sections=guide)
+        assert "**Respaldos de los datos:**" not in md
+
+    def test_la_tabla_de_la_propuesta_no_muestra_etiquetas_internas(self):
+        ctx = _ctx(proposal_markdown="| Opción | Fuente RAG |\n|---|---|\n| A | [1] |\n| B | Sin fuente RAG |")
+        md = render_adr_markdown(ctx, llm_sections=None)
+        assert "RAG" not in md.split("## 3. Decisión", 1)[1].split("## 4.", 1)[0]
+        assert "Referencia (sección 5)" in md and "Criterio general" in md
+
+    def test_riesgos_del_resumen_ordenados_por_impacto(self):
+        guide = self._guide(**{
+            "Riesgos y mitigaciones": "| Riesgo | Impacto | Mitigación |\n|---|---|---|\n"
+            "| Diseño poco claro | bajo | Revisar |\n| Fuente de datos incierta | alto | Validar |",
+        })
+        md = render_adr_markdown(_ctx(), llm_sections=guide)
+        summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
+        assert summary.index("Fuente de datos incierta (impacto alto)") < summary.index("Diseño poco claro")
+
+
+class TestDatosDelUsuario:
+    def test_contexto_tecnico_y_datos_textuales_en_requerimientos_y_resumen(self):
+        resumen = dict(_ctx().resumen)
+        resumen["contexto_tecnico"] = {
+            "plataforma": "App móvil",
+            "habilidades_equipo": "React y Node",
+            "fuentes_de_datos": "API del proveedor de buses en tiempo real",
+        }
+        resumen["datos_viabilidad"] = {"equipo": "4 devs, 3 front y 1 PM"}
+        md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
+
+        assert "### Contexto técnico" in md
+        assert "**Fuente de los datos:** API del proveedor de buses en tiempo real" in md
+        assert "**Equipo:** «4 devs, 3 front y 1 PM»" in md
+        summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
+        assert "**Equipo:** 4 devs, 3 front y 1 PM" in summary
+
+    def test_el_prompt_de_la_guia_lleva_los_datos_del_usuario(self):
+        from app.core.adr_generator import _adr_prompt
+
+        resumen = dict(_ctx().resumen)
+        resumen["datos_viabilidad"] = {"equipo": "4 devs, 3 front y 1 PM"}
+        assert "3 front y 1 PM" in _adr_prompt(_ctx(resumen=resumen))

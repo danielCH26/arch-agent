@@ -232,3 +232,8 @@ def concern_by_question(question: str) -> Optional[DomainConcern]:
         (c for c in DOMAIN_CONCERNS if normalize_text(c.question).strip() == target),
         None,
     )
+
+
+def concern_mentioned(concern: DomainConcern, text: str) -> bool:
+    """True si ``text`` ya trata la preocupación (usa alguno de sus términos)."""
+    return bool(_COVERED[concern.key].search(normalize_text(text)))

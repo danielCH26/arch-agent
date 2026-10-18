@@ -400,7 +400,7 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
 
       {markdown && warnings.length > 0 && (
         <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="adr-guide-warnings">
-          <p className="font-medium">Revisión automática de la guía: confirma estos datos antes de usarlos.</p>
+          <p className="font-medium">Revisión automática: puntos que no salen de lo decidido o que no cuadran con el resto del documento.</p>
           <ul className="mt-1 list-disc pl-5">
             {warnings.map((warning) => (
               <li key={warning}>{warning}</li>

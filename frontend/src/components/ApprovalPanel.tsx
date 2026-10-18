@@ -50,6 +50,8 @@ const RESUMEN_LABELS: Record<string, string> = {
   funcionalidades: 'Funcionalidades',
   restricciones: 'Restricciones',
   calidad: 'Atributos de calidad',
+  contexto_tecnico: 'Contexto técnico',
+  datos_viabilidad: 'Datos de viabilidad (palabras del usuario)',
 }
 
 function resumenLabel(key: string): string {

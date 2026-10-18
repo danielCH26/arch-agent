@@ -52,10 +52,25 @@ UNKNOWN_FIGURES_RULE = (
     "riesgo o supuesto y elige la opción más conservadora y viable.\n"
 )
 
+# El stack se elegía por razones genéricas (barato, rápido, open source) sin
+# mirar al equipo, y la composición del equipo se reinterpretaba ("3 front y
+# 1 PM" terminaba como "4 desarrolladores backend").
+TEAM_FIT_RULE = (
+    "- EQUIPO REAL: usa los datos de viabilidad tal como los dijo el usuario. "
+    "No reinterpretes la composición del equipo (si dice \"3 front y 1 PM\", "
+    "no son 4 desarrolladores backend). Elige tecnologías que el equipo ya "
+    "domina (\"Habilidades del equipo\"); si recomiendas una que no domina, "
+    "dilo y declara la curva de aprendizaje como riesgo. Justifica cada "
+    "tecnología con un dato de ESTE proyecto (equipo, plataforma, fuente de "
+    "datos, requisito), no con razones genéricas como \"es barata\" u "
+    "\"open source\".\n"
+)
+
 # Bloque común que va, tal cual, en el prompt de la propuesta y en el de la
 # guía del ADR.
 COMMON_VIABILITY_RULES = (
-    PROPORTIONALITY_RULE
+    TEAM_FIT_RULE
+    + PROPORTIONALITY_RULE
     + TECHNOLOGY_LIMIT_RULE
     + FRAMEWORK_LAYERS_RULE
     + NO_INVENTED_METRICS_RULE

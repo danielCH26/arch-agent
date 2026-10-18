@@ -67,7 +67,8 @@ HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
 # calidad y los tres factores de viabilidad): con ellos el modelo puede cerrar.
 _DOCS_COMPLETOS = (
     "Usuarios: operadores de bodega. Deben poder registrar inventario. "
-    "Seguridad básica. Presupuesto definido. Equipo disponible. Plazo acordado."
+    "Seguridad básica. Presupuesto definido. Equipo disponible. Plazo acordado. "
+    "App web. El equipo domina Python. Los operadores ingresan los datos a mano."
 )
 HISTORY_5_VIABLE = HISTORY_1_VIABLE + HISTORY_5[1:]
 
@@ -566,6 +567,7 @@ class TestNextStepHardRules:
             {"pregunta": "equipo", "respuesta": "Equipo de 3 desarrolladores senior."},
             {"pregunta": "plazo", "respuesta": "MVP en 12 semanas."},
             {"pregunta": "calidad", "respuesta": "Que sea seguro y rápido."},
+            {"pregunta": "plataforma", "respuesta": "Web, en Python; los datos los registran los operadores."},
         ]
         model = _FakeModel(['{"done": true, "question": null, "reason": "ya"}'])
 
@@ -824,7 +826,7 @@ class TestCoverageChecklist:
         assert not _es_pregunta_compuesta(decision.question)
 
     def test_answering_the_quality_question_closes_the_category(self):
-        question = missing_coverage([{"pregunta": "p", "respuesta": "usuarios"}])[-1][1]
+        question = dict(missing_coverage([{"pregunta": "p", "respuesta": "usuarios"}]))["calidad"]
         history = [{"pregunta": question, "respuesta": "No lo tenemos claro"}]
         assert "calidad" not in [name for name, _ in missing_coverage(history)]
 
@@ -837,6 +839,7 @@ class TestCoverageChecklist:
             {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Dueños de mascotas perdidas."},
             {"pregunta": "¿Qué debe hacer?", "respuesta": "Publicar avisos."},
             {"pregunta": "calidad", "respuesta": "Que sea rápido."},
+            {"pregunta": "plataforma", "respuesta": "App móvil en Flutter; los dueños suben los datos."},
             *_VIABLE_ANSWERS,
         ]
         model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])
@@ -893,3 +896,70 @@ class TestSummaryGaps:
         question = summary_gaps(self._complete(calidad=[]), [])[0][1]
         history = [{"pregunta": question, "respuesta": "no sé"}]
         assert summary_gaps(self._complete(calidad=[]), history) == []
+
+
+
+class TestArchitectureDrivers:
+    """Plataforma, habilidades del equipo y fuente de los datos."""
+
+    def _base(self):
+        return [
+            {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Analistas."},
+            {"pregunta": "¿Qué debe hacer?", "respuesta": "Consultar indicadores."},
+            {"pregunta": "calidad", "respuesta": "Que sea rápido."},
+            *_VIABLE_ANSWERS,
+        ]
+
+    def test_no_cierra_sin_saber_plataforma_habilidades_y_fuente_de_datos(self):
+        missing = [name for name, _ in missing_coverage(self._base())]
+        assert missing == ["plataforma", "habilidades", "fuente_datos"]
+
+        model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])
+        decision = next_step(model, history=self._base())
+        assert decision.done is False
+        assert "navegador web" in decision.question
+        assert not _es_pregunta_compuesta(decision.question)
+
+    def test_las_respuestas_cubren_los_drivers(self):
+        history = self._base() + [
+            {"pregunta": "p", "respuesta": "Desde el navegador; sabemos React y Node."},
+            {"pregunta": "p", "respuesta": "Los datos vienen de sensores en tiempo real."},
+        ]
+        assert missing_coverage(history) == []
+
+    def test_las_preguntas_de_los_drivers_son_granulares(self):
+        from app.core.elicitation_agent import _DRIVER_CATEGORIES
+
+        for _name, _patterns, _asked, question in _DRIVER_CATEGORIES:
+            assert question.count("?") == 1
+            assert not _es_pregunta_compuesta(question)
+
+
+class TestViabilityFacts:
+    def test_conserva_las_palabras_del_usuario(self):
+        from app.core.elicitation_agent import viability_facts
+
+        team_question = _VIABILITY_FACTORS[1][2]
+        history = [
+            {"pregunta": team_question, "respuesta": "4 devs, 3 front y 1 PM"},
+            {"pregunta": "p", "respuesta": "Tenemos 15000 USD. Entregamos en 4 meses."},
+        ]
+        facts = viability_facts(history)
+        assert facts["equipo"] == "4 devs, 3 front y 1 PM"
+        assert facts["presupuesto"] == "Tenemos 15000 USD."
+        assert facts["plazo"] == "Entregamos en 4 meses."
+
+    def test_el_resumen_lleva_los_datos_textuales(self):
+        team_question = _VIABILITY_FACTORS[1][2]
+        model = _FakeModel(
+            ['{"problema": "x", "usuarios": "y", "funcionalidades": [], '
+             '"restricciones": ["Equipo de 4"], "calidad": []}']
+        )
+        summary = generate_summary(
+            model, history=[{"pregunta": team_question, "respuesta": "4 devs, 3 front y 1 PM"}]
+        )
+        assert summary["datos_viabilidad"] == {"equipo": "4 devs, 3 front y 1 PM"}
+
+    def test_el_prompt_del_resumen_pide_no_reinterpretar_el_equipo(self):
+        assert "3 front y 1 PM" in elicitation_agent.SUMMARY_SYSTEM_PROMPT
+        assert '"contexto_tecnico"' in elicitation_agent.SUMMARY_SYSTEM_PROMPT
