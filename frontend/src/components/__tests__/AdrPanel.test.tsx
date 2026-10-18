@@ -9,7 +9,7 @@ vi.mock('../../api/diagrams', async (importOriginal) => {
   return { ...actual, fetchDiagramHistory: vi.fn() }
 })
 
-import { AdrPanel, adrFilename, pickAdrDiagram } from '../AdrPanel'
+import { AdrPanel, adrFilename, pickAdrDiagram, splitAtMermaid } from '../AdrPanel'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
 
@@ -199,6 +199,54 @@ describe('AdrPanel', () => {
     renderPanel()
 
     expect(await screen.findByTestId('adr-guide-warnings')).toHaveTextContent('Gunicorn')
+  })
+
+  it('Descargar PDF abre la vista de impresión con el diagrama como imagen', async () => {
+    vi.mocked(getAdr).mockResolvedValue({
+      ...ADR,
+      markdown: '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n## 5. Referencias\n\nFuentes',
+      diagram_attachment_id: 'a',
+    })
+    vi.mocked(fetchDiagramHistory).mockResolvedValue([
+      { message_id: 1, id: 'a', url: '/aprobado.png', filename: null, created_at: '', decision: 'approve' },
+    ])
+    const written: string[] = []
+    const fakeWindow = {
+      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn() },
+      addEventListener: vi.fn(),
+      focus: vi.fn(),
+      print: vi.fn(),
+    }
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(fakeWindow as unknown as Window)
+
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('adr-diagram')).toBeInTheDocument())
+    await userEvent.click(screen.getByTestId('adr-download-pdf'))
+
+    expect(openSpy).toHaveBeenCalled()
+    const html = written.join('')
+    expect(html).toContain('<title>ADR-clinica</title>')
+    expect(html).toContain('src="/aprobado.png"')
+    expect(html).toContain('Referencias')
+    expect(html).not.toContain('flowchart TD')
+    openSpy.mockRestore()
+  })
+
+  it('avisa si el navegador bloquea la ventana del PDF', async () => {
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+
+    renderPanel()
+    await userEvent.click(await screen.findByTestId('adr-download-pdf'))
+
+    expect(await screen.findByTestId('adr-error')).toHaveTextContent('ventanas emergentes')
+    openSpy.mockRestore()
+  })
+
+  it('splitAtMermaid separa el bloque del diagrama', () => {
+    const parts = splitAtMermaid('antes\n```mermaid\nflowchart TD\n```\ndespués')
+    expect(parts).toEqual({ before: 'antes\n', after: '\ndespués', hasMermaid: true })
+    expect(splitAtMermaid('sin diagrama')).toEqual({ before: 'sin diagrama', after: '', hasMermaid: false })
   })
 
   it('arma un nombre de archivo seguro', () => {

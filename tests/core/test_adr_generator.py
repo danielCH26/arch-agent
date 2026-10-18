@@ -396,3 +396,34 @@ class TestCollectAdrContext:
         _seed(db, approved=False)
         with pytest.raises(AdrNotReadyError):
             collect_adr_context(db, user_id=1, project_id=5)
+
+
+class TestResumenEjecutivo:
+    def test_va_antes_del_contexto_con_problema_decision_recursos_y_riesgos(self):
+        ctx = _ctx(
+            proposal_markdown=(
+                "## Patrones\n- Patrón principal: Monolito modular\n\n"
+                "## Justificación del patrón principal\n- Riesgo o costo: escala como una sola unidad\n\n"
+                "## Trade-offs y decisión\n- Recomendación: **Monolito modular** [1]\n"
+            ),
+        )
+        md = render_adr_markdown(ctx, llm_sections=None)
+
+        assert md.index("## Resumen ejecutivo") < md.index("## 1. Contexto")
+        summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
+        assert "**Qué problema resuelve:** Las citas se agendan por teléfono." in summary
+        assert "construir el sistema como Monolito modular." in summary
+        assert "[1]" not in summary and "**Monolito" not in summary
+        assert "**Presupuesto:** Presupuesto de 20000 USD" in summary
+        assert "**Equipo:** no definido" in summary
+        assert "escala como una sola unidad" in summary
+
+    def test_usa_los_riesgos_y_preguntas_de_la_guia(self):
+        guide = LLM_GUIDE.replace(
+            "Contenido de Riesgos y mitigaciones.",
+            "| Riesgo | Impacto | Mitigación |\n|---|---|---|\n| Caída del proveedor | alto | Respaldo |",
+        ).replace("Contenido de Preguntas abiertas.", "- ¿Quién opera el servidor?")
+        md = render_adr_markdown(_ctx(), llm_sections=guide)
+        summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
+        assert "- Caída del proveedor" in summary
+        assert "- ¿Quién opera el servidor?" in summary

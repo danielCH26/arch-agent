@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
@@ -37,6 +37,73 @@ function downloadMarkdown(markdown: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+// Parte el ADR en el bloque ```mermaid: en el PDF el diagrama va como imagen
+// (la captura aprobada), no como código, que una persona no técnica no puede leer.
+export function splitAtMermaid(markdown: string): { before: string; after: string; hasMermaid: boolean } {
+  const match = markdown.match(/```mermaid\s*\n[\s\S]*?```/i)
+  if (!match || match.index === undefined) return { before: markdown, after: '', hasMermaid: false }
+  return {
+    before: markdown.slice(0, match.index),
+    after: markdown.slice(match.index + match[0].length),
+    hasMermaid: true,
+  }
+}
+
+const PRINT_STYLES = `
+  @page { margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1f2937; line-height: 1.5; font-size: 11pt; margin: 0; }
+  h1, h2, h3, h4, h5, h6 { font-family: Helvetica, Arial, sans-serif; color: #111827; line-height: 1.25; page-break-after: avoid; }
+  h3 { font-size: 18pt; margin: 0 0 8pt; }
+  h4 { font-size: 14pt; margin: 18pt 0 6pt; border-bottom: 1px solid #d1d5db; padding-bottom: 3pt; }
+  h5, h6 { font-size: 12pt; margin: 12pt 0 4pt; }
+  p, ul, ol { margin: 0 0 8pt; }
+  table { border-collapse: collapse; width: 100%; margin: 6pt 0 10pt; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #d1d5db; padding: 4pt 6pt; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  pre, code { font-family: 'Courier New', monospace; font-size: 9pt; }
+  pre { background: #f9fafb; border: 1px solid #e5e7eb; padding: 6pt; white-space: pre-wrap; page-break-inside: avoid; }
+  blockquote { margin: 0 0 8pt; padding: 4pt 10pt; border-left: 3px solid #6366f1; background: #eef2ff; }
+  img { max-width: 100%; height: auto; }
+  figure { margin: 8pt 0 12pt; text-align: center; page-break-inside: avoid; }
+  figcaption { font-size: 9pt; color: #6b7280; margin-top: 4pt; }
+  a { color: #4338ca; }
+  .print-note { font-family: Helvetica, Arial, sans-serif; font-size: 9pt; color: #6b7280; margin-bottom: 12pt; }
+`
+
+const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"]/g, (c) => HTML_ESCAPES[c] ?? c)
+}
+
+// Abre una vista del ADR lista para imprimir y lanza el diálogo de impresión,
+// donde se elige "Guardar como PDF". Así no hacen falta librerías ni backend.
+export function openPrintView(bodyHtml: string, title: string): boolean {
+  const win = window.open('', '_blank')
+  if (!win) return false
+  win.document.open()
+  win.document.write(
+    `<!doctype html><html lang="es"><head><meta charset="utf-8">` +
+      `<base href="${escapeHtml(window.location.origin)}/">` +
+      `<title>${escapeHtml(title)}</title><style>${PRINT_STYLES}</style></head>` +
+      `<body><p class="print-note">Para guardarlo como PDF, elige "Guardar como PDF" en el destino de impresión.</p>` +
+      `${bodyHtml}</body></html>`,
+  )
+  win.document.close()
+  let printed = false
+  const print = () => {
+    if (printed) return
+    printed = true
+    win.focus()
+    win.print()
+  }
+  // Se espera a que cargue la imagen del diagrama; si tarda, se imprime igual.
+  win.addEventListener('load', print)
+  setTimeout(print, 2500)
+  return true
+}
+
 // El diagrama que usa el ADR (mismo adjunto que su Mermaid). Para ADR viejos,
 // sin ese dato, el aprobado más reciente o el último generado.
 export function pickAdrDiagram(diagrams: DiagramVersion[], attachmentId?: string | null): DiagramVersion | null {
@@ -57,7 +124,8 @@ function formatDate(iso: string | null): string {
  * Fase Revisión: el ADR del proyecto. Reúne lo decidido en todas las fases
  * (requerimientos, propuesta con trade-offs, diagrama, decisiones) más una
  * guía práctica para empezar a construir. Se puede regenerar y descargar en
- * Markdown (GitHub/GitLab renderizan el diagrama Mermaid).
+ * Markdown (GitHub/GitLab renderizan el diagrama Mermaid) o en PDF, con el
+ * diagrama como imagen, para quien no es técnico.
  */
 export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps) {
   const navigate = useNavigate()
@@ -141,6 +209,15 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
   const completed = Boolean(adr?.approved_at)
   const busy = generating || approving || loading
   const diagram = pickAdrDiagram(diagrams, adr?.diagram_attachment_id)
+  // Copia del ADR armada para imprimir (oculta): el diagrama va como imagen.
+  const printRef = useRef<HTMLDivElement>(null)
+  const printParts = markdown ? splitAtMermaid(markdown) : null
+
+  function handleDownloadPdf() {
+    const html = printRef.current?.innerHTML ?? ''
+    const opened = openPrintView(html, adrFilename(projectName).replace(/\.md$/, ''))
+    if (!opened) setError('El navegador bloqueó la ventana. Permite las ventanas emergentes para descargar el PDF.')
+  }
   const warnings = adr?.guide_warnings ?? []
 
   return (
@@ -169,6 +246,15 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
                 className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
               >
                 Descargar .md
+              </button>
+              <button
+                type="button"
+                data-testid="adr-download-pdf"
+                onClick={handleDownloadPdf}
+                title="Abre el documento listo para imprimir o guardar como PDF"
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                Descargar PDF
               </button>
               <button
                 type="button"
@@ -343,6 +429,24 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
         >
           {renderMarkdownBlocks(markdown)}
         </article>
+      )}
+
+      {printParts && (
+        <div ref={printRef} hidden data-testid="adr-print-source">
+          {renderMarkdownBlocks(printParts.before)}
+          {printParts.hasMermaid && diagram && (
+            <figure>
+              <img src={diagram.url} alt="Diagrama de arquitectura del documento" />
+              <figcaption>{diagram.decision === 'approve' ? 'Diagrama aprobado' : 'Último diagrama generado'}</figcaption>
+            </figure>
+          )}
+          {printParts.hasMermaid && !diagram && (
+            <p>
+              <em>El diagrama está en la versión Markdown del documento.</em>
+            </p>
+          )}
+          {renderMarkdownBlocks(printParts.after)}
+        </div>
       )}
 
       <ProjectCompletedDialog open={celebrate} projectName={projectName} onClose={() => setCelebrate(false)} />

@@ -620,6 +620,111 @@ def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
     return "\n\n".join(blocks)
 
 
+# --- Resumen ejecutivo ----------------------------------------------------------
+
+_VIABILITY_MARKERS = (
+    ("Presupuesto", re.compile(r"presupuest|\busd\b|\$|\bcop\b|dolar|pesos")),
+    ("Equipo", re.compile(r"equipo|persona|desarrollador|integrante|somos")),
+    ("Plazo", re.compile(r"plazo|\bmes(es)?\b|semana|entrega|\bmvp\b")),
+)
+_RECOMMENDATION_RE = re.compile(
+    r"^\s*[-*+]?\s*[*_]*recomendaci[oó]n[*_]*\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE
+)
+_PRIMARY_RE = re.compile(
+    r"^\s*[-*+]?\s*[*_]*patr[oó]n principal[*_]*\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE
+)
+_PROPOSAL_RISK_RE = re.compile(
+    r"^\s*[-*+]?\s*[*_]*riesgos?\s*(?:o|y)\s*costos?[*_]*\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE
+)
+
+
+def _plain(text: str) -> str:
+    """Sin marcas de markdown ni citas [n]: el resumen es para leer, no para auditar."""
+    text = re.sub(r"\[(\d+)\]", "", text or "")
+    text = re.sub(r"[*_`]", "", text)
+    return re.sub(r"\s+", " ", text).strip(" .-")
+
+
+def _viability_lines(ctx: AdrContext) -> list[str]:
+    restricciones = _as_list((ctx.resumen or {}).get("restricciones"))
+    lines = []
+    for label, pattern in _VIABILITY_MARKERS:
+        found = next((r for r in restricciones if pattern.search(normalize_text(r))), None)
+        lines.append(f"**{label}:** {_plain(found) if found else 'no definido'}")
+    return lines
+
+
+def _summary_risks(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    risks = [
+        _plain(cell)
+        for cell in _table_column(_section_lines(guide or "", "7.4"), "riesgo")
+        if _plain(cell)
+    ][:3]
+    if not risks:
+        match = _PROPOSAL_RISK_RE.search(ctx.proposal_markdown or "")
+        if match and _plain(match.group(1)):
+            risks.append(_plain(match.group(1)))
+    return risks
+
+
+def _summary_pending(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    pending = [c.label for c in open_domain_concerns(ctx)]
+    for line in _section_lines(guide or "", "7.8"):
+        item = re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.+)$", line)
+        if item and _plain(item.group(1)) and len(pending) < 6:
+            pending.append(_plain(item.group(1)))
+    seen: set[str] = set()
+    return [p for p in pending if not (p in seen or seen.add(p))][:6]
+
+
+def executive_summary(ctx: AdrContext, guide: Optional[str]) -> str:
+    """Resumen de media página para quien no es técnico.
+
+    Todo sale de lo ya decidido, sin llamar al LLM: el problema y los usuarios
+    de la elicitación, la recomendación de la propuesta aprobada, presupuesto,
+    equipo y plazo de las restricciones, los principales riesgos (7.4 de la
+    guía o el "Riesgo o costo" de la propuesta) y lo que falta decidir
+    (preguntas obligatorias del dominio y 7.8).
+    """
+    resumen = ctx.resumen or {}
+    problema = _plain(str(resumen.get("problema") or ctx.project_description or "")) or "No especificado"
+    usuarios = _plain(str(resumen.get("usuarios") or "")) or "No especificado"
+    proposal = ctx.proposal_markdown or ""
+    decision = _RECOMMENDATION_RE.search(proposal) or _PRIMARY_RE.search(proposal)
+    decision_text = (
+        _plain(decision.group(1)) if decision else "ver la sección 3 (Decisión)"
+    )
+    risks = _summary_risks(ctx, guide)
+    pending = _summary_pending(ctx, guide)
+    return "\n".join(
+        [
+            "## Resumen ejecutivo",
+            "",
+            "> Esta página resume el documento para quien no necesita los detalles "
+            "técnicos. El equipo de desarrollo encuentra todo en las secciones 1 a 7.",
+            "",
+            f"**Qué problema resuelve:** {problema}.",
+            "",
+            f"**Para quién:** {usuarios}.",
+            "",
+            f"**Qué se decidió:** construir el sistema como {decision_text}."
+            + (" El diagrama aprobado está en la sección 4." if ctx.mermaid else ""),
+            "",
+            "**Con qué recursos:**",
+            "",
+            _bullets(_viability_lines(ctx)),
+            "",
+            "**Principales riesgos:**",
+            "",
+            _bullets(risks, empty="_No se registraron riesgos._"),
+            "",
+            "**Qué falta decidir:**",
+            "",
+            _bullets(pending, empty="_Nada pendiente registrado._"),
+        ]
+    )
+
+
 def render_adr_markdown(
     ctx: AdrContext,
     *,
@@ -673,6 +778,8 @@ def render_adr_markdown(
 > propuesta, refinamiento y revisión) y una guía para empezar a construir el
 > sistema. Las secciones 1 a 6 salen directamente de lo aprobado; la sección 7
 > es una guía redactada a partir de esas decisiones.
+
+{executive_summary(ctx, llm_sections)}
 
 ## 1. Contexto
 
