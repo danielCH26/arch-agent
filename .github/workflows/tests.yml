@@ -126,9 +126,18 @@ jobs:
         # test_proposals_endpoints estaban escondiendo un bug de
         # importlib.reload (arreglado en el commit anterior). Los 20
         # de test_document_storage fallaban porque el conftest pisaba
-        # DATABASE_URL (arreglado con os.environ.setdefault). Los 2
-        # de test_seed_idempotent son scripts de integración que
-        # shellan a psql; los ignoramos a nivel de archivo.
+        # DATABASE_URL (arreglado con os.environ.setdefault).
+        #
+        # Round 5 (PR #102): se removio tambien el --ignore de
+        # test_llm_model_benchmarks.py. Ese archivo mockeaba
+        # builtins.open con mock_open y devolvia un MagicMock desde
+        # _yaml_path, asi que yaml.safe_load recibia un mock en vez de
+        # texto: el lector de PyYAML nunca llegaba a EOF y el proceso
+        # moria por OOM a los ~400 MB/s, tumbando el runner. El archivo
+        # se reescribio escribiendo YAML reales en un tmp_path.
+        #
+        # Queda un solo --ignore: los test_seed_idempotent son scripts de
+        # integracion que shellan a psql, no tests de pytest.
         run: |
           pytest tests/ \
             --cov=app \
@@ -137,7 +146,6 @@ jobs:
             --cov-fail-under=80 \
             -v \
             --tb=short \
-            --ignore=tests/core/test_llm_model_benchmarks.py \
             --ignore=tests/test_seed_idempotent.py
 
       - name: Upload coverage artifact

@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # con un warning, en lugar de recortarse en silencio.
 SSE_HEARTBEAT_SECONDS = env_float("SSE_HEARTBEAT_SECONDS", 15.0, minimum=1.0)
 
+
 def _proposal_reject_reverts_to() -> str:
     """Read the env var at call time so tests don't need to reload the module.
 

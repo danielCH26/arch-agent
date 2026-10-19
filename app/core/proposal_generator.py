@@ -95,6 +95,8 @@ _GEN_START, _GEN_END = 20, 92
 
 # Default maximum number of iterations per project. Mirrors the design
 # (§5 + §17 #6). Per-project override is not yet implemented.
+
+
 def proposal_max_iter() -> int:
     """Devuelve el tope de iteraciones leyendo la env var en cada llamada.
 
@@ -108,8 +110,10 @@ def proposal_max_iter() -> int:
     return env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
 
 
-# Para los callers que solo necesitan un valor de proceso. Donde el valor se
-# lea durante un request, usar ``proposal_max_iter()``.
+# Compatibilidad: fijada al importar. NO leerla durante un request, porque
+# no ve cambios de la env var; para eso esta proposal_max_iter(), que es la
+# que usan los tres cortes de iteracion. Esta constante existe para el
+# re-export de app.api.proposals y para el test de una-sola-definicion.
 PROPOSAL_MAX_ITER = proposal_max_iter()
 
 # Engram port per ADR-008: the memory mirror is best-effort, never blocking

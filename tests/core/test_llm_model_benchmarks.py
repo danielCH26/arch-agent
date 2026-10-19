@@ -1,139 +1,283 @@
-"""Tests for app/core/llm_model_benchmarks.py.
+"""Tests de app/core/llm_model_benchmarks.py.
 
-Covers the YAML loading and score lookup with full mocking.
+PR #102 (round 5, review de Laura): este archivo se reescribio completo. La
+version anterior mockeaba ``builtins.open`` con ``mock_open`` y devolvia un
+``MagicMock`` desde ``_yaml_path``, asi que ``yaml.safe_load`` recibia un mock
+en vez de texto. El lector de PyYAML nunca llegaba a EOF y el mock acumulaba
+cada llamada: la memoria crecia ~400 MB/s hasta que el proceso moria por OOM
+y eso tumbaba el runner de GitHub Actions.
+
+Ademas el YAML de ejemplo usaba ``tiers:``/``score`` cuando el modulo espera
+``models:``/``mmlu_score``, y ``get_model_score`` devuelve ``mmlu_score``,
+no ``score``. O sea que el test no describia el modulo.
+
+Ahora se escriben YAML reales en un directorio temporal (via ``tmp_path``) y
+se parchea unicamente ``_yaml_path``. Sin mocks de ``open`` ni de ``read_text``,
+y sin ``importlib.reload``: el modulo expone ``invalidate_cache()`` justamente
+para eso, y el fixture lo llama en setUp y teardown para que cada test arranque
+con el cache limpio.
 """
+
 from __future__ import annotations
 
-import unittest
-from unittest.mock import MagicMock, mock_open, patch
+from pathlib import Path
+
+import pytest
+import yaml
+
+from app.core.llm_model_benchmarks import (
+    LLMBenchmarkFileError,
+    get_model_score,
+    invalidate_cache,
+    load_benchmarks,
+)
+
+# YAML minimo valido: el modulo exige la clave "models" en el top-level.
+YAML_VALIDO = """
+models:
+  - model_id: "gpt-4"
+    mmlu_score: 95.5
+    source: "paper oficial"
+  - model_id: "gpt-3.5-turbo"
+    mmlu_score: 80
+    source: "leaderboard"
+"""
 
 
-# ---------------------------------------------------------------------------
-# Tests that need to import the module's symbols
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _cache_limpio():
+    """``invalidate_cache()`` es el seam que el propio modulo expone para tests."""
+    invalidate_cache()
+    yield
+    invalidate_cache()
 
 
-class TestLoadBenchmarks(unittest.TestCase):
-    """load_benchmarks reads a YAML file and caches the result."""
+@pytest.fixture
+def yaml_en_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Escribe YAML real y parchea SOLO ``_yaml_path``.
 
-    def _reload_module(self):
-        # Force re-import so module-level cache resets between tests
-        import importlib
-        import app.core.llm_model_benchmarks as bm
-        importlib.reload(bm)
-        return bm
+    Se parchea el path, no ``open``: el modulo lee con ``Path.read_text``, asi
+    que mockear ``open`` no interceptaba nada y ademas rompia el parser.
+    """
 
-    def test_loads_yaml_into_benchmark_entries(self):
-        yaml_content = (
-            "tiers:\n"
-            "  tier1:\n"
-            "    - model_id: gpt-4\n"
-            "      score: 95\n"
-            "  tier2:\n"
-            "    - model_id: gpt-3.5\n"
-            "      score: 80\n"
+    def _escribir(contenido: str) -> Path:
+        archivo = tmp_path / "llm_model_benchmarks.yaml"
+        archivo.write_text(contenido, encoding="utf-8")
+        monkeypatch.setattr(
+            "app.core.llm_model_benchmarks._yaml_path", lambda: archivo
         )
-        bm = self._reload_module()
-        with patch("builtins.open", mock_open(read_data=yaml_content)), \
-             patch("app.core.llm_model_benchmarks._yaml_path") as mock_path:
-            mock_path.return_value = MagicMock()
-            bm.invalidate_cache()
-            result = bm.load_benchmarks()
+        return archivo
 
-        self.assertGreater(len(result), 0)
-        # Each entry has model_id and score
-        for entry in result:
-            self.assertTrue(hasattr(entry, "model_id"))
-            self.assertTrue(hasattr(entry, "score"))
-
-    def test_uses_cache_on_subsequent_calls(self):
-        bm = self._reload_module()
-        # First call populates the cache
-        with patch("builtins.open", mock_open(read_data="tiers:\n  tier1:\n    - {model_id: x, score: 1}\n")):
-            bm.invalidate_cache()
-            first = bm.load_benchmarks()
-
-        # Second call must NOT re-open the file (cache hit)
-        with patch("builtins.open") as mock_file:
-            second = bm.load_benchmarks()
-            mock_file.assert_not_called()
-            self.assertEqual(first, second)
-
-    def test_raises_llm_benchmark_file_error_on_missing_file(self):
-        bm = self._reload_module()
-        # Patch Path so the file doesn't exist
-        with patch("app.core.llm_model_benchmarks._yaml_path") as mock_path:
-            mock_path.return_value.exists.return_value = False
-            bm.invalidate_cache()
-
-            with self.assertRaises(bm.LLMBenchmarkFileError):
-                bm.load_benchmarks()
-
-    def test_invalidate_cache_clears_cache(self):
-        bm = self._reload_module()
-        with patch("builtins.open", mock_open(read_data="tiers:\n  tier1:\n    - {model_id: x, score: 1}\n")):
-            bm.invalidate_cache()
-            bm.load_benchmarks()
-            bm.invalidate_cache()
-            # After invalidate, next load must re-read the file
-            with patch("builtins.open") as mock_file:
-                bm.load_benchmarks()
-                mock_file.assert_called()
+    return _escribir
 
 
-# ---------------------------------------------------------------------------
-# get_model_score
-# ---------------------------------------------------------------------------
+class TestCargaDeEntradas:
+    """``load_benchmarks`` lee el YAML y devuelve ``BenchmarkEntry`` en orden."""
 
-class TestGetModelScore(unittest.TestCase):
-    def test_returns_score_when_model_in_tier(self):
-        from app.core.llm_model_benchmarks import get_model_score
-        entry = MagicMock(model_id="gpt-4", score=95)
-        with patch("app.core.llm_model_benchmarks.load_benchmarks", return_value=[entry]):
-            result = get_model_score("gpt-4")
+    def test_carga_las_entradas_del_yaml(self, yaml_en_tmp):
+        yaml_en_tmp(YAML_VALIDO)
 
-        self.assertEqual(result, 95)
+        entries = load_benchmarks()
 
-    def test_returns_none_when_model_not_in_benchmarks(self):
-        from app.core.llm_model_benchmarks import get_model_score
-        entry = MagicMock(model_id="gpt-4", score=95)
-        with patch("app.core.llm_model_benchmarks.load_benchmarks", return_value=[entry]):
-            result = get_model_score("nonexistent-model")
+        assert len(entries) == 2
+        assert [e.model_id for e in entries] == ["gpt-4", "gpt-3.5-turbo"]
+        assert entries[0].mmlu_score == 95.5
+        assert entries[1].mmlu_score == 80.0
 
-        self.assertIsNone(result)
+    def test_conserva_el_source_de_cada_entrada(self, yaml_en_tmp):
+        yaml_en_tmp(YAML_VALIDO)
 
-    def test_returns_score_from_correct_entry(self):
-        """If multiple entries exist, the matching one is returned."""
-        from app.core.llm_model_benchmarks import get_model_score
-        e1 = MagicMock(model_id="gpt-4", score=95)
-        e2 = MagicMock(model_id="claude-opus", score=92)
-        e3 = MagicMock(model_id="gpt-3.5", score=80)
-        with patch("app.core.llm_model_benchmarks.load_benchmarks", return_value=[e1, e2, e3]):
-            result = get_model_score("claude-opus")
+        entries = load_benchmarks()
 
-        self.assertEqual(result, 92)
+        assert entries[0].source == "paper oficial"
+        # "source" es opcional en el YAML: si falta, el modulo pone un marcador.
+        yaml_en_tmp("models:\n  - model_id: solo-modelo\n    mmlu_score: 70\n")
+        invalidate_cache()
+        assert load_benchmarks()[0].source == "(no source)"
 
-    def test_handles_empty_benchmarks_list(self):
-        from app.core.llm_model_benchmarks import get_model_score
-        with patch("app.core.llm_model_benchmarks.load_benchmarks", return_value=[]):
-            result = get_model_score("any-model")
+    def test_toma_el_orden_del_yaml(self, yaml_en_tmp):
+        yaml_en_tmp(
+            "models:\n"
+            "  - model_id: primero\n    mmlu_score: 10\n"
+            "  - model_id: segundo\n    mmlu_score: 20\n"
+            "  - model_id: tercero\n    mmlu_score: 30\n"
+        )
 
-        self.assertIsNone(result)
+        assert [e.model_id for e in load_benchmarks()] == [
+            "primero",
+            "segundo",
+            "tercero",
+        ]
 
 
-# ---------------------------------------------------------------------------
-# Module-level invariants
-# ---------------------------------------------------------------------------
+class TestEntradasMalformadas:
+    """Las entradas invalidas se saltean, no tumban la carga."""
 
-class TestModuleStructure(unittest.TestCase):
-    def test_llm_benchmark_file_error_is_exception(self):
-        from app.core.llm_model_benchmarks import LLMBenchmarkFileError
-        self.assertTrue(issubclass(LLMBenchmarkFileError, Exception))
+    def test_saltea_entradas_que_no_son_dict(self, yaml_en_tmp):
+        yaml_en_tmp(
+            "models:\n"
+            '  - model_id: "bueno"\n'
+            "    mmlu_score: 90\n"
+            "  - \"esto es un string, no un dict\"\n"
+            "  - 42\n"
+        )
 
-    def test_benchmark_entry_class_exists(self):
-        from app.core.llm_model_benchmarks import BenchmarkEntry
-        self.assertTrue(BenchmarkEntry is not None)
+        entries = load_benchmarks()
 
-    def test_invalidate_cache_is_callable(self):
-        from app.core.llm_model_benchmarks import invalidate_cache
-        self.assertTrue(callable(invalidate_cache))
+        assert len(entries) == 1
+        assert entries[0].model_id == "bueno"
+
+    def test_saltea_model_id_invalido(self, yaml_en_tmp):
+        yaml_en_tmp(
+            "models:\n"
+            '  - model_id: ""\n'
+            "    mmlu_score: 90\n"
+            "  - model_id: \"   \"\n"
+            "    mmlu_score: 90\n"
+            "  - model_id: 12345\n"
+            "    mmlu_score: 90\n"
+            '  - model_id: "valido"\n'
+            "    mmlu_score: 90\n"
+        )
+
+        entries = load_benchmarks()
+
+        assert len(entries) == 1
+        assert entries[0].model_id == "valido"
+
+    def test_saltea_mmlu_score_fuera_de_rango_o_no_numerico(self, yaml_en_tmp):
+        yaml_en_tmp(
+            "models:\n"
+            '  - model_id: "negativo"\n'
+            "    mmlu_score: -1\n"
+            '  - model_id: "arriba"\n'
+            "    mmlu_score: 101\n"
+            '  - model_id: "texto"\n'
+            '    mmlu_score: "mucho"\n'
+            '  - model_id: "sin-score"\n'
+            '  - model_id: "ok"\n'
+            "    mmlu_score: 60\n"
+        )
+
+        entries = load_benchmarks()
+
+        assert [e.model_id for e in entries] == ["ok"]
+
+    def test_acepta_los_extremos_del_rango(self, yaml_en_tmp):
+        yaml_en_tmp(
+            "models:\n"
+            '  - model_id: "cero"\n'
+            "    mmlu_score: 0\n"
+            '  - model_id: "cien"\n'
+            "    mmlu_score: 100\n"
+        )
+
+        assert len(load_benchmarks()) == 2
+
+
+class TestYamlInvalido:
+    """Los errores de archivo o de formato levantan ``LLMBenchmarkFileError``."""
+
+    def test_levanta_si_el_archivo_no_existe(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "app.core.llm_model_benchmarks._yaml_path",
+            lambda: tmp_path / "no-existe.yaml",
+        )
+
+        with pytest.raises(LLMBenchmarkFileError, match="No se encontro"):
+            load_benchmarks()
+
+    def test_levanta_con_yaml_sintacticamente_invalido(self, yaml_en_tmp):
+        yaml_en_tmp("models: [\n  - model_id: roto\n    mmlu: :\n")
+
+        with pytest.raises(LLMBenchmarkFileError, match="YAML invalido"):
+            load_benchmarks()
+
+    def test_levanta_si_falta_la_clave_models(self, yaml_en_tmp):
+        yaml_en_tmp("tiers:\n  tier1:\n    - model_id: gpt-4\n")
+
+        with pytest.raises(LLMBenchmarkFileError, match="clave 'models'"):
+            load_benchmarks()
+
+    def test_levanta_si_models_no_es_lista(self, yaml_en_tmp):
+        yaml_en_tmp("models:\n  model_id: gpt-4\n  mmlu_score: 90\n")
+
+        with pytest.raises(LLMBenchmarkFileError, match="debe ser una lista"):
+            load_benchmarks()
+
+
+class TestCache:
+    """El cache evita releer el archivo, y ``invalidate_cache`` lo limpia."""
+
+    def test_la_segunda_llamada_usa_el_cache(self, yaml_en_tmp, monkeypatch):
+        yaml_en_tmp(YAML_VALIDO)
+
+        assert len(load_benchmarks()) == 2
+
+        # Si el cache no sirviera, esta llamada volveria a leer el archivo.
+        def _explota() -> Path:
+            raise AssertionError("reload del archivo: el cache no funciono")
+
+        monkeypatch.setattr(
+            "app.core.llm_model_benchmarks._yaml_path", _explota
+        )
+        assert len(load_benchmarks()) == 2
+
+    def test_invalidate_cache_fuerza_a_releer(self, yaml_en_tmp):
+        yaml_en_tmp("models:\n  - model_id: v1\n    mmlu_score: 10\n")
+        assert load_benchmarks()[0].model_id == "v1"
+
+        yaml_en_tmp("models:\n  - model_id: v2\n    mmlu_score: 20\n")
+        invalidate_cache()
+        assert load_benchmarks()[0].model_id == "v2"
+
+    def test_yaml_vacio_devuelve_lista_vacia(self, yaml_en_tmp):
+        yaml_en_tmp("models: []\n")
+
+        assert load_benchmarks() == []
+
+
+class TestGetModelScore:
+    """``get_model_score`` busca por ``model_id`` y devuelve ``mmlu_score``."""
+
+    def test_devuelve_el_score_de_un_modelo_conocido(self, yaml_en_tmp):
+        yaml_en_tmp(YAML_VALIDO)
+
+        assert get_model_score("gpt-4") == 95.5
+
+    def test_devuelve_none_para_un_modelo_desconocido(self, yaml_en_tmp):
+        yaml_en_tmp(YAML_VALIDO)
+
+        assert get_model_score("modelo-que-no-existe") is None
+
+    def test_devuelve_none_para_id_vacio(self, yaml_en_tmp):
+        yaml_en_tmp(YAML_VALIDO)
+
+        assert get_model_score("") is None
+
+
+class TestYamlRealDelRepo:
+    """Smoke test contra el archivo real: si esto falla, el producto esta roto."""
+
+    def test_el_yaml_del_repo_es_valido(self):
+        from app.core.llm_model_benchmarks import _yaml_path
+
+        assert _yaml_path().exists(), f"falta el YAML de benchmarks: {_yaml_path()}"
+
+        entries = load_benchmarks()
+
+        assert entries, "el YAML del repo no tiene entradas utilizables"
+        assert all(e.mmlu_score for e in entries), (
+            "hay entradas sin mmlu_score en el YAML del repo"
+        )
+
+    def test_los_scores_estan_en_rango_y_ordenados_por_tier(self):
+        from app.core.llm_model_benchmarks import MMLU_TIER1_THRESHOLD
+
+        entries = load_benchmarks()
+
+        for entry in entries:
+            assert 0 <= entry.mmlu_score <= 100, entry
+        # Ningun modelo blocked deberia estar en el catalogo.
+        blocked = [e for e in entries if e.mmlu_score < MMLU_TIER1_THRESHOLD]
+        assert blocked, "el YAML deberia tener al menos un modelo de tier1"

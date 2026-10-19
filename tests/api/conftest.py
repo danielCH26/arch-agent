@@ -6,7 +6,7 @@ Usa mocking puro (sin TestClient) para evitar el overhead de langchain.
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Configurar entorno antes de importar la app.
 # setdefault en las 5 variables: el CI (y cualquier runner externo) puede
@@ -68,7 +68,3 @@ def auth_token(mock_user):
 def auth_headers(auth_token):
     """Headers con Authorization Bearer token."""
     return {"Authorization": f"Bearer {auth_token}"}
-
-# F18: silence pydantic deprecation warnings
-# (anteriormente filterwarnings = [...] que no hacia nada como variable
-# Python; ahora esto se hace via pytest.ini, ver #FIX-6 en el PR #102).
