@@ -614,12 +614,17 @@ _DRIVER_CATEGORIES = (
     ),
     (
         "fuente_datos",
+        # Solo frases que dicen DE DÓNDE salen los datos. "a mano" o
+        # "manual" sueltos describen el proceso actual ("concilian a mano")
+        # y daban la categoría por cubierta sin haberla preguntado.
         (
-            r"fuentes?\s+de\s+datos", r"tiempo\s+real", r"sensor\w*", r"apis?",
-            r"integra\w+", r"importa\w*", r"excel", r"hojas?\s+de\s+calculo",
-            r"manual\w*", r"a\s+mano", r"proviene\w*", r"vienen?\s+de",
-            r"(?:los\s+)?(?:cargan|ingresan|registran|digitan|suben)",
-            r"base\s+de\s+datos\s+(?:existente|actual)", r"sistema\s+(?:actual|existente)",
+            r"fuentes?\s+de\s+(?:los\s+)?datos", r"tiempo\s+real", r"sensor\w*",
+            r"apis?\s+(?:de|del|externa\w*)", r"se\s+integra\w*\s+con",
+            r"importa\w*\s+(?:desde|de)", r"excel", r"hojas?\s+de\s+calculo",
+            r"(?:los\s+)?datos\s+(?:vienen|provienen|salen|llegan)\s+de",
+            r"(?:los\s+)?(?:ingresan|registran|digitan|cargan|suben)\s+(?:los\s+|las\s+)?"
+            r"(?:usuarios|operadores|tiendas|clientes|administradores|empleados)",
+            r"base\s+de\s+datos\s+(?:existente|actual)", r"sistema\s+(?:actual|existente)\s+de",
         ),
         (r"de\s+donde", r"fuente", r"origen\s+de\s+los\s+datos", r"tiempo\s+real"),
         "¿De dónde salen los datos que el sistema muestra: los ingresan los usuarios o vienen de otro sistema o fuente externa?",
@@ -738,6 +743,19 @@ def summary_gaps(
         if any(re.search(marker, text) for marker in asked_markers for text in asked):
             continue
         gaps.append((name, question))
+    # Lo que decide la arquitectura, según el resumen: si el LLM dejó
+    # "no definido" y la pregunta no se hizo, se hace antes de cerrar (la
+    # detección por palabras puede dar falsos positivos; el resumen no).
+    tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
+    for (name, _patterns, asked_markers, question), field in zip(
+        _DRIVER_CATEGORIES, ("plataforma", "habilidades_equipo", "fuentes_de_datos")
+    ):
+        value = _normalize_text(str(tecnico.get(field) or "")).strip(" .")
+        if value and value not in _UNDEFINED_VALUES:
+            continue
+        if any(re.search(marker, text) for marker in asked_markers for text in asked):
+            continue
+        gaps.append((name, question))
     restrictions = " ".join(_as_str_list(resumen.get("restricciones")))
     for factor, question in _missing_viability_factors(
         history,
@@ -746,6 +764,9 @@ def summary_gaps(
     ):
         gaps.append((factor, question))
     return gaps
+
+
+_UNDEFINED_VALUES = {"no definido", "no definida", "no especificado", "no especificada", "n/a", "ninguno", "-"}
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -866,6 +887,22 @@ def next_step(
                 done=False,
                 question=question,
                 reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
+            )
+
+    if not decision.done and MIN_QUESTIONS <= len(history) < MAX_QUESTIONS:
+        # Reserva de turnos: si las preguntas que quedan apenas alcanzan para
+        # lo obligatorio que falta (categorías de HU5 y lo que decide la
+        # arquitectura: plataforma, habilidades, fuente de datos), se pregunta
+        # eso en vez de lo que propuso el modelo. Antes el modelo podía seguir
+        # con otros temas hasta la pregunta 10 y la elicitación se cerraba por
+        # el máximo sin haber preguntado, por ejemplo, la plataforma.
+        missing = missing_coverage(history, project_description, documents_context)
+        if missing and MAX_QUESTIONS - len(history) <= len(missing):
+            category, question = missing[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Quedan pocas preguntas y falta lo obligatorio: {category}.",
             )
 
     if decision.done and MIN_QUESTIONS <= len(history) < MAX_QUESTIONS:

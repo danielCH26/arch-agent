@@ -156,6 +156,11 @@ class TestElicitationReceivesDocuments:
             "funcionalidades": ["Agendar citas"],
             "restricciones": ["Presupuesto de 5000 USD", "Equipo de 3 personas", "Plazo de 8 meses"],
             "calidad": ["Seguridad de los datos"],
+            "contexto_tecnico": {
+                "plataforma": "Web",
+                "habilidades_equipo": "Python",
+                "fuentes_de_datos": "Los ingresan las recepcionistas",
+            },
         }
 
         result = run(send_elicitation_message(

@@ -60,7 +60,9 @@ HISTORY_10 = [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(10)]
 # compuestas nunca llega a ejecutarse. Los tests del guardarraíl los usan para
 # aislar su comportamiento de esa regla.
 _RESPUESTA_VIABILIDAD = (
-    "Presupuesto de 20000 USD, equipo de 3 desarrolladores y plazo de 3 meses."
+    "Presupuesto de 20000 USD, equipo de 3 desarrolladores que saben Python y "
+    "plazo de 3 meses. Los usuarios son operadores; deben poder registrar pedidos "
+    "desde una app web segura y los datos los ingresan los operadores."
 )
 HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
 # Documentos que cubren la checklist completa (usuarios, funcionalidades,
@@ -68,7 +70,7 @@ HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
 _DOCS_COMPLETOS = (
     "Usuarios: operadores de bodega. Deben poder registrar inventario. "
     "Seguridad básica. Presupuesto definido. Equipo disponible. Plazo acordado. "
-    "App web. El equipo domina Python. Los operadores ingresan los datos a mano."
+    "App web. El equipo domina Python. Los datos los ingresan los operadores."
 )
 HISTORY_5_VIABLE = HISTORY_1_VIABLE + HISTORY_5[1:]
 
@@ -839,7 +841,7 @@ class TestCoverageChecklist:
             {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Dueños de mascotas perdidas."},
             {"pregunta": "¿Qué debe hacer?", "respuesta": "Publicar avisos."},
             {"pregunta": "calidad", "respuesta": "Que sea rápido."},
-            {"pregunta": "plataforma", "respuesta": "App móvil en Flutter; los dueños suben los datos."},
+            {"pregunta": "plataforma", "respuesta": "App móvil en Flutter; los datos los suben los usuarios."},
             *_VIABLE_ANSWERS,
         ]
         model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])
@@ -874,6 +876,11 @@ class TestSummaryGaps:
             "funcionalidades": ["Registrar inventario"],
             "restricciones": ["Presupuesto de 20000 USD", "Equipo de 3 personas", "Plazo de 3 meses"],
             "calidad": ["Seguridad"],
+            "contexto_tecnico": {
+                "plataforma": "Web",
+                "habilidades_equipo": "Python",
+                "fuentes_de_datos": "Los ingresan los operadores",
+            },
         }
         summary.update(overrides)
         return summary
@@ -963,3 +970,50 @@ class TestViabilityFacts:
     def test_el_prompt_del_resumen_pide_no_reinterpretar_el_equipo(self):
         assert "3 front y 1 PM" in elicitation_agent.SUMMARY_SYSTEM_PROMPT
         assert '"contexto_tecnico"' in elicitation_agent.SUMMARY_SYSTEM_PROMPT
+
+
+
+class TestNoSeCierraSinLoQueDecideLaArquitectura:
+    """Caso real: cerró con plataforma y fuente de datos "no definido"."""
+
+    def test_reserva_las_ultimas_preguntas_para_lo_obligatorio(self):
+        # 8 respuestas cubren todo menos plataforma y fuente de datos: quedan
+        # 2 turnos para 2 temas, así que la pregunta del modelo se cambia.
+        history = [
+            {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Tiendas de barrio."},
+            {"pregunta": "¿Qué debe hacer?", "respuesta": "Consultar las ventas del día."},
+            {"pregunta": "calidad", "respuesta": "Que responda en menos de un minuto."},
+            {"pregunta": "equipo", "respuesta": "5 desarrolladores; saben Python y React."},
+            {"pregunta": "presupuesto", "respuesta": "Presupuesto medio, una base de datos gestionada."},
+            {"pregunta": "plazo", "respuesta": "6 meses para el MVP."},
+            {"pregunta": "p", "respuesta": "Hoy cada tienda concilia a mano al final del día."},
+            {"pregunta": "p", "respuesta": "Hay picos en quincena."},
+        ]
+        model = _FakeModel(['{"done": false, "question": "¿Algo más sobre los picos?", "reason": "x"}'])
+
+        decision = next_step(model, history=history)
+
+        assert decision.done is False
+        assert "navegador web" in decision.question
+        assert "Quedan pocas preguntas" in decision.reason
+
+    def test_conciliar_a_mano_no_dice_de_donde_salen_los_datos(self):
+        history = [{"pregunta": "p", "respuesta": "Cada tienda concilia a mano al final del día."}]
+        assert "fuente_datos" in [name for name, _ in missing_coverage(history)]
+
+    def test_el_resumen_con_no_definido_obliga_a_preguntar(self):
+        summary = TestSummaryGaps()._complete(
+            contexto_tecnico={"plataforma": "no definido", "habilidades_equipo": "Python",
+                              "fuentes_de_datos": "No definido."},
+        )
+        assert [name for name, _ in summary_gaps(summary, [])] == ["plataforma", "fuente_datos"]
+
+    def test_si_ya_se_pregunto_no_insiste(self):
+        from app.core.elicitation_agent import _DRIVER_CATEGORIES
+
+        summary = TestSummaryGaps()._complete(
+            contexto_tecnico={"plataforma": "no definido", "habilidades_equipo": "Python",
+                              "fuentes_de_datos": "API del banco"},
+        )
+        history = [{"pregunta": _DRIVER_CATEGORIES[0][3], "respuesta": "Todavía no sabemos"}]
+        assert summary_gaps(summary, history) == []

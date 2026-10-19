@@ -17,13 +17,28 @@ function toLines(text: string): string[] {
     .filter(Boolean)
 }
 
-function resumenItems(value: unknown): string[] {
+// Subcampos de contexto_tecnico y datos_viabilidad: se muestran con nombre
+// legible, no con la clave interna ("habilidades_equipo").
+const SUBFIELD_LABELS: Record<string, string> = {
+  plataforma: 'Plataforma',
+  habilidades_equipo: 'Habilidades del equipo',
+  fuentes_de_datos: 'Fuente de los datos',
+  presupuesto: 'Presupuesto',
+  equipo: 'Equipo',
+  plazo: 'Plazo',
+}
+
+function subfieldLabel(key: string): string {
+  return SUBFIELD_LABELS[key] ?? key.replace(/_/g, ' ')
+}
+
+export function resumenItems(value: unknown): string[] {
   if (value == null) return []
   if (Array.isArray(value)) return value.flatMap((item) => resumenItems(item))
   if (typeof value === 'string') return toLines(value)
   if (typeof value === 'object') {
     return Object.entries(value as Record<string, unknown>).map(
-      ([key, item]) => `${key}: ${resumenItems(item).join('; ')}`,
+      ([key, item]) => `${subfieldLabel(key)}: ${resumenItems(item).join('; ')}`,
     )
   }
   return [String(value)]
