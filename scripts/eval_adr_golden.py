@@ -13,8 +13,11 @@ Variables para ``--live`` (modelo compatible con OpenAI, p. ej. Groq):
   EVAL_LLM_MODEL     (default openai/gpt-oss-120b)
   EVAL_LLM_BASE_URL  (default https://api.groq.com/openai/v1)
   EVAL_LLM_API_KEY   (obligatoria)
-  EVAL_WAIT_S        segundos entre casos (default 20; el plan gratuito de
-                     Groq permite 8000 tokens por minuto)
+  EVAL_WAIT_S        segundos entre casos (default 60; el plan gratuito de
+                     Groq permite 8000 tokens por minuto y cada caso usa
+                     2 o 3 llamadas)
+  EVAL_MAX_RETRIES   reintentos ante un 429 (default 4; espera lo que pide
+                     el proveedor)
 
 Uso:
   python scripts/eval_adr_golden.py
@@ -29,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -37,6 +41,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
+# Los reintentos por 429 ocurren dentro de la llamada a la guía: con el tope
+# normal de 120 s se cortaría antes de terminar de esperar.
+os.environ.setdefault("ADR_LLM_TIMEOUT_S", "400")
 
 from app.core.golden_eval import (  # noqa: E402
     GoldenCase,
@@ -54,13 +61,49 @@ def _build_model():
     api_key = os.getenv("EVAL_LLM_API_KEY")
     if not api_key:
         sys.exit("Falta EVAL_LLM_API_KEY para --live")
-    return init_chat_model(
+    model = init_chat_model(
         os.getenv("EVAL_LLM_MODEL", "openai/gpt-oss-120b"),
         model_provider="openai",
         base_url=os.getenv("EVAL_LLM_BASE_URL", "https://api.groq.com/openai/v1"),
         api_key=api_key,
         temperature=0.2,
     )
+    return _RetryingModel(model, int(os.getenv("EVAL_MAX_RETRIES", "4")))
+
+
+_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)\s*(ms|s|m)\b", re.IGNORECASE)
+
+
+class _RetryingModel:
+    """Envuelve el modelo y reintenta los 429 (límite de tokens por minuto).
+
+    Groq gratis permite 8000 tokens/min y cada caso hace 2 o 3 llamadas de
+    ~5000. Sin esto un 429 cortaba la corrida entera; además, dentro de la app
+    un 429 en la guía deja el ADR sin sección 7 y la rúbrica mediría eso, no
+    la calidad del prompt.
+    """
+
+    def __init__(self, model, retries: int):
+        self._model = model
+        self._retries = retries
+
+    async def ainvoke(self, *args, **kwargs):
+        for attempt in range(self._retries + 1):
+            try:
+                return await self._model.ainvoke(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 -- se filtra abajo
+                text = str(exc)
+                if attempt >= self._retries or ("429" not in text and "rate_limit" not in text):
+                    raise
+                match = _RETRY_AFTER_RE.search(text)
+                wait = 30.0
+                if match:
+                    value, unit = float(match.group(1)), match.group(2).lower()
+                    wait = value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
+                wait = min(max(wait + 2.0, 5.0), 120.0)
+                print(f"   (límite de tokens del proveedor: espero {wait:.0f}s y reintento)", flush=True)
+                await asyncio.sleep(wait)
+        raise RuntimeError("sin respuesta del modelo")
 
 
 def _text(message) -> str:
@@ -116,13 +159,18 @@ async def main() -> int:
         return 1
 
     model = _build_model() if args.live else None
-    wait = float(os.getenv("EVAL_WAIT_S", "20"))
+    wait = float(os.getenv("EVAL_WAIT_S", "60"))
     failed = []
     for index, case in enumerate(cases):
         if model is not None:
             if index:
                 await asyncio.sleep(wait)
-            proposal, guide = await _live_outputs(model, case)
+            try:
+                proposal, guide = await _live_outputs(model, case)
+            except Exception as exc:  # noqa: BLE001 -- un caso no corta la corrida
+                print(f"\n{case.id} ({case.kind}) — ERROR: {type(exc).__name__}: {str(exc)[:200]}")
+                failed.append(case.id)
+                continue
             result, _md, _cit = evaluate_case(case, proposal=proposal, guide=guide)
         else:
             result, _md, _cit = evaluate_case(case)
