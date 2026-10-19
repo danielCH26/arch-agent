@@ -484,6 +484,16 @@ class TestIsTemperatureRejection:
     def test_otros_errores(self):
         assert is_temperature_rejection(Exception("Error code: 429 - rate limit")) is False
 
+    def test_400_dentro_de_otro_numero_no_cuenta(self):
+        # Un 429 que repite los parametros del request: "4000" no es un 400.
+        exc = Exception("Error code: 429 - rate limit (temperature=0.0, max_tokens 4000)")
+        assert is_temperature_rejection(exc) is False
+
+    def test_status_code_manda_sobre_el_texto(self):
+        exc = Exception("Error code: 429 - retry; request had temperature=0.0, 400 tokens")
+        exc.status_code = 429
+        assert is_temperature_rejection(exc) is False
+
     def test_recorre_la_cadena_de_causas(self):
         try:
             try:

@@ -1194,8 +1194,12 @@ def test_chat_retries_once_without_temperature_and_answers(_forget_rejected_mode
 
     calls = []
 
+    degraded = {"source": "context7", "reason": "context7_unavailable", "fallback": "rag_only"}
+
     async def _rejects_first(*_args, **kwargs):
         calls.append(kwargs["model"])
+        # Como run_agent: el `degraded` de Context7 sale antes de llamar al modelo.
+        yield {"event": "degraded", "data": degraded}
         if len(calls) == 1:
             raise Exception(_TEMPERATURE_400)
         yield {"event": "token", "data": "hola"}
@@ -1203,6 +1207,7 @@ def test_chat_retries_once_without_temperature_and_answers(_forget_rejected_mode
     body_text = _run_chat_with_run_agent(chat_module, _rejects_first)
 
     assert len(calls) == 2
+    assert body_text.count("event: degraded\n") == 1  # el reintento no lo duplica
     assert calls[1] is not calls[0]  # el reintento usa la copia sin temperature
     assert _token("hola") in body_text
     assert body_text.endswith(_done())

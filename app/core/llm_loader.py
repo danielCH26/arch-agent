@@ -176,8 +176,10 @@ TEMPERATURE_REJECTED_MESSAGE = (
 )
 
 # Marcas de que un error que menciona `temperature` es un rechazo del
-# parametro y no, por ejemplo, un texto que solo lo cita.
-_RECHAZO_MARCAS = ("400", "unsupported", "not support", "invalid")
+# parametro y no, por ejemplo, un texto que solo lo cita. El "400" del texto
+# se busca como palabra (no matchea "4000" ni "max_tokens=1400").
+_RECHAZO_MARCAS = ("unsupported", "not support", "invalid")
+_CODIGO_400_RE = re.compile(r"\b400\b")
 
 
 def _cadena_de_causas(exc: BaseException) -> list[BaseException]:
@@ -195,14 +197,19 @@ def is_temperature_rejection(exc: BaseException) -> bool:
 
     Exige que el mensaje mencione ``temperature`` Y que sea un 400 (por
     ``status_code`` o por el texto) o diga ``unsupported``/``invalid``: la
-    palabra sola no alcanza. Recorre la cadena de causas porque los call
+    palabra sola no alcanza. Si el error trae ``status_code``, manda ese
+    codigo y el "400" del texto se ignora (un 429 que repite los parametros
+    del request no es un rechazo). Recorre la cadena de causas porque los call
     sites envuelven el error del SDK (ej. ``ElicitationLLMError``).
     """
     for e in _cadena_de_causas(exc):
         texto = str(e).lower()
         if "temperature" not in texto:
             continue
-        if getattr(e, "status_code", None) == 400:
+        status_code = getattr(e, "status_code", None)
+        if status_code == 400:
+            return True
+        if status_code is None and _CODIGO_400_RE.search(texto):
             return True
         if any(marca in texto for marca in _RECHAZO_MARCAS):
             return True

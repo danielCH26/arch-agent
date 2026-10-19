@@ -420,6 +420,10 @@ async def chat(
 
             emitted_done = False
             full_response = ""
+            # `degraded` ya enviados, por (source, reason). El reintento sin
+            # `temperature` vuelve a correr run_agent, que reemite el de
+            # Context7 antes de llamar al modelo: el cliente lo recibe una vez.
+            sent_degraded: set[tuple[Any, Any]] = set()
             # F13 (REQ-ATT-1 / REQ-PMCP-1): collected attachment dicts from
             # ``event: attachment`` SSE payloads. Persisted alongside the
             # assistant row in the same pre-``done`` transaction so a
@@ -486,6 +490,14 @@ async def chat(
                 payload = sse_dict.get("data")
 
                 if event_name == "degraded":
+                    degraded_key = (
+                        (payload.get("source"), payload.get("reason"))
+                        if isinstance(payload, dict)
+                        else (None, json.dumps(payload, ensure_ascii=False, default=str))
+                    )
+                    if degraded_key in sent_degraded:
+                        continue
+                    sent_degraded.add(degraded_key)
                     logger.warning(
                         "Context7 unavailable for user_id=%s project_id=%s; "
                         "falling back to RAG-only: %s",
