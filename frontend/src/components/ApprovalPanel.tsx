@@ -26,6 +26,7 @@ const SUBFIELD_LABELS: Record<string, string> = {
   presupuesto: 'Presupuesto',
   equipo: 'Equipo',
   plazo: 'Plazo',
+  _texto_original: 'Texto original (antes de corregir la escritura)',
 }
 
 function subfieldLabel(key: string): string {

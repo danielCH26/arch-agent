@@ -1017,3 +1017,45 @@ class TestNoSeCierraSinLoQueDecideLaArquitectura:
         )
         history = [{"pregunta": _DRIVER_CATEGORIES[0][3], "respuesta": "Todavía no sabemos"}]
         assert summary_gaps(summary, history) == []
+
+
+
+class TestCorreccionDeEscritura:
+    """El usuario escribió mal ("edio"): el LLM puede corregir la escritura,
+    pero el código solo lo acepta si no cambia cifras ni el sentido."""
+
+    def test_acepta_letras_faltantes(self):
+        from app.core.elicitation_agent import accept_typo_fix
+
+        assert accept_typo_fix(
+            "edio: pueden pagar una base de datos gestionada, pero no un clúster.",
+            "Medio: pueden pagar una base de datos gestionada, pero no un clúster.",
+        )
+
+    def test_rechaza_cambios_de_cifras_o_de_sentido(self):
+        from app.core.elicitation_agent import accept_typo_fix
+
+        assert not accept_typo_fix("4 devs, 3 front y 1 PM", "4 desarrolladores backend")
+        assert not accept_typo_fix("6 meses", "8 meses")
+        assert not accept_typo_fix("6 meses", "")
+        assert not accept_typo_fix("6 meses", "6 meses")  # sin cambios no hay corrección
+
+    def test_el_resumen_usa_la_correccion_y_guarda_el_original(self):
+        budget_question = _VIABILITY_FACTORS[0][2]
+        team_question = _VIABILITY_FACTORS[1][2]
+        model = _FakeModel([
+            '{"problema": "x", "usuarios": "y", "funcionalidades": [], "restricciones": [], '
+            '"calidad": [], "datos_viabilidad": {'
+            '"presupuesto": "Medio: pueden pagar una base gestionada", '
+            '"equipo": "4 desarrolladores backend", '
+            '"plazo": "12 meses"}}'
+        ])
+        summary = generate_summary(model, history=[
+            {"pregunta": budget_question, "respuesta": "edio: pueden pagar una base gestionada"},
+            {"pregunta": team_question, "respuesta": "4 devs, 3 front y 1 PM"},
+        ])
+        datos = summary["datos_viabilidad"]
+        assert datos["presupuesto"] == "Medio: pueden pagar una base gestionada"
+        assert datos["equipo"] == "4 devs, 3 front y 1 PM"  # reinterpretación rechazada
+        assert "plazo" not in datos  # el usuario no lo dijo: lo del LLM se descarta
+        assert datos["_texto_original"] == {"presupuesto": "edio: pueden pagar una base gestionada"}

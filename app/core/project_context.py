@@ -79,7 +79,7 @@ def format_requirements_summary(resumen: dict | None) -> str:
         items = [
             f"{key.capitalize()}: {str(value).strip()}"
             for key, value in datos.items()
-            if str(value or "").strip()
+            if not key.startswith("_") and str(value or "").strip()
         ]
         block = _format_list(
             "Datos de viabilidad (palabras textuales del usuario; no los reinterpretes)", items

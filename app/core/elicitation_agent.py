@@ -17,6 +17,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -200,6 +201,11 @@ reinterpretes ni las resumas a un solo número.
 En "contexto_tecnico" usa las palabras del usuario; si no lo dijo, escribe \
 "no definido".
 
+En "datos_viabilidad" copia lo que dijo el usuario sobre presupuesto, equipo y \
+plazo. Solo corrige errores de escritura evidentes (letras que faltan o están \
+cambiadas, como "edio" por "medio"); no cambies cifras, no agregues datos y \
+no reinterpretes el sentido. Si no lo dijo, deja el campo vacío.
+
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
 {
@@ -208,7 +214,8 @@ forma exacta:
   "funcionalidades": [str, ...],
   "restricciones": [str, ...],
   "calidad": [{"atributo": str, "origen": "dicho" | "propuesto"}, ...],
-  "contexto_tecnico": {"plataforma": str, "habilidades_equipo": str, "fuentes_de_datos": str}
+  "contexto_tecnico": {"plataforma": str, "habilidades_equipo": str, "fuentes_de_datos": str},
+  "datos_viabilidad": {"presupuesto": str, "equipo": str, "plazo": str}
 }
 """
 
@@ -1007,6 +1014,51 @@ def viability_facts(
     return facts
 
 
+_DIGITS_RE = re.compile(r"\d+(?:[.,]\d+)?")
+# Parecido mínimo entre el texto del usuario y la versión corregida por el LLM
+# para aceptar la corrección (0-1, sobre texto sin acentos ni mayúsculas).
+TYPO_FIX_MIN_SIMILARITY = 0.85
+
+
+def accept_typo_fix(literal: str, corrected: Optional[str]) -> bool:
+    """¿La versión del LLM solo corrige la escritura del texto del usuario?
+
+    Se acepta si es casi el mismo texto (``TYPO_FIX_MIN_SIMILARITY``) y tiene
+    exactamente las mismas cifras. Así "edio: base gestionada" -> "Medio: base
+    gestionada" pasa, y "4 devs, 3 front y 1 PM" -> "4 desarrolladores
+    backend" no (cambian las cifras y el texto).
+    """
+    if not corrected or not str(corrected).strip():
+        return False
+    original = _normalize_text(literal).strip()
+    candidate = _normalize_text(str(corrected)).strip()
+    if candidate == original:
+        return False
+    if sorted(_DIGITS_RE.findall(original)) != sorted(_DIGITS_RE.findall(candidate)):
+        return False
+    return SequenceMatcher(None, original, candidate).ratio() >= TYPO_FIX_MIN_SIMILARITY
+
+
+def _merge_viability_facts(literal: dict[str, str], from_llm: Any) -> dict[str, Any]:
+    """Datos de viabilidad finales: el texto del usuario, con la corrección de
+    escritura del LLM solo si ``accept_typo_fix`` la aprueba. Lo que el LLM
+    ponga para un factor que el usuario no mencionó se descarta."""
+    proposed = from_llm if isinstance(from_llm, dict) else {}
+    final: dict[str, Any] = {}
+    originals: dict[str, str] = {}
+    for name, text in literal.items():
+        fix = proposed.get(name)
+        if accept_typo_fix(text, fix):
+            final[name] = str(fix).strip()
+            originals[name] = text
+        else:
+            final[name] = text
+    if originals:
+        # Lo que escribió el usuario, para poder auditar la corrección.
+        final["_texto_original"] = originals
+    return final
+
+
 def generate_summary(
     model: BaseChatModel,
     history: list[dict],
@@ -1034,8 +1086,10 @@ def generate_summary(
         )
     )
     facts = viability_facts(history, project_description, documents_context)
+    from_llm = summary.pop("datos_viabilidad", None)
     if facts:
-        # Las palabras del usuario viajan aparte, sin pasar por el LLM, hasta
-        # la propuesta y el ADR (ver format_requirements_summary).
-        summary["datos_viabilidad"] = facts
+        # Las palabras del usuario viajan aparte hasta la propuesta y el ADR
+        # (ver format_requirements_summary). Del LLM solo se toma la
+        # corrección de errores de escritura evidentes, si no cambia cifras.
+        summary["datos_viabilidad"] = _merge_viability_facts(facts, from_llm)
     return summary

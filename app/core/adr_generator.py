@@ -441,7 +441,11 @@ def _requirements_text(ctx: AdrContext) -> str:
 def _dict_values(value: Any) -> list[str]:
     if not isinstance(value, dict):
         return []
-    return [str(v).strip() for v in value.values() if str(v or "").strip()]
+    return [
+        str(v).strip()
+        for k, v in value.items()
+        if not str(k).startswith("_") and isinstance(v, str) and v.strip()
+    ]
 
 
 def open_domain_concerns(ctx: AdrContext, addressed_text: str = "") -> list[DomainConcern]:
@@ -879,7 +883,7 @@ def _technical_context_block(resumen: dict) -> str:
     items = [
         f"**{key.capitalize()}:** «{str(value).strip()}»"
         for key, value in datos.items()
-        if str(value or "").strip()
+        if not key.startswith("_") and str(value or "").strip()
     ]
     if items:
         blocks.append("### Datos de viabilidad (palabras del usuario)\n\n" + _bullets(items))
