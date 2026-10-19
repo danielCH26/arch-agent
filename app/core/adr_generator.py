@@ -530,6 +530,73 @@ _TECH_STOPWORDS = {
 }
 
 
+def _source_numbers(ctx: AdrContext) -> set[str]:
+    """Números con origen válido para una cifra de la guía.
+
+    Cualquier número de los requerimientos (y de los cambios pedidos), o una
+    cifra con unidad de la propuesta. De la propuesta no se toman números
+    sueltos: las citas [1]..[3] y la numeración de listas harían pasar "2 vCPU"
+    o "3 GB".
+    """
+    requirements = normalize_text(
+        " ".join([_requirements_text(ctx), " ".join(ctx.proposal_feedback_history)])
+    )
+    proposal_figures = " ".join(
+        m.group(0) for m in _FIGURE_RE.finditer(normalize_text(ctx.proposal_markdown))
+    )
+    return _numbers(requirements) | _numbers(proposal_figures)
+
+
+def mark_unsourced_figures(ctx: AdrContext, guide: Optional[str]) -> Optional[str]:
+    """Marca ``(supuesto)`` cada cifra de la guía que no tiene origen.
+
+    Es el último recurso, sin LLM: si la corrección no las quitó, el lector al
+    menos ve que "2 vCPU" o "200 ms" son supuestos y no decisiones.
+    """
+    if not guide:
+        return guide
+    sources = _source_numbers(ctx)
+    lines = []
+    for line in guide.splitlines():
+        if ASSUMPTION_MARK in line or "supuesto" in normalize_text(line):
+            lines.append(line)
+            continue
+        # .lower() conserva las posiciones (a diferencia de quitar acentos),
+        # así que los índices sirven para insertar en la línea original.
+        lowered = line.lower()
+        spans = [
+            m.span()
+            for m in _FIGURE_RE.finditer(lowered)
+            if not (_numbers(m.group(0)) & sources)
+        ]
+        for start, end in reversed(spans):
+            while end > start and line[end - 1] == " ":
+                end -= 1
+            line = f"{line[:end]} {ASSUMPTION_MARK}{line[end:]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _proposal_technologies(proposal: str) -> list[str]:
+    """Filas de la tabla de la sección Tecnologías de la propuesta."""
+    lines = (proposal or "").splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if re.match(r"^\s*#{1,6}\s*[*_\d.]*\s*tecnolog", normalize_text(line))),
+        None,
+    )
+    if start is None:
+        return []
+    section = []
+    for line in lines[start + 1 :]:
+        if re.match(r"^\s*#{1,6}\s", line):
+            break
+        section.append(line)
+    return [c for c in _table_column(section, "tecnolog") if c.strip(" -—")]
+
+
+MAX_GUIDE_TECHNOLOGIES = 6
+
+
 def lint_adr_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
     """Revisión barata y determinista de la guía (sección 7) contra lo decidido.
 
@@ -543,17 +610,7 @@ def lint_adr_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
     if not guide:
         return []
     warnings: list[str] = []
-    # Origen válido de una cifra: cualquier número de los requerimientos (y de
-    # los cambios pedidos), o una cifra con unidad de la propuesta. De la
-    # propuesta no se toman números sueltos: las citas [1]..[3] y la
-    # numeración de listas harían pasar "2 vCPU" o "3 GB".
-    requirements = normalize_text(
-        " ".join([_requirements_text(ctx), " ".join(ctx.proposal_feedback_history)])
-    )
-    proposal_figures = " ".join(
-        m.group(0) for m in _FIGURE_RE.finditer(normalize_text(ctx.proposal_markdown))
-    )
-    source_numbers = _numbers(requirements) | _numbers(proposal_figures)
+    source_numbers = _source_numbers(ctx)
 
     figures: list[str] = []
     for line in guide.splitlines():
@@ -587,6 +644,14 @@ def lint_adr_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
         warnings.append(
             "Tecnologías en 7.2 que la propuesta aprobada no nombra: "
             + ", ".join(new_tech)
+        )
+
+    guide_tech = [c for c in _table_column(_section_lines(guide, "7.2"), "tecnolog") if c.strip(" -—")]
+    limit = max(MAX_GUIDE_TECHNOLOGIES, len(_proposal_technologies(ctx.proposal_markdown)))
+    if len(guide_tech) > limit:
+        warnings.append(
+            f"Demasiadas tecnologías en 7.2: {len(guide_tech)} (máximo {limit}). Deja las de "
+            "la propuesta y solo lo que un requisito exija."
         )
 
     if any(_UI_LEFTOVER_RE.match(normalize_text(line)) for line in guide.splitlines()):
@@ -1174,6 +1239,31 @@ async def generate_llm_sections(
     return sections
 
 
+_GUIDE_SECTION_RE = re.compile(r"^#{1,6}\s*7\.(\d)\b", re.MULTILINE)
+
+
+def _split_guide_sections(text: str) -> dict[str, str]:
+    """``{"1": "### 7.1 ...", ...}`` para cada subsección de la guía."""
+    body = (text or "").strip()
+    fenced = re.fullmatch(r"```(?:markdown|md)?\s*\n(.*)\n```", body, re.S)
+    if fenced:
+        body = fenced.group(1)
+    matches = list(_GUIDE_SECTION_RE.finditer(body))
+    sections = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        sections[match.group(1)] = body[match.start():end].strip()
+    return sections
+
+
+def merge_guide_sections(original: str, partial: str) -> str:
+    """Guía con las subsecciones corregidas de ``partial`` y el resto de ``original``."""
+    base = _split_guide_sections(original)
+    fixes = _split_guide_sections(partial)
+    merged = {**base, **{k: v for k, v in fixes.items() if v}}
+    return "\n\n".join(merged[k] for k in sorted(merged))
+
+
 _REPAIR_INSTRUCTIONS = """\
 Una revisión automática encontró estos problemas en la guía que escribiste:
 {warnings}
@@ -1188,6 +1278,8 @@ formato y las mismas secciones. Para cada tipo de problema:
 - Preguntas repetidas: deja una sola.
 - Etiquetas internas (RAG, [n], similitud): reemplázalas por texto que \
   entienda una persona.
+- Demasiadas tecnologías en 7.2: deja las de la propuesta y solo lo que un \
+  requisito exija.
 No cambies lo que no tiene problemas.
 
 Guía a corregir:
@@ -1225,7 +1317,12 @@ async def repair_llm_sections(
     except Exception as exc:  # noqa: BLE001 -- se queda la guía original
         _LOGGER.warning("ADR: la corrección de la guía falló (%s: %s)", type(exc).__name__, exc)
         return None
-    repaired = clean_llm_sections(_message_text(response))
+    raw = _message_text(response)
+    repaired = clean_llm_sections(raw)
+    if repaired is None:
+        # A veces el modelo devuelve solo las secciones que cambió: se toman
+        # esas y el resto sale de la guía original.
+        repaired = clean_llm_sections(merge_guide_sections(guide, raw))
     if repaired is None:
         _LOGGER.warning("ADR: la guía corregida vino incompleta; se usa la original")
         return None
@@ -1253,14 +1350,20 @@ async def generate_guide(
     2. ``lint_adr_guide`` la revisa contra lo decidido y contra el resto del
        documento.
     3. Si hay avisos y ``ADR_GUIDE_REPAIR`` está activo, una segunda llamada
-       corrige solo esos puntos (``repair_llm_sections``). Los avisos que
-       queden se muestran igual en el documento.
+       corrige solo esos puntos (``repair_llm_sections``). Si devuelve solo
+       algunas secciones, se combinan con las originales.
+    4. Las cifras que sigan sin origen se marcan ``(supuesto)``. Los demás
+       avisos que queden se muestran igual en el documento.
     """
     guide = await generate_llm_sections(model, ctx, callbacks=callbacks)
-    if guide is None or not ADR_GUIDE_REPAIR:
-        return guide, False
-    warnings = lint_adr_guide(ctx, guide)
-    if not warnings:
-        return guide, False
-    repaired = await repair_llm_sections(model, ctx, guide, warnings, callbacks=callbacks)
-    return (repaired, True) if repaired is not None else (guide, False)
+    if guide is None:
+        return None, False
+    repaired_flag = False
+    if ADR_GUIDE_REPAIR:
+        warnings = lint_adr_guide(ctx, guide)
+        if warnings:
+            repaired = await repair_llm_sections(model, ctx, guide, warnings, callbacks=callbacks)
+            if repaired is not None:
+                guide, repaired_flag = repaired, True
+    # 4. Lo que siga sin origen queda marcado como supuesto (sin LLM).
+    return mark_unsourced_figures(ctx, guide), repaired_flag

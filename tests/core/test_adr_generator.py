@@ -525,6 +525,8 @@ class TestCorreccionDeLaGuia:
     """Segunda pasada: el LLM corrige lo que encontró la revisión automática."""
 
     BAD = LLM_GUIDE.replace("Contenido de Consecuencias.", "Costo de $900 al mes.")
+    # Lo que queda sin origen al final se marca como supuesto (sin LLM).
+    BAD_MARKED = LLM_GUIDE.replace("Contenido de Consecuencias.", "Costo de $900 (supuesto) al mes.")
 
     class _Seq:
         def __init__(self, *responses):
@@ -556,14 +558,14 @@ class TestCorreccionDeLaGuia:
 
         model = self._Seq(self.BAD, self.BAD)
         guide, repaired = asyncio.run(generate_guide(model, _ctx()))
-        assert (guide, repaired) == (self.BAD, False)
+        assert (guide, repaired) == (self.BAD_MARKED, False)
 
     def test_si_la_correccion_falla_se_queda_la_original(self):
         from app.core.adr_generator import generate_guide
 
         model = self._Seq(self.BAD, RuntimeError("429"))
         guide, repaired = asyncio.run(generate_guide(model, _ctx()))
-        assert (guide, repaired) == (self.BAD, False)
+        assert (guide, repaired) == (self.BAD_MARKED, False)
 
     def test_sin_avisos_no_hay_segunda_llamada(self):
         from app.core.adr_generator import generate_guide
@@ -579,5 +581,45 @@ class TestCorreccionDeLaGuia:
         monkeypatch.setattr(adr_generator, "ADR_GUIDE_REPAIR", False)
         model = self._Seq(self.BAD)
         guide, repaired = asyncio.run(adr_generator.generate_guide(model, _ctx()))
-        assert (guide, repaired) == (self.BAD, False)
+        assert (guide, repaired) == (self.BAD_MARKED, False)
         assert len(model.configs) == 1
+
+
+class TestCorreccionRobusta:
+    """Casos del eval con LLM real: corrección incompleta y 7 tecnologías."""
+
+    def test_una_correccion_parcial_se_combina_con_la_original(self):
+        from app.core.adr_generator import generate_guide
+
+        bad = LLM_GUIDE.replace("Contenido de Consecuencias.", "Costo de $900 al mes.")
+        # El modelo devuelve solo la sección que corrigió.
+        partial = "### 7.3 Consecuencias\nCosto según el plan elegido."
+        model = TestCorreccionDeLaGuia._Seq(bad, partial)
+
+        guide, repaired = asyncio.run(generate_guide(model, _ctx()))
+
+        assert repaired is True
+        assert "Costo según el plan elegido." in guide
+        assert "Contenido de Primer sprint." in guide  # el resto sale de la original
+        assert "$900" not in guide
+
+    def test_marca_como_supuesto_las_cifras_sin_origen(self):
+        from app.core.adr_generator import mark_unsourced_figures
+
+        guide = "Servidor de 2 vCPU / 4 GB por <$150/mes.\nPresupuesto de 20000 USD."
+        marked = mark_unsourced_figures(_ctx(), guide)
+        assert "2 vCPU (supuesto)" in marked
+        assert "4 GB (supuesto)" in marked
+        assert "$150 (supuesto)" in marked
+        assert "20000 USD (supuesto)" not in marked  # está en los requerimientos
+
+    def test_avisa_cuando_7_2_tiene_demasiadas_tecnologias(self):
+        from app.core.adr_generator import lint_adr_guide
+
+        rows = "\n".join(f"| Capa {i} | Tec{i} | x |" for i in range(7))
+        guide = LLM_GUIDE.replace(
+            "Contenido de Stack tecnológico recomendado.",
+            "| Capa | Tecnología | Por qué |\n|---|---|---|\n" + rows,
+        )
+        warnings = " ".join(lint_adr_guide(_ctx(), guide))
+        assert "Demasiadas tecnologías en 7.2: 7 (máximo 6)" in warnings
