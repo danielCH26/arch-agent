@@ -384,8 +384,9 @@ class TestAceptaTemperature:
             "gpt-4o-mini",
             "gpt-4o",
             "gpt-4.1",
-            "gpt-5",
+            # gpt-5-chat si acepta temperatura (la restriccion es de gpt-5 no-chat).
             "gpt-5-chat-latest",
+            "openai/gpt-5-chat-latest",
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
             "openai/gpt-4o-mini",
@@ -476,6 +477,27 @@ class TestAceptaTemperature:
     def test_provider_prefijado_que_no_es_o_digito_si_acepta(self, model):
         assert _acepta_temperature(model) is True
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5-pro",
+            "gpt-5.1",
+            "gpt-5-2025-08-07",
+            "GPT-5-MINI",
+            # Con prefijo de provider: la guarda de langchain-openai decide con
+            # startswith("gpt-5") y NO los cubre, por eso se resuelve en la app.
+            "openai/gpt-5",
+            "openai/gpt-5-mini",
+            "openai/gpt-5-nano",
+            "  OpenAI/GPT-5  ",
+        ],
+    )
+    def test_serie_gpt5_no_chat_no_acepta(self, model):
+        assert _acepta_temperature(model) is False
+
 
 class TestInitModelTemperature:
     """`_init_model` solo manda `temperature` si el modelo lo acepta."""
@@ -503,7 +525,10 @@ class TestInitModelTemperature:
         assert kwargs["temperature"] == 0.0
         assert DEFAULT_LLM_TEMPERATURE == 0.0
 
-    @pytest.mark.parametrize("model", ["o1", "o1-mini", "o3-mini", "o4-mini"])
+    @pytest.mark.parametrize(
+        "model",
+        ["o1", "o1-mini", "o3-mini", "o4-mini", "gpt-5", "openai/gpt-5-mini"],
+    )
     def test_modelo_serie_o_no_recibe_temperature(self, model):
         """Sin el kwarg, langchain aplica su default de 1, que es lo valido.
 

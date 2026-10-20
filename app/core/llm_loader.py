@@ -61,29 +61,44 @@ DEFAULT_LLM_MODEL: str = "openai/gpt-oss-120b"
 
 # Series de modelos que rechazan `temperature` distinto de 1 (400 de OpenAI).
 #
-# El criterio es el prefijo ``o`` seguido de un digito, NO una lista de nombres.
-# Es la convencion de nomenclatura de toda la familia de razonamiento de OpenAI
-# (letra + generacion): o1, o1-mini, o1-pro, o1-2024-12-17, o3, o3-mini, o3-pro,
-# o4-mini, ... asi una generacion futura (o2, o5) queda cubierta sin tocar el
-# codigo. Ningun modelo ajeno a esa familia entra por accidente: `gpt-4o`,
-# `gpt-4o-mini` y `llama-3.3-70b` no arrancan con `o` + digito.
+# El criterio es la convencion de nomenclatura, NO una lista de nombres:
 #
-# Sobre langchain: `langchain_openai.chat_models.base.ChatOpenAI` tiene su propia
-# guarda (base.py ~1118) que fuerza temperature=1 para `o1*`, pero SOLO cuando el
-# parametro NO viene en `values` -- y la app lo manda explicito, con lo cual la
-# guarda nunca dispara y el 0.0 viaja al request. Para `gpt-5*` no-chat langchain
-# hace `values.pop("temperature")` y descarta el valor en silencio, asi que ese
-# caso lo cubre la libreria y no se replica acá. Ademas la guarda de langchain
-# solo llega a `o1`: no cubre `o3*` ni `o4*`, que fallan igual.
+# - ``o`` + digito: toda la familia de razonamiento (o1, o1-mini, o1-pro,
+#   o1-2024-12-17, o3, o3-mini, o3-pro, o4-mini, ...). Una generacion futura
+#   (o2, o5) queda cubierta sin tocar el codigo. `gpt-4o`, `gpt-4o-mini` y
+#   `llama-3.3-70b` no arrancan con `o` + digito, asi que no entran.
+# - ``gpt-5`` sin ``chat`` en el nombre: gpt-5, gpt-5-mini, gpt-5-nano,
+#   gpt-5.1, ... `gpt-5-chat-latest` si acepta temperatura y queda afuera.
 #
-# Punto de extension: si manana otro proveedor -- u otra familia de OpenAI --
-# tiene la misma restriccion, su patron se agrega ACa. Este es el unico lugar
-# que decide si se manda la temperatura.
+# Asimetria de errores: un falso positivo solo omite la temperatura (el modelo
+# muestrea con el default del provider, inocuo); un falso negativo rompe el
+# request con 400. Por eso la regex prefiere matchear de mas.
 #
-# Formato de los nombres: los providers OpenAI-style suelen prefijar con
-# ``provider/`` (Groq devuelve ``openai/o1-mini`` en ``/v1/models``). La forma
-# ``(?:^|/)o\d`` matchea tanto ``o1-mini`` como ``openai/o1-mini``.
-_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)o\d")
+# Sobre langchain -- SOLO como contexto: la logica de este modulo no depende de
+# esto, porque decide aca si manda o no el kwarg. Observado en langchain-openai
+# 1.6.2 (``ChatOpenAI.validate_temperature``); `requirements.txt` admite otras
+# 1.x y el detalle puede cambiar entre versiones:
+# - Para `o1*` fuerza temperature=1 SOLO si el caller no paso el kwarg. Para
+#   `o3*`/`o4*` no hace nada: si se omite, el valor queda en None, no viaja en
+#   el request y la API aplica su propio default.
+# - Para `gpt-5*` no-chat descarta el valor en silencio, pero decide con
+#   ``model.lower().startswith("gpt-5")``: un nombre con prefijo de provider
+#   (``openai/gpt-5``) no matchea y el 0.0 llegaria al request. Por eso
+#   `gpt-5` se resuelve aca y no se delega a la libreria.
+#
+# Formato de los nombres: los gateways OpenAI-compatibles como OpenRouter
+# exponen los modelos como ``provider/modelo`` (``openai/o1-mini``,
+# ``openai/gpt-5-mini``). El ancla ``(?:^|/)`` matchea tanto el nombre pelado
+# como el prefijado. Esto tambien aplica a cualquier provider: un segmento
+# ``/o\d`` (``anthropic/o3``) omite la temperatura, decision deliberada por la
+# asimetria de errores de arriba.
+#
+# Punto de extension: si manana otra familia tiene la misma restriccion, su
+# patron se agrega ACA. Este es el unico lugar que decide si se manda la
+# temperatura. La regex es la misma que la de #106 (feat/llm-temperature-rag-
+# config), que ademas agrega ``LLM_MODELS_WITHOUT_TEMPERATURE`` para nombres
+# arbitrarios (deployments de Azure tipo ``my-o1-deployment``).
+_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)(?:o\d|gpt-5(?![^/]*chat))")
 
 
 def _acepta_temperature(model: str) -> bool:
@@ -97,9 +112,9 @@ def _acepta_temperature(model: str) -> bool:
 
     Returns:
         True si se le puede pasar `temperature` (ej. `gpt-4o-mini`,
-        `llama-3.3-70b`, `openai/gpt-4o-mini`). False si hay que omitir el kwarg
-        para que la libreria aplique su default (ej. `o1`, `o1-mini`, `o3-mini`,
-        `o4-mini`, `openai/o1-mini`).
+        `llama-3.3-70b`, `openai/gpt-4o-mini`, `gpt-5-chat-latest`). False si
+        hay que omitir el kwarg para que la API aplique su default (ej. `o1`,
+        `o3-mini`, `openai/o1-mini`, `gpt-5`, `openai/gpt-5-mini`).
     """
     return not _RECHAZA_TEMPERATURE_RE.search((model or "").strip().lower())
 
