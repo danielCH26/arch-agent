@@ -1,0 +1,76 @@
+# Caso complejo (solo --live): analítica de permanencia estudiantil para una
+# universidad con varias sedes. Lo difícil: varias fuentes (sistema académico,
+# Moodle, financiero), datos personales de estudiantes, un modelo predictivo y
+# un equipo de datos pequeño. Debe proponer algo de datos (ETL / lakehouse) y
+# no microservicios.
+id: analitica-permanencia
+name: Observatorio de Permanencia
+kind: analítica universitaria
+description: >
+  Plataforma de analítica para una universidad con sedes en varias ciudades de
+  Colombia: integrar los datos del sistema académico, de Moodle y del área
+  financiera para detectar a tiempo a los estudiantes en riesgo de deserción y
+  mostrar tableros a los directores de programa y a Bienestar Universitario.
+profile:
+  resumen: Analítica de permanencia con alertas de riesgo y tableros por programa.
+  dominio: educacion
+  tipo_sistema: plataforma de datos y tableros web
+  tipo_proyecto: producto_en_produccion
+  equipo_personas: 4
+  plazo_meses: 6
+  presupuesto_usd: 40000
+resumen:
+  problema: La deserción se detecta cuando el estudiante ya se fue; los datos están repartidos entre el sistema académico, Moodle y el área financiera, y los reportes se arman a mano en Excel cada semestre.
+  usuarios: Unos 15000 estudiantes (como sujetos de los datos), 60 directores de programa, Bienestar Universitario, vicerrectoría académica y el equipo de planeación.
+  funcionalidades:
+    - Integrar cada noche los datos del sistema académico, Moodle y el área financiera
+    - Calcular un puntaje de riesgo de deserción por estudiante
+    - Tableros por sede, facultad y programa
+    - Alertas semanales a Bienestar con los estudiantes en riesgo alto
+    - Registrar las intervenciones de Bienestar y ver si funcionaron
+  restricciones:
+    - Presupuesto de 40000 USD para el primer año
+    - Equipo de 4 personas (2 ingenieros de datos, 1 analista de Power BI y 1 desarrollador web)
+    - Plazo de 6 meses, con un piloto en una facultad a los 3 meses
+    - Cumplir la Ley 1581 de protección de datos personales
+    - La universidad ya tiene licencias de Microsoft 365 y Power BI
+  calidad:
+    - Privacidad y control de acceso por rol (un director solo ve su programa)
+    - Datos actualizados cada día
+    - Explicar por qué un estudiante sale en riesgo
+  contexto_tecnico:
+    plataforma: Tableros web en Power BI y una aplicación web sencilla para registrar intervenciones
+    habilidades_equipo: Python, SQL, Power BI, algo de Azure
+    fuentes_de_datos: Base de datos Oracle del sistema académico, Moodle (MySQL) y exportaciones Excel del área financiera
+  datos_viabilidad:
+    presupuesto: "40000 USD el primer año."
+    equipo: "2 ingenieros de datos, 1 analista de Power BI y 1 desarrollador web."
+    plazo: "6 meses, con piloto en una facultad a los 3 meses."
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: La deserción se detecta tarde y los datos están en tres sistemas que no se hablan; los reportes se hacen a mano en Excel.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Directores de programa, Bienestar Universitario, vicerrectoría y planeación; los datos son de unos 15000 estudiantes.
+  - pregunta: ¿De dónde salen los datos?
+    respuesta: Del sistema académico en Oracle, de Moodle en MySQL y de exportaciones Excel del área financiera.
+  - pregunta: ¿Con qué sistemas externos hay que integrarse?
+    respuesta: Con esos tres; el sistema académico solo permite lectura por una réplica nocturna.
+  - pregunta: ¿Qué datos personales o sensibles va a guardar el sistema?
+    respuesta: Notas, asistencia, estado de pagos, datos socioeconómicos y de contacto de los estudiantes.
+  - pregunta: ¿El sistema debe avisar a los usuarios por correo, notificación push o SMS?
+    respuesta: Un correo semanal a Bienestar con los estudiantes en riesgo alto.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 40000 USD el primer año; ya tenemos Microsoft 365 y Power BI.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 2 ingenieros de datos, 1 analista de Power BI y 1 desarrollador web.
+  - pregunta: ¿Cuál es el plazo objetivo para la primera entrega utilizable?
+    respuesta: 6 meses, con un piloto en una facultad a los 3 meses.
+candidates:
+  - {name: "Pipeline de datos ETL / ELT por lotes", similarity: 0.88}
+  - {name: "Data Lakehouse con capas Medallion (bronce, plata, oro)", similarity: 0.87}
+  - {name: "Pipeline de MLOps (entrenamiento, registro y serving de modelos)", similarity: 0.86}
+  - {name: "Microservicios", similarity: 0.85}
+  - {name: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)", similarity: 0.85}
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.84}
+expect:
+  concerns: [datos_personales, notificaciones, integraciones, respaldos]
