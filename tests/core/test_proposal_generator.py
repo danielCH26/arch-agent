@@ -2227,12 +2227,34 @@ def test_invalid_llm_config_is_not_retryable():
     from app.core.llm_loader import LLMConfigError
 
     stack, generator, persisted = _patched_generator(_CompleteModel())
-    with stack, patch.object(gen, "build_langchain_model", side_effect=LLMConfigError("sin API key")):
+    with stack, patch.object(
+        gen,
+        "build_langchain_model",
+        side_effect=LLMConfigError("configura GROQ_API_KEY en el backend", reason="not_configured"),
+    ):
         events = _drain(generator.generate_stream())
 
     assert _error_meta(events) == ("llm_config", False)
-    assert events[-1][1]["message"] == "sin API key"
+    # Por SSE llega el mensaje para el usuario, no el detalle del backend.
+    message = events[-1][1]["message"]
+    assert "GROQ_API_KEY" not in message
+    assert "configuración del LLM" in message
     assert persisted == []
+
+
+def test_llm_without_model_tells_the_user_to_finish_step_3():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.llm_loader import LLMConfigError
+
+    stack, generator, _persisted = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "build_langchain_model", side_effect=LLMConfigError("sin modelo", reason="missing")
+    ):
+        events = _drain(generator.generate_stream())
+
+    assert "paso 3" in events[-1][1]["message"]
 
 
 def test_empty_llm_output_is_a_distinct_non_retryable_code():
