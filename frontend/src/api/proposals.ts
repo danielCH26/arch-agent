@@ -68,6 +68,8 @@ export type ProposalProgressStage =
   | 'context'
   | 'retrieval'
   | 'generating'
+  /** La tabla de trade-offs (u otra sección) quedó incompleta y se está completando. */
+  | 'repairing'
   | 'saving'
 
 export interface ProposalProgress {

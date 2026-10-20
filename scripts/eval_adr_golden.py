@@ -23,6 +23,12 @@ Uso:
   python scripts/eval_adr_golden.py
   python scripts/eval_adr_golden.py --live --case mascotas-perdidas
   python scripts/eval_adr_golden.py --live --min-score 0.8   # exit 1 si baja
+  python scripts/eval_adr_golden.py --live --complex --repeat 3
+
+``--complex`` usa los casos de data/golden/complejos/ (proyectos grandes, sin
+salidas grabadas: solo sirven con ``--live``). ``--repeat N`` corre cada caso N
+veces y resume cuántas propuestas salieron completas a la primera, cuántas se
+repararon y cuántas fallaron: es la medida de "tuve que regenerar".
 
 Sale con código 1 si algún caso queda por debajo de ``--min-score``.
 """
@@ -46,6 +52,7 @@ os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
 os.environ.setdefault("ADR_LLM_TIMEOUT_S", "400")
 
 from app.core.golden_eval import (  # noqa: E402
+    GOLDEN_DIR,
     GoldenCase,
     build_context,
     evaluate_case,
@@ -53,6 +60,8 @@ from app.core.golden_eval import (  # noqa: E402
     load_cases,
     select_rows,
 )
+
+COMPLEX_DIR = GOLDEN_DIR / "complejos"
 
 
 def _build_model():
@@ -113,9 +122,10 @@ def _text(message) -> str:
     return str(content or "")
 
 
-async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None]:
+async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None, str]:
+    """``(propuesta, guía, estado)``; estado = ok | llm | tabla | fallo (ver repair_proposal)."""
     from app.core.adr_generator import generate_guide
-    from app.core.proposal_generator import _build_prompt, _profile_kind
+    from app.core.proposal_generator import _build_prompt, _profile_kind, repair_proposal
 
     citations = select_rows(case)
     prompt = _build_prompt(
@@ -127,15 +137,32 @@ async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None]:
         requirements_text=case.requirements_text,
         project_kind=_profile_kind(case.profile or None),
     )
-    proposal = _text(await model.ainvoke(prompt))
+    message = await model.ainvoke(prompt)
+    proposal = _text(message)
+    finish_reason = (getattr(message, "response_metadata", None) or {}).get("finish_reason")
+    # Igual que en la app: si la propuesta no pasa la validación se completa
+    # (pasada del LLM y, si no alcanza, tabla armada con los patrones).
+    repaired, status = await repair_proposal(model, proposal, citations, finish_reason=finish_reason)
+    if repaired is None:
+        return proposal, None, status
     # Igual que en la app: redacción + revisión + corrección si hace falta.
-    guide, _repaired = await generate_guide(model, build_context(case, proposal, citations))
-    return proposal, guide
+    guide, _repaired = await generate_guide(model, build_context(case, repaired, citations))
+    return repaired, guide, status
 
 
-def _print_result(case: GoldenCase, result, compare: bool) -> None:
+_STATUS_LABELS = {
+    "ok": "completa a la primera",
+    "llm": "reparada por el LLM",
+    "tabla": "tabla armada con los patrones",
+    "fallo": "INCOMPLETA (en la app habría que regenerar)",
+}
+
+
+def _print_result(case: GoldenCase, result, compare: bool, status: str | None = None) -> None:
     expected = expected_checks(case) if compare else {}
     print(f"\n{case.id} ({case.kind}) — {result.score * 100:.0f}%")
+    if status:
+        print(f"  propuesta: {_STATUS_LABELS.get(status, status)}")
     for check in result.checks:
         mark = "OK " if check.passed else "NO "
         note = ""
@@ -151,9 +178,15 @@ async def main() -> int:
     parser.add_argument("--live", action="store_true", help="generar con un LLM real")
     parser.add_argument("--case", help="solo este caso (id)")
     parser.add_argument("--min-score", type=float, default=0.0, help="puntaje mínimo por caso (0-1)")
+    parser.add_argument("--complex", action="store_true", help="casos de data/golden/complejos (solo --live)")
+    parser.add_argument("--repeat", type=int, default=1, help="corridas por caso (solo --live)")
     args = parser.parse_args()
+    if args.complex and not args.live:
+        sys.exit("--complex no tiene salidas grabadas: úsalo con --live")
 
-    cases = [c for c in load_cases() if not args.case or c.id == args.case]
+    directory = COMPLEX_DIR if args.complex else None
+    cases = [c for c in load_cases(directory) if not args.case or c.id == args.case]
+    cases = [c for c in cases for _ in range(max(1, args.repeat if args.live else 1))]
     if not cases:
         print("No hay casos que evaluar")
         return 1
@@ -161,24 +194,35 @@ async def main() -> int:
     model = _build_model() if args.live else None
     wait = float(os.getenv("EVAL_WAIT_S", "60"))
     failed = []
+    statuses: list[str] = []
     for index, case in enumerate(cases):
+        status = None
         if model is not None:
             if index:
                 await asyncio.sleep(wait)
             try:
-                proposal, guide = await _live_outputs(model, case)
+                proposal, guide, status = await _live_outputs(model, case)
             except Exception as exc:  # noqa: BLE001 -- un caso no corta la corrida
                 print(f"\n{case.id} ({case.kind}) — ERROR: {type(exc).__name__}: {str(exc)[:200]}")
                 failed.append(case.id)
+                statuses.append("error")
                 continue
+            statuses.append(status)
             result, _md, _cit = evaluate_case(case, proposal=proposal, guide=guide)
         else:
             result, _md, _cit = evaluate_case(case)
-        _print_result(case, result, compare=not args.live)
-        if result.score < args.min_score:
+        _print_result(case, result, compare=not args.live, status=status)
+        if result.score < args.min_score or status == "fallo":
             failed.append(case.id)
 
     total = len(cases)
+    if statuses:
+        counts = {key: statuses.count(key) for key in ("ok", "llm", "tabla", "fallo", "error")}
+        print(
+            f"\nPropuestas: {counts['ok']} completas a la primera, "
+            f"{counts['llm']} reparadas por el LLM, {counts['tabla']} con tabla armada, "
+            f"{counts['fallo']} incompletas, {counts['error']} con error del proveedor"
+        )
     print(f"\n{total - len(failed)}/{total} casos por encima de {args.min_score:.2f}")
     return 1 if failed else 0
 

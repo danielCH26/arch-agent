@@ -92,6 +92,7 @@ _PROGRESS_STAGES = {
     "context": (3, "Cargando el contexto del proyecto"),
     "retrieval": (12, "Buscando patrones de arquitectura relevantes"),
     "generating": (20, "Redactando la propuesta"),
+    "repairing": (93, "Completando las secciones que quedaron incompletas"),
     "saving": (95, "Guardando la propuesta"),
 }
 _GEN_START, _GEN_END = 20, 92
@@ -657,6 +658,28 @@ class ProposalGenerator:
         # gastaria una de las PROPOSAL_MAX_ITER y la siguiente modificacion
         # partiria de un texto al que le faltan secciones.
         missing_sections = _missing_sections(full_markdown, source_count=len(citations))
+        if finish_reason == "length" or missing_sections:
+            # Antes de descartarla se intenta completar (ver repair_proposal):
+            # el usuario no debería tener que regenerar por una tabla incompleta.
+            yield _progress_event("repairing", started_at, chars=chars_received)
+            repaired, how = await repair_proposal(
+                model,
+                full_markdown,
+                citations,
+                finish_reason=finish_reason,
+                deadline=work_deadline,
+            )
+            logger.info(
+                "Proposal repair project_id=%s finish_reason=%s missing=%s result=%s",
+                effective_project_id,
+                finish_reason,
+                missing_sections,
+                how,
+            )
+            if repaired is not None:
+                full_markdown = repaired
+                missing_sections = []
+                finish_reason = None
         if finish_reason == "length" or missing_sections:
             logger.warning(
                 "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s",
@@ -1492,6 +1515,8 @@ def _select_citations(
                 "snippet": (doc.page_content or "")[:240],
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
                 "fuentes": doc.metadata.get("fuentes") or [],
+                # Para armar la tabla de trade-offs sin LLM si el modelo la deja incompleta.
+                "complexity": doc.metadata.get("complexity"),
             }
         )
         family = pattern_family(doc.metadata.get("pattern_name"))
@@ -1810,6 +1835,305 @@ def _has_decision_point(markdown: str | None) -> bool:
         re.search(r"^\s*[-*+]?\s*[*_]*recomendacion[*_]*\s*:", text, re.MULTILINE)
         and "punto de decision" in text
     )
+
+
+# --- Reparación de una propuesta incompleta ------------------------------------
+# Antes, si el modelo dejaba la tabla de trade-offs incompleta (menos de 3
+# filas, una celda vacía, sin [n], sin "Punto de decisión") o se cortaba por
+# tokens, la propuesta entera se descartaba y el usuario tenía que regenerar,
+# a veces varias veces. La estructura se sigue exigiendo, pero ahora se repara:
+#   1. Una pasada corta del LLM que devuelve SOLO las secciones que fallaron;
+#      se reemplazan en el borrador y se vuelve a validar.
+#   2. Si eso no alcanza y lo único que falla son los trade-offs, la tabla se
+#      arma sin LLM con los patrones recuperados (sus ventajas y desventajas
+#      del catálogo, citados con su [n]).
+#   3. Solo si sigue faltando una sección que no se puede reconstruir
+#      (Componentes, Tecnologías...) se responde el error de siempre.
+PROPOSAL_REPAIR = os.getenv("PROPOSAL_REPAIR", "on").strip().lower() not in {
+    "0",
+    "off",
+    "false",
+    "no",
+}
+
+_TRADEOFF_LABEL = "Trade-offs y decisión"
+_JUSTIFICATION_LABEL = "Justificación del patrón principal"
+_TRADEOFF_PROBLEMS = {
+    _TRADEOFF_LABEL,
+    "Tabla de trade-offs (3 opciones y 3 criterios)",
+    "Recomendación y punto de decisión",
+}
+_SECTION_ORDER = tuple(label for label, _ in _REQUIRED_HEADINGS)
+_TOP_HEADING_RE = re.compile(r"^\s*#{1,2}\s")
+_COMPLEXITY_LABELS = {"baja": "Baja", "media": "Media", "alta": "Alta"}
+_DECISION_LINE = "- Punto de decisión: ¿Aprueba los trade-offs?"
+
+
+def _section_key(line: str, seen_justification: bool) -> str | None:
+    """Sección obligatoria que abre ``line``.
+
+    Solo encabezados ``#`` o ``##``, salvo la de trade-offs después de la
+    justificación, que se acepta en cualquier nivel (igual que
+    ``_tradeoff_heading``): si el modelo la escribió como ``###`` y quedó
+    rota, tiene que poder reemplazarse.
+    """
+    normalized = _normalize_text(line)
+    if seen_justification and _TRADEOFF_HEADING_RE.match(normalized):
+        return _TRADEOFF_LABEL
+    if not _TOP_HEADING_RE.match(line):
+        return None
+    for label, pattern in _REQUIRED_HEADINGS:
+        if not re.match(r"^\s*#{1,2}\s+" + _HEADING_DECOR + pattern, normalized):
+            continue
+        # "## Opciones de despliegue" dentro de Componentes no es la sección de
+        # trade-offs: antes de la justificación solo cuenta si dice "trade".
+        if label == _TRADEOFF_LABEL and not seen_justification and "trade" not in normalized:
+            return None
+        return label
+    return None
+
+
+def _split_sections(markdown: str) -> tuple[list[str], dict[str, list[str]]]:
+    """``(preámbulo, {sección: líneas})``; un encabezado repetido se ignora."""
+    preamble: list[str] = []
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    seen_justification = False
+    for line in (markdown or "").splitlines():
+        key = _section_key(line, seen_justification)
+        if key is not None and key not in sections:
+            current = [line]
+            sections[key] = current
+            seen_justification = seen_justification or key == _JUSTIFICATION_LABEL
+        elif current is not None:
+            current.append(line)
+        else:
+            preamble.append(line)
+    return preamble, sections
+
+
+def _merge_proposal_sections(original: str, patch: str) -> str:
+    """Reemplaza en ``original`` las secciones que trae ``patch`` (y agrega las nuevas).
+
+    El resultado queda en el orden obligatorio del formato, así la tabla de
+    trade-offs siempre queda después de la justificación.
+    """
+    preamble, current = _split_sections(original)
+    _, replacements = _split_sections(patch)
+    blocks = ["\n".join(preamble).strip()] if "\n".join(preamble).strip() else []
+    for key in _SECTION_ORDER:
+        lines = replacements.get(key) or current.get(key)
+        if lines:
+            blocks.append("\n".join(lines).strip())
+    return "\n\n".join(blocks) + "\n"
+
+
+def _sections_to_repair(missing: list[str]) -> list[str]:
+    """Encabezados que el LLM debe devolver completos para cubrir ``missing``."""
+    wanted: list[str] = []
+    for item in missing:
+        if item in _TRADEOFF_PROBLEMS:
+            label = _TRADEOFF_LABEL
+        elif item == "Riesgo o costo":
+            label = _JUSTIFICATION_LABEL
+        else:
+            label = item
+        if label not in wanted:
+            wanted.append(label)
+    return [label for label in _SECTION_ORDER if label in wanted]
+
+
+def _repair_prompt(
+    markdown: str,
+    missing: list[str],
+    citations: list[dict],
+    *,
+    truncated: bool,
+) -> str:
+    """Prompt corto: devolver solo las secciones que fallaron, con el formato exacto."""
+    sections = _sections_to_repair(missing)
+    heading_names = {
+        "Tecnologias": "## Tecnologias",
+        _JUSTIFICATION_LABEL: "## Justificación del patrón principal",
+        _TRADEOFF_LABEL: "## Trade-offs y decisión",
+    }
+    headings = ", ".join(heading_names.get(label, f"## {label}") for label in sections)
+    if citations:
+        sources = "\n".join(
+            f"[{index}] {cite.get('pattern_name')}"
+            + (" (descartado por la escala del proyecto)" if cite.get("scale_disqualified") else "")
+            + f" — trade-offs: {json.dumps(cite.get('tradeoffs') or {}, ensure_ascii=False)}"
+            for index, cite in enumerate(citations, start=1)
+        )
+        rows_rule = (
+            f"una fila por cada fuente [1]..[{len(citations)}] (como mínimo "
+            f"{MIN_TRADEOFF_OPTIONS}), cada una con su [n] DISTINTO en la columna Fuente RAG"
+        )
+    else:
+        sources = "No hay fuentes recuperadas."
+        rows_rule = (
+            f"al menos {MIN_TRADEOFF_OPTIONS} filas y `{NO_RAG_SOURCE_LABEL}` en "
+            "la columna Fuente RAG de cada una, sin números entre corchetes"
+        )
+    return (
+        "Eres el mismo arquitecto de software que redactó la propuesta de abajo. "
+        "La validación automática encontró que está incompleta: "
+        f"{', '.join(missing)}.\n"
+        + (
+            "La respuesta se cortó por el límite de tokens: sé breve (celdas de "
+            "máximo 20 palabras).\n"
+            if truncated
+            else ""
+        )
+        + f"\nDevuelve SOLO estas secciones, completas y en este orden: {headings}. "
+        "Cada una empieza con su encabezado exacto. No repitas las demás secciones, "
+        "no agregues texto antes ni después y no cambies la arquitectura ni el "
+        "patrón principal que ya eligió la propuesta.\n"
+        "\nReglas de cada sección:\n"
+        "- ## Justificación del patrón principal: bullets Motivo de elección, "
+        "Reflejo en la arquitectura, Beneficio esperado y Riesgo o costo.\n"
+        "- ## Trade-offs y decisión: UNA tabla Markdown con las columnas\n"
+        "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        f"con {rows_rule}. Ninguna celda vacía. Las ventajas y desventajas salen "
+        "de los trade-offs de cada fuente. Tras la tabla escribe exactamente "
+        f"`- Recomendación: <la opción que ya eligió la propuesta>` y `{_DECISION_LINE}`.\n"
+        f"\nFuentes:\n{sources}\n"
+        f"\nPropuesta a completar:\n{markdown}\n"
+    )
+
+
+def _first_point(value: Any, limit: int = 160) -> str:
+    """Primer punto de una lista de ventajas/desventajas, apto para una celda."""
+    if isinstance(value, (list, tuple)):
+        value = next((item for item in value if str(item).strip()), "")
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(",;:.") + "…"
+    return text.replace("|", "\\|")
+
+
+def _recommended_citation(markdown: str, citations: list[dict]) -> int:
+    """Índice de la fuente que la propuesta ya eligió como patrón principal."""
+    _, sections = _split_sections(markdown)
+    for label in (_JUSTIFICATION_LABEL, "Patrones"):
+        text = _normalize_text("\n".join(sections.get(label) or []))
+        if not text:
+            continue
+        mentioned = [
+            (spans[0][0], index)
+            for index, cite in enumerate(citations)
+            for spans in [_alias_mentions(str(cite.get("pattern_name") or ""), text)]
+            if spans and not cite.get("scale_disqualified")
+        ]
+        if mentioned:
+            return min(mentioned)[1]
+    return next(
+        (index for index, cite in enumerate(citations) if cite.get("source_role") == "primary"),
+        0,
+    )
+
+
+def _fallback_tradeoff_section(markdown: str, citations: list[dict]) -> str | None:
+    """Sección de trade-offs armada sin LLM con los patrones recuperados.
+
+    Cada fila sale del catálogo (primera ventaja y primera desventaja del
+    YAML, complejidad del patrón) y cita su ``[n]``, así que es evidencia de la
+    base, no texto inventado. Con menos de 3 fuentes no hay tabla que armar.
+    """
+    if len(citations) < MIN_TRADEOFF_OPTIONS:
+        return None
+    recommended = _recommended_citation(markdown, citations)
+    rows = []
+    for index, cite in enumerate(citations):
+        tradeoffs = cite.get("tradeoffs") or {}
+        name = _first_point(cite.get("pattern_name"), 80) or f"Opción {index + 1}"
+        if index == recommended:
+            fit = "Recomendada: es el patrón principal de esta propuesta"
+        elif cite.get("scale_disqualified"):
+            fit = "Descartada por la escala del proyecto (equipo, plazo o presupuesto)"
+        else:
+            fit = _first_point(cite.get("llm_reason"), 120) or "Alternativa considerada"
+        rows.append(
+            f"| {name} "
+            f"| {_first_point(tradeoffs.get('ventajas')) or 'No documentadas en la base'} "
+            f"| {_first_point(tradeoffs.get('desventajas')) or 'No documentadas en la base'} "
+            f"| {_COMPLEXITY_LABELS.get(str(cite.get('complexity') or '').lower(), 'No indicada en la base')} "
+            f"| {fit} | [{index + 1}] |"
+        )
+    return (
+        "## Trade-offs y decisión\n"
+        "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        + "\n".join(rows)
+        + f"\n- Recomendación: {_first_point(citations[recommended].get('pattern_name'), 80)}\n"
+        + f"{_DECISION_LINE}\n"
+    )
+
+
+def _message_text(message: Any) -> str:
+    content = getattr(message, "content", message)
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+        )
+    return str(content or "")
+
+
+async def repair_proposal(
+    model: Any,
+    markdown: str,
+    citations: list[dict],
+    *,
+    finish_reason: str | None = None,
+    deadline: float | None = None,
+) -> tuple[str | None, str]:
+    """Completa una propuesta que no pasó la validación.
+
+    Devuelve ``(propuesta, como)``. ``como`` es ``"ok"`` (no hacía falta),
+    ``"llm"`` (la pasada del modelo la completó), ``"tabla"`` (la tabla de
+    trade-offs se armó con los patrones recuperados) o ``"fallo"`` (sigue
+    incompleta; la propuesta es None).
+    """
+    source_count = len(citations)
+    missing = _missing_sections(markdown, source_count=source_count)
+    truncated = finish_reason == "length"
+    if not missing and not truncated:
+        return markdown, "ok"
+    if truncated and not missing:
+        # Cortada por tokens pero con todo lo obligatorio: la última sección
+        # (trade-offs) es la sospechosa, se rehace.
+        missing = ["Tabla de trade-offs (3 opciones y 3 criterios)"]
+    if not PROPOSAL_REPAIR:
+        return None, "fallo"
+
+    candidate = markdown
+    try:
+        raw = await _within_budget(
+            model.ainvoke(_repair_prompt(markdown, missing, citations, truncated=truncated)),
+            deadline,
+            "repairing",
+        )
+        patched = _merge_proposal_sections(markdown, _message_text(raw))
+        if not _missing_sections(patched, source_count=source_count):
+            return patched, "llm"
+        candidate = patched
+    except Exception as exc:  # noqa: BLE001 -- incluye el tope de tiempo y los 429
+        logger.warning("Proposal repair LLM pass failed: %s", exc)
+
+    # El LLM no alcanzó (o falló). Si lo que falta es solo la tabla, se arma
+    # con los patrones recuperados, partiendo del mejor borrador que haya.
+    for draft in (candidate, markdown):
+        remaining = _missing_sections(draft, source_count=source_count)
+        if remaining and not set(remaining) <= _TRADEOFF_PROBLEMS:
+            continue
+        section = _fallback_tradeoff_section(draft, citations)
+        if section is None:
+            break
+        rebuilt = _merge_proposal_sections(draft, section)
+        if not _missing_sections(rebuilt, source_count=source_count):
+            return rebuilt, "tabla"
+    return None, "fallo"
 
 
 def _strip_secondary_references(text: str | None) -> str:

@@ -53,3 +53,27 @@ resultado esperado de cada check.
 
 Para agregar un caso, copia uno de `data/golden/`, cambia el proyecto y graba la
 salida de una corrida `--live` en `recorded`.
+
+## Proyectos complejos y estabilidad de la propuesta
+
+`data/golden/complejos/` tiene proyectos grandes (red de clínicas con EPS y
+HL7, marketplace de domicilios en tiempo real, sistema universitario con mucho
+alcance y un equipo de 3). No tienen salidas grabadas y CI no los corre: son
+para probar el agente con un LLM real.
+
+```bash
+python scripts/eval_adr_golden.py --live --complex --repeat 3
+```
+
+En cada corrida se muestra cómo salió la propuesta:
+
+- **completa a la primera**: pasó la validación sin ayuda;
+- **reparada por el LLM**: faltaba algo (casi siempre la tabla de trade-offs) y
+  la pasada corta de reparación lo completó;
+- **tabla armada con los patrones**: la reparación no alcanzó y la tabla se
+  armó con las ventajas y desventajas del catálogo;
+- **INCOMPLETA**: faltaba una sección que no se puede reconstruir; en la app el
+  usuario tendría que regenerar.
+
+El resumen final cuenta cada caso. Antes de la reparación, cualquier cosa
+distinta de "completa a la primera" era un "regenera otra vez" para el usuario.
