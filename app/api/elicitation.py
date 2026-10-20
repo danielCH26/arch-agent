@@ -134,6 +134,8 @@ async def send_elicitation_message(
     400 — no hay pregunta pendiente para responder, o ya existe un resumen
           (hay que pasar por /elicitation/decision antes de seguir)
     409 — LLM no configurado para este usuario
+    500 — la config LLM está completa pero el modelo no se pudo iniciar
+          (mismo status y mensaje que el chat: ``http_status_for``)
     502 — el modelo respondió pero con contenido no parseable
     503 — la llamada al modelo falló (rate limit, timeout, proveedor caído)
     """
