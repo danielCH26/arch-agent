@@ -1,6 +1,6 @@
 """Tests HU8 para la verificación de fuentes y la métrica del KR.
 
-- ``GET /api/patterns/{id}``: destino de ``verify_url`` en cada cita.
+- ``GET /api/patterns/{id}``: destino de "Verificar fuente" en cada cita.
 - ``GET /api/proposals/justification-stats``: % de propuestas que citan
   patrones (KR ≥80%), solo con la última iteración viva de cada proyecto.
 - ``GET /api/proposals/{id}``: expone ``justification``.
@@ -21,6 +21,7 @@ CURRENT_USER = {"user_id": 1, "username": "sofia"}
 CITED = (
     "## Patrones\n- Patrón principal: Hexagonal [1]\n\n"
     "## Justificación del patrón principal\nAísla el dominio de la infraestructura.\n"
+    "- Riesgo o costo: más código de adaptadores.\n"
 )
 UNCITED = "## Patrones\n- Hexagonal\n"
 CITATIONS = [

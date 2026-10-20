@@ -630,6 +630,12 @@ async def get_justification_stats(
     proyecto, la misma que devuelve ``/api/projects/{id}/proposals/latest``:
     las iteraciones viejas y las rechazadas no inflan ni bajan la medida.
 
+    Si la ultima iteracion de un proyecto esta rechazada, el proyecto se mide
+    con la iteracion viva anterior: ``modify`` no cambia el ``lifecycle`` de la
+    iteracion que reemplaza, asi que esa sigue en ``proposed``. Es a proposito
+    y coincide con ``latest``: el KR mide la propuesta que el usuario tiene
+    vigente en el proyecto; un proyecto sin ninguna iteracion viva no cuenta.
+
     Con ``project_id`` mide ese proyecto (debe ser del usuario). Sin el,
     agrega todos los proyectos del usuario y ``project_id`` vuelve ``null``.
     Sin propuestas devuelve totales en 0 y ``meets_target: false``.

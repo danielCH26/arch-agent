@@ -342,7 +342,6 @@ describe('ProposalCard HU8: justificación con patrones', () => {
       source_role: 'primary' as const,
       snippet: 'Un despliegue, módulos aislados',
       source: { type: 'curated_catalog' as const, label: 'Catálogo curado de patrones (arch-agent)', filename: null },
-      verify_url: '/api/patterns/3',
     },
     { index: 2, pattern_id: 8, pattern_name: 'Microservicios', similarity: 0.85, source_role: 'tradeoff_option' as const },
   ]

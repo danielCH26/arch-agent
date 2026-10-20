@@ -10,8 +10,8 @@ No se exige citar cada decisión (React, PostgreSQL, Jest...): el catálogo solo
 tiene patrones de arquitectura y forzar esas citas hace que el LLM invente
 fuentes. Con esa definición se mide el KR "≥80% de propuestas citan patrones".
 
-1. ``source_for`` / ``verify_url_for`` describen de dónde sale cada cita para
-   que el usuario la verifique (``GET /api/patterns/{id}``).
+1. ``source_for`` describe de dónde sale cada cita para que el usuario la
+   verifique (``GET /api/patterns/{pattern_id}``).
 2. ``analyze_justification`` comprueba la definición de arriba sobre el
    markdown guardado y sus citas. No modifica sus argumentos.
 3. ``summarize_citation_rate`` agrega varios análisis para el KR.
@@ -34,8 +34,11 @@ _PRIMARY_LINE_RE = re.compile(
     r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*[*_]*patron principal[*_]*[ \t]*:[ \t]*(.+?)[ \t]*$",
     re.MULTILINE,
 )
-_HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+(.*)$", re.MULTILINE)
-_JUSTIFICATION_HEADING_RE = re.compile(r"^[*_`\d.)\s]*justificacion\b")
+_HEADING_RE = re.compile(r"^[ \t]*(#{1,6})[ \t]+(.*)$", re.MULTILINE)
+# Mismo criterio que el encabezado "Patrones" de proposal_generator._REQUIRED_HEADINGS.
+_PATTERNS_HEADING_RE = re.compile(r"^[*_`\d.)\s]*patr(?:on|ones)\b")
+_CODE_FENCE_RE = re.compile(r"^[ \t]*```.*?^[ \t]*```[^\n]*$", re.MULTILINE | re.DOTALL)
+_PARENTHETICAL_RE = re.compile(r"\s*\([^)]*\)")
 _TRAILING_REFS_RE = re.compile(r"(?:\s*\[\d+\])+\s*$")
 
 
@@ -51,13 +54,6 @@ def _clean_pattern_name(raw: str) -> str:
     name = _TRAILING_REFS_RE.sub("", raw)
     name = name.strip().strip("*_`").strip()
     return name.rstrip(".;,").strip()
-
-
-def verify_url_for(pattern_id: object) -> str | None:
-    """Endpoint donde el usuario puede leer el patrón completo que se citó."""
-    if pattern_id is None:
-        return None
-    return f"/api/patterns/{pattern_id}"
 
 
 def source_for(metadata: dict) -> dict:
@@ -79,8 +75,29 @@ def _primary_citation(citations: Iterable[dict]) -> dict | None:
     return None
 
 
+def _patterns_section(normalized_markdown: str) -> str:
+    """Texto de ``## Patrones`` hasta el siguiente encabezado del mismo nivel o superior.
+
+    Los bloques de código se descartan antes, para no leer un ``#`` o un
+    ``Patrón principal:`` que esté dentro de uno.
+    """
+    text = _CODE_FENCE_RE.sub("", normalized_markdown)
+    headings = list(_HEADING_RE.finditer(text))
+    for position, heading in enumerate(headings):
+        if not _PATTERNS_HEADING_RE.match(heading.group(2)):
+            continue
+        level = len(heading.group(1))
+        end = len(text)
+        for following in headings[position + 1:]:
+            if len(following.group(1)) <= level:
+                end = following.start()
+                break
+        return text[heading.end():end]
+    return ""
+
+
 def _declared_primary(normalized_markdown: str) -> str | None:
-    match = _PRIMARY_LINE_RE.search(normalized_markdown)
+    match = _PRIMARY_LINE_RE.search(_patterns_section(normalized_markdown))
     if match is None:
         return None
     name = _clean_pattern_name(match.group(1))
@@ -88,22 +105,35 @@ def _declared_primary(normalized_markdown: str) -> str | None:
 
 
 def _names_match(declared: str, pattern_name: str) -> bool:
-    """El nombre declarado coincide con el patrón (tolera sufijos como "(Monolítica)")."""
-    target = _normalize(pattern_name)
-    if not declared or not target:
+    """El nombre declarado es el patrón o uno de sus alias, con igualdad exacta.
+
+    Reutiliza los alias de ``proposal_generator`` ("Arquitectura hexagonal
+    (Puertos y Adaptadores)" -> "hexagonal", "puertos y adaptadores"...) y
+    descarta un paréntesis aclaratorio del nombre declarado ("Monolito modular
+    (Monolítica)"). No compara por substring: "Arquitectura" no es
+    "Arquitectura hexagonal" ni "CQRS + Event Sourcing" es "Event sourcing".
+    """
+    # Import diferido: proposal_generator importa este módulo.
+    from app.core.proposal_generator import _pattern_aliases
+
+    if not declared or not pattern_name:
         return False
-    return declared == target or target in declared or declared in target
+    aliases = {_normalize(alias) for alias in _pattern_aliases(pattern_name)}
+    candidates = {declared, _normalize(_PARENTHETICAL_RE.sub("", declared))}
+    return bool(candidates & aliases)
 
 
-def _has_justification(normalized: str) -> bool:
-    """La sección ``## Justificación...`` existe y tiene texto antes del siguiente encabezado."""
-    headings = list(_HEADING_RE.finditer(normalized))
-    for position, heading in enumerate(headings):
-        if not _JUSTIFICATION_HEADING_RE.match(heading.group(1)):
-            continue
-        end = headings[position + 1].start() if position + 1 < len(headings) else len(normalized)
-        return bool(normalized[heading.end():end].strip())
-    return False
+def _has_justification(markdown: str) -> bool:
+    """La justificación pasa el mismo control que exige producción.
+
+    Usa ``proposal_generator._missing_sections``: el encabezado existe y la
+    sección llega hasta su riesgo o costo, así un placeholder (``- ...``) no
+    cuenta y el KR no diverge del validador que decide si se guarda la propuesta.
+    """
+    from app.core.proposal_generator import _missing_sections
+
+    missing = _missing_sections(markdown)
+    return "Justificación del patrón principal" not in missing and "Riesgo o costo" not in missing
 
 
 def _normalize_lines(markdown: str) -> str:
@@ -124,7 +154,7 @@ def analyze_justification(markdown: str | None, citations: Iterable[dict] | None
     primary_in_sources = bool(
         declared and primary_name and _names_match(declared, primary_name)
     )
-    justified = _has_justification(normalized)
+    justified = _has_justification(markdown or "")
     return {
         "cites_patterns": primary_in_sources and justified,
         "declared_primary": declared,

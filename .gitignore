@@ -63,3 +63,6 @@ frontend/.env.local
 .freebuff/
 .patch
 
+
+# Resultados locales del harness de evals (cada corrida genera uno)
+evals/results/

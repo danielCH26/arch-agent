@@ -12,7 +12,6 @@ from app.core.pattern_justification import (
     analyze_justification,
     source_for,
     summarize_citation_rate,
-    verify_url_for,
 )
 
 CITATIONS = [
@@ -109,6 +108,30 @@ class TestAnalyzeJustification:
         )
         assert analyze_justification(markdown, CITATIONS)["justified"] is True
 
+    def test_placeholder_justification_does_not_cite(self):
+        start = PROPOSAL.index("## Justificación")
+        end = PROPOSAL.index("## Trade-offs")
+        markdown = PROPOSAL[:start] + "## Justificación del patrón principal\n- ...\n\n" + PROPOSAL[end:]
+        assert analyze_justification(markdown, CITATIONS)["justified"] is False
+
+    def test_primary_line_outside_patterns_section_is_ignored(self):
+        markdown = PROPOSAL.replace("- Patrón principal: **Monolito modular** [1]", "- Monolito modular")
+        markdown = markdown.replace(
+            "Encaja con un equipo", "Patrón principal: Monolito modular\nEncaja con un equipo"
+        )
+        assert analyze_justification(markdown, CITATIONS)["declared_primary"] is None
+
+    def test_primary_line_inside_code_block_is_ignored(self):
+        markdown = PROPOSAL.replace(
+            "- Patrón principal: **Monolito modular** [1]",
+            "```\nPatrón principal: Monolito modular\n```",
+        )
+        assert analyze_justification(markdown, CITATIONS)["declared_primary"] is None
+
+    def test_patterns_subheading_keeps_the_section(self):
+        markdown = PROPOSAL.replace("## Patrones\n", "## Patrones\n### Principal\n")
+        assert analyze_justification(markdown, CITATIONS)["cites_patterns"] is True
+
     def test_does_not_mutate_citations(self):
         citations = copy.deepcopy(CITATIONS)
         analyze_justification(PROPOSAL, citations)
@@ -117,6 +140,47 @@ class TestAnalyzeJustification:
     def test_legacy_citations_without_source_role_do_not_cite(self):
         legacy = [{"pattern_id": 7, "pattern_name": "Monolito modular", "similarity": 0.9}]
         assert analyze_justification(PROPOSAL, legacy)["cites_patterns"] is False
+
+
+def _cites_with(declared: str, primary_name: str) -> bool:
+    markdown = PROPOSAL.replace("**Monolito modular**", declared)
+    citations = [{"index": 1, "pattern_id": 1, "pattern_name": primary_name, "source_role": "primary"}]
+    return analyze_justification(markdown, citations)["primary_in_sources"]
+
+
+class TestPrimaryNameMatch:
+    """El patrón declarado debe ser la fuente principal o un alias suyo, no un substring."""
+
+    @pytest.mark.parametrize(
+        ("declared", "primary_name"),
+        [
+            # Revisión HU8 v2: falsos positivos del substring en ambas direcciones.
+            ("Arquitectura", "Arquitectura hexagonal (Puertos y Adaptadores)"),
+            ("CQRS + Event Sourcing", "Event sourcing"),
+            ("Microservicios", "Servicios"),
+            ("Monolito modular", "Monolito"),
+            ("Event", "Event sourcing"),
+        ],
+    )
+    def test_partial_names_do_not_match(self, declared, primary_name):
+        assert _cites_with(declared, primary_name) is False
+
+    @pytest.mark.parametrize(
+        ("declared", "primary_name"),
+        [
+            ("Monolito modular", "Monolito modular (Modular Monolith)"),
+            ("Monolito modular (Monolítica)", "Monolito modular (Modular Monolith)"),
+            ("Modular Monolith", "Monolito modular (Modular Monolith)"),
+            ("Arquitectura hexagonal", "Arquitectura hexagonal (Puertos y Adaptadores)"),
+            ("Hexagonal", "Arquitectura hexagonal (Puertos y Adaptadores)"),
+            ("Puertos y adaptadores", "Arquitectura hexagonal (Puertos y Adaptadores)"),
+            ("Arquitectura Hexagonal (Puertos y Adaptadores)", "Arquitectura hexagonal (Puertos y Adaptadores)"),
+            ("Microservicio", "Microservicios"),
+            ("Event Sourcing", "Event sourcing"),
+        ],
+    )
+    def test_name_or_alias_matches(self, declared, primary_name):
+        assert _cites_with(declared, primary_name) is True
 
 
 class TestSummarizeCitationRate:
@@ -156,13 +220,9 @@ class TestCitationSource:
         assert source["type"] == "source_upload"
         assert source["filename"] == "cockburn.pdf"
 
-    def test_verify_url_derives_from_pattern_id(self):
-        assert verify_url_for(7) == "/api/patterns/7"
-        assert verify_url_for(None) is None
-
 
 class TestSelectCitationsPayload:
-    def test_citations_carry_index_source_and_verify_url(self):
+    def test_citations_carry_index_and_source(self):
         from langchain_core.documents import Document
 
         from app.core.proposal_generator import _select_citations
@@ -194,7 +254,7 @@ class TestSelectCitationsPayload:
 
         assert [c["index"] for c in citations] == [1, 2]
         assert citations[0]["source_role"] == "primary"
-        assert citations[0]["verify_url"] == "/api/patterns/7"
+        assert "verify_url" not in citations[0]  # el front usa pattern_id
         assert citations[0]["source"]["type"] == "curated_catalog"
         assert citations[0]["category"] == "Estructural"
         assert citations[1]["source"]["filename"] == "fowler.pdf"

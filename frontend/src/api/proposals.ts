@@ -17,7 +17,6 @@ export interface ProposalCitation {
   category?: string | null
   chunk_type?: string | null
   source?: ProposalCitationSource
-  verify_url?: string | null
 }
 
 export interface ProposalCitationSource {

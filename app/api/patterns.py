@@ -102,9 +102,10 @@ async def get_pattern(
     """
     Detalle de un patron con todos sus chunks indexados en el RAG (HU8).
 
-    Es el destino de ``verify_url`` en las citas de una propuesta: el usuario
-    lee el texto completo que respaldo el patron citado y de que fuente sale
-    (catalogo curado o documento subido). Como el resto de /api/patterns, el
+    Es el destino de "Verificar fuente" en las citas de una propuesta (el
+    front lo pide con el ``pattern_id`` de la cita): el usuario lee el texto
+    completo que respaldo el patron citado y de que fuente sale (catalogo
+    curado o documento subido). Como el resto de /api/patterns, el
     catalogo es comun y lo puede leer cualquier usuario autenticado.
     """
     db = SessionLocal()
