@@ -157,6 +157,18 @@ def user_facing_message(exc: "LLMConfigError") -> str:
     return _USER_FACING_MESSAGES.get(exc.reason, _USER_FACING_MESSAGES["not_configured"])
 
 
+def http_status_for(exc: "LLMConfigError") -> int:
+    """Código HTTP para un ``LLMConfigError``, el mismo en chat y elicitación.
+
+    ``initialization_failed`` (``init_chat_model`` falló con una config que sí
+    estaba completa) es un 500. El resto (falta config, falta el modelo del
+    paso 3, la key no se puede desencriptar, usuario inexistente) es un 409:
+    el usuario lo resuelve desde la configuración del LLM. Devuelve un ``int``
+    para no acoplar ``app/core`` a FastAPI.
+    """
+    return 500 if exc.reason == "initialization_failed" else 409
+
+
 @dataclass
 class UserLLMConfig:
     """Configuración LLM de un usuario, ya desencriptada."""

@@ -14,7 +14,12 @@ from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError, user_facing_message
+from app.core.llm_loader import (
+    build_langchain_model,
+    http_status_for,
+    LLMConfigError,
+    user_facing_message,
+)
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
@@ -221,18 +226,23 @@ async def chat(
     """
     Stream agent chat responses as SSE.
 
-    POST /api/chat  ╬ô├Ñ├å  text/event-stream
+    POST /api/chat  →  text/event-stream
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream ╬ô├ç├╢ "sources" event (metadata RAG) +
+        200 text/event-stream — "sources" event (metadata RAG) +
             ("tool_start" / "tool_end")* + tokens as "event: token" +
             optional "event: degraded" + final "event: done".
             On hard failure, "event: error" terminates the stream.
-        400 ╬ô├ç├╢ no message provided
-        401 ╬ô├ç├╢ invalid JWT
-        404 ╬ô├ç├╢ project not found or not owned
-        409 ╬ô├ç├╢ LLM not configured for user
+        400 — no message provided
+        401 — invalid JWT
+        404 — project not found or not owned
+        409 — LLM not configured for user (incl. wizard stopped before step 3)
+        500 — the user's LLM config is complete but the model failed to
+            initialize (``reason="initialization_failed"``)
+        Status and message come from ``http_status_for`` /
+        ``user_facing_message`` (``app/core/llm_loader.py``), shared with
+        elicitation.
 
     F11 changes (issue #13, design.md §6.5):
       - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
@@ -311,11 +321,7 @@ async def chat(
         # (p. ej. "te falta elegir el modelo" si dejó el wizard en el paso 3).
         logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-                if e.reason == "initialization_failed"
-                else status.HTTP_409_CONFLICT
-            ),
+            status_code=http_status_for(e),
             detail=user_facing_message(e),
         )
 
@@ -615,7 +621,7 @@ def chat_history(
 
         # Resolve the user's session id (lazy-upsert so a fresh user still
         # gets an empty list, not an exception). REQ-11: any DB failure on
-        # the read path ╬ô├Ñ├å 200 with empty messages (graceful degradation).
+        # the read path → 200 with empty messages (graceful degradation).
         try:
             session = (
                 db.query(UserSession).filter(UserSession.user_id == user_id).first()
