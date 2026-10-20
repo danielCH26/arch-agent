@@ -2087,6 +2087,7 @@ async def repair_proposal(
     *,
     finish_reason: str | None = None,
     deadline: float | None = None,
+    trace: dict | None = None,
 ) -> tuple[str | None, str]:
     """Completa una propuesta que no pasó la validación.
 
@@ -2094,10 +2095,16 @@ async def repair_proposal(
     ``"llm"`` (la pasada del modelo la completó), ``"tabla"`` (la tabla de
     trade-offs se armó con los patrones recuperados) o ``"fallo"`` (sigue
     incompleta; la propuesta es None).
+
+    ``trace`` (opcional) recibe el diagnóstico: qué faltaba, por qué se cortó,
+    la respuesta de la pasada de reparación y qué seguía faltando después. Lo
+    usa ``scripts/eval_adr_golden.py`` para ver por qué falla una propuesta.
     """
+    trace = trace if trace is not None else {}
     source_count = len(citations)
     missing = _missing_sections(markdown, source_count=source_count)
     truncated = finish_reason == "length"
+    trace.update(missing=list(missing), finish_reason=finish_reason)
     if not missing and not truncated:
         return markdown, "ok"
     if truncated and not missing:
@@ -2114,11 +2121,16 @@ async def repair_proposal(
             deadline,
             "repairing",
         )
-        patched = _merge_proposal_sections(markdown, _message_text(raw))
-        if not _missing_sections(patched, source_count=source_count):
+        reply = _message_text(raw)
+        trace["repair_reply"] = reply
+        patched = _merge_proposal_sections(markdown, reply)
+        still_missing = _missing_sections(patched, source_count=source_count)
+        trace["missing_after_repair"] = still_missing
+        if not still_missing:
             return patched, "llm"
         candidate = patched
     except Exception as exc:  # noqa: BLE001 -- incluye el tope de tiempo y los 429
+        trace["repair_error"] = f"{type(exc).__name__}: {exc}"[:300]
         logger.warning("Proposal repair LLM pass failed: %s", exc)
 
     # El LLM no alcanzó (o falló). Si lo que falta es solo la tabla, se arma
