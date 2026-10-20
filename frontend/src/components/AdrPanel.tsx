@@ -4,6 +4,7 @@ import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { ProjectCompletedDialog } from './ProjectCompletedDialog'
+import { buildAdrPrintDocument } from './adrPrint'
 
 interface AdrPanelProps {
   projectId: number
@@ -49,47 +50,13 @@ export function splitAtMermaid(markdown: string): { before: string; after: strin
   }
 }
 
-const PRINT_STYLES = `
-  @page { margin: 18mm 16mm; }
-  * { box-sizing: border-box; }
-  body { font-family: Georgia, 'Times New Roman', serif; color: #1f2937; line-height: 1.5; font-size: 11pt; margin: 0; }
-  h1, h2, h3, h4, h5, h6 { font-family: Helvetica, Arial, sans-serif; color: #111827; line-height: 1.25; page-break-after: avoid; }
-  h3 { font-size: 18pt; margin: 0 0 8pt; }
-  h4 { font-size: 14pt; margin: 18pt 0 6pt; border-bottom: 1px solid #d1d5db; padding-bottom: 3pt; }
-  h5, h6 { font-size: 12pt; margin: 12pt 0 4pt; }
-  p, ul, ol { margin: 0 0 8pt; }
-  table { border-collapse: collapse; width: 100%; margin: 6pt 0 10pt; font-size: 9.5pt; page-break-inside: avoid; }
-  th, td { border: 1px solid #d1d5db; padding: 4pt 6pt; text-align: left; vertical-align: top; }
-  th { background: #f3f4f6; }
-  pre, code { font-family: 'Courier New', monospace; font-size: 9pt; }
-  pre { background: #f9fafb; border: 1px solid #e5e7eb; padding: 6pt; white-space: pre-wrap; page-break-inside: avoid; }
-  blockquote { margin: 0 0 8pt; padding: 4pt 10pt; border-left: 3px solid #6366f1; background: #eef2ff; }
-  img { max-width: 100%; height: auto; }
-  figure { margin: 8pt 0 12pt; text-align: center; page-break-inside: avoid; }
-  figcaption { font-size: 9pt; color: #6b7280; margin-top: 4pt; }
-  a { color: #4338ca; }
-  .print-note { font-family: Helvetica, Arial, sans-serif; font-size: 9pt; color: #6b7280; margin-bottom: 12pt; }
-`
-
-const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
-
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"]/g, (c) => HTML_ESCAPES[c] ?? c)
-}
-
 // Abre una vista del ADR lista para imprimir y lanza el diálogo de impresión,
 // donde se elige "Guardar como PDF". Así no hacen falta librerías ni backend.
 export function openPrintView(bodyHtml: string, title: string): boolean {
   const win = window.open('', '_blank')
   if (!win) return false
   win.document.open()
-  win.document.write(
-    `<!doctype html><html lang="es"><head><meta charset="utf-8">` +
-      `<base href="${escapeHtml(window.location.origin)}/">` +
-      `<title>${escapeHtml(title)}</title><style>${PRINT_STYLES}</style></head>` +
-      `<body><p class="print-note">Para guardarlo como PDF, elige "Guardar como PDF" en el destino de impresión.</p>` +
-      `${bodyHtml}</body></html>`,
-  )
+  win.document.write(buildAdrPrintDocument(bodyHtml, { title, baseHref: window.location.origin }))
   win.document.close()
   let printed = false
   const print = () => {

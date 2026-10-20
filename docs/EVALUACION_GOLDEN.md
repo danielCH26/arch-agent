@@ -58,7 +58,8 @@ salida de una corrida `--live` en `recorded`.
 
 `data/golden/complejos/` tiene proyectos grandes (red de clínicas con EPS y
 HL7, marketplace de domicilios en tiempo real, sistema universitario con mucho
-alcance y un equipo de 3). No tienen salidas grabadas y CI no los corre: son
+alcance y un equipo de 3, analítica de permanencia estudiantil con varias
+fuentes de datos). No tienen salidas grabadas y CI no los corre: son
 para probar el agente con un LLM real.
 
 ```bash
