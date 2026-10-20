@@ -216,3 +216,46 @@ def test_aprobar_vuelve_a_armar_el_markdown_como_aceptado_sin_llamar_al_llm(clie
     assert approved["guide_complete"] is True
     stored = http.get("/api/projects/5/adr").json()
     assert stored["markdown"] == approved["markdown"]
+
+
+# --- Re-revisión: los bloqueantes 1 y 2 sobre la estructura actual del ADR ---
+# (guía con redacción + revisión + corrección y cifras marcadas como supuesto)
+
+
+def test_aprobar_conserva_la_guia_corregida_y_el_diagrama_con_clases(client):
+    http, _ = client
+    mermaid = "flowchart TD\n  A[Web]:::web --> B[API]:::svc\n  B --> C[(DB)]"
+
+    def ctx_con_diagrama(*_a, **_k):
+        ctx = _ctx()
+        ctx.mermaid = mermaid
+        ctx.diagram_approved = True
+        return ctx
+
+    guide = "\n\n".join(
+        f"### 7.{i} {name}\nContenido." for i, name in enumerate(
+            ("Componentes y responsabilidades", "Stack tecnológico recomendado", "Consecuencias",
+             "Riesgos y mitigaciones", "Plan de implementación", "Primer sprint",
+             "Estructura inicial del repositorio", "Preguntas abiertas"), 1)
+    ).replace("### 7.3 Consecuencias\nContenido.", "### 7.3 Consecuencias\nCosto de $900 (supuesto) al mes.")
+    with patch("app.api.adr.collect_adr_context", side_effect=ctx_con_diagrama), patch(
+        "app.api.adr.build_langchain_model", return_value=object()
+    ), patch("app.api.adr.generate_guide", new=AsyncMock(return_value=(guide, True))):
+        created = http.post("/api/projects/5/adr").json()
+
+    llm = AsyncMock(side_effect=AssertionError("no debe llamar al LLM al aprobar"))
+    with patch("app.api.adr.collect_adr_context", side_effect=ctx_con_diagrama), patch(
+        "app.api.adr.generate_guide", new=llm
+    ):
+        approved = http.post("/api/projects/5/adr/approve").json()
+
+    # Bloqueante 1: el estado sale de approved_at, también con la guía corregida.
+    assert "| Estado | Propuesto (pendiente de aprobación) |" in created["markdown"]
+    assert "| Estado | Aceptado |" in approved["markdown"]
+    assert "| Aprobado |" in approved["markdown"]
+    # La guía que se aprueba es la guardada: no se vuelve a redactar ni a corregir.
+    assert "Costo de $900 (supuesto) al mes." in approved["markdown"]
+    assert approved["markdown"].count("(supuesto)") == created["markdown"].count("(supuesto)")
+    # Bloqueante 2: las clases del diagrama llegan intactas al ADR.
+    assert "A[Web]:::web --> B[API]:::svc" in approved["markdown"]
+    assert "|::" not in approved["markdown"]
