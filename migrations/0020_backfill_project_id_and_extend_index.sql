@@ -7,11 +7,18 @@
 -- migration 0016 already added `project_id` as nullable + an index on
 -- `(project_id, phase)`. This migration:
 --
---   1. Backfills NULL `project_id` rows from `sessions.project_id` (F08 only
---      added the column nullable so old rows stayed NULL). Rows whose
---      session has no project_id stay NULL — logged as WARNING for manual
---      triage. NOT a blocker; the application layer treats NULL project_id
---      as "unknown project, do not anchor approval to it" (REQ-SA-27).
+--   1. Backfills NULL `project_id` rows from `sessions.project_id`, LIMITED
+--      to users with exactly one project. (F08 only added the column
+--      nullable so old rows stayed NULL; `sessions` has one row per user
+--      and `sessions.project_id` is the last project that user opened, so
+--      a blanket backfill would assign every legacy approval of a user to
+--      their last project, mixing approvals across projects — review PR
+--      #105, Soomri 2026-10-19.) For single-project users the session's
+--      project_id is unambiguous, so the backfill is safe there. Rows that
+--      stay NULL (session without project_id, or multi-project users) are
+--      left for manual triage. NOT a blocker; the application layer treats
+--      NULL project_id as "unknown project, do not anchor approval to it"
+--      (REQ-SA-27).
 --
 --   2. Adds an extended index `(project_id, phase, created_at DESC)` for the
 --      hot read path "latest decision for (project, phase)" used by
@@ -38,13 +45,15 @@
 -- volver a correrla con el nombre nuevo sin cambios.
 -- =============================================================================
 
--- 1. Backfill project_id from sessions for legacy rows.
+-- 1. Backfill project_id from sessions for legacy rows — only for users
+--    with exactly one project (see header note 1).
 UPDATE approvals a
 SET project_id = s.project_id
 FROM sessions s
 WHERE a.session_id = s.id
   AND a.project_id IS NULL
-  AND s.project_id IS NOT NULL;
+  AND s.project_id IS NOT NULL
+  AND (SELECT count(*) FROM projects p WHERE p.user_id = s.user_id) = 1;
 
 -- 2. Extended index for (project, phase, created_at DESC).
 CREATE INDEX IF NOT EXISTS ix_approvals_project_phase_created
