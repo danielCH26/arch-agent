@@ -1258,7 +1258,7 @@ async def generate_llm_sections(
                 missing="\n".join(
                     f"### 7.{LLM_SECTIONS.index(title) + 1} {title}" for title in missing
                 ),
-                guide=raw,
+                guide=_guide_digest(raw),
             )
         ),
     ]
@@ -1284,6 +1284,23 @@ este orden y con estos encabezados exactos (sé breve, sin repetir las demás):
 Lo que ya escribiste (para que no te contradigas):
 {guide}
 """
+
+
+def _guide_digest(raw: str, limit: int = 2500) -> str:
+    """Lo ya escrito, recortado: 7.1 y 7.2 completas (componentes y stack, lo
+    que más se puede contradecir) y del resto solo el encabezado.
+
+    Mandar la guía entera junto con el contexto del ADR pasaba de los 8000
+    tokens por minuto del plan gratuito de Groq en los proyectos grandes
+    (error 413) y la guía se perdía igual.
+    """
+    sections = _split_guide_sections(raw)
+    parts = [
+        text if number in {"1", "2"} else text.splitlines()[0]
+        for number, text in sorted(sections.items())
+    ]
+    digest = "\n\n".join(parts)
+    return digest[:limit]
 
 
 def missing_guide_sections(text: str) -> list[str]:
