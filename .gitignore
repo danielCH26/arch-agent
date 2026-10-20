@@ -63,3 +63,4 @@ frontend/.env.local
 .freebuff/
 .patch
 
+eval_out/

@@ -1233,10 +1233,63 @@ async def generate_llm_sections(
     except Exception as exc:  # noqa: BLE001 -- el ADR se entrega igual
         _LOGGER.warning("ADR: el LLM falló (%s: %s)", type(exc).__name__, exc)
         return None
-    sections = clean_llm_sections(_message_text(response))
+    raw = _message_text(response)
+    sections = clean_llm_sections(raw)
+    if sections is not None:
+        return sections
+    missing = missing_guide_sections(raw)
+    finish_reason = (getattr(response, "response_metadata", None) or {}).get("finish_reason")
+    _LOGGER.warning(
+        "ADR: la respuesta del LLM no trae todas las secciones (faltan: %s; finish_reason=%s)",
+        ", ".join(missing),
+        finish_reason,
+    )
+    # Antes la guía entera se perdía si faltaba UNA subsección (casi siempre
+    # las últimas, cuando la respuesta se cortaba). Si llegó una parte, se
+    # piden solo las que faltan y se combinan.
+    if not raw.strip() or len(missing) == len(LLM_SECTIONS):
+        return None
+    completion = [
+        SystemMessage(content=ADR_SYSTEM_PROMPT),
+        HumanMessage(
+            content=_adr_prompt(ctx)
+            + "\n\n"
+            + _COMPLETE_INSTRUCTIONS.format(
+                missing="\n".join(
+                    f"### 7.{LLM_SECTIONS.index(title) + 1} {title}" for title in missing
+                ),
+                guide=raw,
+            )
+        ),
+    ]
+    try:
+        response = await asyncio.wait_for(
+            model.ainvoke(completion, config={**config, "run_name": "adr-guide-complete"}),
+            timeout=ADR_LLM_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 -- el ADR se entrega igual
+        _LOGGER.warning("ADR: no se pudo completar la guía (%s: %s)", type(exc).__name__, exc)
+        return None
+    sections = clean_llm_sections(merge_guide_sections(raw, _message_text(response)))
     if sections is None:
-        _LOGGER.warning("ADR: la respuesta del LLM no trae todas las secciones")
+        _LOGGER.warning("ADR: la guía sigue incompleta después de pedir las secciones que faltaban")
     return sections
+
+
+_COMPLETE_INSTRUCTIONS = """\
+Tu respuesta anterior quedó incompleta. Devuelve SOLO estas subsecciones, en \
+este orden y con estos encabezados exactos (sé breve, sin repetir las demás):
+{missing}
+
+Lo que ya escribiste (para que no te contradigas):
+{guide}
+"""
+
+
+def missing_guide_sections(text: str) -> list[str]:
+    """Títulos de ``LLM_SECTIONS`` que no aparecen en ``text``."""
+    normalized = normalize_text(text)
+    return [title for title in LLM_SECTIONS if normalize_text(title) not in normalized]
 
 
 _GUIDE_SECTION_RE = re.compile(r"^#{1,6}\s*7\.(\d)\b", re.MULTILINE)

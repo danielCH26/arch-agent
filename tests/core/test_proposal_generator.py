@@ -2747,3 +2747,17 @@ def test_stream_repairs_an_incomplete_table_instead_of_failing():
     assert "| Microservicios | Escala | Operación | Alta | Bajo | Sin fuente RAG |" in persisted[0]["markdown"]
     stages = [payload["stage"] for name, payload in events if name == "progress"]
     assert "repairing" in stages
+
+
+def test_a_non_breaking_hyphen_in_the_heading_is_still_the_tradeoff_section():
+    """gpt-oss escribe "Trade‑offs" (U+2011) y "Punto de decisión" con U+00A0.
+
+    A la vista es igual, pero la validación no encontraba la sección y la
+    propuesta salía como incompleta en cada corrida del proyecto complejo.
+    """
+    from app.core.proposal_generator import _missing_sections
+
+    proposal = _FULL_PROPOSAL.replace("Trade-offs y decisión", "Trade‑offs y decisión").replace(
+        "Punto de decisión", "Punto de decisión"
+    )
+    assert _missing_sections(proposal, source_count=3) == []

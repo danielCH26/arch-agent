@@ -122,8 +122,21 @@ def _text(message) -> str:
     return str(content or "")
 
 
-async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None, str]:
-    """``(propuesta, guía, estado)``; estado = ok | llm | tabla | fallo (ver repair_proposal)."""
+OUT_DIR = PROJECT_ROOT / "eval_out"
+
+
+def _save(name: str, text: str | None) -> None:
+    """Guarda una salida cruda en eval_out/ para revisarla después."""
+    if not text:
+        return
+    OUT_DIR.mkdir(exist_ok=True)
+    (OUT_DIR / name).write_text(text, encoding="utf-8")
+
+
+async def _live_outputs(
+    model, case: GoldenCase, run: int = 1
+) -> tuple[str, str | None, str, dict]:
+    """``(propuesta, guía, estado, diagnóstico)``; estado = ok | llm | tabla | fallo."""
     from app.core.adr_generator import generate_guide
     from app.core.proposal_generator import _build_prompt, _profile_kind, repair_proposal
 
@@ -142,12 +155,20 @@ async def _live_outputs(model, case: GoldenCase) -> tuple[str, str | None, str]:
     finish_reason = (getattr(message, "response_metadata", None) or {}).get("finish_reason")
     # Igual que en la app: si la propuesta no pasa la validación se completa
     # (pasada del LLM y, si no alcanza, tabla armada con los patrones).
-    repaired, status = await repair_proposal(model, proposal, citations, finish_reason=finish_reason)
+    trace: dict = {}
+    repaired, status = await repair_proposal(
+        model, proposal, citations, finish_reason=finish_reason, trace=trace
+    )
+    prefix = f"{case.id}-{run}"
+    _save(f"{prefix}-propuesta-original.md", proposal)
+    _save(f"{prefix}-reparacion-respuesta.md", trace.get("repair_reply"))
+    _save(f"{prefix}-propuesta-final.md", repaired)
     if repaired is None:
-        return proposal, None, status
+        return proposal, None, status, trace
     # Igual que en la app: redacción + revisión + corrección si hace falta.
     guide, _repaired = await generate_guide(model, build_context(case, repaired, citations))
-    return repaired, guide, status
+    _save(f"{prefix}-guia.md", guide)
+    return repaired, guide, status, trace
 
 
 _STATUS_LABELS = {
@@ -158,11 +179,20 @@ _STATUS_LABELS = {
 }
 
 
-def _print_result(case: GoldenCase, result, compare: bool, status: str | None = None) -> None:
+def _print_result(
+    case: GoldenCase, result, compare: bool, status: str | None = None, trace: dict | None = None
+) -> None:
     expected = expected_checks(case) if compare else {}
     print(f"\n{case.id} ({case.kind}) — {result.score * 100:.0f}%")
     if status:
         print(f"  propuesta: {_STATUS_LABELS.get(status, status)}")
+    if trace and status != "ok":
+        print(f"       faltaba: {', '.join(trace.get('missing') or []) or '-'}"
+              f" (finish_reason={trace.get('finish_reason')})")
+        if trace.get("repair_error"):
+            print(f"       la reparación falló: {trace['repair_error']}")
+        elif trace.get("missing_after_repair"):
+            print(f"       tras la reparación seguía faltando: {', '.join(trace['missing_after_repair'])}")
     for check in result.checks:
         mark = "OK " if check.passed else "NO "
         note = ""
@@ -195,13 +225,16 @@ async def main() -> int:
     wait = float(os.getenv("EVAL_WAIT_S", "60"))
     failed = []
     statuses: list[str] = []
+    runs: dict[str, int] = {}
     for index, case in enumerate(cases):
         status = None
+        trace = None
+        runs[case.id] = runs.get(case.id, 0) + 1
         if model is not None:
             if index:
                 await asyncio.sleep(wait)
             try:
-                proposal, guide, status = await _live_outputs(model, case)
+                proposal, guide, status, trace = await _live_outputs(model, case, runs[case.id])
             except Exception as exc:  # noqa: BLE001 -- un caso no corta la corrida
                 print(f"\n{case.id} ({case.kind}) — ERROR: {type(exc).__name__}: {str(exc)[:200]}")
                 failed.append(case.id)
@@ -211,7 +244,7 @@ async def main() -> int:
             result, _md, _cit = evaluate_case(case, proposal=proposal, guide=guide)
         else:
             result, _md, _cit = evaluate_case(case)
-        _print_result(case, result, compare=not args.live, status=status)
+        _print_result(case, result, compare=not args.live, status=status, trace=trace)
         if result.score < args.min_score or status == "fallo":
             failed.append(case.id)
 
@@ -223,6 +256,8 @@ async def main() -> int:
             f"{counts['llm']} reparadas por el LLM, {counts['tabla']} con tabla armada, "
             f"{counts['fallo']} incompletas, {counts['error']} con error del proveedor"
         )
+    if statuses:
+        print(f"Salidas crudas en {OUT_DIR}")
     print(f"\n{total - len(failed)}/{total} casos por encima de {args.min_score:.2f}")
     return 1 if failed else 0
 

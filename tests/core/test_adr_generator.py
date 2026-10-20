@@ -623,3 +623,55 @@ class TestCorreccionRobusta:
         )
         warnings = " ".join(lint_adr_guide(_ctx(), guide))
         assert "Demasiadas tecnologías en 7.2: 7 (máximo 6)" in warnings
+
+
+class TestGuiaIncompleta:
+    """Antes, si faltaba UNA subsección (la respuesta se cortó), se perdía la guía entera."""
+
+    def test_pide_solo_las_que_faltan_y_las_combina(self):
+        from app.core.adr_generator import missing_guide_sections
+
+        cut = LLM_GUIDE.split("### 7.6")[0]
+        rest = "### 7.6" + LLM_GUIDE.split("### 7.6")[1]
+        assert missing_guide_sections(cut) == [
+            "Primer sprint",
+            "Estructura inicial del repositorio",
+            "Preguntas abiertas",
+        ]
+
+        class _TwoCalls:
+            def __init__(self):
+                self.prompts = []
+
+            async def ainvoke(self, messages, config=None):
+                self.prompts.append(messages[-1].content)
+                reply = cut if len(self.prompts) == 1 else rest
+                return type("Msg", (), {"content": reply})()
+
+        model = _TwoCalls()
+        guide = asyncio.run(generate_llm_sections(model, _ctx()))
+
+        assert guide is not None
+        assert "### 7.1" in guide and "### 7.8" in guide
+        assert len(model.prompts) == 2
+        assert "### 7.6 Primer sprint" in model.prompts[1]
+        pedido = model.prompts[1].split("Tu respuesta anterior quedó incompleta")[1].split("Lo que ya escribiste")[0]
+        assert "7.6 Primer sprint" in pedido and "7.1 Componentes" not in pedido
+
+    def test_si_la_segunda_llamada_falla_no_hay_guia(self):
+        cut = LLM_GUIDE.split("### 7.6")[0]
+
+        class _Fails:
+            calls = 0
+
+            async def ainvoke(self, messages, config=None):
+                _Fails.calls += 1
+                if _Fails.calls > 1:
+                    raise RuntimeError("429")
+                return type("Msg", (), {"content": cut})()
+
+        assert asyncio.run(generate_llm_sections(_Fails(), _ctx())) is None
+
+    def test_espacios_y_guiones_unicode_no_tumban_la_guia(self):
+        text = LLM_GUIDE.replace("### 7.6 Primer sprint", "### 7.6 Primer sprint")
+        assert clean_llm_sections(text) is not None
