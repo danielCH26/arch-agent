@@ -10,7 +10,12 @@ from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import (
+    build_langchain_model,
+    http_status_for,
+    LLMConfigError,
+    user_facing_message,
+)
 from app.core.project_context import load_documents_text
 from app.core.session_store import load_session_state, record_approval_decision, save_session_state
 from app.models.project import Project
@@ -129,6 +134,8 @@ async def send_elicitation_message(
     400 — no hay pregunta pendiente para responder, o ya existe un resumen
           (hay que pasar por /elicitation/decision antes de seguir)
     409 — LLM no configurado para este usuario
+    500 — la config LLM está completa pero el modelo no se pudo iniciar
+          (mismo status y mensaje que el chat: ``http_status_for``)
     502 — el modelo respondió pero con contenido no parseable
     503 — la llamada al modelo falló (rate limit, timeout, proveedor caído)
     """
@@ -188,10 +195,11 @@ async def send_elicitation_message(
 
     try:
         model = build_langchain_model(user_id)
-    except LLMConfigError:
+    except LLMConfigError as e:
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+            status_code=http_status_for(e),
+            detail=user_facing_message(e),
         )
 
     # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).

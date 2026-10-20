@@ -9,6 +9,7 @@ from app.auth.register import register_user as _register_user
 from app.auth.validators import ValidationError
 from app.core.database import SessionLocal
 from app.core.jwt import create_access_token
+from app.core.llm_loader import clear_session_cache
 from app.models.user import User
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -111,6 +112,12 @@ async def logout(current_user: dict = Depends(get_current_user)):
     jti = current_user.get("jti")
     if jti:
         JWT_REVOKED.add(jti)
+    # La config LLM cacheada (TTL 5 min) no debe sobrevivir a la sesión: al
+    # volver a entrar se lee otra vez de la DB.
+    try:
+        clear_session_cache(int(current_user["user_id"]))
+    except (KeyError, TypeError, ValueError):
+        pass
     return LogoutResponse(message="Logged out successfully")
 
 

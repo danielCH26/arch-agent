@@ -89,6 +89,52 @@ class TestChatEndpointErrors:
         assert "config LLM" in str(err)
 
 
+class TestChatLLMConfigErrors:
+    """Qué ve el usuario cuando su LLM no está listo (409 / 500)."""
+
+    def _call(self, err):
+        from fastapi import HTTPException
+
+        from app.api import chat as chat_module
+
+        probe = MagicMock()
+        probe.__enter__ = MagicMock(return_value=probe)
+        probe.__exit__ = MagicMock(return_value=False)
+        with patch.object(chat_module, "SessionLocal", return_value=probe), patch.object(
+            chat_module, "build_langchain_model", side_effect=err
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    chat_module.chat(
+                        body=chat_module.ChatRequest(project_id=None, message="hola"),
+                        current_user={"user_id": 1, "username": "u"},
+                    )
+                )
+        return exc_info.value
+
+    def test_sin_modelo_le_dice_que_complete_el_paso_3(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("sin modelo", reason="missing"))
+        assert exc.status_code == 409
+        assert "paso 3" in exc.detail
+
+    def test_sin_config_no_expone_detalles_del_backend(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("configura GROQ_API_KEY", reason="not_configured"))
+        assert exc.status_code == 409
+        assert "GROQ_API_KEY" not in exc.detail
+        assert "POST /api/llm/config" not in exc.detail
+
+    def test_falla_al_iniciar_el_modelo_es_500_sin_el_detalle(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("boom: token sk-123", reason="initialization_failed"))
+        assert exc.status_code == 500
+        assert "sk-123" not in exc.detail
+
+
 class TestSSEFormat:
     """Tests del formato SSE emitido por el endpoint."""
 
@@ -693,10 +739,10 @@ def test_chat_stream_sources_event_carries_doc_metadata(monkeypatch):
 
 
 class TestEventGeneratorPersistence:
-    """F12.2: SCN-1, SCN-4, SCN-7 ΓÇö commit-before-yield + Engram-down resilience.
+    """F12.2: SCN-1, SCN-4, SCN-7 — commit-before-yield + Engram-down resilience.
 
     We replicate the persistence block inline rather than instantiating the
-    FastAPI app ΓÇö the goal is to assert the orchestration contract (commit
+    FastAPI app — the goal is to assert the orchestration contract (commit
     happens BEFORE the 'done' yield; EngramError does not abort the stream)
     without spinning up Postgres.
     """
@@ -740,7 +786,7 @@ class TestEventGeneratorPersistence:
             engram_mirror("u", user_id=user_id, project_id=project_id)
             engram_mirror("a", user_id=user_id, project_id=project_id)
         except Exception:
-            # Must NOT propagate ΓÇö REQ-6 / REQ-10 / SCN-4.
+            # Must NOT propagate — REQ-6 / REQ-10 / SCN-4.
             pass
 
     def test_commit_happens_before_done_yield(self):
@@ -784,7 +830,7 @@ class TestEventGeneratorPersistence:
         session = MagicMock()
 
         with patch("app.api.chat.engram_mirror") as fake_mirror:
-            fake_mirror.side_effect = EngramError("Engram ca├¡do")
+            fake_mirror.side_effect = EngramError("Engram caído")
 
             async def run():
                 yield "event: sources\ndata: []\n\n"
