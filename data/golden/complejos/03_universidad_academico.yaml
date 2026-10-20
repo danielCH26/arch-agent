@@ -1,0 +1,67 @@
+# Caso complejo (solo --live): mucho alcance con un equipo y plazo chicos
+# (trabajo de grado). Lo difícil es NO sobredimensionar: integraciones,
+# reportes y analítica, pero 3 estudiantes y 5 meses.
+id: universidad-academico
+name: Campus Conecta
+kind: académico con mucho alcance
+description: >
+  Trabajo de grado: sistema para que una universidad gestione inscripción de
+  materias, notas, horarios y alertas tempranas de deserción con un tablero de
+  analítica para los directores de programa.
+profile:
+  resumen: Inscripción, notas, horarios y alertas de deserción con analítica.
+  dominio: educacion
+  tipo_sistema: aplicación web
+  tipo_proyecto: academico
+  equipo_personas: 3
+  plazo_meses: 5
+  presupuesto_usd: 0
+resumen:
+  problema: La inscripción colapsa cada semestre y nadie detecta a tiempo a los estudiantes en riesgo de abandonar.
+  usuarios: 9000 estudiantes, 400 docentes y 20 directores de programa.
+  funcionalidades:
+    - Inscripción de materias con cupos y prerrequisitos
+    - Registro y consulta de notas
+    - Horarios sin cruces
+    - Alertas tempranas de deserción
+    - Tablero de analítica para directores
+  restricciones:
+    - Sin presupuesto (capas gratuitas)
+    - Equipo de 3 estudiantes
+    - Plazo de 5 meses
+    - Importar datos del sistema académico actual (exportación CSV)
+  calidad:
+    - Aguantar el pico de inscripciones
+    - Privacidad de las notas
+  contexto_tecnico:
+    plataforma: Web responsive
+    habilidades_equipo: Python, Django, un poco de pandas
+    fuentes_de_datos: Exportaciones CSV del sistema académico actual
+  datos_viabilidad:
+    presupuesto: "No hay presupuesto, es trabajo de grado; solo capas gratuitas."
+    equipo: "Somos 3 estudiantes."
+    plazo: "5 meses."
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: La inscripción colapsa cada semestre y nadie detecta a tiempo a los estudiantes en riesgo.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: 9000 estudiantes, 400 docentes y 20 directores de programa.
+  - pregunta: ¿Con qué presupuesto cuentan?
+    respuesta: No hay presupuesto, es trabajo de grado; solo capas gratuitas.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: Somos 3 estudiantes.
+  - pregunta: ¿Cuál es el plazo objetivo?
+    respuesta: 5 meses.
+  - pregunta: ¿De dónde salen los datos?
+    respuesta: De exportaciones CSV del sistema académico actual.
+  - pregunta: ¿Qué datos personales o sensibles va a guardar el sistema?
+    respuesta: Notas, cédula y datos de contacto de los estudiantes.
+candidates:
+  - {name: "Microservicios", similarity: 0.86}
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.85}
+  - {name: "Pipeline de datos ETL / ELT por lotes", similarity: 0.85}
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.84}
+  - {name: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)", similarity: 0.84}
+  - {name: "CQRS (Command Query Responsibility Segregation)", similarity: 0.83}
+expect:
+  concerns: [datos_personales, respaldos]

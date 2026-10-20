@@ -1,0 +1,73 @@
+# Caso complejo (solo --live): marketplace de tres lados con tiempo real,
+# ubicación, pagos divididos y picos de demanda. Aquí sí puede tener sentido
+# algo distribuido: mide que la propuesta lo justifique y no se corte.
+id: marketplace-domicilios
+name: Mercado Vecino
+kind: marketplace en tiempo real
+description: >
+  Marketplace de domicilios para tiendas de barrio en Bogotá y Medellín: los
+  clientes piden desde la app, la tienda acepta el pedido y un repartidor
+  independiente lo lleva con seguimiento en el mapa en tiempo real.
+profile:
+  resumen: Pedidos a tiendas de barrio con repartidores y seguimiento en vivo.
+  dominio: comercio
+  tipo_sistema: apps móviles, panel web y API
+  tipo_proyecto: producto_en_produccion
+  equipo_personas: 14
+  plazo_meses: 8
+  presupuesto_usd: 250000
+resumen:
+  problema: Las tiendas de barrio reciben pedidos por WhatsApp, no saben cuándo llega el repartidor y pierden ventas frente a las grandes plataformas.
+  usuarios: Clientes (meta de 200000 en el primer año), 3000 tiendas, 1500 repartidores y soporte.
+  funcionalidades:
+    - Catálogo de cada tienda con inventario
+    - Pedido, aceptación y asignación automática de repartidor
+    - Seguimiento del repartidor en el mapa en tiempo real
+    - Pago en línea dividido entre tienda, repartidor y plataforma
+    - Notificaciones push del estado del pedido
+    - Calificaciones y soporte
+  restricciones:
+    - Presupuesto de 250000 USD
+    - Equipo de 14 personas en tres equipos (pedidos, pagos, apps)
+    - Plazo de 8 meses
+    - Picos de 5 veces la demanda normal en quincena y fines de semana
+  calidad:
+    - Escalabilidad en los picos de demanda
+    - Latencia baja en el seguimiento del repartidor
+    - Consistencia de los pagos divididos
+  contexto_tecnico:
+    plataforma: App móvil para clientes y repartidores, panel web para tiendas
+    habilidades_equipo: Node.js con TypeScript, React Native, PostgreSQL, algo de AWS
+    fuentes_de_datos: Las tiendas cargan su catálogo desde un Excel o a mano
+  datos_viabilidad:
+    presupuesto: "250000 USD."
+    equipo: "14 personas en tres equipos (pedidos, pagos, apps)."
+    plazo: "8 meses."
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Las tiendas de barrio reciben pedidos por WhatsApp, no saben cuándo llega el repartidor y pierden ventas.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Clientes, unas 3000 tiendas, 1500 repartidores independientes y el equipo de soporte.
+  - pregunta: ¿El sistema necesita mostrar ubicaciones en un mapa o buscar por cercanía?
+    respuesta: Sí, el repartidor se ve en el mapa en tiempo real y se asigna el más cercano.
+  - pregunta: ¿El sistema va a recibir pagos en línea?
+    respuesta: Sí, y el pago se divide entre la tienda, el repartidor y la plataforma.
+  - pregunta: ¿El sistema debe avisar a los usuarios por correo, notificación push o SMS?
+    respuesta: Notificaciones push en cada cambio de estado del pedido.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 250000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 14 personas en tres equipos.
+  - pregunta: ¿Cuál es el plazo objetivo para la primera entrega utilizable?
+    respuesta: 8 meses.
+  - pregunta: ¿Qué volumen esperan?
+    respuesta: En quincena y fines de semana los pedidos se multiplican por cinco.
+candidates:
+  - {name: "Microservicios", similarity: 0.88}
+  - {name: "Arquitectura orientada a eventos (Event-Driven)", similarity: 0.87}
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.85}
+  - {name: "Saga (transacciones distribuidas)", similarity: 0.85}
+  - {name: "Serverless (Function-as-a-Service)", similarity: 0.84}
+  - {name: "API Gateway + Backend for Frontend (BFF)", similarity: 0.84}
+expect:
+  concerns: [ubicacion, notificaciones, pagos, respaldos]
