@@ -537,7 +537,7 @@ async def _render_mermaid_server_side(
     ``navigate`` + esperar + ``screenshot`` DENTRO de la misma sesión,
     garantizando que comparten el mismo browser/página.
     """
-    from app.core.puppeteer_mcp import _resolve_url
+    from app.core.puppeteer_mcp import _max_render_bytes, _resolve_url
 
     try:
         from mcp import ClientSession
@@ -657,6 +657,20 @@ async def _render_mermaid_server_side(
     ext = "png" if "png" in mime else "jpg"
     filename = f"{attachment_id}.{ext}"
     raw_bytes = base64.b64decode(image_block.data)
+
+    # REQ-PMCP-3: byte cap on the real render path. A screenshot over the
+    # cap is treated as a failed render — same contract as every other
+    # failure here (log + return None) — so an oversized PNG can never
+    # blow up memory, the attachments row, or the FE payload.
+    max_bytes = _max_render_bytes()
+    if len(raw_bytes) > max_bytes:
+        _LOGGER.warning(
+            "Render server-side: screenshot de %d bytes excede el tope de "
+            "%d (PUPPETEER_MAX_RENDER_BYTES); se descarta el render.",
+            len(raw_bytes),
+            max_bytes,
+        )
+        return None
 
     uploads_dir = _ensure_uploads_dir()
     storage_path = os.path.join(uploads_dir, filename)

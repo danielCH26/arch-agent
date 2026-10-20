@@ -75,6 +75,21 @@ _RATE_LIMIT_WINDOW_SECONDS: int = 60
 _RATE_LIMITER: dict[int, list[float]] = {}
 _RATE_LIMIT_LOCK = None  # lazily created; see ``_check_rate_limit``
 
+# REQ-PMCP-3: byte cap on render results. Hardcoded default mirrors ADR-013 §2 (2 MB).
+# Override via env var for tests / future tuning.
+_DEFAULT_MAX_RENDER_BYTES: int = 2_097_152  # 2 MiB
+
+
+def _max_render_bytes() -> int:
+    """Read ``PUPPETEER_MAX_RENDER_BYTES`` at call-time (test-friendly)."""
+    raw = os.getenv("PUPPETEER_MAX_RENDER_BYTES")
+    if raw is None or not raw.strip():
+        return _DEFAULT_MAX_RENDER_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_MAX_RENDER_BYTES
+
 
 def _rate_limit_per_minute() -> int:
     """Read ``PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE`` at call-time.

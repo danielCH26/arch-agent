@@ -1385,3 +1385,128 @@ def test_format_history_recap_empty_yields_empty_string():
 
 
 # ---------------------------------------------------------------------------
+# REQ-PMCP-3: byte cap on the real render path (_render_mermaid_server_side)
+# ---------------------------------------------------------------------------
+
+
+def test_max_render_bytes_env_parsing(monkeypatch):
+    """_max_render_bytes: default 2 MiB, env override, blank/invalid -> default, 0 disables."""
+    from app.core import puppeteer_mcp
+
+    monkeypatch.delenv("PUPPETEER_MAX_RENDER_BYTES", raising=False)
+    assert puppeteer_mcp._max_render_bytes() == 2_097_152
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "1024")
+    assert puppeteer_mcp._max_render_bytes() == 1024
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "   ")
+    assert puppeteer_mcp._max_render_bytes() == 2_097_152
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "no-es-un-numero")
+    assert puppeteer_mcp._max_render_bytes() == 2_097_152
+
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "0")
+    assert puppeteer_mcp._max_render_bytes() == 0
+
+
+def test_render_mermaid_server_side_returns_none_when_png_over_byte_cap(
+    monkeypatch, tmp_path
+):
+    """REQ-PMCP-3: a screenshot over PUPPETEER_MAX_RENDER_BYTES is treated
+    as a failed render (log + return None) and nothing is written to disk.
+    """
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "8")
+    from app.core import agent
+
+    import base64 as _b64
+
+    big_png = b"\x89PNG\r\n\x1a\n" + b"x" * 64  # > 8 bytes
+    fake_session = AsyncMock()
+    fake_session.initialize = AsyncMock(return_value=None)
+
+    async def _call_tool(name, args):
+        if name == "puppeteer_navigate":
+            return _FakeToolResult([])
+        if name == "puppeteer_evaluate":
+            return _FakeToolResult(
+                [_FakeContentBlock(type_="text", text="mermaid-rendered")]
+            )
+        if name == "puppeteer_screenshot":
+            return _FakeToolResult(
+                [
+                    _FakeContentBlock(
+                        type_="image",
+                        data=_b64.b64encode(big_png).decode("ascii"),
+                        mime_type="image/png",
+                    )
+                ]
+            )
+        raise AssertionError(f"tool inesperada: {name}")
+
+    fake_session.call_tool = AsyncMock(side_effect=_call_tool)
+
+    _install_fake_mcp_module(monkeypatch, session=fake_session)
+    monkeypatch.setattr(
+        "app.core.puppeteer_mcp._resolve_url", lambda: "http://puppeteer.local/mcp"
+    )
+
+    result = asyncio.run(
+        agent._render_mermaid_server_side("flowchart TD\nA-->B", fetch_timeout=5.0)
+    )
+
+    assert result is None
+    assert list(tmp_path.iterdir()) == []  # nothing written to disk
+
+
+def test_render_mermaid_server_side_keeps_png_under_byte_cap(monkeypatch, tmp_path):
+    """Camino feliz con tope: un PNG bajo PUPPETEER_MAX_RENDER_BYTES se guarda igual."""
+    monkeypatch.setenv("PUPPETEER_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setenv("PUPPETEER_MAX_RENDER_BYTES", "1024")
+    from app.core import agent
+
+    import base64 as _b64
+
+    png_bytes = b"\x89PNG\r\n\x1a\nFAKE"
+    fake_session = AsyncMock()
+    fake_session.initialize = AsyncMock(return_value=None)
+
+    async def _call_tool(name, args):
+        if name == "puppeteer_navigate":
+            return _FakeToolResult([])
+        if name == "puppeteer_evaluate":
+            return _FakeToolResult(
+                [_FakeContentBlock(type_="text", text="mermaid-rendered")]
+            )
+        if name == "puppeteer_screenshot":
+            return _FakeToolResult(
+                [
+                    _FakeContentBlock(
+                        type_="image",
+                        data=_b64.b64encode(png_bytes).decode("ascii"),
+                        mime_type="image/png",
+                    )
+                ]
+            )
+        raise AssertionError(f"tool inesperada: {name}")
+
+    fake_session.call_tool = AsyncMock(side_effect=_call_tool)
+
+    _install_fake_mcp_module(monkeypatch, session=fake_session)
+    monkeypatch.setattr(
+        "app.core.puppeteer_mcp._resolve_url", lambda: "http://puppeteer.local/mcp"
+    )
+
+    result = asyncio.run(
+        agent._render_mermaid_server_side("flowchart TD\nA-->B", fetch_timeout=5.0)
+    )
+
+    assert result is not None
+    assert result["kind"] == "screenshot"
+    # _ensure_uploads_dir writes into {PUPPETEER_UPLOADS_DIR}/screenshots/.
+    assert result["storage_path"] == str(tmp_path / "screenshots" / result["filename"])
+    with open(result["storage_path"], "rb") as f:
+        assert f.read() == png_bytes
+
+
+# ---------------------------------------------------------------------------
