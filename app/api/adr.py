@@ -218,8 +218,14 @@ async def generate_adr(
     guide_repaired = False
     try:
         model = build_langchain_model(user_id)
-    except LLMConfigError:
-        logger.warning("ADR sin guía: el usuario %s no tiene LLM configurado", user_id)
+    except LLMConfigError as exc:
+        # Sin LLM (no configurado, wizard incompleto o el modelo no inició) el
+        # ADR se arma igual con las secciones 1 a 6; la sección 7 queda pendiente.
+        logger.warning(
+            "ADR sin guía para el usuario %s: LLM no disponible (reason=%s)",
+            user_id,
+            getattr(exc, "reason", None),
+        )
         model = None
     if model is not None:
         handler = get_langfuse_handler()
