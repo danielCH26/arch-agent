@@ -9,7 +9,8 @@ mocks, y verifica tanto el camino feliz como los gates negativos:
                     (el mismo camino que la UI) -> retry idempotente
     refinamiento:   modify (con feedback) -> pending no nulo (B4)
                     -> advance bloqueado (409) -> approve -> advance
-    revision:       reject -> pending no nulo (B4) -> approve -> advance
+    revision:       approve -> reject -> pending no nulo (B4) -> approve
+                    -> advance
     final:          modify rechazado (I3/REQ-SA-8) -> approve -> advance
                     bloqueado (ultima fase)
 
@@ -409,13 +410,18 @@ def run(w: Walk, skip_until_phases: bool) -> None:
     pend = _pending(w)
     w.step(pend is not None,
            "despues de modify: pending_decision no nulo (B4)")
-    step_neg_advance_blocked(w)
+    step_neg_advance_blocked(w, expect_statuses=(409,))
     step_decision(w, "refinamiento", "approve")
     w.step(_pending(w) is None,
            "despues de approve: pending_decision nulo")
     step_advance(w, "refinamiento", "revision")
 
-    # ---- revision: reject -> pending no nulo -> approve -------------------
+    # ---- revision: approve -> reject -> pending no nulo (B4) -> approve ---
+    # El approve previo es lo que ejercita B4 de verdad: rechazar sobre una
+    # fase ya aprobada deja pending_decision con last_decision='rejected' y
+    # la fase bloqueada hasta el nuevo approve. Rechazar sin approve previo
+    # no cubria ese caso (review PR #105, Soomri 2026-10-19).
+    step_decision(w, "revision", "approve")
     step_decision(w, "revision", "reject")
     pend = _pending(w)
     w.step(pend is not None and pend.get("last_decision") == "rejected",
