@@ -184,6 +184,26 @@ class TestCleanLlmSections:
         assert clean_llm_sections(text) is not None
 
 
+class TestGuiaDelObservatorio:
+    """Defectos vistos en la guía real del caso analitica-permanencia."""
+
+    def test_quita_el_encabezado_vacio(self):
+        text = LLM_GUIDE.replace("### 7.8", "### 7.\n\n### 7.8")
+        cleaned = clean_llm_sections(text)
+        assert cleaned is not None
+        assert "### 7.\n" not in cleaned + "\n"
+        assert "### 7.8 Preguntas abiertas" in cleaned
+
+    def test_quita_la_ultima_pregunta_cortada(self):
+        text = LLM_GUIDE + "\n- ¿Se necesita SSO?\n- ¿Cuál"
+        cleaned = clean_llm_sections(text)
+        assert cleaned.endswith("- ¿Se necesita SSO?")
+
+    def test_no_toca_un_final_completo(self):
+        text = LLM_GUIDE + "\n- ¿Se necesita SSO?"
+        assert clean_llm_sections(text) == text
+
+
 class TestDomainConcernsAndLint:
     def test_las_preocupaciones_del_dominio_sin_respuesta_van_a_preguntas_abiertas(self):
         ctx = _ctx(
