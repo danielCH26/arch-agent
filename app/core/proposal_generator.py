@@ -669,7 +669,7 @@ class ProposalGenerator:
                 finish_reason=finish_reason,
                 deadline=work_deadline,
             )
-            logger.info(
+            logger.warning(
                 "Proposal repair project_id=%s finish_reason=%s missing=%s result=%s",
                 effective_project_id,
                 finish_reason,
@@ -682,11 +682,16 @@ class ProposalGenerator:
                 finish_reason = None
         if finish_reason == "length" or missing_sections:
             logger.warning(
-                "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s",
+                "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s headings=%s",
                 effective_project_id,
                 finish_reason,
                 missing_sections,
                 len(full_markdown),
+                [
+                    ln.strip()
+                    for ln in full_markdown.splitlines()
+                    if ln.lstrip().startswith("#")
+                ],
             )
             yield _error_event(
                 _incomplete_proposal_message(finish_reason, missing_sections),
