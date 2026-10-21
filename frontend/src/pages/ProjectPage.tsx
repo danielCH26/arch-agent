@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { getProject, Project } from '../api/projects'
 import { projectsStore } from '../stores/projectsStore'
+import { projectUnavailableMessage } from '../stores/authStore'
 
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -32,7 +33,7 @@ export function ProjectPage() {
           projectsStore.getState().setCurrentProject(null)
           navigate('/projects', {
             replace: true,
-            state: { message: 'Ese proyecto ya no está disponible para tu usuario.' },
+            state: { message: projectUnavailableMessage() },
           })
           return
         }

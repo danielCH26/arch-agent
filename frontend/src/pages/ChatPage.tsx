@@ -7,6 +7,7 @@ import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
 import { ElicitationPanel } from '../components/ElicitationPanel'
 import { PhaseStepper } from '../components/PhaseStepper'
 import { projectsStore } from '../stores/projectsStore'
+import { projectUnavailableMessage } from '../stores/authStore'
 
 const ELICITATION_PHASE = 'requerimientos'
 const PROPOSAL_PHASE = 'propuesta'
@@ -62,7 +63,7 @@ function ChatPageContent() {
           projectsStore.getState().setCurrentProject(null)
           navigate('/projects', {
             replace: true,
-            state: { message: 'Ese proyecto ya no está disponible para tu usuario.' },
+            state: { message: projectUnavailableMessage() },
           })
           return
         }

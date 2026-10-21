@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { projectsStore } from '../stores/projectsStore'
 import { ProjectCard } from '../components/ProjectCard'
 import { CreateProjectDialog } from '../components/CreateProjectDialog'
@@ -7,13 +7,22 @@ import { ProjectCardsSkeleton } from '../components/Skeleton'
 
 export function ProjectsPage() {
   const location = useLocation()
+  const navigate = useNavigate()
   // "Crear otro proyecto" al terminar uno llega con { openCreate: true }.
   const [showCreateDialog, setShowCreateDialog] = useState(
     () => (location.state as { openCreate?: boolean } | null)?.openCreate === true,
   )
   const { projects, error, hasLoaded, fetchProjects } = projectsStore()
   // Mensaje al llegar redirigido (p. ej. desde un proyecto que ya no existe).
-  const routeMessage = (location.state as { message?: string } | null)?.message
+  // Se muestra UNA vez: el estado de la navegación queda guardado en el
+  // historial del navegador, y al duplicar la pestaña o recargar volvía a
+  // salir "Ese proyecto ya no está disponible" aunque no hubiera pasado nada.
+  const [routeMessage] = useState(() => (location.state as { message?: string } | null)?.message)
+
+  useEffect(() => {
+    if (location.state) navigate(location.pathname, { replace: true, state: null })
+    // Solo al entrar: después el estado ya está limpio.
+  }, [])
 
   useEffect(() => {
     fetchProjects()
