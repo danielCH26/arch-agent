@@ -5,6 +5,7 @@ import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
 import { AdrPanel } from './AdrPanel'
 import { ChatInput } from './ChatInput'
+import { ElicitationDocuments } from './ElicitationDocuments'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
 import { ChatHistorySkeleton } from './Skeleton'
@@ -96,6 +97,16 @@ export function ChatWindow({
   const autoDiagramFor = useRef<number | null>(null)
   const phaseRef = useRef(currentPhase)
   phaseRef.current = currentPhase
+  // Documentos del proyecto: visibles en todas las fases (no solo en
+  // Elicitación), porque el agente ya busca en ellos por similitud sin
+  // importar la fase (ver app.core.agent._documents_section). `docsRefreshKey`
+  // se sube al adjuntar con el clip del chat, para que la lista se actualice.
+  const [docsRefreshKey, setDocsRefreshKey] = useState(0)
+  // Propuesta: la interacción ya es 100% por los botones de ProposalCard
+  // (Aprobar / Solicitar cambios / Rechazar). Antes el chat libre seguía
+  // disponible debajo y un mensaje suelto ahí podía confundir al agente
+  // -- no hay ningún flujo que lo espere en esta fase.
+  const hideChatInput = currentPhase === 'propuesta'
 
   useEffect(() => {
     if (isStreaming && !wasStreaming.current) {
@@ -200,6 +211,10 @@ export function ChatWindow({
         {showProposalCard && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
         )}
+        {/* Propuesta no tiene ChatInput (ver `hideChatInput`), así que ahí se
+            usa la caja completa -- con su propio botón de subir -- en vez de
+            depender del clip del chat para poder adjuntar documentos. */}
+        <ElicitationDocuments projectId={projectId} compact={!hideChatInput} refreshKey={docsRefreshKey} />
         {loadingHistory && messages.length === 0 && <ChatHistorySkeleton />}
 
         {historyTruncated && (
@@ -271,7 +286,14 @@ export function ChatWindow({
         <div ref={messagesEndRef} />
       </div>
 
-      <ChatInput projectId={projectId} onSend={handleSend} disabled={isStreaming || loadingHistory} />
+      {!hideChatInput && (
+        <ChatInput
+          projectId={projectId}
+          onSend={handleSend}
+          disabled={isStreaming || loadingHistory}
+          onUploaded={() => setDocsRefreshKey((key) => key + 1)}
+        />
+      )}
     </div>
   )
 }
