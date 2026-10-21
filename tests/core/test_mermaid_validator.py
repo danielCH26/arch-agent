@@ -1,5 +1,6 @@
 from app.core.mermaid_validator import (
     sanitize_flowchart_edge_labels,
+    sanitize_pipe_edge_labels,
     sanitize_subgraph_id_collisions,
     extract_mermaid_block,
     sanitize_class_statements,
@@ -321,3 +322,62 @@ def test_sanitize_edge_labels_keeps_class_syntax_on_the_target_node():
 def test_sanitize_edge_labels_moves_the_label_and_keeps_both_classes():
     code = 'flowchart TD\n  A:::web --> B:::svc : "HTTP"'
     assert sanitize_flowchart_edge_labels(code) == "flowchart TD\n  A:::web -->|HTTP| B:::svc"
+
+
+# ---------------------------------------------------------------------------
+# sanitize_pipe_edge_labels (bug real: caso del observatorio de permanencia)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_pipe_edge_labels_quotes_unquoted_parentheses():
+    # Caso real que tumbaba el render: Mermaid interpreta el "(" dentro de
+    # `|...|` como inicio de una forma de nodo, igual que en una etiqueta
+    # [...] -- "Parse error ... Expecting ... got 'PS'".
+    code = "flowchart LR\n    FlaskApp -->|API REST (intervenciones)| PowerBI"
+
+    result = sanitize_pipe_edge_labels(code)
+
+    assert result == (
+        'flowchart LR\n    FlaskApp -->|"API REST (intervenciones)"| PowerBI'
+    )
+
+
+def test_sanitize_pipe_edge_labels_leaves_plain_text_untouched():
+    code = "flowchart LR\n    A -->|extracción nocturna| B"
+    assert sanitize_pipe_edge_labels(code) == code
+
+
+def test_sanitize_pipe_edge_labels_leaves_already_quoted_label_untouched():
+    code = 'flowchart LR\n    A -->|"ya citado (con paréntesis)"| B'
+    assert sanitize_pipe_edge_labels(code) == code
+
+
+def test_sanitize_pipe_edge_labels_ignores_non_flowchart_diagram_types():
+    code = "sequenceDiagram\n  A->>B: 1) validar (con paréntesis)"
+    assert sanitize_pipe_edge_labels(code) == code
+
+
+def test_sanitize_mermaid_fixes_the_observatorio_render_failure_end_to_end():
+    # Mismo bloque que tumbó el render en producción (ver log de agent.py);
+    # sanitize_mermaid + validate_mermaid deben dejarlo válido sin intervención
+    # manual, sin pedirle al usuario que regenere una y otra vez.
+    code = "flowchart LR\n    FlaskApp -->|API REST (intervenciones)| PowerBI"
+
+    result = sanitize_mermaid(code)
+
+    assert validate_mermaid(result) == (True, None)
+    assert '|"API REST (intervenciones)"|' in result
+
+
+def test_validate_mermaid_rejects_unquoted_specials_in_pipe_edge_label():
+    code = "flowchart LR\n    FlaskApp -->|API REST (intervenciones)| PowerBI"
+
+    is_valid, error = validate_mermaid(code)
+
+    assert is_valid is False
+    assert "API REST (intervenciones)" in error
+
+
+def test_validate_mermaid_accepts_quoted_pipe_edge_label():
+    code = 'flowchart LR\n    FlaskApp -->|"API REST (intervenciones)"| PowerBI'
+    assert validate_mermaid(code) == (True, None)
