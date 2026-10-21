@@ -1347,6 +1347,25 @@ def _message_text(response: Any) -> str:
     return str(content or "")
 
 
+_COMPLETE_ENDING = re.compile(r"[.?!:;)\]»\"'*_`|]\s*$")
+
+
+def _trim_truncated_tail(body: str) -> str:
+    """Quita el último punto de lista si quedó cortado a la mitad.
+
+    Cuando la respuesta se corta por tokens, 7.8 terminaba en "- ¿Cuál". Solo
+    se toca el ÚLTIMO renglón, y solo si es un punto de lista que no termina
+    en puntuación (una pregunta sin "?", una frase sin punto).
+    """
+    lines = body.rstrip().splitlines()
+    if not lines:
+        return body
+    last = lines[-1].strip()
+    if re.match(r"^(?:[-*+]|\d+\.)\s+", last) and not _COMPLETE_ENDING.search(last):
+        return "\n".join(lines[:-1]).rstrip()
+    return body
+
+
 def clean_llm_sections(text: str) -> Optional[str]:
     """Normaliza la respuesta del LLM; ``None`` si le falta alguna sección.
 
@@ -1358,6 +1377,10 @@ def clean_llm_sections(text: str) -> Optional[str]:
     if fenced:
         body = fenced.group(1).strip()
     body = re.sub(r"^#{1,2}\s+(?!#)", "### ", body, flags=re.M)
+    # Encabezados vacíos que deja el modelo ("### 7." sin número ni título,
+    # visto en la guía del observatorio entre 7.7 y 7.8).
+    body = re.sub(r"^#{1,6}[ \t]*(?:7\.?)?[ \t]*$\n?", "", body, flags=re.M).strip()
+    body = _trim_truncated_tail(body)
     # Sin acentos ni mayúsculas: "Stack tecnologico" vale igual que
     # "Stack tecnológico". Antes una tilde de menos descartaba toda la
     # sección 7 después de haber gastado los tokens.
