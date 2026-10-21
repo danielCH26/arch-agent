@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from typing import Any, Optional
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.core.domain_concerns import concern_by_question, uncovered_concerns
+from app.core.domain_concerns import concern_by_question, relevant_concerns, uncovered_concerns
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +33,12 @@ _LOGGER = logging.getLogger(__name__)
 # decida el modelo.
 MIN_QUESTIONS = 5
 MAX_QUESTIONS = 10
+# Proyectos complejos (varias fuentes de datos o sistemas a integrar, varias
+# sedes, tiempo real, modelos predictivos, muchas preocupaciones del dominio):
+# con 10 preguntas el agente cerraba sin preguntar por fuentes adicionales,
+# frescura de los datos, menores de edad o retención (prueba del observatorio
+# de analítica). Ver ``max_questions``.
+MAX_QUESTIONS_COMPLEX = int(os.getenv("ELICITATION_MAX_QUESTIONS_COMPLEX", "14") or 14)
 
 # Estos tres datos no son una restricción genérica más: determinan si una
 # propuesta es viable. Se buscan en las RESPUESTAS del usuario, en la
@@ -51,6 +58,12 @@ MAX_QUESTIONS = 10
 _NUMBER = r"(?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doce)"
 _MONEY_AMOUNT = r"\d[\d.,]*(?:\s*(?:k|mil|millones?))?"
 _DEV_ROLE = r"(?:desarrollador(?:es)?|programador(?:es)?|developers?|devs?|ingenier[oa]s?\s+de\s+software)"
+# Roles que también cuentan como integrantes del equipo cuando vienen con un
+# número ("2 ingenieros de datos, 1 analista de Power BI").
+_TEAM_ROLE = (
+    r"(?:ingenier[oa]s?|analistas?|disenador(?:a|es|as)?|cientific[oa]s?\s+de\s+datos|"
+    r"testers?|qa|pm|lider(?:es)?\s+tecnic[oa]s?|arquitect[oa]s?|personas\s+en\s+el\s+equipo)"
+)
 _VIABILITY_FACTORS = (
     (
         "presupuesto",
@@ -68,7 +81,17 @@ _VIABILITY_FACTORS = (
     (
         "equipo",
         (
-            r"equipo",
+            # Antes bastaba la palabra "equipo": "Bienestar y el equipo de
+            # planeación" (una lista de USUARIOS) daba el equipo por respondido
+            # y nunca se preguntaba el tamaño. Ahora tiene que hablar del equipo
+            # que construye el sistema.
+            r"equipo\s+(?:de\s+)?(?:desarrollo|desarrolladores|ingenieria|software|sistemas|ti|"
+            r"tecnico|tecnologia|trabajo|datos|proyecto)",
+            r"equipo\s+(?:de|con)\s+" + _NUMBER,
+            r"equipo\s+(?:pequeno|grande|reducido|chico|mediano|propio|interno)",
+            r"(?:el|nuestro|mi)\s+equipo\s+(?:es|son|somos|tiene|esta|cuenta|lo\s+forman|"
+            r"lo\s+integran|domina|sabe|conoce|maneja|trabaja)",
+            _NUMBER + r"\s+(?:\w+\s+)?" + _TEAM_ROLE,
             r"somos\s+" + _NUMBER,
             _NUMBER + r"\s+(?:\w+\s+)?" + _DEV_ROLE,
             _DEV_ROLE + r"\s+(?:senior|junior|semi\s*senior)",
@@ -201,8 +224,17 @@ reinterpretes ni las resumas a un solo número.
 En "contexto_tecnico" usa las palabras del usuario; si no lo dijo, escribe \
 "no definido".
 
+En "escala" copia las cifras de volumen que dio el usuario (cuántos usuarios \
+de cada tipo, cuántos datos o registros, con qué frecuencia se usa, picos); \
+si no dio ninguna, escribe "no definido". En contexto_tecnico.\
+"tecnologias_no_dominadas" anota las tecnologías que el usuario dijo que el \
+equipo NO conoce o no ha usado; si no lo dijo, "no definido".
+
+Las respuestas a "(ajuste solicitado por el usuario)" son correcciones que el \
+usuario hizo al revisar el resumen: mandan sobre lo que dijo antes.
+
 En "datos_viabilidad" copia lo que dijo el usuario sobre presupuesto, equipo y \
-plazo. Solo corrige errores de escritura evidentes (letras que faltan o están \
+plazo (si lo corrigió después, la versión corregida). Solo corrige errores de escritura evidentes (letras que faltan o están \
 cambiadas, como "edio" por "medio"); no cambies cifras, no agregues datos y \
 no reinterpretes el sentido. Si no lo dijo, deja el campo vacío.
 
@@ -214,7 +246,8 @@ forma exacta:
   "funcionalidades": [str, ...],
   "restricciones": [str, ...],
   "calidad": [{"atributo": str, "origen": "dicho" | "propuesto"}, ...],
-  "contexto_tecnico": {"plataforma": str, "habilidades_equipo": str, "fuentes_de_datos": str},
+  "escala": str,
+  "contexto_tecnico": {"plataforma": str, "habilidades_equipo": str, "fuentes_de_datos": str, "tecnologias_no_dominadas": str},
   "datos_viabilidad": {"presupuesto": str, "equipo": str, "plazo": str}
 }
 """
@@ -647,6 +680,40 @@ _COVERAGE_REGEXES = {
 # elicitación (ubicación, archivos, pagos...). Las demás preocupaciones sin
 # respuesta llegan al ADR como preguntas abiertas obligatorias (sección 7.8).
 MAX_DOMAIN_QUESTIONS = 2
+MAX_DOMAIN_QUESTIONS_COMPLEX = 4
+
+# Señales de un proyecto complejo en lo que dijo el usuario (sin acentos).
+_COMPLEXITY_MARKERS = re.compile(
+    r"\b(?:integra\w*|varios\s+sistemas|fuentes\s+de\s+datos|varias\s+fuentes|sedes|"
+    r"tiempo\s+real|en\s+vivo|cada\s+minuto|modelo\s+predictivo|predicci\w+|machine\s+learning|"
+    r"puntaje\s+de\s+riesgo|replica|eventos|streaming|multisede|regiones)\b"
+)
+
+
+def is_complex_project(
+    history: list[dict], project_description: str = "", documents_context: Optional[str] = None
+) -> bool:
+    """¿El proyecto necesita más preguntas que el tope normal?
+
+    Complejo = al menos 3 señales distintas (``_COMPLEXITY_MARKERS``) o al
+    menos 4 preocupaciones del dominio relevantes (sin contar las que aplican
+    a todo sistema).
+    """
+    text = _normalize_text(_user_context(history, project_description, documents_context))
+    markers = {m.group(0) for m in _COMPLEXITY_MARKERS.finditer(text)}
+    if len(markers) >= 3:
+        return True
+    concerns = [c for c in relevant_concerns(text) if not c.always]
+    return len(concerns) >= 4
+
+
+def max_questions(
+    history: list[dict], project_description: str = "", documents_context: Optional[str] = None
+) -> int:
+    """Tope de preguntas para este proyecto (``MAX_QUESTIONS`` o ``MAX_QUESTIONS_COMPLEX``)."""
+    if is_complex_project(history, project_description, documents_context):
+        return max(MAX_QUESTIONS, MAX_QUESTIONS_COMPLEX)
+    return MAX_QUESTIONS
 
 
 def _user_context(
@@ -707,7 +774,12 @@ def pending_domain_questions(
         for concern in [concern_by_question(str(item.get("pregunta") or ""))]
         if concern is not None
     }
-    if len(asked_keys) >= MAX_DOMAIN_QUESTIONS:
+    limit = (
+        MAX_DOMAIN_QUESTIONS_COMPLEX
+        if is_complex_project(history, project_description, documents_context)
+        else MAX_DOMAIN_QUESTIONS
+    )
+    if len(asked_keys) >= limit:
         return []
     text = _user_context(history, project_description, documents_context)
     return [
@@ -874,6 +946,8 @@ def next_step(
         raise ElicitationAgentError(f"Falta la clave 'done' en la respuesta del modelo: {data}")
 
     decision = _decision_from_data(data)
+    # Tope de preguntas de ESTE proyecto (más alto si es complejo).
+    max_q = max_questions(history, project_description, documents_context)
 
     # Regla dura complementaria al prompt: el LLM no puede cerrar ni saltarse
     # los límites que condicionan coste, complejidad y entrega. Solo se aplica
@@ -882,7 +956,7 @@ def next_step(
     # LLM (ya pagada) con las de presupuesto, equipo y plazo, rompiendo la
     # progresión de HU5. Y respeta MAX_QUESTIONS: a partir del máximo no se
     # hace una pregunta más, se cierra (ver abajo).
-    if len(history) < MAX_QUESTIONS and (
+    if len(history) < max_q and (
         decision.done or len(history) >= MIN_QUESTIONS
     ):
         missing_viability = _missing_viability_factors(
@@ -896,7 +970,7 @@ def next_step(
                 reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
             )
 
-    if not decision.done and MIN_QUESTIONS <= len(history) < MAX_QUESTIONS:
+    if not decision.done and MIN_QUESTIONS <= len(history) < max_q:
         # Reserva de turnos: si las preguntas que quedan apenas alcanzan para
         # lo obligatorio que falta (categorías de HU5 y lo que decide la
         # arquitectura: plataforma, habilidades, fuente de datos), se pregunta
@@ -904,7 +978,7 @@ def next_step(
         # con otros temas hasta la pregunta 10 y la elicitación se cerraba por
         # el máximo sin haber preguntado, por ejemplo, la plataforma.
         missing = missing_coverage(history, project_description, documents_context)
-        if missing and MAX_QUESTIONS - len(history) <= len(missing):
+        if missing and max_q - len(history) <= len(missing):
             category, question = missing[0]
             return ElicitationDecision(
                 done=False,
@@ -912,7 +986,7 @@ def next_step(
                 reason=f"Quedan pocas preguntas y falta lo obligatorio: {category}.",
             )
 
-    if decision.done and MIN_QUESTIONS <= len(history) < MAX_QUESTIONS:
+    if decision.done and MIN_QUESTIONS <= len(history) < max_q:
         # Checklist de cobertura: el LLM quiere cerrar, pero el código no lo
         # deja si falta una categoría de HU5 o una preocupación del dominio
         # (ubicación, archivos, pagos...) que el proyecto sugiere. Antes del
@@ -927,7 +1001,7 @@ def next_step(
                 reason=f"Falta cubrir la categoría obligatoria: {category}.",
             )
         domain = pending_domain_questions(history, project_description, documents_context)
-        if domain and len(history) < MAX_QUESTIONS - 1:
+        if domain and len(history) < max_q - 1:
             concern, question = domain[0]
             return ElicitationDecision(
                 done=False,
@@ -944,12 +1018,12 @@ def next_step(
             reason="Forzado: aún no se alcanza el mínimo de preguntas "
             f"({len(history)}/{MIN_QUESTIONS}).",
         )
-    elif len(history) >= MAX_QUESTIONS and not decision.done:
+    elif len(history) >= max_q and not decision.done:
         # Regla dura opuesta: no dejar que se alargue indefinidamente.
         decision = ElicitationDecision(
             done=True,
             question=None,
-            reason=f"Forzado: se alcanzó el máximo de preguntas ({MAX_QUESTIONS}).",
+            reason=f"Forzado: se alcanzó el máximo de preguntas ({max_q}).",
         )
 
     if (
@@ -965,6 +1039,19 @@ def next_step(
     return decision
 
 
+# Pregunta con la que app/api/elicitation.py guarda un ajuste del usuario a los
+# requerimientos (decisión "modify"), normalizada.
+_ADJUSTMENT_QUESTION = "(ajuste solicitado por el usuario)"
+
+
+def _first_matching_sentence(name: str, text: str) -> str:
+    """Primera oración de ``text`` que menciona el factor ``name``."""
+    for sentence in re.split(r"(?<=[.;\n])\s+", text):
+        if _VIABILITY_REGEXES[name].search(_normalize_text(sentence)):
+            return sentence.strip()
+    return ""
+
+
 def viability_facts(
     history: list[dict],
     project_description: str = "",
@@ -975,27 +1062,55 @@ def viability_facts(
     El resumen del LLM a veces los pierde o los reinterpreta: un "4 devs, 3
     front y 1 PM" terminaba como "Equipo: no definido" en el ADR o como "4
     desarrolladores backend" en la propuesta. Aquí se guarda el texto tal
-    cual: la respuesta a la pregunta del factor (si se hizo) o la primera
-    respuesta, descripción o documento que lo menciona.
+    cual.
+
+    Orden de prioridad:
+      1. el ajuste MÁS RECIENTE que el usuario pidió al revisar los
+         requerimientos ("(ajuste solicitado por el usuario)") y que menciona
+         el factor. Antes ganaba la primera coincidencia y una corrección del
+         plazo ("piloto a los 3 meses y versión completa a los 6") no llegaba
+         a los datos de viabilidad ni al resumen ejecutivo del ADR;
+      2. la respuesta más reciente a la pregunta del factor;
+      3. la primera respuesta que lo menciona;
+      4. la descripción o los documentos.
     """
     facts: dict[str, str] = {}
+    adjustments = [
+        str(item.get("respuesta") or "").strip()
+        for item in history
+        if _normalize_text(str(item.get("pregunta") or "")).strip() == _ADJUSTMENT_QUESTION
+    ]
     for name, _patterns, question in _VIABILITY_FACTORS:
         questions = {
             _normalize_text(text).strip()
             for text in (question, *_LEGACY_VIABILITY_QUESTIONS.get(name, ()))
         }
         answer = next(
-            (
-                str(item.get("respuesta") or "").strip()
-                for item in history
-                if _normalize_text(str(item.get("pregunta") or "")).strip() in questions
-                and str(item.get("respuesta") or "").strip()
-            ),
+            (hit for text in reversed(adjustments) for hit in [_first_matching_sentence(name, text)] if hit),
             "",
         )
         if not answer:
-            candidates = [str(item.get("respuesta") or "") for item in history]
-            candidates += [project_description or "", documents_context or ""]
+            answer = next(
+                (
+                    str(item.get("respuesta") or "").strip()
+                    for item in reversed(history)
+                    if _normalize_text(str(item.get("pregunta") or "")).strip() in questions
+                    and str(item.get("respuesta") or "").strip()
+                ),
+                "",
+            )
+        if not answer:
+            answer = next(
+                (
+                    hit
+                    for item in history
+                    for hit in [_first_matching_sentence(name, str(item.get("respuesta") or ""))]
+                    if hit
+                ),
+                "",
+            )
+        if not answer:
+            candidates = [project_description or "", documents_context or ""]
             for text in candidates:
                 sentences = re.split(r"(?<=[.;\n])\s+", text)
                 hit = next(

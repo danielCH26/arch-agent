@@ -816,11 +816,24 @@ def test_truncated_proposal_is_not_persisted_and_yields_error():
     assert not any(name == "done" for name, _ in events)
 
 
-def test_finish_reason_length_is_not_persisted_even_if_sections_exist():
+def test_finish_reason_length_with_every_section_is_persisted():
+    """Antes se descartaba siempre. La validación ya exige la tabla completa y
+    el punto de decisión (lo último de la propuesta): si pasa, no se perdió nada."""
     events, persisted = _stream_with(None, _FULL_PROPOSAL, finish_reason="length")
 
-    assert persisted == []
-    assert events[-1][0] == "error"
+    assert len(persisted) == 1
+    assert events[-1][0] == "done"
+
+
+def test_finish_reason_length_with_a_cut_table_is_rebuilt_from_the_catalog():
+    cut = _FULL_PROPOSAL.split("| Modular |")[0]
+    events, persisted = _stream_with(None, cut + "| Modular | Límites", finish_reason="length")
+
+    # Sin LLM para reparar (el modelo falso no tiene ainvoke) y sin patrones
+    # recuperados, la tabla se arma con el catálogo, marcada "Sin fuente RAG".
+    assert events[-1][0] == "done"
+    assert persisted[0]["markdown"].count("Sin fuente RAG") == 3
+    assert "- Punto de decisión: ¿Aprueba los trade-offs?" in persisted[0]["markdown"]
 
 
 def test_complete_proposal_is_persisted_and_done_is_emitted():
@@ -1814,7 +1827,8 @@ def test_timeout_of_the_llm_client_is_not_reported_as_our_budget():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "LLM stream failed" in events[-1][1]["message"]
+    assert "No se pudo generar la propuesta" in events[-1][1]["message"]
+    assert "tardó más de lo permitido" in events[-1][1]["message"]
     assert "tiempo máximo" not in events[-1][1]["message"]
     # Un fallo del proveedor es reintentable, pero NO es nuestro tope de tiempo.
     assert _error_meta(events) == ("llm_stream_failed", True)
@@ -2614,10 +2628,19 @@ def test_fallback_table_uses_the_retrieved_patterns_and_passes_validation():
     assert rebuilt.count("## Trade-offs y decisión") == 1
 
 
-def test_without_three_sources_there_is_no_fallback_table():
-    from app.core.proposal_generator import _fallback_tradeoff_section
+def test_with_two_sources_the_table_is_completed_from_the_catalog():
+    """Antes no había tabla con menos de 3 fuentes y la propuesta se descartaba."""
+    from app.core.proposal_generator import (
+        _fallback_tradeoff_section,
+        _merge_proposal_sections,
+        _missing_sections,
+    )
 
-    assert _fallback_tradeoff_section(_BROKEN_TABLE, _REPAIR_CITATIONS[:2]) is None
+    section = _fallback_tradeoff_section(_BROKEN_TABLE, _REPAIR_CITATIONS[:2])
+    assert section is not None
+    assert section.count("Sin fuente RAG") == 1
+    rebuilt = _merge_proposal_sections(_BROKEN_TABLE, section)
+    assert _missing_sections(rebuilt, source_count=2) == []
 
 
 def test_merge_replaces_a_broken_level_three_tradeoff_heading():
@@ -2783,3 +2806,251 @@ def test_a_non_breaking_hyphen_in_the_heading_is_still_the_tradeoff_section():
         "Punto de decisión", "Punto de decisión"
     )
     assert _missing_sections(proposal, source_count=3) == []
+
+
+# --- Prueba del observatorio de analítica (hallazgos) -------------------------
+
+
+def test_modify_keeps_the_previous_primary_pattern_when_feedback_does_not_name_one():
+    """2.3: con un comentario que no nombraba el patrón volvía Monolito modular."""
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.86, "baja"),
+        _pat("Pipeline de datos ETL / ELT por lotes", 2, 0.83, "media"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.84, "media"),
+    ]
+    citations = _select_citations(
+        docs,
+        feedback="Agrega el reporte SNIES y el tablero de ocupación",
+        keep_primary="Pipeline ETL/ELT por lotes [1]",
+    )
+    assert citations[0]["pattern_name"] == "Pipeline de datos ETL / ELT por lotes"
+
+
+def test_modify_that_asks_for_another_pattern_still_wins_over_the_previous_one():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.86, "baja"),
+        _pat("Pipeline de datos ETL / ELT por lotes", 2, 0.83, "media"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.84, "media"),
+    ]
+    citations = _select_citations(
+        docs,
+        feedback="Cambia a serverless",
+        keep_primary="Pipeline de datos ETL / ELT por lotes",
+    )
+    assert citations[0]["pattern_name"] == "Serverless (Function-as-a-Service)"
+
+
+def test_prior_primary_pattern_is_read_from_the_previous_proposal():
+    from app.core.proposal_generator import _prior_primary_pattern
+
+    assert _prior_primary_pattern(_FULL_PROPOSAL) == "Arquitectura en capas (Layered)"
+    assert _prior_primary_pattern("sin patrón") is None
+
+
+def test_data_projects_prefer_data_patterns_and_a_data_alternative():
+    """2.1 / 2.9: para un observatorio de analítica salía API Gateway + BFF."""
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("API Gateway + Backend for Frontend (BFF)", 1, 0.86, "media"),
+        _pat("Serverless (Function-as-a-Service)", 2, 0.85, "media"),
+        _pat("Monolito modular (Modular Monolith)", 3, 0.84, "baja"),
+        _pat("Pipeline de datos ETL / ELT por lotes", 4, 0.83, "media"),
+        _pat("Data Lakehouse con capas Medallion (bronce, plata, oro)", 5, 0.82, "media"),
+    ]
+    text = (
+        "Observatorio: integrar los datos del sistema académico y de Moodle en "
+        "tableros de Power BI con indicadores por programa."
+    )
+    citations = _select_citations(docs, explicit_text=text)
+    names = [c["pattern_name"] for c in citations]
+    assert names[0] == "Pipeline de datos ETL / ELT por lotes"
+    assert "Data Lakehouse con capas Medallion (bronce, plata, oro)" in names
+    # Sigue habiendo una alternativa de otra familia.
+    assert len({c.get("family") for c in citations}) >= 2
+
+
+def test_a_regular_project_is_not_a_data_project():
+    from app.core.proposal_generator import _data_project_signal
+
+    assert _data_project_signal("Agenda de citas con recordatorios por correo") is False
+    assert _data_project_signal("Tableros en Power BI con indicadores de ventas") is True
+
+
+def test_unverified_cloud_region_and_response_time_are_marked_as_assumptions():
+    """2.4 / 2.12: "región Colombia Central" de Azure y "< 1 s" se daban por hechos."""
+    from app.core.proposal_generator import mark_unverified_claims
+
+    proposal = (
+        "- Almacén: Azure Database for PostgreSQL – región Colombia Central\n"
+        "| FastAPI | Permite responder en < 1 s a los lectores | Ocupación |\n"
+        "- Disponibilidad de 99.5% pedida por el usuario\n"
+    )
+    marked = mark_unverified_claims(proposal, "Disponibilidad 99.5% en horario de atención")
+    assert "región Colombia Central (supuesto)" in marked
+    assert "< 1 s (supuesto)" in marked
+    assert "99.5% (supuesto)" not in marked  # esa cifra sí la dio el usuario
+    # No marca dos veces.
+    assert mark_unverified_claims(marked, "Disponibilidad 99.5% en horario de atención") == marked
+
+
+def test_a_region_without_a_cloud_provider_is_not_touched():
+    from app.core.proposal_generator import mark_unverified_claims
+
+    text = "- Usuarios de la región Caribe\n"
+    assert mark_unverified_claims(text, "") == text
+
+
+def test_batch_and_real_time_requirements_add_the_two_paths_rule():
+    """2.11: la justificación decía que no hacía falta tiempo real."""
+    from app.core.proposal_generator import _build_prompt
+    from app.core.viability_rules import REAL_TIME_PATH_RULE
+
+    both = _build_prompt(
+        [], None, None, "Obs",
+        requirements_text="Carga nocturna de la réplica. Tablero de ocupación actualizado cada minuto.",
+    )
+    only_batch = _build_prompt([], None, None, "Obs", requirements_text="Carga nocturna de la réplica.")
+    assert REAL_TIME_PATH_RULE in both
+    assert REAL_TIME_PATH_RULE not in only_batch
+
+
+def test_compact_prompt_is_shorter_and_keeps_the_feedback():
+    from app.core.proposal_generator import _build_prompt
+
+    citations = [
+        {
+            "pattern_name": f"Patrón {i}",
+            "source_role": "primary" if i == 1 else "tradeoff_option",
+            "snippet": "x" * 240,
+            "tradeoffs": {"ventajas": ["a" * 100] * 5, "desventajas": ["b" * 100] * 5},
+        }
+        for i in range(1, 4)
+    ]
+    args = dict(
+        citations=citations, prior_content="## Componentes\n- API", feedback="Agrega el reporte SNIES",
+        project_name="Obs", documents_text="d" * 6000,
+    )
+    full, compact = _build_prompt(**args), _build_prompt(**args, compact=True)
+    assert len(compact) < len(full) - 3000
+    assert "Agrega el reporte SNIES" in compact
+
+
+def test_a_413_from_the_provider_is_explained_and_not_retryable():
+    """3.2 / 3.4: se mostraba el error crudo de Groq y "Reintentar" fallaba igual."""
+
+    class _Model:
+        async def astream(self, _prompt):
+            raise RuntimeError(
+                "Error code: 413 - Request too large for model on tokens per minute (TPM): "
+                "Limit 8000, Requested 8117 ... rate_limit_exceeded"
+            )
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    message = events[-1][1]["message"]
+    assert "límite de tokens" in message and "Error code" not in message
+    assert _error_meta(events) == ("llm_stream_failed", False)
+
+
+def test_citations_take_the_sources_from_the_catalog_when_the_base_has_none():
+    """2.14: el patrón recomendado salía sin enlaces en Referencias."""
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations([_pat("Pipeline de datos ETL / ELT por lotes", 1, 0.9, "media")])
+    assert citations[0]["fuentes"], "las fuentes del YAML deberían llegar a la cita"
+
+
+def test_a_429_before_the_first_token_is_retried_once():
+    """Límite de tokens por minuto de Groq: antes había que darle a "Reintentar"."""
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    class _Model:
+        calls = 0
+
+        async def astream(self, _prompt):
+            _Model.calls += 1
+            if _Model.calls == 1:
+                raise RuntimeError("Error code: 429 - rate_limit_exceeded. Please try again in 0.01s.")
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert _Model.calls == 2
+    assert "waiting" in [payload["stage"] for name, payload in events if name == "progress"]
+
+
+def test_a_second_429_is_reported_and_retryable():
+    class _Model:
+        async def astream(self, _prompt):
+            raise RuntimeError("Error code: 429 - rate_limit_exceeded. Please try again in 0.01s.")
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert "límite de uso por minuto" in events[-1][1]["message"]
+    assert _error_meta(events) == ("llm_stream_failed", True)
+
+
+def test_modify_that_changes_the_pattern_without_asking_saves_a_warning():
+    """Un ajuste que no nombra el patrón y lo cambia queda avisado al principio."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.proposal_notes import NOTE_TITLE
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    changed = _FULL_PROPOSAL.replace(
+        "- Patrón principal: Arquitectura en capas (Layered)", "- Patrón principal: Microservicios"
+    ).replace("- Recomendación: Capas", "- Recomendación: Microservicios")
+
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(changed)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    persisted = []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    with patch.object(gen, "_load_project_and_session", return_value=(project, 1)), \
+        patch.object(gen, "_load_prior_proposal", return_value=(_FULL_PROPOSAL, 1)), \
+        patch.object(gen, "load_requirements_text", return_value=""), \
+        patch.object(gen, "load_documents_text", return_value=("", [])), \
+        patch.object(gen, "_retrieve_patterns", return_value=[]), \
+        patch.object(gen, "build_langchain_model", return_value=_Model()), \
+        patch.object(gen, "_persist_proposal_and_log",
+                     side_effect=lambda **kw: persisted.append(kw) or (7, 8, 2)), \
+        patch.object(gen, "_engram_mirror", new=_noop_async):
+        events = _drain(
+            gen.ProposalGenerator(user_id=1, project_id=1).generate_stream(
+                feedback="Agrega un módulo de reportes", prior_proposal_id=3
+            )
+        )
+
+    assert events[-1][0] == "done"
+    saved = persisted[0]["markdown"]
+    assert saved.startswith(NOTE_TITLE)
+    assert "cambió de «Arquitectura en capas (Layered)» a «Microservicios»" in saved

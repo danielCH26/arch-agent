@@ -70,6 +70,8 @@ export type ProposalProgressStage =
   | 'generating'
   /** La tabla de trade-offs (u otra sección) quedó incompleta y se está completando. */
   | 'repairing'
+  /** El proveedor pidió esperar por su límite de uso por minuto; se reintenta solo. */
+  | 'waiting'
   | 'saving'
 
 export interface ProposalProgress {

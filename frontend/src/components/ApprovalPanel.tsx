@@ -23,6 +23,7 @@ const SUBFIELD_LABELS: Record<string, string> = {
   plataforma: 'Plataforma',
   habilidades_equipo: 'Habilidades del equipo',
   fuentes_de_datos: 'Fuente de los datos',
+  tecnologias_no_dominadas: 'Tecnologías que el equipo no domina',
   presupuesto: 'Presupuesto',
   equipo: 'Equipo',
   plazo: 'Plazo',
@@ -66,6 +67,7 @@ const RESUMEN_LABELS: Record<string, string> = {
   funcionalidades: 'Funcionalidades',
   restricciones: 'Restricciones',
   calidad: 'Atributos de calidad',
+  escala: 'Escala y volumen',
   contexto_tecnico: 'Contexto técnico',
   datos_viabilidad: 'Datos de viabilidad (palabras del usuario)',
 }

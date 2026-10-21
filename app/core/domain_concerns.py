@@ -155,6 +155,69 @@ DOMAIN_CONCERNS: tuple[DomainConcern, ...] = (
             "tienen API y quién la mantiene."
         ),
     ),
+    # Las tres siguientes salieron de la prueba del observatorio de analítica:
+    # la elicitación nunca preguntó si había datos de menores, cuánto se
+    # guardaban los eventos ni cada cuánto debía estar al día el tablero, y la
+    # propuesta quedó con la tensión lotes / tiempo real sin resolver.
+    DomainConcern(
+        key="frescura",
+        label="Frescura de los datos",
+        covered=(
+            r"tiempo\s+real", r"en\s+vivo", r"cada\s+(?:minuto|hora|dia|noche|semana|mes)",
+            r"diari\w+", r"semanal\w*", r"actualiza\w*\s+(?:cada|en|al|diari\w*|semanal\w*)",
+            r"al\s+dia", r"near\s+real\s+time", r"refresco",
+        ),
+        triggers=(
+            r"tableros?", r"dashboards?", r"indicadores?", r"reportes?", r"analitica",
+            r"power\s*bi", r"metricas?", r"monitoreo", r"ocupacion",
+        ),
+        question="¿Cada cuánto deben estar actualizados los datos que se muestran (en tiempo real, cada hora o cada día)?",
+        open_question=(
+            "¿Cada cuánto deben estar al día los datos de cada tablero o reporte? "
+            "Si alguno necesita tiempo real, la arquitectura debe tener una vía "
+            "aparte de la carga por lotes."
+        ),
+    ),
+    DomainConcern(
+        key="menores",
+        label="Datos de menores de edad",
+        covered=(
+            r"menores\s+de\s+edad", r"menores", r"ninos", r"ninas", r"adolescentes",
+            r"mayores\s+de\s+edad", r"acudientes?", r"padres\s+de\s+familia",
+        ),
+        triggers=(
+            r"estudiantes?", r"alumnos?", r"colegios?", r"escuelas?", r"pediatri\w+",
+            r"aspirantes?", r"bachiller\w*",
+        ),
+        domains=("educacion",),
+        question="¿El sistema va a guardar datos de menores de edad?",
+        open_question=(
+            "¿Hay datos de menores de edad (estudiantes de primer semestre, "
+            "aspirantes, pacientes)? Requieren autorización de padres o "
+            "acudientes y un acceso más restringido."
+        ),
+    ),
+    DomainConcern(
+        key="retencion",
+        label="Retención de los datos",
+        covered=(
+            r"retenci\w+", r"conserva\w*\s+(?:los\s+)?(?:datos|registros|eventos)",
+            r"(?:borrar|eliminar|anonimizar|purgar)\s+(?:los\s+)?(?:datos|registros|eventos)",
+            r"cuanto\s+tiempo\s+se\s+guarda\w*", r"\d+\s+(?:dias|meses|anos)\s+de\s+historia",
+        ),
+        triggers=(
+            r"eventos?", r"registros?\s+de\s+(?:acceso|entrada|ingreso)", r"logs?",
+            r"lectores?", r"sensores?", r"carne", r"historial", r"historicos?",
+            r"auditoria", r"trazabilidad",
+        ),
+        domains=("salud", "educacion", "finanzas", "banca"),
+        question="¿Cuánto tiempo deben conservarse los datos antes de borrarlos o anonimizarlos?",
+        open_question=(
+            "¿Cuánto tiempo se conservan los datos (eventos, historiales, "
+            "registros de acceso) y cuándo se borran o anonimizan? Define la "
+            "política antes de diseñar el almacenamiento."
+        ),
+    ),
     DomainConcern(
         key="respaldos",
         label="Respaldos de los datos",

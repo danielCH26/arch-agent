@@ -281,6 +281,10 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
           <label htmlFor={`adr-changes-${projectId}`} className="block text-sm font-medium text-gray-800 dark:text-gray-200">
             ¿Qué quieres cambiar en el ADR?
           </label>
+          <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="adr-changes-scope">
+            Los cambios se aplican a la guía para empezar (sección 7). Las secciones 1 a 6 reflejan lo que ya se
+            aprobó: para cambiar un componente, el diagrama o la propuesta, vuelve a esa fase.
+          </p>
           {completed && (
             <p className="text-xs text-amber-800" data-testid="adr-reopen-note">
               El ADR ya está aprobado: al aplicar los cambios el proyecto se reabre y tendrás que aprobarlo otra vez.
@@ -342,7 +346,7 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
 
       {generating && (
         <p role="status" className="mt-3 text-sm text-indigo-800 dark:text-indigo-300">
-          Generando el ADR con las decisiones del proyecto. Puede tardar hasta un minuto…
+          Generando el ADR con las decisiones del proyecto. En proyectos grandes puede tardar dos o tres minutos…
         </p>
       )}
 

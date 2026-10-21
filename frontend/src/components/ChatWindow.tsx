@@ -71,7 +71,7 @@ export function ChatWindow({
   // modifica una propuesta, aunque la fase cambie durante el stream.
   const proposalStreaming = proposalsStore((s) => s.activity === 'generating' || s.activity === 'modifying')
   const showProposalCard = currentPhase === 'propuesta' || proposalStreaming
-  // Revisión (y Cierre, para volver a descargarlo): el ADR del proyecto.
+  // Revisión: el ADR del proyecto (aprobado o no; ahí también se vuelve a descargar).
   // El flujo termina en Revisión: ahí vive el ADR (no hay fase 'final').
   const showAdrPanel = currentPhase === 'revision'
   const projectName = projectsStore((s) => (s.currentProject?.id === projectId ? s.currentProject?.name : null))
@@ -160,6 +160,13 @@ export function ChatWindow({
         await waitForHistoryLoad()
         const diagrams = await fetchDiagramHistory(projectId)
         if (diagrams.length > 0) return
+        // El historial solo cuenta los diagramas que se pudieron convertir a
+        // imagen. Si el de la primera visita quedó solo como código Mermaid,
+        // al volver se mandaba otro automático: ya hay diagrama, no se repite.
+        const hasMermaid = chatStore
+          .getState()
+          .messages.some((message) => message.role === 'assistant' && /```mermaid/i.test(message.content))
+        if (hasMermaid) return
         if (!isRefinementPhase(phaseRef.current)) return
         const state = chatStore.getState()
         if (state.isStreaming || state.loadingHistory) return

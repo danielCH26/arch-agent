@@ -66,6 +66,25 @@ TEAM_FIT_RULE = (
     "\"open source\".\n"
 )
 
+# Prueba del observatorio de analítica: la propuesta dio por hecha una
+# "región Colombia Central" de Azure (sin evidencia de que exista), afirmó que
+# FastAPI respondía "en < 1 s" a un requisito que nadie pidió, citó entre
+# comillas un requisito inventado y presentó Logic Apps como "ya dominada" por
+# un equipo que solo tenía conocimientos básicos de Azure.
+UNVERIFIABLE_FACTS_RULE = (
+    "- DATOS QUE NO PUEDES VERIFICAR: no afirmes como hecho regiones o zonas de "
+    "un proveedor de nube en un país, la disponibilidad de un servicio en una "
+    "región, precios, versiones ni tiempos de respuesta. Si hacen falta, "
+    "escríbelos seguidos de `(supuesto)` y deja claro que hay que confirmarlos. "
+    "Si el usuario pide verificar uno de esos datos, di explícitamente que no "
+    "puedes verificarlo desde aquí y que debe confirmarse en la documentación "
+    "oficial del proveedor.\n"
+    "- Cada \"Requisito que lo motiva\" debe ser un requisito que está en los "
+    "requerimientos; no pongas entre comillas texto que no aparece ahí.\n"
+    "- No digas que el equipo domina una tecnología que no está en "
+    "\"Habilidades del equipo\".\n"
+)
+
 # Bloque común que va, tal cual, en el prompt de la propuesta y en el de la
 # guía del ADR.
 COMMON_VIABILITY_RULES = (
@@ -75,6 +94,18 @@ COMMON_VIABILITY_RULES = (
     + FRAMEWORK_LAYERS_RULE
     + NO_INVENTED_METRICS_RULE
     + UNKNOWN_FIGURES_RULE
+    + UNVERIFIABLE_FACTS_RULE
+)
+
+# Se agrega al prompt de la propuesta solo cuando los requerimientos piden a la
+# vez cargas por lotes y datos casi en tiempo real (ver proposal_generator).
+REAL_TIME_PATH_RULE = (
+    "- LOTES Y TIEMPO REAL: los requerimientos piden datos que se cargan por "
+    "lotes y otros que deben estar al día en minutos o en tiempo real. Di "
+    "explícitamente qué componente atiende cada vía y con qué frecuencia se "
+    "actualiza cada tablero; no digas que no hace falta tiempo real si un "
+    "requisito lo pide. Si entre las fuentes hay un patrón que combine ambas "
+    "vías (Lambda / Kappa), evalúalo en la tabla de trade-offs.\n"
 )
 
 # Marca que la guía del ADR debe poner a todo dato que no viene de la

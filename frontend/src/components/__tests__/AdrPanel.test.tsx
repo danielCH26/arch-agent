@@ -93,6 +93,16 @@ describe('AdrPanel', () => {
     await waitFor(() => expect(screen.queryByTestId('adr-changes-form')).not.toBeInTheDocument())
   })
 
+  it('al pedir cambios aclara que solo se rehace la sección 7', async () => {
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+
+    renderPanel()
+    await userEvent.click(await screen.findByTestId('adr-request-changes'))
+
+    expect(screen.getByTestId('adr-changes-scope')).toHaveTextContent('sección 7')
+    expect(screen.getByTestId('adr-changes-scope')).toHaveTextContent('vuelve a esa fase')
+  })
+
   it('aprobar termina el proyecto, felicita y avisa a la página', async () => {
     vi.mocked(getAdr).mockResolvedValue(ADR)
     vi.mocked(approveAdr).mockResolvedValue({ ...ADR, approved_at: '2026-10-16T16:00:00+00:00' })

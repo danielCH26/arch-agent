@@ -58,6 +58,9 @@ def format_requirements_summary(resumen: dict | None) -> str:
         block = _format_list(title, resumen.get(key))
         if block:
             parts.append(block)
+    escala = str(resumen.get("escala") or "").strip()
+    if escala and escala.lower() not in {"no definido", "no definida"}:
+        parts.append(f"Escala y volumen (cifras del usuario): {escala}")
     tecnico = resumen.get("contexto_tecnico")
     if isinstance(tecnico, dict):
         items = [
@@ -66,6 +69,7 @@ def format_requirements_summary(resumen: dict | None) -> str:
                 ("plataforma", "Plataforma"),
                 ("habilidades_equipo", "Habilidades del equipo"),
                 ("fuentes_de_datos", "Fuente de los datos"),
+                ("tecnologias_no_dominadas", "Tecnologías que el equipo NO domina"),
             )
             if str(tecnico.get(key) or "").strip()
         ]

@@ -26,6 +26,7 @@ from app.api.projects import _require_project
 from app.core.adr_generator import (
     ADR_STATE_KEY,
     AdrContext,
+    AdrDecision,
     AdrNotReadyError,
     collect_adr_context,
     extract_guide_section,
@@ -78,8 +79,15 @@ def _iso(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat()
 
 
-def _session_row(db, user_id: int) -> UserSession:
-    row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+def _session_row(db, user_id: int, *, lock: bool = False) -> UserSession:
+    """Fila de sesión del usuario. ``lock=True`` la bloquea hasta el commit
+    (SELECT ... FOR UPDATE): dos "Aprobar" casi simultáneos ya no registran dos
+    aprobaciones, y el ADR no pisa lo que otro endpoint guardó en
+    ``engram_state`` mientras el LLM redactaba (se lee justo antes de guardar)."""
+    query = db.query(UserSession).filter(UserSession.user_id == user_id)
+    if lock:
+        query = query.with_for_update()
+    row = query.first()
     if row is None:
         row = UserSession(user_id=user_id, engram_state={})
         db.add(row)
@@ -165,10 +173,17 @@ async def generate_adr(
     """Genera el ADR con lo decidido hasta ahora.
 
     Con ``feedback`` se registra un "modify" en la fase Revisión, se suma al
-    historial de cambios y el LLM lo aplica. Pedir cambios (o regenerar) reabre
-    el proyecto si ya estaba aprobado. 409 si el proyecto no está en Revisión o
-    si todavía no hay una propuesta aprobada; en ese caso NO se guarda nada.
-    Si el LLM no está configurado o falla, el ADR se genera igual sin la guía.
+    historial de cambios y el LLM lo aplica (solo a la sección 7: las
+    secciones 1 a 6 salen de lo ya aprobado). Pedir cambios (o regenerar)
+    reabre el proyecto si ya estaba aprobado. 409 si el proyecto no está en
+    Revisión o si todavía no hay una propuesta aprobada; en ese caso NO se
+    guarda nada. Si el LLM no está configurado o falla, el ADR se genera igual
+    sin la guía.
+
+    Nada se escribe antes de llamar al LLM: el "modify", ``phase_ready=False``
+    y el ADR nuevo se guardan juntos al final, en una sola transacción. Antes
+    el "modify" se confirmaba primero y, si después fallaba el guardado,
+    quedaba en ``approvals`` sin ADR ni entrada en ``feedback_history``.
     """
     user_id = int(current_user["user_id"])
     _require_project(user_id, project_id)
@@ -181,7 +196,7 @@ async def generate_adr(
         # "modify" y se hacía commit, y si después faltaba la propuesta
         # aprobada el 409 dejaba una fila suelta en `approvals`.
         try:
-            collect_adr_context(db, user_id=user_id, project_id=project_id)
+            ctx = collect_adr_context(db, user_id=user_id, project_id=project_id)
         except AdrNotReadyError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -190,23 +205,19 @@ async def generate_adr(
         )
         history = list(stored.get("feedback_history") or [])
         if feedback:
-            record_approval_decision(
-                db,
-                user_id=user_id,
-                phase=REVISION_PHASE,
-                decision="modify",
-                feedback=feedback,
-                project_id=project_id,
-            )
             history.append(feedback)
-        # Un ADR nuevo (con o sin cambios) vuelve a necesitar aprobación: el
-        # proyecto deja de estar terminado hasta que se apruebe otra vez.
-        project.phase_ready = False
-        db.commit()
-        # Se junta otra vez para que el "modify" recién registrado aparezca en
-        # el historial de decisiones del propio ADR.
-        ctx = collect_adr_context(db, user_id=user_id, project_id=project_id)
+            # Todavía no está en `approvals` (se registra al guardar): se suma
+            # aquí para que aparezca en el historial del propio ADR.
+            ctx.decisions.append(
+                AdrDecision(
+                    phase=REVISION_PHASE,
+                    decision="modify",
+                    feedback=feedback,
+                    created_at=datetime.now(tz=timezone.utc),
+                )
+            )
         ctx.revision_feedback = history
+        db.rollback()  # solo lectura: no queda nada abierto mientras redacta el LLM
     except HTTPException:
         db.rollback()
         raise
@@ -231,7 +242,14 @@ async def generate_adr(
         handler = get_langfuse_handler()
         callbacks = [handler] if handler is not None else None
         # Redacción + revisión automática + una pasada de corrección si hace falta.
-        guide, guide_repaired = await generate_guide(model, ctx, callbacks=callbacks)
+        diagnostics: dict = {}
+        guide, guide_repaired = await generate_guide(
+            model, ctx, callbacks=callbacks, diagnostics=diagnostics
+        )
+        if guide is None:
+            # El aviso de la sección 7 dice la causa concreta (413, límite por
+            # minuto, tiempo de espera...), no tres posibles a la vez.
+            ctx.guide_failure = diagnostics.get("failure")
         if callbacks:
             flush_langfuse()
 
@@ -250,12 +268,28 @@ async def generate_adr(
         "guide_warnings": lint_adr_guide(ctx, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
         "feedback_history": history,
+        "guide_failure": ctx.guide_failure,
         # Un ADR nuevo vuelve a necesitar aprobación.
         "approved_at": None,
     }
     db = SessionLocal()
     try:
-        _save_adr(_session_row(db, user_id), project_id, new_stored)
+        session_row = _session_row(db, user_id, lock=True)
+        if feedback:
+            record_approval_decision(
+                db,
+                user_id=user_id,
+                phase=REVISION_PHASE,
+                decision="modify",
+                feedback=feedback,
+                project_id=project_id,
+            )
+        # Un ADR nuevo (con o sin cambios) vuelve a necesitar aprobación: el
+        # proyecto deja de estar terminado hasta que se apruebe otra vez.
+        project = db.get(Project, project_id)
+        if project is not None:
+            project.phase_ready = False
+        _save_adr(session_row, project_id, new_stored)
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -282,6 +316,7 @@ def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
     if guide is None and stored.get("guide_complete"):
         guide = extract_guide_section(stored.get("markdown"))
     ctx.revision_feedback = list(stored.get("feedback_history") or [])
+    ctx.guide_failure = stored.get("guide_failure")
     ctx.approved_at = approved_at
     generated_at = _parse_iso(stored.get("generated_at")) or datetime.now(tz=timezone.utc)
     updated = dict(stored)
@@ -306,7 +341,9 @@ async def approve_adr(project_id: int, current_user: dict = Depends(get_current_
     db = SessionLocal()
     try:
         project = _require_revision_phase(db, project_id)
-        session_row = _session_row(db, user_id)
+        # Bloqueada hasta el commit: con dos clics casi simultáneos el segundo
+        # espera, ve approved_at y no registra otra aprobación.
+        session_row = _session_row(db, user_id, lock=True)
         stored = _stored_adr(session_row, project_id)
         if not stored.get("markdown"):
             raise HTTPException(

@@ -24,6 +24,10 @@ class _FakeSession:
     def filter(self, *_args):
         return self
 
+    def with_for_update(self, **_kwargs):
+        _FakeSession.store["locked"] = _FakeSession.store.get("locked", 0) + 1
+        return self
+
     def first(self):
         return _FakeSession.store.get("row")
 
@@ -259,3 +263,65 @@ def test_aprobar_conserva_la_guia_corregida_y_el_diagrama_con_clases(client):
     # Bloqueante 2: las clases del diagrama llegan intactas al ADR.
     assert "A[Web]:::web --> B[API]:::svc" in approved["markdown"]
     assert "|::" not in approved["markdown"]
+
+
+# --- Revisión: el modify se guarda con el ADR, causa del fallo y doble clic ----
+
+
+def test_el_modify_se_registra_despues_del_llm_junto_con_el_adr(client):
+    """Antes se confirmaba ANTES de llamar al LLM: si el guardado fallaba quedaba suelto."""
+    http, record = client
+    order: list[str] = []
+    record.side_effect = lambda *a, **k: order.append("record")
+
+    async def _guide(*_a, **_k):
+        order.append("llm")
+        return None, False
+
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
+        "app.api.adr.build_langchain_model", return_value=object()
+    ), patch("app.api.adr.generate_guide", new=_guide):
+        body = http.post("/api/projects/5/adr", json={"feedback": "Agregar auditoría"}).json()
+
+    assert order == ["llm", "record"]
+    assert body["feedback_history"] == ["Agregar auditoría"]
+    # El cambio pedido ya aparece en el historial de decisiones del ADR.
+    assert "Agregar auditoría" in body["markdown"].split("## 6.")[1]
+
+
+def test_si_falla_el_guardado_no_queda_el_modify(client):
+    http, record = client
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
+        "app.api.adr._save_adr", side_effect=RuntimeError("db caída")
+    ):
+        response = http.post("/api/projects/5/adr", json={"feedback": "Agregar auditoría"})
+    assert response.status_code == 500
+    # record_approval_decision se llamó dentro de la transacción que hizo rollback.
+    assert record.call_count <= 1
+
+
+def test_la_causa_del_fallo_de_la_guia_se_guarda_y_se_muestra(client):
+    http, _ = client
+
+    async def _guide(_model, _ctx_arg, *, callbacks=None, diagnostics=None):
+        diagnostics["failure"] = "too_large"
+        return None, False
+
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()), patch(
+        "app.api.adr.build_langchain_model", return_value=object()
+    ), patch("app.api.adr.generate_guide", new=_guide):
+        created = http.post("/api/projects/5/adr").json()
+        approved = http.post("/api/projects/5/adr/approve").json()
+
+    assert "límite de tokens" in created["markdown"]
+    # Al aprobar se vuelve a armar sin LLM y conserva la causa.
+    assert "límite de tokens" in approved["markdown"]
+
+
+def test_aprobar_bloquea_la_fila_de_sesion(client):
+    http, _ = client
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx()):
+        http.post("/api/projects/5/adr")
+        before = _FakeSession.store.get("locked", 0)
+        http.post("/api/projects/5/adr/approve")
+    assert _FakeSession.store.get("locked", 0) == before + 1

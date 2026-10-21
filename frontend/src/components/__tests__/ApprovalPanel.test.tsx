@@ -28,6 +28,13 @@ describe('ApprovalPanel — origen de los atributos de calidad', () => {
     expect(screen.queryByText(/calidad origen/i)).not.toBeInTheDocument()
   })
 
+  it('muestra la escala y las tecnologías que el equipo no domina', () => {
+    expect(resumenEntries({ escala: '22000 estudiantes' })).toEqual([['escala', '22000 estudiantes']])
+    expect(resumenItems({ tecnologias_no_dominadas: 'Kafka' })).toEqual(['Tecnologías que el equipo no domina: Kafka'])
+    render(<ApprovalPanel projectId={1} resumen={{ escala: '22000 estudiantes' }} onDecided={vi.fn()} />)
+    expect(screen.getByText(/Escala y volumen/)).toBeInTheDocument()
+  })
+
   it('muestra los subcampos con nombre legible', () => {
     expect(
       resumenItems({ plataforma: 'Web', habilidades_equipo: 'Python', fuentes_de_datos: 'no definido' }),

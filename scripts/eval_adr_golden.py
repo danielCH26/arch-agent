@@ -50,6 +50,7 @@ os.environ.setdefault("EMBEDDINGS_WARMUP", "off")
 # Los reintentos por 429 ocurren dentro de la llamada a la guía: con el tope
 # normal de 120 s se cortaría antes de terminar de esperar.
 os.environ.setdefault("ADR_LLM_TIMEOUT_S", "400")
+os.environ.setdefault("ADR_GUIDE_MAX_SECONDS", "900")
 
 from app.core.golden_eval import (  # noqa: E402
     GOLDEN_DIR,
