@@ -540,6 +540,34 @@ class TestDatosDelUsuario:
         resumen["datos_viabilidad"] = {"equipo": "4 devs, 3 front y 1 PM"}
         assert "3 front y 1 PM" in _adr_prompt(_ctx(resumen=resumen))
 
+    def test_no_duplica_la_etiqueta_cuando_el_dato_literal_ya_la_trae(self):
+        # Bug real (ADR del observatorio de permanencia): el valor guardado en
+        # datos_viabilidad ya venía con su propia etiqueta markdown ("- **Presupuesto:**
+        # 25.000 USD..."), y el resumen ejecutivo le pegaba "**Presupuesto:**" encima sin
+        # quitarla, mostrando "Presupuesto: Presupuesto: 25.000 USD para el primer año".
+        resumen = dict(_ctx().resumen)
+        resumen["datos_viabilidad"] = {
+            "presupuesto": "- **Presupuesto:** 25.000 USD para el primer año.",
+        }
+        md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
+        summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
+
+        assert "**Presupuesto:** 25.000 USD para el primer año" in summary
+        assert "Presupuesto: Presupuesto:" not in summary
+
+    def test_separa_parentesis_pegado_al_texto_siguiente(self):
+        # Mismo caso real: "Estrategia de entrega (Plazo):Fase 1 ..." sin espacio
+        # después de los dos puntos quedaba pegado en el resumen ejecutivo.
+        resumen = dict(_ctx().resumen)
+        resumen["datos_viabilidad"] = {
+            "plazo": "Estrategia de entrega (Plazo):Fase 1 (Piloto a los 3 meses).",
+        }
+        md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
+        summary = md.split("## Resumen ejecutivo", 1)[1].split("## 1. Contexto", 1)[0]
+
+        assert "(Plazo): Fase 1" in summary
+        assert "(Plazo):Fase 1" not in summary
+
 
 class TestCorreccionDeLaGuia:
     """Segunda pasada: el LLM corrige lo que encontró la revisión automática."""

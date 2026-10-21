@@ -883,6 +883,25 @@ def _plain(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip(" .-")
 
 
+def _strip_redundant_label(label: str, text: str) -> str:
+    """Quita la etiqueta si ``text`` ya empieza con ella.
+
+    Bug real (ADR del observatorio de permanencia): las palabras literales del
+    usuario en ``datos_viabilidad`` a veces ya vienen con su propia etiqueta
+    ("Presupuesto: 25.000 USD..."), y como ``_viability_lines`` le pega
+    "**Presupuesto:**" encima sin revisar, el resumen ejecutivo mostraba
+    "Presupuesto: Presupuesto: 25.000 USD...". Se quita el prefijo duplicado
+    (con o sin el guion/negrita de markdown que ya limpia ``_plain``) antes de
+    anteponer la etiqueta real.
+
+    También separa "):" seguido de texto sin espacio -- otro caso real visto
+    en el mismo documento: "Estrategia de entrega (Plazo):Fase 1..." quedaba
+    pegado porque el usuario no dejó espacio después de los dos puntos.
+    """
+    text = re.sub(rf"^\s*{re.escape(label)}\s*:\s*", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\):(?=\S)", "): ", text)
+
+
 def _viability_lines(ctx: AdrContext) -> list[str]:
     """Presupuesto, equipo y plazo: primero las palabras del usuario
     (``datos_viabilidad``), después lo que dejó el resumen en restricciones."""
@@ -894,7 +913,8 @@ def _viability_lines(ctx: AdrContext) -> list[str]:
         found = str(literal.get(label.lower()) or "").strip() or next(
             (r for r in restricciones if pattern.search(normalize_text(r))), None
         )
-        lines.append(f"**{label}:** {_plain(found) if found else 'no definido'}")
+        value = _strip_redundant_label(label, _plain(found)) if found else "no definido"
+        lines.append(f"**{label}:** {value}")
     return lines
 
 
