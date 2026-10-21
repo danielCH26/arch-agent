@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { authStore } from '../authStore'
+import { authStore, projectUnavailableMessage, tabSessionStorage } from '../authStore'
 
 // Mock fetch globally
 global.fetch = vi.fn()
@@ -105,5 +105,39 @@ describe('authStore', () => {
     // Clear error
     authStore.getState().clearError()
     expect(authStore.getState().error).toBeNull()
+  })
+
+  describe('sesión por pestaña', () => {
+    const other = JSON.stringify({ state: { token: 't2', user: { id: 2, username: 'beto' } }, version: 0 })
+
+    it('otra pestaña que inicia sesión con otra cuenta no cambia la de esta', async () => {
+      ;(global.fetch as vi.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ user_id: 1, username: 'ana', token: 't1' }),
+      })
+      await authStore.getState().login('ana', 'x')
+
+      // La otra pestaña escribe su sesión en localStorage.
+      localStorage.setItem('auth-storage', other)
+      await authStore.persist.rehydrate()
+
+      expect(authStore.getState().user).toEqual({ id: 1, username: 'ana' })
+      expect(authStore.getState().token).toBe('t1')
+    })
+
+    it('una pestaña nueva arranca con la última sesión iniciada', () => {
+      sessionStorage.clear()
+      localStorage.setItem('auth-storage', other)
+      expect(tabSessionStorage.getItem('auth-storage')).toBe(other)
+    })
+
+    it('el aviso de proyecto no disponible nombra la cuenta de esta pestaña', async () => {
+      ;(global.fetch as vi.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ user_id: 1, username: 'ana', token: 't1' }),
+      })
+      await authStore.getState().login('ana', 'x')
+      expect(projectUnavailableMessage()).toContain('«ana»')
+    })
   })
 })
