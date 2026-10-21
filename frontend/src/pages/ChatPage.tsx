@@ -109,8 +109,11 @@ function ChatPageContent() {
       await advancePhase(projectId)
       await refreshAfterPhaseChange()
     } catch (err) {
+      // El diagrama YA quedó aprobado: lo que falló es pasar de fase. Antes el
+      // mensaje técnico del error reemplazaba la indicación de qué hacer.
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : ''
       setPhaseActionError(
-        err instanceof Error ? err.message : 'El diagrama quedó aprobado, pero no se pudo avanzar de fase. Usa "Avanzar fase".',
+        `El diagrama quedó aprobado, pero no se pudo avanzar de fase${detail}. Usa "Avanzar fase".`,
       )
     } finally {
       setPhaseActionLoading(false)

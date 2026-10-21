@@ -14,6 +14,15 @@ from dotenv import load_dotenv
 # importarse, asi que fuera de Docker (sin env_file) el .env debe estar cargado.
 load_dotenv()
 
+# Nivel de los logs de la app (app.*). Sin esto solo salían WARNING o más (el
+# "lastResort" de Python): los INFO de la reparación de propuestas, del ADR o
+# del RAG no se veían en ningún lado. LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
+# Si uvicorn u otro ya configuró el logging raíz, basicConfig no lo pisa.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").strip().upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 from app.auth.register import register_user  # noqa: E402
 from app.auth.validators import ValidationError  # noqa: E402
 

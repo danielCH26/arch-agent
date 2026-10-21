@@ -123,3 +123,23 @@ def build_pattern_chunks(pattern: dict[str, Any]) -> dict[str, str]:
         chunks["fit"] = f"{name} - " + ". ".join(parts) + "."
 
     return {kind: text for kind, text in chunks.items() if text}
+
+
+@lru_cache(maxsize=1)
+def _sources_by_name() -> dict[str, list]:
+    return {
+        normalize_text(pattern["pattern_name"]): list(pattern.get("fuentes") or [])
+        for pattern in load_patterns()
+    }
+
+
+def pattern_sources(pattern_name: str | None) -> list:
+    """Fuentes del patrón según el YAML del catálogo ([] si no hay).
+
+    Respaldo para las citas: si la base se sembró antes de que el YAML tuviera
+    ``fuentes`` (o no se volvió a sembrar), la cita llegaba sin enlaces y el
+    patrón recomendado salía sin referencias en el ADR.
+    """
+    if not pattern_name:
+        return []
+    return _sources_by_name().get(normalize_text(pattern_name), [])

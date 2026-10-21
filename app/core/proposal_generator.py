@@ -33,14 +33,15 @@ from app.core.env import env_float, env_int
 from app.core.llm_loader import build_langchain_model, LLMConfigError
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
-from app.core.pattern_catalog import pattern_family
+from app.core.pattern_catalog import load_patterns, pattern_family, pattern_sources
 from app.core.query_profile import (
     extract_project_profile,
     profile_to_query,
 )
 from app.core.rag import similarity_search
+from app.core.llm_errors import TOO_LARGE, classify_llm_error, estimate_tokens, llm_error_message
 from app.core.text_norm import normalize_text
-from app.core.viability_rules import COMMON_VIABILITY_RULES
+from app.core.viability_rules import ASSUMPTION_MARK, COMMON_VIABILITY_RULES, REAL_TIME_PATH_RULE
 from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
 from app.models.project import Project
 from app.models.user import User
@@ -498,6 +499,58 @@ class ProposalGenerator:
             )
             docs = []
 
+        # Al modificar, el patrón principal anterior tiene que estar entre los
+        # candidatos para poder conservarlo (ver keep_primary): la consulta
+        # nueva, armada con el comentario, puede no traerlo.
+        prior_primary = _prior_primary_pattern(prior_content) if feedback else None
+        if prior_primary and docs and not any(
+            _name_position(str(d.metadata.get("pattern_name") or ""), prior_primary) is not None
+            for d in docs
+        ):
+            try:
+                extra = await _within_budget(
+                    asyncio.to_thread(_retrieve_patterns, prior_primary, self.user_id),
+                    work_deadline,
+                    "retrieval",
+                )
+                docs = docs + [
+                    d
+                    for d in extra
+                    if _name_position(str(d.metadata.get("pattern_name") or ""), prior_primary) is not None
+                ]
+            except _GenerationTimeout:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("Proposal RAG: no se pudo recuperar el patrón principal anterior")
+
+        explicit_for_signal = "\n".join(
+            part for part in (project.description, requirements_text, documents_text) if part
+        )
+        if (
+            docs
+            and _data_project_signal(explicit_for_signal)
+            and not any(
+                (pattern_family(d.metadata.get("pattern_name")) or {}).get("family") == "datos"
+                for d in docs
+            )
+        ):
+            try:
+                extra = await _within_budget(
+                    asyncio.to_thread(_retrieve_patterns, DATA_PATTERNS_QUERY, self.user_id),
+                    work_deadline,
+                    "retrieval",
+                )
+                docs = docs + [
+                    d
+                    for d in extra
+                    if (pattern_family(d.metadata.get("pattern_name")) or {}).get("family") == "datos"
+                ]
+                logger.info("Proposal RAG: proyecto de datos, se sumaron %s chunks de patrones de datos", len(docs))
+            except _GenerationTimeout:
+                raise
+            except Exception:  # noqa: BLE001 -- es un complemento, no bloquea
+                logger.exception("Proposal RAG: la consulta extra de patrones de datos falló")
+
         logger.info(
             "Proposal RAG raw project_id=%s top_chunks=%s",
             effective_project_id,
@@ -528,12 +581,14 @@ class ProposalGenerator:
         # Dos pasadas: 1) el orden por similitud + reglas duras define un pool
         # de candidatos; 2) el LLM los reordena y ese orden desempata dentro de
         # las reglas duras (ver _select_citations).
+        keep_primary = prior_primary
         pool = _select_citations(
             docs,
             top_n=max(RERANK_POOL_SIZE, PROPOSAL_RAG_TOP_N),
             explicit_text=explicit_text,
             feedback=feedback,
             profile=profile,
+            keep_primary=keep_primary,
         )
         ranked = await _within_budget(
             rank_candidates(model, summary_query, pool), work_deadline, "retrieval"
@@ -551,6 +606,7 @@ class ProposalGenerator:
             llm_ranking=ranked[0] if ranked else None,
             llm_reasons=ranked[1] if ranked else None,
             profile=profile,
+            keep_primary=keep_primary,
         )
         logger.info(
             "Proposal RAG project_id=%s candidates=%s cited=%s top=%s",
@@ -572,7 +628,7 @@ class ProposalGenerator:
         yield ("sources", citations)
 
         # 5. Build structured prompt and acquire LLM model.
-        prompt = _build_prompt(
+        prompt_args = dict(
             citations=citations,
             prior_content=prior_content,
             feedback=feedback,
@@ -582,6 +638,22 @@ class ProposalGenerator:
             documents_text=documents_text,
             project_kind=_profile_kind(profile),
         )
+        prompt = _build_prompt(**prompt_args)
+        # Un proyecto grande en una modificación (propuesta previa completa +
+        # comentario largo) pasaba de los 8000 tokens del plan gratuito de Groq
+        # y el proveedor respondía 413. Se manda una versión compacta del
+        # contexto de los patrones y de los documentos; la propuesta previa y
+        # el comentario van completos.
+        if estimate_tokens(prompt) > PROPOSAL_PROMPT_TOKEN_BUDGET:
+            compact = _build_prompt(**prompt_args, compact=True)
+            logger.warning(
+                "Proposal prompt over budget project_id=%s tokens~%s -> compact~%s (budget %s)",
+                effective_project_id,
+                estimate_tokens(prompt),
+                estimate_tokens(compact),
+                PROPOSAL_PROMPT_TOKEN_BUDGET,
+            )
+            prompt = compact
 
         # 6. Stream LLM tokens + accumulate the full markdown.
         full_markdown_chunks: list[str] = []
@@ -627,7 +699,15 @@ class ProposalGenerator:
                 self.user_id,
                 exc,
             )
-            yield _error_event(f"LLM stream failed: {exc}", ERR_LLM_STREAM, retryable=True)
+            # Antes se mostraba el error crudo del proveedor ("LLM stream
+            # failed: Error code: 413 - {...}"). Un 413 tampoco es
+            # reintentable: la misma petición vuelve a pasar del límite.
+            kind = classify_llm_error(exc)
+            yield _error_event(
+                f"No se pudo generar la propuesta: {llm_error_message(kind)}.",
+                ERR_LLM_STREAM,
+                retryable=kind != TOO_LARGE,
+            )
             return
         finally:
             # Cancelacion del usuario (cliente desconectado), timeout o error:
@@ -663,7 +743,7 @@ class ProposalGenerator:
                 finish_reason=finish_reason,
                 deadline=work_deadline,
             )
-            logger.info(
+            logger.warning(
                 "Proposal repair project_id=%s finish_reason=%s missing=%s result=%s",
                 effective_project_id,
                 finish_reason,
@@ -676,17 +756,34 @@ class ProposalGenerator:
                 finish_reason = None
         if finish_reason == "length" or missing_sections:
             logger.warning(
-                "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s",
+                "Proposal incomplete project_id=%s finish_reason=%s missing=%s chars=%s headings=%s",
                 effective_project_id,
                 finish_reason,
                 missing_sections,
                 len(full_markdown),
+                [
+                    ln.strip()
+                    for ln in full_markdown.splitlines()
+                    if ln.lstrip().startswith("#")
+                ],
             )
             yield _error_event(
                 _incomplete_proposal_message(finish_reason, missing_sections),
                 ERR_INCOMPLETE,
             )
             return
+
+        # Regiones de nube, tiempos de respuesta o porcentajes que nadie dio
+        # quedan marcados "(supuesto)" en lo que se guarda (el usuario ve la
+        # versión guardada al terminar; ver proposalsStore.refresh).
+        full_markdown = mark_unverified_claims(
+            full_markdown,
+            "\n".join(
+                part
+                for part in (project.name, project.description, requirements_text, documents_text, feedback)
+                if part
+            ),
+        )
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
         # Latencia de la generacion (perfil + RAG + reordenamiento + redaccion),
@@ -1232,6 +1329,129 @@ def _is_comparison_request(feedback: str | None) -> bool:
 AVOID_CHUNK_TYPES = frozenset({"when_not_to_use"})
 
 
+# Señales de un proyecto de DATOS (integrar fuentes, tableros, analítica,
+# modelos predictivos). Con dos o más, los patrones de la familia "datos"
+# reciben PROPOSAL_DATA_FAMILY_BONUS: la consulta del perfil pesaba "portal",
+# "API" y "control de acceso" y para un observatorio de analítica salía API
+# Gateway + BFF como principal, sin ETL ni lakehouse entre las alternativas.
+_DATA_SIGNAL_RE = re.compile(
+    r"\b(?:etl|elt|almacen\s+de\s+datos|data\s*warehouse|lakehouse|datamart|"
+    r"tableros?|dashboards?|power\s*bi|tableau|analitica|indicadores?|kpis?|"
+    r"(?:integrar|consolidar|unificar|cruzar)\s+(?:los\s+)?datos|fuentes\s+de\s+datos|"
+    r"modelo\s+predictivo|puntaje\s+de\s+riesgo|prediccion\w*|reportes?\s+(?:institucional|gerencial|regulatori)\w*|"
+    r"carga\s+nocturna|replica\s+nocturna|por\s+lotes|batch)\b"
+)
+PROPOSAL_DATA_FAMILY_BONUS = env_float("PROPOSAL_DATA_FAMILY_BONUS", 0.05, minimum=0.0)
+
+
+_REAL_TIME_RE = re.compile(
+    r"\b(?:tiempo\s+real|en\s+vivo|cada\s+(?:\d+\s+)?(?:minutos?|segundos?)|al\s+minuto|"
+    r"near\s+real\s+time|streaming)\b"
+)
+_BATCH_RE = re.compile(
+    r"\b(?:por\s+lotes|batch|cada\s+noche|nocturn\w+|cada\s+dia|diari\w+|etl|elt|replica)\b"
+)
+
+
+def _needs_both_paths(text: str | None) -> bool:
+    """¿Los requerimientos piden a la vez carga por lotes y datos en tiempo real?"""
+    normalized = _normalize_text(text)
+    return bool(_REAL_TIME_RE.search(normalized) and _BATCH_RE.search(normalized))
+
+
+# Supuestos que la propuesta no puede verificar y suele dar por hechos.
+_CLOUD_PROVIDER_RE = re.compile(r"\b(?:azure|aws|amazon|gcp|google\s+cloud|oracle\s+cloud|oci|ibm\s+cloud)\b", re.I)
+_REGION_RE = re.compile(
+    r"(regi[oó]n(?:es)?\s+(?:de\s+)?[A-ZÁÉÍÓÚ][\wáéíóúñ-]*(?:\s+[A-ZÁÉÍÓÚ(][\wáéíóúñ()-]*){0,3})"
+)
+_LATENCY_RE = re.compile(r"([<>≤≥]?\s*\d+(?:[.,]\d+)?\s*(?:ms|s|seg(?:undos?)?)\b)")
+_PERCENT_RE = re.compile(r"(\d+(?:[.,]\d+)?\s*%)")
+
+
+def mark_unverified_claims(markdown: str, sources_text: str) -> str:
+    """Marca ``(supuesto)`` lo que la propuesta afirma y nadie le dio.
+
+    * Una región de un proveedor de nube ("región Colombia Central" junto a
+      "Azure"): no hay forma de verificarla desde aquí.
+    * Un tiempo de respuesta (``< 1 s``, ``200 ms``) o un porcentaje que no
+      aparece en los requerimientos, la descripción, los documentos ni el
+      comentario del usuario.
+
+    Sin LLM, línea por línea; lo que ya dice ``(supuesto)`` no se toca.
+    """
+    sources_digits = set(re.findall(r"\d+(?:[.,]\d+)?", sources_text or ""))
+    sources_digits |= {d.replace(",", ".") for d in sources_digits}
+    out = []
+    for line in (markdown or "").splitlines():
+        if ASSUMPTION_MARK in line:
+            out.append(line)
+            continue
+        if _CLOUD_PROVIDER_RE.search(line):
+            line = _REGION_RE.sub(lambda m: f"{m.group(1).rstrip()} {ASSUMPTION_MARK}", line, count=1)
+
+        def _mark_figure(match: re.Match) -> str:
+            number = re.search(r"\d+(?:[.,]\d+)?", match.group(1)).group(0)
+            if number in sources_digits or number.replace(",", ".") in sources_digits:
+                return match.group(1)
+            return f"{match.group(1)} {ASSUMPTION_MARK}"
+
+        if not line.lstrip().startswith(("|---", "| ---")):
+            line = _LATENCY_RE.sub(_mark_figure, line)
+            line = _PERCENT_RE.sub(_mark_figure, line)
+        out.append(line)
+    result = "\n".join(out)
+    return result + ("\n" if (markdown or "").endswith("\n") else "")
+
+
+def _data_project_signal(text: str | None) -> bool:
+    """¿El proyecto es, sobre todo, de integración y análisis de datos?"""
+    hits = {match.group(0) for match in _DATA_SIGNAL_RE.finditer(_normalize_text(text))}
+    return len(hits) >= 2
+
+
+# Consulta extra para un proyecto de datos cuando la consulta del perfil no
+# trajo ningún patrón de datos (ver _run_pipeline).
+DATA_PATTERNS_QUERY = (
+    "Plataforma de datos: integrar varias fuentes, carga ETL/ELT por lotes, "
+    "almacén o lakehouse por capas, tableros e indicadores, modelos predictivos "
+    "y, si hace falta, una vía de tiempo real."
+)
+
+_PRIOR_PRIMARY_RE = re.compile(
+    r"^\s*[-*+]?\s*[*_]*(?:patr[oó]n\s+principal|recomendaci[oó]n)[*_]*\s*:\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+_NAME_STOPWORDS = {"arquitectura", "patron", "por", "los", "las", "del", "con", "and", "the", "para"}
+
+
+def _name_position(pattern_name: str, text: str) -> int | None:
+    """Dónde nombra ``text`` al patrón (None si no lo nombra).
+
+    Acepta el nombre o un alias ("Monolito modular") y también las palabras del
+    nombre escritas de otra forma ("Pipeline ETL/ELT" por "Pipeline de datos
+    ETL / ELT por lotes"): al menos dos de sus palabras, o la única que tiene.
+    """
+    normalized = _normalize_text(text)
+    spans = _alias_mentions(pattern_name, normalized)
+    if spans:
+        return spans[0][0]
+    words = [
+        w for w in re.findall(r"[a-z0-9]{3,}", _normalize_text(pattern_name)) if w not in _NAME_STOPWORDS
+    ]
+    found = [m.start() for w in dict.fromkeys(words) for m in [re.search(rf"\b{re.escape(w)}\b", normalized)] if m]
+    if words and len(found) >= min(2, len(set(words))):
+        return min(found)
+    return None
+
+
+def _prior_primary_pattern(prior_content: str | None) -> str | None:
+    """Línea "Patrón principal: ..." (o "Recomendación: ...") de la propuesta anterior."""
+    match = _PRIOR_PRIMARY_RE.search(prior_content or "")
+    return match.group(1).strip() if match else None
+
+
 def _diverse_selection(
     eligible: list[tuple[Any, Document]],
     limit: int,
@@ -1269,6 +1489,24 @@ def _diverse_selection(
     chosen = [(primary_key, primary_doc)]
     taken = {primary_key}
     rest = eligible[1:]
+    # Proyecto de datos: la alternativa más útil es OTRO enfoque de datos
+    # (lakehouse por capas, Lambda/Kappa para tiempo real), no un BFF o un
+    # serverless genérico. Antes, por buscar familias distintas, la tabla de un
+    # observatorio de analítica comparaba ETL contra BFF y Serverless. Se toma
+    # una alternativa de datos y el resto sigue buscando familias distintas.
+    if primary_info and primary_info["family"] == "datos":
+        data_alternative = next(
+            (
+                (key, doc)
+                for key, doc in rest
+                if not scale_disqualified(key)
+                and (_info(doc) or {}).get("family") == "datos"
+            ),
+            None,
+        )
+        if data_alternative is not None and len(chosen) < limit:
+            chosen.append(data_alternative)
+            taken.add(data_alternative[0])
     for viable_only in (True, False):
         for key, doc in rest:
             if len(chosen) >= limit:
@@ -1302,8 +1540,15 @@ def _select_citations(
     llm_ranking: list[str] | None = None,
     llm_reasons: dict[str, str] | None = None,
     profile: dict | None = None,
+    keep_primary: str | None = None,
 ) -> list[dict]:
     """Elige los patrones que mejor encajan y los proyecta al payload de citations.
+
+    ``keep_primary`` (al modificar): la línea "Patrón principal: ..." de la
+    propuesta anterior. Si el feedback no pide otro patrón ni quita ese, se
+    conserva como principal. Antes cada modificación volvía a elegir desde
+    cero: un comentario que no nombraba el patrón ("agrega el reporte SNIES")
+    devolvía Monolito modular en lugar del ETL de la iteración anterior.
 
     No aplica el umbral ``RAG_MIN_SIMILARITY``. Por cada patron:
       * su puntaje es el del mejor chunk que habla de cuando SI usarlo
@@ -1379,13 +1624,23 @@ def _select_citations(
     def _avoided(key: Any) -> bool:
         return key in best_avoid and best_avoid[key] > _sim(best_fit[key])
 
+    data_project = _data_project_signal(explicit_text)
+
     def _score(doc: Document) -> float:
+        bonus = 0.0
         level = _COMPLEXITY_LEVEL.get(doc.metadata.get("complexity"), 0)
+        if data_project and (pattern_family(doc.metadata.get("pattern_name")) or {}).get("family") == "datos":
+            bonus = PROPOSAL_DATA_FAMILY_BONUS
+            # En un proyecto de datos, la complejidad "media" de un pipeline o
+            # un lakehouse es la del problema, no un exceso: no se penaliza
+            # (sí la "alta", p. ej. Lambda/Kappa).
+            if level < 2:
+                level = 0
         if not level or _explicitly_requested(
             doc.metadata.get("pattern_name"), explicit_text
         ):
-            return _sim(doc)
-        return _sim(doc) - PROPOSAL_COMPLEXITY_PENALTY * level
+            return _sim(doc) + bonus
+        return _sim(doc) + bonus - PROPOSAL_COMPLEXITY_PENALTY * level
 
     stance = {
         key: _feedback_stance(doc.metadata.get("pattern_name"), feedback)
@@ -1411,6 +1666,16 @@ def _select_citations(
             )
             for key, value in stance.items()
         }
+
+    if keep_primary and not any(value == "want" for value in stance.values()):
+        mentions = sorted(
+            (position, key)
+            for key, doc in best_fit.items()
+            for position in [_name_position(str(doc.metadata.get("pattern_name") or ""), keep_primary)]
+            if position is not None and stance[key] != "reject"
+        )
+        if mentions:
+            stance[mentions[0][1]] = "want"
 
     # Descalificacion dura por escala del proyecto (ver comentario junto a
     # PROPOSAL_SMALL_TEAM_MAX): un patron "alta" complejidad no puede ser
@@ -1508,7 +1773,8 @@ def _select_citations(
                 "similarity": doc.metadata.get("similarity"),
                 "snippet": (doc.page_content or "")[:240],
                 "tradeoffs": doc.metadata.get("tradeoffs") or {},
-                "fuentes": doc.metadata.get("fuentes") or [],
+                "fuentes": doc.metadata.get("fuentes")
+                or pattern_sources(doc.metadata.get("pattern_name")),
                 # Para armar la tabla de trade-offs sin LLM si el modelo la deja incompleta.
                 "complexity": doc.metadata.get("complexity"),
             }
@@ -1843,6 +2109,10 @@ def _has_decision_point(markdown: str | None) -> bool:
 #      del catálogo, citados con su [n]).
 #   3. Solo si sigue faltando una sección que no se puede reconstruir
 #      (Componentes, Tecnologías...) se responde el error de siempre.
+# Tokens estimados del prompt a partir de los cuales se usa el contexto
+# compacto (ver _build_prompt). 0 = nunca.
+PROPOSAL_PROMPT_TOKEN_BUDGET = env_int("PROPOSAL_PROMPT_TOKEN_BUDGET", 5500, minimum=0) or 10**9
+
 PROPOSAL_REPAIR = os.getenv("PROPOSAL_REPAIR", "on").strip().lower() not in {
     "0",
     "off",
@@ -2028,18 +2298,57 @@ def _recommended_citation(markdown: str, citations: list[dict]) -> int:
     )
 
 
+def _catalog_padding(markdown: str, citations: list[dict], needed: int) -> list[dict]:
+    """Patrones del catálogo para completar la tabla cuando hay menos de 3 fuentes.
+
+    Primero los que el borrador ya nombra (la tabla rota suele traer las
+    opciones aunque le falten celdas), después los de una familia que la
+    tabla no tiene y de menor complejidad. Van como "Sin fuente RAG": no son
+    evidencia recuperada para este proyecto.
+    """
+    if needed <= 0:
+        return []
+    present = {_normalize_text(c.get("pattern_name")) for c in citations}
+    families = {(pattern_family(c.get("pattern_name")) or {}).get("family") for c in citations}
+    candidates = [p for p in load_patterns() if _normalize_text(p.get("pattern_name")) not in present]
+
+    def _order(pattern: dict) -> tuple:
+        position = _name_position(str(pattern.get("pattern_name") or ""), markdown or "")
+        return (
+            position is None,
+            position or 0,
+            pattern.get("family") in families,
+            _COMPLEXITY_LEVEL.get(pattern.get("complexity"), 0),
+        )
+
+    return [
+        {
+            "pattern_name": p.get("pattern_name"),
+            "tradeoffs": p.get("tradeoffs") or {},
+            "complexity": p.get("complexity"),
+            "_catalog": True,
+        }
+        for p in sorted(candidates, key=_order)[:needed]
+    ]
+
+
 def _fallback_tradeoff_section(markdown: str, citations: list[dict]) -> str | None:
     """Sección de trade-offs armada sin LLM con los patrones recuperados.
 
     Cada fila sale del catálogo (primera ventaja y primera desventaja del
     YAML, complejidad del patrón) y cita su ``[n]``, así que es evidencia de la
-    base, no texto inventado. Con menos de 3 fuentes no hay tabla que armar.
+    base, no texto inventado. Si se recuperaron menos de 3 patrones, la tabla
+    se completa con patrones del catálogo marcados "Sin fuente RAG" (antes no
+    había tabla que armar y la propuesta se descartaba).
     """
-    if len(citations) < MIN_TRADEOFF_OPTIONS:
+    options = list(citations) + _catalog_padding(
+        markdown, citations, MIN_TRADEOFF_OPTIONS - len(citations)
+    )
+    if len(options) < MIN_TRADEOFF_OPTIONS:
         return None
-    recommended = _recommended_citation(markdown, citations)
+    recommended = _recommended_citation(markdown, options)
     rows = []
-    for index, cite in enumerate(citations):
+    for index, cite in enumerate(options):
         tradeoffs = cite.get("tradeoffs") or {}
         name = _first_point(cite.get("pattern_name"), 80) or f"Opción {index + 1}"
         if index == recommended:
@@ -2048,19 +2357,20 @@ def _fallback_tradeoff_section(markdown: str, citations: list[dict]) -> str | No
             fit = "Descartada por la escala del proyecto (equipo, plazo o presupuesto)"
         else:
             fit = _first_point(cite.get("llm_reason"), 120) or "Alternativa considerada"
+        source = NO_RAG_SOURCE_LABEL if cite.get("_catalog") else f"[{index + 1}]"
         rows.append(
             f"| {name} "
             f"| {_first_point(tradeoffs.get('ventajas')) or 'No documentadas en la base'} "
             f"| {_first_point(tradeoffs.get('desventajas')) or 'No documentadas en la base'} "
             f"| {_COMPLEXITY_LABELS.get(str(cite.get('complexity') or '').lower(), 'No indicada en la base')} "
-            f"| {fit} | [{index + 1}] |"
+            f"| {fit} | {source} |"
         )
     return (
         "## Trade-offs y decisión\n"
         "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
         "| --- | --- | --- | --- | --- | --- |\n"
         + "\n".join(rows)
-        + f"\n- Recomendación: {_first_point(citations[recommended].get('pattern_name'), 80)}\n"
+        + f"\n- Recomendación: {_first_point(options[recommended].get('pattern_name'), 80)}\n"
         + f"{_DECISION_LINE}\n"
     )
 
@@ -2099,12 +2409,11 @@ async def repair_proposal(
     missing = _missing_sections(markdown, source_count=source_count)
     truncated = finish_reason == "length"
     trace.update(missing=list(missing), finish_reason=finish_reason)
-    if not missing and not truncated:
+    if not missing:
+        # Completa (aunque el proveedor diga finish_reason=length: la
+        # validación ya exige la tabla entera y el punto de decisión, que es lo
+        # último de la propuesta).
         return markdown, "ok"
-    if truncated and not missing:
-        # Cortada por tokens pero con todo lo obligatorio: la última sección
-        # (trade-offs) es la sospechosa, se rehace.
-        missing = ["Tabla de trade-offs (3 opciones y 3 criterios)"]
     if not PROPOSAL_REPAIR:
         return None, "fallo"
 
@@ -2465,8 +2774,16 @@ def _build_prompt(
     requirements_text: str | None = None,
     documents_text: str | None = None,
     project_kind: str | None = None,
+    compact: bool = False,
 ) -> str:
-    """Compose the structured prompt that drives the LLM to produce the 5 sections."""
+    """Compose the structured prompt that drives the LLM to produce the 5 sections.
+
+    ``compact`` recorta el contexto de cada patrón (dos ventajas y dos
+    desventajas, fragmento corto) y los documentos, para que un proyecto
+    grande quepa en el límite de tokens del proveedor.
+    """
+    if compact and documents_text and len(documents_text) > 2500:
+        documents_text = documents_text[:2500] + "\n[...]"
     limits = scale_thresholds(project_kind)
     team_max = int(limits["team_max"])
     months_max = int(limits["months_max"])
@@ -2535,6 +2852,11 @@ def _build_prompt(
         context_blocks = []
         for index, cite in enumerate(citations, start=1):
             tradeoffs = cite.get("tradeoffs") or {}
+            if compact and isinstance(tradeoffs, dict):
+                tradeoffs = {
+                    key: value[:2] if isinstance(value, list) else value
+                    for key, value in tradeoffs.items()
+                }
             tradeoffs_context = (
                 json.dumps(tradeoffs, ensure_ascii=False)
                 if tradeoffs
@@ -2542,7 +2864,7 @@ def _build_prompt(
             )
             context_blocks.append(
                 f"[{index}] {cite.get('pattern_name')}\n"
-                f"Contexto: {cite.get('snippet') or ''}\n"
+                f"Contexto: {(cite.get('snippet') or '')[:120] if compact else cite.get('snippet') or ''}\n"
                 f"Trade-offs RAG: {tradeoffs_context}"
                 + (
                     "\nDescartado por la escala del proyecto (equipo, plazo o "
@@ -2613,7 +2935,13 @@ def _build_prompt(
             "Reglas para aplicar los cambios:\n"
             "- Parte de la propuesta previa y conserva tal cual todo lo que el "
             "usuario no pidio cambiar.\n"
-            "- Aplica cada cambio de forma literal y en TODAS las secciones donde "
+            "- Si el comentario NO pide cambiar el estilo o patrón principal, "
+            "CONSÉRVALO tal como está en la propuesta anterior; no lo cambies por "
+            "otro de los patrones candidatos.\n"
+            "- Si el comentario pide verificar un dato externo (una región de "
+            "nube, un precio, la disponibilidad de un servicio), di que no lo "
+            "puedes verificar desde aquí y márcalo `(supuesto)`.\n"
+                        "- Aplica cada cambio de forma literal y en TODAS las secciones donde "
             "corresponda (Componentes, Tecnologias, Patrones, Justificación y "
             "Trade-offs y decisión: la tabla y la Recomendación deben reflejar "
             "el cambio).\n"
@@ -2701,6 +3029,7 @@ def _build_prompt(
         "diseño, no como notas informativas.\n"
         # Reglas comunes con la guía del ADR (app/core/viability_rules.py).
         f"{COMMON_VIABILITY_RULES}"
+        f"{REAL_TIME_PATH_RULE if _needs_both_paths(project_section) else ''}"
         "- Mantén Componentes y Tecnologías al mínimo necesario (como "
         "referencia, entre 3 y 6 componentes en un proyecto sencillo; no "
         "más de 6) y prefiere tecnologías open source, conocidas por el "

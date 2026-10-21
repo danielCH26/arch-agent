@@ -219,7 +219,10 @@ async def send_elicitation_message(
                 elicitation_agent.summary_gaps(
                     resumen, history, project.description or "", documents_text or None
                 )
-                if len(history) < elicitation_agent.MAX_QUESTIONS
+                if len(history)
+                < elicitation_agent.max_questions(
+                    history, project.description or "", documents_text or None
+                )
                 else []
             )
             if gaps:

@@ -675,3 +675,106 @@ class TestGuiaIncompleta:
     def test_espacios_y_guiones_unicode_no_tumban_la_guia(self):
         text = LLM_GUIDE.replace("### 7.6 Primer sprint", "### 7.6 Primer sprint")
         assert clean_llm_sections(text) is not None
+
+
+# --- Revisión: tope de tiempo, 413 y causa del fallo -----------------------------
+
+
+class TestTopeYCausa:
+    def test_sin_tiempo_no_se_llama_al_modelo_y_la_causa_es_timeout(self, monkeypatch):
+        from app.core import adr_generator as gen
+
+        monkeypatch.setattr(gen, "ADR_GUIDE_MAX_SECONDS", 1.0)
+        model = _FakeModel(error=AssertionError("no debe llamarse"))
+        diagnostics: dict = {}
+        guide, repaired = asyncio.run(gen.generate_guide(model, _ctx(), diagnostics=diagnostics))
+        assert (guide, repaired) == (None, False)
+        assert diagnostics["failure"] == "timeout"
+        assert model.configs == []
+
+    def test_un_413_queda_como_causa_y_el_aviso_la_dice(self):
+        from app.core import adr_generator as gen
+
+        error = RuntimeError("Error code: 413 - Request too large ... rate_limit_exceeded")
+        diagnostics: dict = {}
+        assert asyncio.run(gen.generate_llm_sections(_FakeModel(error=error), _ctx(), diagnostics=diagnostics)) is None
+        assert diagnostics["failure"] == "too_large"
+        md = render_adr_markdown(_ctx(guide_failure="too_large"), llm_sections=None)
+        assert "límite de tokens" in md
+        assert "límite de uso, tiempo de espera o respuesta incompleta" not in md
+
+    def test_el_prompt_se_compacta_si_pasa_del_presupuesto(self, monkeypatch):
+        from app.core import adr_generator as gen
+
+        ctx = _ctx(proposal_markdown="x" * 7000, preguntas_respuestas=[{"pregunta": "p", "respuesta": "r" * 900}] * 10)
+        full = gen._adr_prompt(ctx)
+        monkeypatch.setattr(gen, "ADR_PROMPT_TOKEN_BUDGET", gen.estimate_tokens(gen.ADR_SYSTEM_PROMPT + full) - 1)
+        fitted = gen._fit_prompt(ctx)
+        assert fitted is not None and len(fitted) < len(full)
+        monkeypatch.setattr(gen, "ADR_PROMPT_TOKEN_BUDGET", 1000)
+        assert gen._fit_prompt(ctx) is None
+
+    def test_la_correccion_no_se_pide_si_no_cabe(self, monkeypatch):
+        from app.core import adr_generator as gen
+
+        monkeypatch.setattr(gen, "ADR_PROMPT_TOKEN_BUDGET", 1000)
+        model = _FakeModel(error=AssertionError("no debe llamarse"))
+        assert asyncio.run(gen.repair_llm_sections(model, _ctx(), LLM_GUIDE, ["aviso"])) is None
+        assert model.configs == []
+
+
+class TestPuntosPorConfirmar:
+    def test_supuestos_y_verificaciones_llegan_a_78_y_al_resumen(self):
+        """5.2 / 5.3: solo salía "Respaldos"; la región que pidieron verificar no."""
+        ctx = _ctx(
+            proposal_markdown=(
+                "## Componentes\n- Almacén en Azure, región Colombia Central (supuesto)\n"
+                "| FastAPI | Responde en < 1 s (supuesto) | Ocupación |\n"
+            ),
+            proposal_feedback_history=["Agrega el SNIES. Verifica que la región de nube exista en Colombia."],
+        )
+        md = render_adr_markdown(ctx, llm_sections=None)
+        assert "**Puntos por confirmar**" in md
+        assert "Confirmar el supuesto de la propuesta: Almacén en Azure, región Colombia Central" in md
+        assert "Pendiente de verificar (lo pidió el equipo): Verifica que la región de nube exista en Colombia" in md
+        resumen = md.split("## 1. Contexto")[0]
+        assert "región Colombia Central" in resumen.split("**Qué falta decidir:**")[1]
+        # Una sola cabecera 7.8 aunque haya preguntas obligatorias y puntos por confirmar.
+        assert md.count("### 7.8 Preguntas abiertas") == 1
+
+    def test_sin_supuestos_no_hay_bloque(self):
+        md = render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)
+        assert "**Puntos por confirmar**" not in md
+
+
+class TestRequerimientosCompletos:
+    def test_los_ajustes_del_usuario_no_salen_como_preguntas_numeradas(self):
+        """1.3: salían como "11. (ajuste solicitado por el usuario)"."""
+        ctx = _ctx(
+            preguntas_respuestas=[
+                {"pregunta": "¿Qué problema resuelve?", "respuesta": "Citas"},
+                {"pregunta": "(ajuste solicitado por el usuario)", "respuesta": "El plazo es de 6 meses"},
+            ]
+        )
+        md = render_adr_markdown(ctx, llm_sections=None)
+        anexo = md.split("## Anexo A")[1]
+        assert "**2." not in anexo
+        assert "**Ajustes pedidos al revisar los requerimientos**" in anexo
+        assert "- El plazo es de 6 meses" in anexo
+
+    def test_escala_y_tecnologias_no_dominadas_en_requerimientos(self):
+        """1.5: las cifras de uso y "nadie ha usado Kafka" no llegaban al ADR."""
+        resumen = dict(
+            _ctx().resumen,
+            escala="Unos 60 directores y 22000 estudiantes; miles de visitas al mes",
+            contexto_tecnico={"plataforma": "Web", "tecnologias_no_dominadas": "Kafka, Spark y Kubernetes"},
+        )
+        md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
+        assert "### Escala y volumen" in md and "22000 estudiantes" in md
+        assert "**Tecnologías que el equipo no domina:** Kafka, Spark y Kubernetes" in md
+
+    def test_no_definido_no_se_muestra(self):
+        resumen = dict(_ctx().resumen, escala="no definido", contexto_tecnico={"tecnologias_no_dominadas": "no definido"})
+        md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
+        assert "Escala y volumen" not in md
+        assert "no domina" not in md

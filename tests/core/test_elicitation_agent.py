@@ -1059,3 +1059,88 @@ class TestCorreccionDeEscritura:
         assert datos["equipo"] == "4 devs, 3 front y 1 PM"  # reinterpretación rechazada
         assert "plazo" not in datos  # el usuario no lo dijo: lo del LLM se descarta
         assert datos["_texto_original"] == {"presupuesto": "edio: pueden pagar una base gestionada"}
+
+
+# --- Prueba del observatorio de analítica (hallazgos 1.1 a 1.5) --------------
+
+
+class TestObservatorioViabilidad:
+    def test_una_lista_de_usuarios_con_equipo_no_es_el_equipo_de_desarrollo(self):
+        """1.2: "el equipo de planeación" daba el equipo por respondido."""
+        history = [
+            {
+                "pregunta": "¿Quiénes van a usar el sistema?",
+                "respuesta": "Directores de programa, Bienestar Universitario y el equipo de planeación.",
+            }
+        ]
+        assert "equipo" in _missing(history)
+
+    def test_el_equipo_que_construye_si_cuenta(self):
+        for answer in (
+            "2 ingenieros de datos, 1 analista de Power BI y 1 desarrollador web",
+            "El equipo de desarrollo son 4 personas",
+            "Un equipo pequeño de la universidad",
+            "Nuestro equipo es de cuatro personas",
+        ):
+            assert "equipo" not in _missing([{"pregunta": "p", "respuesta": answer}]), answer
+
+    def test_el_ajuste_mas_reciente_manda_en_los_datos_de_viabilidad(self):
+        """1.3: el plazo corregido no llegaba a los datos de viabilidad del ADR."""
+        from app.core.elicitation_agent import viability_facts
+
+        plazo_question = _VIABILITY_FACTORS[2][2]
+        history = [
+            {"pregunta": plazo_question, "respuesta": "4 meses para el MVP."},
+            {
+                "pregunta": "(ajuste solicitado por el usuario)",
+                "respuesta": "Corrijo: el plazo es de 6 meses, con un piloto a los 3 meses.",
+            },
+        ]
+        assert viability_facts(history)["plazo"] == "Corrijo: el plazo es de 6 meses, con un piloto a los 3 meses."
+
+    def test_sin_ajustes_manda_la_respuesta_a_la_pregunta(self):
+        from app.core.elicitation_agent import viability_facts
+
+        plazo_question = _VIABILITY_FACTORS[2][2]
+        history = [
+            {"pregunta": plazo_question, "respuesta": "6 meses."},
+            {"pregunta": "¿Algo más?", "respuesta": "La entrega de reportes es mensual."},
+        ]
+        assert viability_facts(history)["plazo"] == "6 meses."
+
+    def test_el_resumen_pide_escala_y_tecnologias_no_dominadas(self):
+        from app.core.elicitation_agent import SUMMARY_SYSTEM_PROMPT
+
+        assert '"escala"' in SUMMARY_SYSTEM_PROMPT
+        assert "tecnologias_no_dominadas" in SUMMARY_SYSTEM_PROMPT
+        assert "(ajuste solicitado por el usuario)" in SUMMARY_SYSTEM_PROMPT
+
+
+class TestProyectosComplejos:
+    COMPLEX = [
+        {
+            "pregunta": "¿Qué problema quieres resolver?",
+            "respuesta": (
+                "Integrar los datos de tres sistemas en tableros, con un puntaje de riesgo "
+                "predictivo y la ocupación de las sedes en tiempo real."
+            ),
+        }
+    ]
+
+    def test_un_proyecto_complejo_tiene_mas_preguntas(self):
+        """1.1: con 10 preguntas cerraba sin preguntar fuentes, frescura ni menores."""
+        assert elicitation_agent.max_questions(self.COMPLEX) == elicitation_agent.MAX_QUESTIONS_COMPLEX
+        assert elicitation_agent.max_questions(HISTORY_5) == MAX_QUESTIONS
+
+    def test_un_proyecto_complejo_no_cierra_en_la_pregunta_10(self):
+        history = self.COMPLEX + [{"pregunta": f"p{i}", "respuesta": f"r{i}"} for i in range(9)]
+        assert len(history) == MAX_QUESTIONS
+        model = _FakeModel(['{"done": false, "question": "¿Cada cuánto se respaldan?", "reason": "x"}'])
+        decision = next_step(model, history=history)
+        assert decision.done is False
+
+    def test_preocupaciones_nuevas_del_dominio(self):
+        from app.core.domain_concerns import relevant_concerns
+
+        keys = {c.key for c in relevant_concerns("Tableros de indicadores para estudiantes con lectores de carné")}
+        assert {"frescura", "menores", "retencion"} <= keys

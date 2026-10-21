@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -37,7 +38,14 @@ from app.core.domain_concerns import (
     uncovered_concerns,
 )
 from app.core.env import env_float, env_int
-from app.core.mermaid_validator import extract_mermaid_block
+from app.core.llm_errors import (
+    INCOMPLETE,
+    TOO_LARGE,
+    classify_llm_error,
+    estimate_tokens,
+    llm_error_message,
+)
+from app.core.mermaid_validator import extract_mermaid_block, sanitize_mermaid
 from app.core.session_store import latest_diagram_decisions
 from app.core.text_norm import normalize_text
 from app.core.viability_rules import (
@@ -58,7 +66,18 @@ DIAGRAM_PHASE = "diagram"
 # Clave dentro de engram_state[project_id] donde se guarda el ADR generado.
 ADR_STATE_KEY = "adr"
 
-ADR_LLM_TIMEOUT_S = env_float("ADR_LLM_TIMEOUT_S", 120.0, minimum=5.0)
+ADR_LLM_TIMEOUT_S = env_float("ADR_LLM_TIMEOUT_S", 90.0, minimum=5.0)
+# Tope TOTAL de la guía (redactar + completar lo que faltó + corregir), que
+# corre dentro del mismo POST /adr. Antes eran hasta 3 llamadas de 120 s una
+# tras otra (~6 min) con el panel en "generando" y el riesgo de que el cliente
+# o un proxy cortara la conexión. Las pasadas opcionales (completar, corregir)
+# se saltan si ya no hay tiempo; la guía redactada se entrega igual.
+ADR_GUIDE_MAX_SECONDS = env_float("ADR_GUIDE_MAX_SECONDS", 150.0, minimum=10.0)
+# Tamaño máximo estimado (tokens) del prompt. Por encima se manda una versión
+# compacta (propuesta más corta, respuestas de la elicitación resumidas). El
+# plan gratuito de Groq rechaza con 413 una petición de más de 8000 tokens
+# contando la respuesta.
+ADR_PROMPT_TOKEN_BUDGET = env_int("ADR_PROMPT_TOKEN_BUDGET", 4500, minimum=1000)
 # Tope de caracteres de la propuesta que se le pasa al LLM: el ADR incluye la
 # propuesta completa igual; al modelo le alcanza con el resumen para redactar
 # el plan, y así la llamada cabe en planes con límite de tokens por minuto.
@@ -135,6 +154,9 @@ class AdrContext:
     # Adjunto (captura) del diagrama que se usó: el panel muestra esa imagen,
     # así la imagen y el Mermaid del ADR son siempre el mismo diagrama.
     diagram_attachment_id: Optional[str] = None
+    # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
+    # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
+    guide_failure: Optional[str] = None
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -179,6 +201,11 @@ def _approved_mermaid(
         code = extract_mermaid_block(row.content or "")
         if not code:
             continue
+        # El mensaje guarda el Mermaid tal como lo escribió el modelo; la app
+        # lo sanea solo para dibujarlo. En el .md del ADR quedaban etiquetas
+        # como EXTR[Extracción (Python + SQLAlchemy)] sin comillas, que otros
+        # visores de Mermaid (GitHub, GitLab) no pueden dibujar.
+        code = sanitize_mermaid(code)
         attachments = [
             att for att in (row.attachments or []) if isinstance(att, dict) and att.get("id")
         ]
@@ -352,13 +379,27 @@ def _elicitation_annex(preguntas_respuestas: list[dict]) -> str:
     ]
     if not items:
         return "_No hay preguntas registradas._"
+    # Los ajustes que el usuario pidió al revisar los requerimientos se
+    # guardan como pseudo-preguntas; antes salían como "11. (ajuste solicitado
+    # por el usuario)" al final de la lista de preguntas.
+    questions = [i for i in items if normalize_text(str(i.get("pregunta") or "")).strip() != _ADJUSTMENT]
+    adjustments = [i for i in items if i not in questions]
     blocks = []
-    for index, item in enumerate(items, start=1):
+    for index, item in enumerate(questions, start=1):
         blocks.append(
             f"**{index}. {str(item.get('pregunta') or '').strip()}**\n\n"
             f"{str(item.get('respuesta') or '').strip() or '_Sin respuesta._'}"
         )
+    if adjustments:
+        blocks.append(
+            "**Ajustes pedidos al revisar los requerimientos** (mandan sobre las "
+            "respuestas anteriores):\n\n"
+            + _bullets([str(i.get("respuesta") or "").strip() for i in adjustments])
+        )
     return "\n\n".join(blocks)
+
+
+_ADJUSTMENT = "(ajuste solicitado por el usuario)"
 
 
 def _status(ctx: AdrContext) -> str:
@@ -774,21 +815,34 @@ def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
     if llm_sections and llm_sections.strip():
         guide = llm_sections.strip()
     else:
+        # Antes el aviso mezclaba tres causas posibles y no decía cuál fue.
+        cause = (
+            f": {llm_error_message(ctx.guide_failure)}"
+            if ctx.guide_failure
+            else " (no hay un modelo configurado o no respondió)"
+        )
         guide = (
-            "> **Aviso:** no se pudo redactar esta parte con el modelo de lenguaje "
-            "(límite de uso, tiempo de espera o respuesta incompleta). El resto del "
-            "documento está completo. Usa **Regenerar ADR** para intentarlo de nuevo."
+            f"> **Aviso:** no se pudo redactar esta parte con el modelo de lenguaje{cause}. "
+            "Las secciones 1 a 6 están completas. Usa **Regenerar ADR** para intentarlo de nuevo."
         )
     blocks = [guide]
     concerns = open_domain_concerns(
         ctx, addressed_text=f"{llm_sections or ''} {ctx.proposal_markdown}"
     )
+    points = open_points(ctx)
+    heading = "" if llm_sections else "### 7.8 Preguntas abiertas\n\n"
     if concerns:
-        heading = "" if llm_sections else "### 7.8 Preguntas abiertas\n\n"
         blocks.append(
             f"{heading}**Preguntas abiertas obligatorias** (preocupaciones habituales "
             "en este tipo de proyecto que nadie respondió todavía):\n\n"
             + "\n".join(f"- **{c.label}:** {c.open_question}" for c in concerns)
+        )
+        heading = ""
+    if points:
+        blocks.append(
+            f"{heading}**Puntos por confirmar** (supuestos de la propuesta y "
+            "verificaciones que pidió el equipo; no se pudieron comprobar desde aquí):\n\n"
+            + _bullets(points)
         )
     warnings = lint_adr_guide(ctx, llm_sections)
     if warnings:
@@ -861,11 +915,45 @@ def _summary_risks(ctx: AdrContext, guide: Optional[str]) -> list[str]:
     return risks
 
 
+_VERIFY_RE = re.compile(r"\b(?:verifica|verificar|confirma|confirmar|valida|validar|comprueba|comprobar|revisa\s+si)\w*\b", re.I)
+
+
+def _short(text: str, limit: int = 160) -> str:
+    text = _plain(re.sub(r"\s*\|\s*", " — ", text.strip().strip("|")))
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def open_points(ctx: AdrContext) -> list[str]:
+    """Supuestos de la propuesta y verificaciones que pidió el equipo.
+
+    Antes, en 7.8 y en el resumen ejecutivo solo salían las preocupaciones
+    genéricas del dominio ("Respaldos"): la región de nube que el usuario pidió
+    verificar, o las cifras que la propuesta marcó como supuesto, no le
+    llegaban a quien lee el documento. Sin LLM: se leen de la propuesta y de
+    los comentarios.
+    """
+    points: list[str] = []
+    for line in (ctx.proposal_markdown or "").splitlines():
+        if ASSUMPTION_MARK not in line or re.match(r"^\s*\|?\s*-{3,}", line):
+            continue
+        # Solo la parte que lleva la marca (en una tabla, la celda).
+        cells = [c for c in line.split("|") if ASSUMPTION_MARK in c] or [line]
+        for cell in cells:
+            points.append("Confirmar el supuesto de la propuesta: " + _short(cell.replace(ASSUMPTION_MARK, "")))
+    for comment in [*ctx.proposal_feedback_history, *ctx.revision_feedback]:
+        for sentence in re.split(r"(?<=[.;!?\n])\s+", str(comment or "")):
+            if _VERIFY_RE.search(sentence):
+                points.append("Pendiente de verificar (lo pidió el equipo): " + _short(sentence))
+    seen: set[str] = set()
+    return [p for p in points if not (p in seen or seen.add(p))][:6]
+
+
 def _summary_pending(ctx: AdrContext, guide: Optional[str]) -> list[str]:
     pending = [
         c.label
         for c in open_domain_concerns(ctx, addressed_text=f"{guide or ''} {ctx.proposal_markdown}")
     ]
+    pending.extend(open_points(ctx))
     for line in _section_lines(guide or "", "7.8"):
         item = re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.+)$", line)
         if item and _plain(item.group(1)) and len(pending) < 6:
@@ -926,7 +1014,11 @@ _TECH_CONTEXT_LABELS = (
     ("plataforma", "Plataforma"),
     ("habilidades_equipo", "Habilidades del equipo"),
     ("fuentes_de_datos", "Fuente de los datos"),
+    ("tecnologias_no_dominadas", "Tecnologías que el equipo no domina"),
 )
+
+
+_UNDEFINED_TEXT = {"no definido", "no definida", "ninguno", "ninguna", "n/a", "-"}
 
 
 def _technical_context_block(resumen: dict) -> str:
@@ -936,11 +1028,17 @@ def _technical_context_block(resumen: dict) -> str:
     de los datos, equipo real); antes se perdían entre fases.
     """
     blocks = []
+    escala = str(resumen.get("escala") or "").strip()
+    if escala and normalize_text(escala) not in _UNDEFINED_TEXT:
+        # Cifras de uso (usuarios, datos, frecuencia): sin ellas la propuesta
+        # no puede dimensionar ni justificar costos.
+        blocks.append(f"### Escala y volumen\n\n{escala}")
     tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
     items = [
         f"**{label}:** {str(tecnico.get(key)).strip()}"
         for key, label in _TECH_CONTEXT_LABELS
         if str(tecnico.get(key) or "").strip()
+        and not (key == "tecnologias_no_dominadas" and normalize_text(str(tecnico.get(key))) in _UNDEFINED_TEXT)
     ]
     if items:
         blocks.append("### Contexto técnico\n\n" + _bullets(items))
@@ -1136,16 +1234,23 @@ no escribas etiquetas internas del sistema (RAG, [n], similitud, chunk).
 """.format(common_rules=COMMON_VIABILITY_RULES, assumption_rules=GUIDE_ASSUMPTION_RULES)
 
 
-def _adr_prompt(ctx: AdrContext) -> str:
+def _adr_prompt(ctx: AdrContext, *, compact: bool = False) -> str:
+    """Contexto del ADR para el LLM. ``compact`` recorta la propuesta y las
+    respuestas de la elicitación (que repiten el resumen) para no pasar del
+    límite de tokens del proveedor en proyectos grandes."""
+    limit = min(ADR_PROPOSAL_PROMPT_MAX_CHARS, 4500) if compact else ADR_PROPOSAL_PROMPT_MAX_CHARS
     proposal = ctx.proposal_markdown
-    if len(proposal) > ADR_PROPOSAL_PROMPT_MAX_CHARS:
-        proposal = proposal[:ADR_PROPOSAL_PROMPT_MAX_CHARS] + "\n[...]"
+    if len(proposal) > limit:
+        proposal = proposal[:limit] + "\n[...]"
     resumen = ctx.resumen or {}
     respuestas = "\n".join(
-        f"- {item.get('pregunta')}: {item.get('respuesta')}"
+        f"- {item.get('pregunta')}: "
+        + (_shorten(str(item.get('respuesta') or ''), 220) if compact else str(item.get('respuesta')))
         for item in ctx.preguntas_respuestas
         if isinstance(item, dict)
     )
+    if compact and len(respuestas) > 2000:
+        respuestas = respuestas[:2000] + "\n[...]"
     return (
         f"Proyecto: {ctx.project_name}\n"
         f"Descripción: {ctx.project_description or '(no proporcionada)'}\n\n"
@@ -1172,6 +1277,12 @@ def _adr_prompt(ctx: AdrContext) -> str:
             else ""
         )
         + (
+            "\nSupuestos y verificaciones pendientes (van en 7.8; no los des por "
+            "confirmados):\n" + "\n".join(f"- {p}" for p in open_points(ctx)) + "\n"
+            if open_points(ctx)
+            else ""
+        )
+        + (
             "\nCambios pedidos por el equipo al revisar el ADR (aplícalos en tu "
             "respuesta; el más reciente manda si se contradicen):\n"
             + "\n".join(f"- {item}" for item in ctx.revision_feedback)
@@ -1180,6 +1291,45 @@ def _adr_prompt(ctx: AdrContext) -> str:
             else ""
         )
     )
+
+
+def _shorten(text: str, limit: int) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def _fit_prompt(ctx: AdrContext, extra: str = "") -> Optional[str]:
+    """Prompt que cabe en ``ADR_PROMPT_TOKEN_BUDGET`` (completo o compacto).
+
+    ``None`` si ni el compacto cabe: para las pasadas opcionales es mejor no
+    llamar que recibir un 413.
+    """
+    for compact in (False, True):
+        prompt = _adr_prompt(ctx, compact=compact) + extra
+        if estimate_tokens(ADR_SYSTEM_PROMPT + prompt) <= ADR_PROMPT_TOKEN_BUDGET:
+            return prompt
+    return None
+
+
+async def _invoke(
+    model: BaseChatModel,
+    messages: list,
+    config: dict[str, Any],
+    deadline: Optional[float],
+) -> Any:
+    """``model.ainvoke`` con el menor entre ``ADR_LLM_TIMEOUT_S`` y lo que queda del tope total."""
+    timeout = ADR_LLM_TIMEOUT_S
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining < 5:
+            raise asyncio.TimeoutError("se agotó el tiempo total de la guía")
+        timeout = min(timeout, remaining)
+    return await asyncio.wait_for(model.ainvoke(messages, config=config), timeout=timeout)
+
+
+def _record(diagnostics: Optional[dict], kind: str) -> None:
+    if diagnostics is not None:
+        diagnostics.setdefault("failure", kind)
 
 
 def _message_text(response: Any) -> str:
@@ -1219,19 +1369,24 @@ async def generate_llm_sections(
     ctx: AdrContext,
     *,
     callbacks: Optional[list[Any]] = None,
+    deadline: Optional[float] = None,
+    diagnostics: Optional[dict] = None,
 ) -> Optional[str]:
     """Pide al LLM la guía práctica. Nunca lanza: ante cualquier falla devuelve
-    ``None`` y el ADR se arma sin esa parte."""
-    messages = [SystemMessage(content=ADR_SYSTEM_PROMPT), HumanMessage(content=_adr_prompt(ctx))]
+    ``None`` y el ADR se arma sin esa parte. ``diagnostics["failure"]`` queda
+    con la causa (``too_large``, ``rate_limit``, ``timeout``, ``incomplete``,
+    ``error``) para decírsela al usuario."""
+    prompt = _fit_prompt(ctx) or _adr_prompt(ctx, compact=True)
+    messages = [SystemMessage(content=ADR_SYSTEM_PROMPT), HumanMessage(content=prompt)]
     config: dict[str, Any] = {"run_name": "adr-guide"}
     if callbacks:
         config["callbacks"] = callbacks
     try:
-        response = await asyncio.wait_for(
-            model.ainvoke(messages, config=config), timeout=ADR_LLM_TIMEOUT_S
-        )
+        response = await _invoke(model, messages, config, deadline)
     except Exception as exc:  # noqa: BLE001 -- el ADR se entrega igual
-        _LOGGER.warning("ADR: el LLM falló (%s: %s)", type(exc).__name__, exc)
+        kind = classify_llm_error(exc)
+        _record(diagnostics, kind)
+        _LOGGER.warning("ADR: el LLM falló [%s] (%s: %s)", kind, type(exc).__name__, exc)
         return None
     raw = _message_text(response)
     sections = clean_llm_sections(raw)
@@ -1248,30 +1403,35 @@ async def generate_llm_sections(
     # las últimas, cuando la respuesta se cortaba). Si llegó una parte, se
     # piden solo las que faltan y se combinan.
     if not raw.strip() or len(missing) == len(LLM_SECTIONS):
+        _record(diagnostics, INCOMPLETE)
         return None
-    completion = [
-        SystemMessage(content=ADR_SYSTEM_PROMPT),
-        HumanMessage(
-            content=_adr_prompt(ctx)
-            + "\n\n"
-            + _COMPLETE_INSTRUCTIONS.format(
-                missing="\n".join(
-                    f"### 7.{LLM_SECTIONS.index(title) + 1} {title}" for title in missing
-                ),
-                guide=_guide_digest(raw),
-            )
+    completion_prompt = _fit_prompt(
+        ctx,
+        "\n\n"
+        + _COMPLETE_INSTRUCTIONS.format(
+            missing="\n".join(
+                f"### 7.{LLM_SECTIONS.index(title) + 1} {title}" for title in missing
+            ),
+            guide=_guide_digest(raw),
         ),
-    ]
+    )
+    if completion_prompt is None:
+        _record(diagnostics, TOO_LARGE)
+        _LOGGER.warning("ADR: no se piden las secciones que faltan: el prompt pasaría del límite")
+        return None
+    completion = [SystemMessage(content=ADR_SYSTEM_PROMPT), HumanMessage(content=completion_prompt)]
     try:
-        response = await asyncio.wait_for(
-            model.ainvoke(completion, config={**config, "run_name": "adr-guide-complete"}),
-            timeout=ADR_LLM_TIMEOUT_S,
+        response = await _invoke(
+            model, completion, {**config, "run_name": "adr-guide-complete"}, deadline
         )
     except Exception as exc:  # noqa: BLE001 -- el ADR se entrega igual
-        _LOGGER.warning("ADR: no se pudo completar la guía (%s: %s)", type(exc).__name__, exc)
+        kind = classify_llm_error(exc)
+        _record(diagnostics, kind)
+        _LOGGER.warning("ADR: no se pudo completar la guía [%s] (%s: %s)", kind, type(exc).__name__, exc)
         return None
     sections = clean_llm_sections(merge_guide_sections(raw, _message_text(response)))
     if sections is None:
+        _record(diagnostics, INCOMPLETE)
         _LOGGER.warning("ADR: la guía sigue incompleta después de pedir las secciones que faltaban")
     return sections
 
@@ -1364,6 +1524,7 @@ async def repair_llm_sections(
     warnings: list[str],
     *,
     callbacks: Optional[list[Any]] = None,
+    deadline: Optional[float] = None,
 ) -> Optional[str]:
     """Segunda pasada: el LLM corrige los problemas que encontró el lint.
 
@@ -1373,19 +1534,29 @@ async def repair_llm_sections(
     """
     if not warnings:
         return None
-    prompt = _adr_prompt(ctx) + "\n\n" + _REPAIR_INSTRUCTIONS.format(
-        warnings="\n".join(f"- {w}" for w in warnings), guide=guide
+    prompt = _fit_prompt(
+        ctx,
+        "\n\n"
+        + _REPAIR_INSTRUCTIONS.format(warnings="\n".join(f"- {w}" for w in warnings), guide=guide),
     )
+    if prompt is None:
+        # Guía + contexto pasan del límite del proveedor (413 seguro): la
+        # corrección es opcional, se entrega la guía con sus avisos.
+        _LOGGER.warning("ADR: no se corrige la guía: el prompt pasaría del límite de tokens")
+        return None
     messages = [SystemMessage(content=ADR_SYSTEM_PROMPT), HumanMessage(content=prompt)]
     config: dict[str, Any] = {"run_name": "adr-guide-repair"}
     if callbacks:
         config["callbacks"] = callbacks
     try:
-        response = await asyncio.wait_for(
-            model.ainvoke(messages, config=config), timeout=ADR_LLM_TIMEOUT_S
-        )
+        response = await _invoke(model, messages, config, deadline)
     except Exception as exc:  # noqa: BLE001 -- se queda la guía original
-        _LOGGER.warning("ADR: la corrección de la guía falló (%s: %s)", type(exc).__name__, exc)
+        _LOGGER.warning(
+            "ADR: la corrección de la guía falló [%s] (%s: %s)",
+            classify_llm_error(exc),
+            type(exc).__name__,
+            exc,
+        )
         return None
     raw = _message_text(response)
     repaired = clean_llm_sections(raw)
@@ -1413,6 +1584,7 @@ async def generate_guide(
     ctx: AdrContext,
     *,
     callbacks: Optional[list[Any]] = None,
+    diagnostics: Optional[dict] = None,
 ) -> tuple[Optional[str], bool]:
     """Guía del ADR con su revisión: ``(guia, corregida)``.
 
@@ -1424,15 +1596,23 @@ async def generate_guide(
        algunas secciones, se combinan con las originales.
     4. Las cifras que sigan sin origen se marcan ``(supuesto)``. Los demás
        avisos que queden se muestran igual en el documento.
+
+    Todo dentro de ``ADR_GUIDE_MAX_SECONDS``. ``diagnostics["failure"]`` dice
+    por qué no hubo guía, si no la hubo.
     """
-    guide = await generate_llm_sections(model, ctx, callbacks=callbacks)
+    deadline = time.monotonic() + ADR_GUIDE_MAX_SECONDS
+    guide = await generate_llm_sections(
+        model, ctx, callbacks=callbacks, deadline=deadline, diagnostics=diagnostics
+    )
     if guide is None:
         return None, False
     repaired_flag = False
     if ADR_GUIDE_REPAIR:
         warnings = lint_adr_guide(ctx, guide)
         if warnings:
-            repaired = await repair_llm_sections(model, ctx, guide, warnings, callbacks=callbacks)
+            repaired = await repair_llm_sections(
+                model, ctx, guide, warnings, callbacks=callbacks, deadline=deadline
+            )
             if repaired is not None:
                 guide, repaired_flag = repaired, True
     # 4. Lo que siga sin origen queda marcado como supuesto (sin LLM).
