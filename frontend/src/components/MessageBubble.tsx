@@ -35,6 +35,10 @@ const safeLinkPattern = /^(https?:\/\/|mailto:)/i
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
+// Cita (`> texto`). Bug real: no existía ninguna rama para esto, así que el
+// `>` quedaba como texto literal al principio del párrafo (visible tanto en
+// el panel como en el PDF del ADR, que reutiliza este mismo parser).
+const blockquotePattern = /^>\s?(.*)$/
 
 const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
 const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
@@ -429,6 +433,23 @@ export function renderMarkdownBlocks(content: string) {
       if (horizontalRulePattern.test(line)) {
         blocks.push(<hr key={`hr-${partIndex}-${index}`} className="my-4 border-gray-300" />)
         index += 1
+        continue
+      }
+
+      if (blockquotePattern.test(line)) {
+        const quoteLines: string[] = []
+        while (index < lines.length && blockquotePattern.test(lines[index])) {
+          quoteLines.push(lines[index].replace(blockquotePattern, '$1'))
+          index += 1
+        }
+        blocks.push(
+          <blockquote
+            key={`blockquote-${partIndex}-${index}`}
+            className="my-2 border-l-4 border-indigo-300 bg-indigo-50 py-1 pl-3 pr-2 text-gray-700"
+          >
+            {renderInline(quoteLines.join(' ').trim())}
+          </blockquote>,
+        )
         continue
       }
 

@@ -84,7 +84,7 @@ const PRINT_STYLES = (runningTitle: string) => `
   h5 { font-size: 12pt; margin: 16pt 0 6pt; color: #3730a3; }
   h6 { font-size: 10.5pt; margin: 12pt 0 4pt; color: #374151; }
   p, ul, ol { margin: 0 0 8pt; }
-  li { margin-bottom: 2pt; }
+  li { margin-bottom: 2pt; break-inside: avoid; }
   strong { color: #111827; }
 
   table { border-collapse: collapse; width: 100%; margin: 6pt 0 12pt; font-size: 9pt; }

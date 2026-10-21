@@ -218,6 +218,42 @@ def sanitize_flowchart_edge_labels(code: str) -> str:
     return "\n".join(_fix(line) for line in code.split("\n"))
 
 
+# Etiqueta de flecha al estilo pipe: A -->|texto| B. Mermaid acepta texto
+# plano aca, pero un "(" dentro -- igual que en una etiqueta de nodo [...]
+# -- lo interpreta como el inicio de una forma redonda y rompe el parser.
+# Bug real visto en produccion (caso del observatorio): el LLM escribio
+# `FlaskApp -->|API REST (intervenciones)| PowerBI` -- `sanitize_mermaid_labels`
+# solo mira `[...]` (nodos), nunca `|...|` (flechas), asi que esta etiqueta
+# pasaba sin tocar y el render fallaba con "Parse error ... Expecting ...
+# got 'PS'". Se cita la misma forma que ya usamos para nodos: `|"texto"|`.
+_PIPE_EDGE_LABEL_PATTERN = re.compile(r"\|([^|\n]*)\|")
+
+
+def _pipe_label_has_unquoted_specials(label: str) -> bool:
+    if label.startswith('"') and label.endswith('"'):
+        return False
+    return any(ch in label for ch in "()\"")
+
+
+def sanitize_pipe_edge_labels(code: str) -> str:
+    """Envuelve en comillas las etiquetas `-->|texto|` que tengan
+    parentesis o comillas sin citar, para que Mermaid no las confunda
+    con el inicio de una forma de nodo. Solo aplica a flowchart/graph,
+    igual que el resto de sanitizadores de este modulo.
+    """
+    if not _is_flowchart(code):
+        return code
+
+    def _fix(match: re.Match) -> str:
+        label = match.group(1)
+        if _pipe_label_has_unquoted_specials(label):
+            escaped = label.replace('"', "#quot;")
+            return f'|"{escaped}"|'
+        return match.group(0)
+
+    return _PIPE_EDGE_LABEL_PATTERN.sub(_fix, code)
+
+
 _SUBGRAPH_ID_PATTERN = re.compile(r"^(\s*subgraph\s+)([A-Za-z_][A-Za-z0-9_]*)(.*)$")
 # Línea que declara un nodo: solo el id, con o sin forma (``X``, ``X["texto"]``,
 # ``X(...)``, ``X{...}``, ``X[(...)]``, ``X((...))``), sin flechas.
@@ -288,6 +324,7 @@ def sanitize_mermaid(code: str) -> str:
     code = sanitize_flowchart_edge_labels(code)
     code = sanitize_subgraph_id_collisions(code)
     code = sanitize_mermaid_labels(code)
+    code = sanitize_pipe_edge_labels(code)
     code = sanitize_subgraph_statements(code)
     code = sanitize_class_statements(code)
     return code
@@ -319,6 +356,14 @@ def validate_mermaid(code: str) -> tuple[bool, str | None]:
                 return False, (
                     f"Etiqueta de nodo sin comillas contiene caracteres especiales: "
                     f'[{label}]. Envolvé el texto entre comillas: ["{label}"]'
+                )
+
+        for match in _PIPE_EDGE_LABEL_PATTERN.finditer(stripped):
+            label = match.group(1)
+            if _pipe_label_has_unquoted_specials(label):
+                return False, (
+                    f"Etiqueta de flecha sin comillas contiene caracteres especiales: "
+                    f'|{label}|. Envolvé el texto entre comillas: |"{label}"|'
                 )
 
     return True, None
