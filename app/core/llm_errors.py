@@ -70,6 +70,18 @@ def llm_error_message(kind: str) -> str:
     return MESSAGES.get(kind, MESSAGES[ERROR])
 
 
+_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)\s*(ms|s|m)\b", re.IGNORECASE)
+
+
+def retry_after_seconds(exc: BaseException | None, default: float = 15.0) -> float:
+    """Segundos que el proveedor pide esperar ("Please try again in 6.2s")."""
+    match = _RETRY_AFTER_RE.search(str(exc or ""))
+    if not match:
+        return default
+    value, unit = float(match.group(1)), match.group(2).lower()
+    return value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
+
+
 def estimate_tokens(text: str) -> int:
     """Estimación gruesa (~3.5 caracteres por token en español con markdown)."""
     return int(len(text or "") / 3.5) + 1

@@ -46,6 +46,7 @@ from app.core.llm_errors import (
     llm_error_message,
 )
 from app.core.mermaid_validator import extract_mermaid_block, sanitize_mermaid
+from app.core.proposal_notes import strip_modification_note
 from app.core.session_store import latest_diagram_decisions
 from app.core.text_norm import normalize_text
 from app.core.viability_rules import (
@@ -283,7 +284,7 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         current_phase=project.current_phase,
         resumen=elicitation.get("resumen") or {},
         preguntas_respuestas=list(elicitation.get("preguntas_respuestas") or []),
-        proposal_markdown=_content_to_text(proposal.content).strip(),
+        proposal_markdown=strip_modification_note(_content_to_text(proposal.content)).strip(),
         proposal_iteration=proposal.iteration,
         proposal_lifecycle=proposal.lifecycle,
         proposal_feedback_history=[
@@ -432,10 +433,12 @@ _UI_LEFTOVER_RE = re.compile(
 
 
 def strip_ui_leftovers(markdown: str) -> str:
-    """Quita del texto heredado las preguntas dirigidas a la interfaz."""
+    """Quita del texto heredado las preguntas dirigidas a la interfaz y el
+    aviso de la revisión automática de la modificación (era para el usuario
+    antes de aprobar; el ADR tiene su propia revisión)."""
     lines = [
         line
-        for line in (markdown or "").splitlines()
+        for line in strip_modification_note(markdown).splitlines()
         if not _UI_LEFTOVER_RE.match(normalize_text(line))
     ]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()

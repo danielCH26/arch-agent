@@ -39,7 +39,15 @@ from app.core.query_profile import (
     profile_to_query,
 )
 from app.core.rag import similarity_search
-from app.core.llm_errors import TOO_LARGE, classify_llm_error, estimate_tokens, llm_error_message
+from app.core.proposal_notes import modification_warnings, strip_modification_note, with_modification_note
+from app.core.llm_errors import (
+    RATE_LIMIT,
+    TOO_LARGE,
+    classify_llm_error,
+    estimate_tokens,
+    llm_error_message,
+    retry_after_seconds,
+)
 from app.core.text_norm import normalize_text
 from app.core.viability_rules import ASSUMPTION_MARK, COMMON_VIABILITY_RULES, REAL_TIME_PATH_RULE
 from app.models import InteractionLog, Proposal, ProposalApproval, UserSession
@@ -93,6 +101,7 @@ _PROGRESS_STAGES = {
     "retrieval": (12, "Buscando patrones de arquitectura relevantes"),
     "generating": (20, "Redactando la propuesta"),
     "repairing": (93, "Completando las secciones que quedaron incompletas"),
+    "waiting": (20, "El proveedor del modelo pidió esperar unos segundos por su límite de uso"),
     "saving": (95, "Guardando la propuesta"),
 }
 _GEN_START, _GEN_END = 20, 92
@@ -401,6 +410,9 @@ class ProposalGenerator:
             except _ProposalDomainError as exc:
                 yield _error_event(str(exc), ERR_REJECTED)
                 return
+            # El aviso de la revisión automática es para el usuario, no parte
+            # de la propuesta que se modifica.
+            prior_content = strip_modification_note(prior_content)
 
         next_iteration = prior_iteration + 1 if prior_iteration else None
 
@@ -661,63 +673,90 @@ class ProposalGenerator:
         chars_received = 0
         last_progress_at = perf_counter()
         yield _progress_event("generating", started_at)
-        stream = model.astream(prompt).__aiter__()
-        try:
-            while True:
-                try:
-                    # Solo es nuestro tope si de verdad se agoto el presupuesto;
-                    # un timeout del cliente HTTP del LLM sigue siendo un fallo
-                    # normal del stream (rama ``except Exception`` de abajo).
-                    event = await _within_budget(
-                        stream.__anext__(), work_deadline, "generating"
-                    )
-                except StopAsyncIteration:
-                    break
-                metadata = getattr(event, "response_metadata", None) or {}
-                finish_reason = metadata.get("finish_reason") or finish_reason
-                chunk = getattr(event, "content", None)
-                if chunk:
-                    full_markdown_chunks.append(chunk)
-                    chars_received += len(chunk)
-                    yield ("token", chunk)
-                    now = perf_counter()
-                    if now - last_progress_at >= PROPOSAL_PROGRESS_INTERVAL_S:
-                        last_progress_at = now
-                        yield _progress_event(
-                            "generating",
-                            started_at,
-                            percent=_generation_percent(chars_received),
-                            chars=chars_received,
+        # Un 429 (límite de tokens POR MINUTO, típico de Groq gratis) antes del
+        # primer token se reintenta UNA vez esperando lo que pide el proveedor,
+        # si cabe en el tope de tiempo. Antes el usuario tenía que esperar y
+        # darle a "Reintentar". Un 413 (petición demasiado grande) no se
+        # reintenta: volvería a fallar igual.
+        for attempt in range(2):
+            stream = model.astream(prompt).__aiter__()
+            retry_wait: float | None = None
+            try:
+                while True:
+                    try:
+                        # Solo es nuestro tope si de verdad se agoto el presupuesto;
+                        # un timeout del cliente HTTP del LLM sigue siendo un fallo
+                        # normal del stream (rama ``except Exception`` de abajo).
+                        event = await _within_budget(
+                            stream.__anext__(), work_deadline, "generating"
                         )
-        except _GenerationTimeout:
-            logger.warning("Proposal LLM stream cut by time budget chars=%s", chars_received)
-            raise  # lo convierte en el evento ``error`` generate_stream
-        except Exception as exc:
-            logger.warning(
-                "LLM stream failed for project_id=%s user_id=%s: %s",
-                effective_project_id,
-                self.user_id,
-                exc,
-            )
-            # Antes se mostraba el error crudo del proveedor ("LLM stream
-            # failed: Error code: 413 - {...}"). Un 413 tampoco es
-            # reintentable: la misma petición vuelve a pasar del límite.
-            kind = classify_llm_error(exc)
-            yield _error_event(
-                f"No se pudo generar la propuesta: {llm_error_message(kind)}.",
-                ERR_LLM_STREAM,
-                retryable=kind != TOO_LARGE,
-            )
-            return
-        finally:
-            # Cancelacion del usuario (cliente desconectado), timeout o error:
-            # cerrar el stream del proveedor para dejar de consumir tokens.
-            aclose = getattr(stream, "aclose", None)
-            if aclose is not None:
-                try:
-                    await aclose()
-                except Exception:  # best-effort
-                    pass
+                    except StopAsyncIteration:
+                        break
+                    metadata = getattr(event, "response_metadata", None) or {}
+                    finish_reason = metadata.get("finish_reason") or finish_reason
+                    chunk = getattr(event, "content", None)
+                    if chunk:
+                        full_markdown_chunks.append(chunk)
+                        chars_received += len(chunk)
+                        yield ("token", chunk)
+                        now = perf_counter()
+                        if now - last_progress_at >= PROPOSAL_PROGRESS_INTERVAL_S:
+                            last_progress_at = now
+                            yield _progress_event(
+                                "generating",
+                                started_at,
+                                percent=_generation_percent(chars_received),
+                                chars=chars_received,
+                            )
+            except _GenerationTimeout:
+                logger.warning("Proposal LLM stream cut by time budget chars=%s", chars_received)
+                raise  # lo convierte en el evento ``error`` generate_stream
+            except Exception as exc:
+                # Antes se mostraba el error crudo del proveedor ("LLM stream
+                # failed: Error code: 413 - {...}").
+                kind = classify_llm_error(exc)
+                wait = retry_after_seconds(exc) + 1.0
+                if (
+                    attempt == 0
+                    and chars_received == 0
+                    and kind == RATE_LIMIT
+                    and wait <= PROPOSAL_RATE_LIMIT_MAX_WAIT_S
+                    and (work_deadline is None or perf_counter() + wait < work_deadline - 30)
+                ):
+                    retry_wait = wait
+                    logger.warning(
+                        "LLM rate limit for project_id=%s: se reintenta en %.0fs (%s)",
+                        effective_project_id,
+                        wait,
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "LLM stream failed for project_id=%s user_id=%s [%s]: %s",
+                        effective_project_id,
+                        self.user_id,
+                        kind,
+                        exc,
+                    )
+                    yield _error_event(
+                        f"No se pudo generar la propuesta: {llm_error_message(kind)}.",
+                        ERR_LLM_STREAM,
+                        retryable=kind != TOO_LARGE,
+                    )
+                    return
+            finally:
+                # Cancelacion del usuario (cliente desconectado), timeout o error:
+                # cerrar el stream del proveedor para dejar de consumir tokens.
+                aclose = getattr(stream, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:  # best-effort
+                        pass
+            if retry_wait is None:
+                break
+            yield _progress_event("waiting", started_at)
+            await asyncio.sleep(retry_wait)
 
         full_markdown = "".join(full_markdown_chunks)
         if not full_markdown.strip():
@@ -784,6 +823,20 @@ class ProposalGenerator:
                 if part
             ),
         )
+
+        # Un ajuste que no menciona el patrón (o una tecnología) podía deshacer
+        # una corrección anterior y dejar el documento contradictorio sin que
+        # nadie lo avisara: se compara con la versión anterior y el aviso va al
+        # principio de lo que se guarda (ver app/core/proposal_notes.py).
+        if feedback and prior_content:
+            change_warnings = modification_warnings(prior_content, full_markdown, feedback)
+            if change_warnings:
+                logger.warning(
+                    "Proposal modify project_id=%s cambios no pedidos: %s",
+                    effective_project_id,
+                    change_warnings,
+                )
+                full_markdown = with_modification_note(full_markdown, change_warnings)
 
         # 7. Persist the proposal + interaction log + (if modify) approval.
         # Latencia de la generacion (perfil + RAG + reordenamiento + redaccion),
@@ -2111,6 +2164,9 @@ def _has_decision_point(markdown: str | None) -> bool:
 #      (Componentes, Tecnologías...) se responde el error de siempre.
 # Tokens estimados del prompt a partir de los cuales se usa el contexto
 # compacto (ver _build_prompt). 0 = nunca.
+# Espera máxima (s) para reintentar un 429 del proveedor antes del primer token.
+PROPOSAL_RATE_LIMIT_MAX_WAIT_S = env_float("PROPOSAL_RATE_LIMIT_MAX_WAIT_S", 30.0, minimum=0.0)
+
 PROPOSAL_PROMPT_TOKEN_BUDGET = env_int("PROPOSAL_PROMPT_TOKEN_BUDGET", 5500, minimum=0) or 10**9
 
 PROPOSAL_REPAIR = os.getenv("PROPOSAL_REPAIR", "on").strip().lower() not in {

@@ -2945,3 +2945,90 @@ def test_citations_take_the_sources_from_the_catalog_when_the_base_has_none():
 
     citations = _select_citations([_pat("Pipeline de datos ETL / ELT por lotes", 1, 0.9, "media")])
     assert citations[0]["fuentes"], "las fuentes del YAML deberían llegar a la cita"
+
+
+def test_a_429_before_the_first_token_is_retried_once():
+    """Límite de tokens por minuto de Groq: antes había que darle a "Reintentar"."""
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    class _Model:
+        calls = 0
+
+        async def astream(self, _prompt):
+            _Model.calls += 1
+            if _Model.calls == 1:
+                raise RuntimeError("Error code: 429 - rate_limit_exceeded. Please try again in 0.01s.")
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert _Model.calls == 2
+    assert "waiting" in [payload["stage"] for name, payload in events if name == "progress"]
+
+
+def test_a_second_429_is_reported_and_retryable():
+    class _Model:
+        async def astream(self, _prompt):
+            raise RuntimeError("Error code: 429 - rate_limit_exceeded. Please try again in 0.01s.")
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert "límite de uso por minuto" in events[-1][1]["message"]
+    assert _error_meta(events) == ("llm_stream_failed", True)
+
+
+def test_modify_that_changes_the_pattern_without_asking_saves_a_warning():
+    """Un ajuste que no nombra el patrón y lo cambia queda avisado al principio."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.proposal_notes import NOTE_TITLE
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    changed = _FULL_PROPOSAL.replace(
+        "- Patrón principal: Arquitectura en capas (Layered)", "- Patrón principal: Microservicios"
+    ).replace("- Recomendación: Capas", "- Recomendación: Microservicios")
+
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(changed)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    persisted = []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    with patch.object(gen, "_load_project_and_session", return_value=(project, 1)), \
+        patch.object(gen, "_load_prior_proposal", return_value=(_FULL_PROPOSAL, 1)), \
+        patch.object(gen, "load_requirements_text", return_value=""), \
+        patch.object(gen, "load_documents_text", return_value=("", [])), \
+        patch.object(gen, "_retrieve_patterns", return_value=[]), \
+        patch.object(gen, "build_langchain_model", return_value=_Model()), \
+        patch.object(gen, "_persist_proposal_and_log",
+                     side_effect=lambda **kw: persisted.append(kw) or (7, 8, 2)), \
+        patch.object(gen, "_engram_mirror", new=_noop_async):
+        events = _drain(
+            gen.ProposalGenerator(user_id=1, project_id=1).generate_stream(
+                feedback="Agrega un módulo de reportes", prior_proposal_id=3
+            )
+        )
+
+    assert events[-1][0] == "done"
+    saved = persisted[0]["markdown"]
+    assert saved.startswith(NOTE_TITLE)
+    assert "cambió de «Arquitectura en capas (Layered)» a «Microservicios»" in saved
