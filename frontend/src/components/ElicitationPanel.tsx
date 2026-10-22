@@ -222,7 +222,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
                 type="button"
                 onClick={() => void advance()}
                 disabled={sending}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 Comenzar elicitación
               </button>

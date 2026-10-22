@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getLLMConfig } from '../api/llm'
 import { LLMWizard } from '../components/llm-wizard/LLMWizard'
+import { PageHeader } from '../components/PageHeader'
 
 export function SettingsPage() {
   const [initialConfig, setInitialConfig] = useState<{ base_url: string; model: string } | null>(null)
@@ -43,12 +44,10 @@ export function SettingsPage() {
 
   return (
     <div>
-      <h1 className="font-display text-2xl font-bold text-gray-900 mb-6">
-        Configuración Global del LLM
-      </h1>
-      <p className="text-gray-600 mb-6">
-        Configura el proveedor de LLM que se utilizará en todos tus proyectos.
-      </p>
+      <PageHeader
+        title="Configuración del LLM"
+        subtitle="Configura el proveedor de LLM que se utilizará en todos tus proyectos."
+      />
       <LLMWizard initialConfig={initialConfig} onSaved={handleSaved} />
     </div>
   )

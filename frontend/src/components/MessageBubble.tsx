@@ -277,6 +277,12 @@ function parseHtmlTable(tableMarkup: string) {
   return rows.filter((row) => row.length > 0)
 }
 
+// Las tablas se ajustan al ancho de su contenido (sin estirarse a todo el
+// mensaje) y los encabezados resaltan: más grandes, en negrita y centrados.
+const TABLE_HEADER_CELL = 'border border-gray-300 bg-gray-200 px-3 py-2 text-center align-middle text-[15px] font-bold'
+// En las celdas, el texto en negrita (p. ej. los pasos numerados) va en semibold.
+const TABLE_BODY_CELL = 'border border-gray-300 px-3 py-2 align-top [&_strong]:font-semibold'
+
 function renderTable(rows: string[][], keyPrefix: string) {
   if (rows.length === 0) return null
 
@@ -284,11 +290,11 @@ function renderTable(rows: string[][], keyPrefix: string) {
 
   return (
     <div key={keyPrefix} className="my-3 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-auto max-w-full border-collapse text-left text-sm">
         <thead>
           <tr>
             {headers.map((header, index) => (
-              <th key={index} className="border border-gray-300 bg-gray-200 px-3 py-2 font-semibold">
+              <th key={index} className={TABLE_HEADER_CELL}>
                 {renderInline(header)}
               </th>
             ))}
@@ -298,7 +304,7 @@ function renderTable(rows: string[][], keyPrefix: string) {
           {bodyRows.map((row, rowIndex) => (
             <tr key={rowIndex} className="odd:bg-white even:bg-gray-50">
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="border border-gray-300 px-3 py-2 align-top">
+                <td key={cellIndex} className={TABLE_BODY_CELL}>
                   {renderInline(cell)}
                 </td>
               ))}
@@ -316,7 +322,7 @@ function renderHtmlTable(tableMarkup: string, keyPrefix: string) {
 
   return (
     <div key={keyPrefix} className="my-3 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-auto max-w-full border-collapse text-left text-sm">
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex} className="odd:bg-white even:bg-gray-50">
@@ -326,9 +332,7 @@ function renderHtmlTable(tableMarkup: string, keyPrefix: string) {
                 return (
                   <Cell
                     key={cellIndex}
-                    className={`border border-gray-300 px-3 py-2 align-top ${
-                      Cell === 'th' ? 'bg-gray-200 font-semibold' : ''
-                    }`}
+                    className={Cell === 'th' ? TABLE_HEADER_CELL : TABLE_BODY_CELL}
                   >
                     {renderInline(cell.text)}
                   </Cell>
@@ -721,7 +725,7 @@ function DiagramAttachments({
                       placeholder="Describe los cambios que necesitas en el diagrama..."
                     />
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isSubmitting || busy} onClick={() => void requestChanges(index)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Enviar ajuste</button>
+                      <button type="button" disabled={isSubmitting || busy} onClick={() => void requestChanges(index)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300">Enviar ajuste</button>
                       <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
                     </div>
                   </div>

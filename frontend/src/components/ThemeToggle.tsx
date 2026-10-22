@@ -19,7 +19,7 @@ interface ThemeToggleProps {
 }
 
 /** Alterna el tema: Sistema → Claro → Oscuro. */
-export function ThemeToggle({ className = '' }: ThemeToggleProps) {
+export function ThemeToggle({ className = 'p-2' }: ThemeToggleProps) {
   const [preference, setPreference] = useThemePreference()
   const next = NEXT[preference]
   const label = `Tema: ${LABEL[preference]}. Cambiar a ${LABEL[next].toLowerCase()}`
@@ -30,7 +30,7 @@ export function ThemeToggle({ className = '' }: ThemeToggleProps) {
       onClick={() => setPreference(next)}
       title={label}
       aria-label={label}
-      className={`rounded-lg p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700 ${className}`}
+      className={`rounded-lg text-gray-500 hover:bg-gray-200 hover:text-gray-700 ${className}`}
     >
       <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={ICON_PATH[preference]} />

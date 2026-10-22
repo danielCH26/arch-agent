@@ -179,7 +179,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
             <div className="mt-3 space-y-2">
               <label className="block text-sm font-medium text-gray-700" htmlFor="proposal-feedback">¿Qué debería cambiar?</label>
               <textarea id="proposal-feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2000} className="w-full rounded-lg border border-sky-200 p-3 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40" placeholder="Ej.: incluir caché, cambiar tecnología o ajustar una decisión..." />
-              <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
+              <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
             </div>
           )}
           {iterationLimitReached && <p className="mt-2 text-xs text-amber-700">Se alcanzó el máximo de {maxIterations} iteraciones: aprueba o rechaza la propuesta.</p>}

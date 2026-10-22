@@ -40,8 +40,11 @@ export function ChatInput({
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
-      const newHeight = Math.min(textareaRef.current.scrollHeight, 4 * 24)
+      const maxHeight = 4 * 24
+      const newHeight = Math.min(textareaRef.current.scrollHeight, maxHeight)
       textareaRef.current.style.height = `${newHeight}px`
+      // Barra de scroll solo cuando el texto supera el alto máximo.
+      textareaRef.current.style.overflowY = textareaRef.current.scrollHeight > maxHeight ? 'auto' : 'hidden'
     }
   }, [text])
 
@@ -160,7 +163,7 @@ const handleCancelDuplicate = () => {
           aria-label={ariaLabel}
           disabled={disabled}
           rows={1}
-          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+          className="flex-1 overflow-hidden px-4 py-2 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
         />
 
         {allowAttachments && (
@@ -193,10 +196,10 @@ const handleCancelDuplicate = () => {
           type="submit"
           aria-label="Enviar mensaje"
           disabled={disabled || !text.trim() || uploading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 transition-colors"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+          <svg aria-hidden="true" className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
           </svg>
         </button>
       </div>
