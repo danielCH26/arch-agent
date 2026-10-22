@@ -532,7 +532,9 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
         className={`max-w-[85%] px-4 py-2 break-words md:max-w-[70%] ${
           isUser
             ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white dark:bg-blue-100'
-            : 'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm'
+            : // En oscuro, la burbuja usa la superficie de tarjetas (no turquesa)
+              // para que las tablas y adjuntos se integren con el resto.
+              'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm dark:border-gray-200 dark:bg-[rgb(var(--surface))]'
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}

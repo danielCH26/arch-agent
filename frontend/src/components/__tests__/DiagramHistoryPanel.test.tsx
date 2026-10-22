@@ -51,9 +51,9 @@ describe('DiagramHistoryPanel (solo lectura)', () => {
     ])
     renderPanel()
 
-    expect(await screen.findByText('✅ Aprobado')).toBeInTheDocument()
-    expect(screen.getByText('❌ Rechazado')).toBeInTheDocument()
-    expect(screen.getByText('✏️ Cambios solicitados')).toBeInTheDocument()
+    expect(await screen.findByText('Aprobado')).toBeInTheDocument()
+    expect(screen.getByText('Rechazado')).toBeInTheDocument()
+    expect(screen.getByText('Cambios solicitados')).toBeInTheDocument()
     expect(screen.getByText('Sin decisión')).toBeInTheDocument()
   })
 

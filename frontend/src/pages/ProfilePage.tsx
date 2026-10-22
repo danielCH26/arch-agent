@@ -206,7 +206,7 @@ export function ProfilePage() {
       <PageHeader title="Perfil" subtitle="Gestiona tus datos y tu contraseña." />
 
       <div className="mb-8 flex flex-col items-center gap-2">
-        <div className="flex h-28 w-28 items-center justify-center rounded-full bg-blue-300">
+        <div className="flex h-28 w-28 items-center justify-center rounded-full bg-blue-300 dark:bg-slate-600">
           <svg className="h-14 w-14 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
           </svg>

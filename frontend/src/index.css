@@ -70,6 +70,21 @@ input::-ms-clear {
 .dark .bg-white\/70 {
   background-color: rgb(var(--surface) / 0.7);
 }
+/* Campos sin fondo propio: en oscuro el navegador les pone un gris neutro
+   que desentona; usan el mismo tono pizarra que el resto de los campos.
+   `:where` no suma especificidad, así cualquier `bg-*` del campo gana. */
+@layer base {
+  .dark :where(input:not([type='checkbox']):not([type='radio']):not([type='file']), textarea, select) {
+    background-color: rgb(var(--gray-50));
+  }
+}
+/* Botones principales desactivados: en oscuro `bg-gray-300` queda como un
+   gris medio con texto blanco que parece activo; se apagan fondo y texto. */
+.dark .disabled\:bg-gray-300:disabled {
+  background-color: rgb(var(--gray-50));
+  color: rgb(var(--gray-400));
+  box-shadow: inset 0 0 0 1px rgb(var(--gray-200));
+}
 /* Filas alternas de tablas en mensajes (p. ej. trade-offs). */
 .dark .odd\:bg-white:nth-child(odd) {
   background-color: rgb(var(--surface));

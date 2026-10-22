@@ -245,7 +245,7 @@ export function Layout() {
             className="flex min-w-0 flex-1 items-center gap-3 hover:opacity-80"
           >
             <span
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-300 text-white ${
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-300 text-white dark:bg-slate-600 ${
                 isProfileActive ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-gray-50' : ''
               }`}
             >
@@ -264,7 +264,7 @@ export function Layout() {
               to="/settings/llm"
               aria-current={isLlmActive ? 'page' : undefined}
               className={`rounded-lg p-1.5 ${
-                isLlmActive ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-200 hover:text-gray-700'
+                isLlmActive ? 'bg-blue-50 text-blue-700 dark:bg-blue-100' : 'text-gray-500 hover:bg-gray-200 hover:text-gray-700'
               }`}
               title="Configuración LLM"
               aria-label="Configuración LLM"
