@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import type_coerce
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app.core.attachment_tokens import (
     _ensure_uploads_dir,
@@ -178,9 +179,12 @@ def get_attachment(
 
 
 def _lookup_attachment(
-    db: SessionLocal, user_id: int, attachment_id: str
+    db: Session, user_id: int, attachment_id: str
 ) -> tuple[dict | None, Message | None]:
     """Resolve one attachment by ``(user_id, attachment_id)``.
+
+    The caller owns the session lifecycle (the route closes it in its
+    ``finally``); this helper never commits or closes.
 
     Postgres path uses ``messages.attachments @> '[{"id": "..."}]'::jsonb``
     + the GIN index from migration 0013. SQLite path falls back to

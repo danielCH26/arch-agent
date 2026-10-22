@@ -17,6 +17,7 @@ Postgres connection — they use SQLAlchemy's dialect compiler.
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import type_coerce
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
@@ -34,6 +35,14 @@ def _compile(clause) -> str:
     return str(clause.compile(dialect=postgresql.dialect()))
 
 
+@pytest.mark.xfail(
+    reason=(
+        "Pins an SQLAlchemy internal: JSON.contains() against the Postgres "
+        "dialect emits LIKE. If a future SQLAlchemy emits @> on its own, this "
+        "witness fails even though our code is correct (review de #116)."
+    ),
+    strict=False,
+)
 def test_buggy_attachments_contains_emits_like_on_postgres():
     """Witness the bug. Compiling ``Message.attachments.contains([...])``
     against Postgres produces ``LIKE '%%' || x::JSONB || '%%'`` — which
@@ -133,3 +142,112 @@ def test_attachment_lookup_helper_uses_jsonb_on_postgres(monkeypatch):
         "Attachments filter must not fall back to LIKE on Postgres — that "
         "is the original C3 blocker."
     )
+
+# ---------------------------------------------------------------------------
+# Integration: run the real postgresql branch of _lookup_attachment.
+#
+# The other tests here only compile the clause; this one executes it against a
+# real Postgres (Soomri, review of #116). It works in its own throwaway schema
+# so it never depends on the shared database being migrated, and it skips when
+# no Postgres is reachable (the rest of the suite is SQLite/mock).
+# ---------------------------------------------------------------------------
+
+
+def _postgres_connection_or_skip():
+    import os
+    import uuid
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    url = os.environ.get("DATABASE_URL")
+    if not url or not url.startswith("postgresql"):
+        pytest.skip("DATABASE_URL no apunta a Postgres: la integración no aplica")
+
+    engine = create_engine(url, pool_pre_ping=True)
+    try:
+        conn = engine.connect()
+        conn.execute(text("SELECT 1"))
+    except SQLAlchemyError as exc:
+        pytest.skip(f"Postgres no alcanzable ({type(exc).__name__}): {exc}")
+
+    schema = f"att_lookup_{uuid.uuid4().hex[:8]}"
+    conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    conn.commit()
+    conn.execute(text(f'SET search_path TO "{schema}"'))
+    conn.commit()
+    return engine, conn, schema
+
+
+def test_lookup_attachment_runs_the_postgresql_branch_against_real_db():
+    """Ejecuta la rama ``postgresql`` de ``_lookup_attachment`` contra una base
+    real: si alguien rompe el ``type_coerce`` o el ``@>``, este test falla en
+    vez de quedar en verde."""
+    import uuid
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.api.attachments import _lookup_attachment
+    from app.models.message import Message
+    from app.models.project import Project
+    from app.models.session import UserSession
+    from app.models.user import User
+
+    engine, conn, schema = _postgres_connection_or_skip()
+    db = None
+    try:
+        # Solo las tablas que este test necesita, en orden de dependencia: el
+        # ``create_all`` global exigiria la extension ``vector`` (pgvector),
+        # que no esta en toda base Postgres.
+        for table in (User.__table__, Project.__table__,
+                      UserSession.__table__, Message.__table__):
+            table.create(conn, checkfirst=True)
+
+        db = sessionmaker(bind=conn)()
+
+        suffix = uuid.uuid4().hex[:8]
+        user = User(
+            username=f"att_lookup_{suffix}",
+            email=f"att_lookup_{suffix}@example.test",
+            password_hash="not-a-real-hash",
+        )
+        db.add(user)
+        db.flush()
+
+        session_row = UserSession(user_id=user.id)
+        db.add(session_row)
+        db.flush()
+
+        message_row = Message(
+            session_id=session_row.id,
+            user_id=user.id,
+            role="assistant",
+            content="respuesta con diagrama",
+            attachments=[
+                {"id": "att-target", "kind": "screenshot", "filename": "a.png"},
+                {"id": "att-other", "kind": "screenshot", "filename": "b.png"},
+            ],
+        )
+        db.add(message_row)
+        db.commit()
+        db.refresh(message_row)
+
+        found, owner = _lookup_attachment(db, user.id, "att-target")
+        assert found is not None, "la rama Postgres debe encontrar el adjunto"
+        assert found["filename"] == "a.png"
+        assert owner is not None and owner.id == message_row.id
+
+        # Un id inexistente no devuelve la fila de otro adjunto.
+        missing, owner_missing = _lookup_attachment(db, user.id, "att-nope")
+        assert missing is None and owner_missing is None
+    finally:
+        if db is not None:
+            db.close()
+        try:
+            from sqlalchemy import text as _text
+
+            conn.execute(_text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+            conn.commit()
+        finally:
+            conn.close()
+            engine.dispose()

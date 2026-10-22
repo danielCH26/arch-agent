@@ -8,7 +8,7 @@
 -- faster lookups, no support for key-existence queries (which we don't need).
 --
 -- IF NOT EXISTS makes the migration idempotent. CONCURRENTLY is NOT used
--- because the migration runner (scripts/run_migrations.py) is transaction-
+-- because the migration runner (migrations/run_migrations.py) is transaction-
 -- per-file; plain CREATE INDEX takes a brief ACCESS EXCLUSIVE lock on
 -- messages, which is acceptable for the current table size (< 100k rows
 -- per the demo seed). For production at higher scale, revisit via F14.
