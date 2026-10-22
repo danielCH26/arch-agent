@@ -163,15 +163,10 @@ class TestRejectRevertsToEnv:
 
 
 class TestRAGConstants:
-    def test_chat_keeps_its_rag_min_similarity_floor(self):
-        # El piso de 0.85 solo gobierna el chat (preguntas fuera de tema). La
-        # fase de propuesta NO lo usa: trae los PROPOSAL_RAG_TOP_N patrones mas
-        # cercanos sin piso; ese comportamiento se prueba en
-        # TestCitationSelection y en tests/core/test_proposal_generator.py.
-        from app.api import chat as chat_module
-
-        assert chat_module.RAG_MIN_SIMILARITY == 0.85
-
+    # El piso de 0.85 del chat lo fija tests/core/test_rag_config.py. La fase de
+    # propuesta NO lo usa: trae los PROPOSAL_RAG_TOP_N patrones mas cercanos sin
+    # piso; ese comportamiento se prueba en TestCitationSelection y en
+    # tests/core/test_proposal_generator.py.
     def test_proposal_modules_do_not_expose_a_similarity_floor_they_do_not_use(self):
         from app.api import proposals as proposals_module
         from app.core import proposal_generator as generator_module
