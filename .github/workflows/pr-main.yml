@@ -38,6 +38,10 @@ jobs:
       # setdefault, así que este DATABASE_URL llega intacto a todos los tests.
       DATABASE_URL: postgresql://asistente:asistente@localhost:5432/asistente_db
       JWT_SECRET_KEY: test-secret-key-for-testing-only-32chars
+      # Engram vía engram-proxy. Explícito para no depender de que
+      # app/__init__.py haga load_dotenv() del .env copiado; el default del
+      # código (7437) es el puerto interno del contenedor, no el del host.
+      ENGRAM_URL: http://localhost:7439
       PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
       EMBEDDINGS_WARMUP: "off"
       HF_HOME: ${{ github.workspace }}/.hf-cache

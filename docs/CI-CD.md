@@ -54,6 +54,8 @@ graph LR
     C -->|tag vX.Y.Z + aprobación production| D[Railway]
 ```
 
+> **Pendiente de decidir:** este branch borra `ci.yml`, y F18 (`feature/f18-test-coverage`) agrega `.github/workflows/tests.yml`, que corre en PRs contra `development` y `main`. Si entran los dos, pytest corre dos veces por PR (`dev-backend-tests`/`main-backend-tests` + `pytest + coverage`). Hay que quedarse con uno; la opción natural es mover el gate de cobertura (`--cov=app --cov-fail-under=80`) a los lanes de este doc y no mergear `tests.yml`, para que los checks requeridos de branch protection no cambien.
+
 ## Secrets y variables
 
 Se configuran en **Settings → Secrets and variables → Actions**. Ningún workflow de PR necesita secrets: todos los valores que usan son de CI y salen de `.env.example` o del propio YAML.
@@ -75,6 +77,8 @@ Las claves de Langfuse (`pk-lf-asistente-prod` / `sk-lf-...`) que ve `pr-main` s
 La versión del CLI está fijada en `RAILWAY_CLI_VERSION` dentro del workflow. Para subirla, probarla primero con un re-deploy manual.
 
 ## How to cut a release
+
+**Antes del primer release (una sola vez):** confirmar que `RAILWAY_CLI_VERSION` autentica con el token de proyecto. Hay reportes de que la CLI ≥ 5.3 falla con `Not signed in` usando token de proyecto, y el workflow todavía no corrió nunca. Actions → "Deploy to Railway" → Run workflow, con `ref` = un tag existente o, si todavía no hay ninguno, el SHA del último commit de `main`. Ojo: no es un dry-run, despliega de verdad a `production` (por eso conviene un ref que ya esté en `main`). Si falla con `Not signed in`, no taggear: corregir la versión del CLI o el token y repetir el dispatch hasta que quede verde.
 
 ```bash
 # 1. Estar en main, actualizado y con los checks de PR - Main en verde

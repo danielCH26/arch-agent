@@ -40,7 +40,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Versión fija y probada del CLI: el paquete publica casi a diario.
+  # Versión fija del CLI: el paquete publica casi a diario. Hay reportes de
+  # que la CLI >= 5.3 falla con "Not signed in" usando token de proyecto;
+  # validar con un workflow_dispatch antes del primer release (docs/CI-CD.md).
   RAILWAY_CLI_VERSION: 5.63.1
 
 jobs:
