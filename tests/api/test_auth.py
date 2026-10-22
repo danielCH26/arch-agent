@@ -162,3 +162,22 @@ class TestJWTTokens:
 
         # Cleanup
         JWT_REVOKED.discard("test-jti-123")
+
+
+def test_logout_limpia_la_config_llm_cacheada():
+    """Revisión: tras logout + login no se debe ver la config LLM cacheada
+    (TTL de 5 min); la siguiente request la vuelve a leer de la DB."""
+    import asyncio
+
+    from app.api.auth import logout
+    from app.core import llm_loader
+
+    config = llm_loader.UserLLMConfig(
+        user_id=4242, base_url="https://api.example.com/v1", model="m", api_key="k"
+    )
+    llm_loader._session_cache[4242] = (config, float("inf"))
+    try:
+        asyncio.run(logout(current_user={"user_id": 4242, "username": "u", "jti": None}))
+        assert 4242 not in llm_loader._session_cache
+    finally:
+        llm_loader._session_cache.pop(4242, None)
