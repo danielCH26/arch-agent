@@ -285,38 +285,49 @@ def format_rag_context(rag_documents: list[Any]) -> str:
     return "\n\n".join(blocks)
 
 
-def _format_history_recap(history: list[dict]) -> str:
-    """Format conversation history as a recap for the agent.
+# Conversation memory (REQ-EM-DELTA-3): how much prior context reaches the agent.
+# The history travels as real ``user``/``assistant`` messages, NEVER inside the
+# system prompt: prepending it there would turn a previous user turn into a
+# system instruction (reviews de #116, Soomri + lau2413). The cap is even so the
+# window holds whole user/assistant pairs, and every entry is truncated because
+# diagrams and long answers blow up the token bill otherwise.
+_HISTORY_MAX_MESSAGES = 6
+_HISTORY_MAX_CHARS_PER_MESSAGE = 2_000
 
-    Args:
-        history: List of dicts with 'role' and 'content' keys. Only
-            includes 'user' and 'assistant' roles.
 
-    Returns:
-        A formatted string to prepend to the system prompt.
+def _build_history_messages(history: list[dict] | None) -> list[dict]:
+    """Normalize prior turns into chat messages for the agent input.
+
+    - keeps only ``user``/``assistant`` roles;
+    - drops a leading orphan ``assistant`` reply (its question fell outside the
+      window) so every assistant message follows its own question;
+    - keeps at most ``_HISTORY_MAX_MESSAGES`` entries, oldest first;
+    - truncates each entry to ``_HISTORY_MAX_CHARS_PER_MESSAGE`` characters.
+
+    ``display_content`` is never carried (REQ-EM-DELTA-2): it is the user-facing
+    bubble, while the LLM must see the real ``content`` (prompt + diagram).
     """
     if not history:
-        return ""
+        return []
 
-    # Filter to user/assistant roles only, cap at 5 entries
-    entries = []
-    for msg in history[-5:]:  # already capped at 5 by caller
-        role = msg.get("role", "unknown")
+    entries: list[dict] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
         if role not in ("user", "assistant"):
             continue
-        # REQ-EM-DELTA-2: the agent MUST NEVER receive `display_content`.
-        # `display_content` is the user-facing bubble (e.g. short feedback
-        # for "Solicitar cambios" on a Mermaid diagram); the LLM gets the
-        # actual `content` (the prompt + previous Mermaid). Drop the
-        # user-facing key here.
-        content = msg.get("content", "")
-        if content:
-            entries.append(f"{role.upper()}: {content}")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > _HISTORY_MAX_CHARS_PER_MESSAGE:
+            content = content[:_HISTORY_MAX_CHARS_PER_MESSAGE] + "…[truncado]"
+        entries.append({"role": role, "content": content})
 
-    if not entries:
-        return ""
-
-    return "### Conversation so far\n" + "\n\n".join(entries)
+    entries = entries[-_HISTORY_MAX_MESSAGES:]
+    while entries and entries[0]["role"] == "assistant":
+        entries.pop(0)
+    return entries
 
 
 def _build_system_prompt(rag_documents: list[Any]) -> str:
@@ -652,17 +663,28 @@ async def _render_mermaid_server_side(
         )
         return None
 
-    attachment_id = str(uuid.uuid4())
-    mime = getattr(image_block, "mimeType", None) or "image/png"
-    ext = "png" if "png" in mime else "jpg"
-    filename = f"{attachment_id}.{ext}"
-    raw_bytes = base64.b64decode(image_block.data)
-
     # REQ-PMCP-3: byte cap on the real render path. A screenshot over the
     # cap is treated as a failed render — same contract as every other
     # failure here (log + return None) — so an oversized PNG can never
-    # blow up memory, the attachments row, or the FE payload.
+    # reach the attachments row, the disk, or the FE payload.
+    #
+    # The cheap length check runs BEFORE the decode: base64 emits 4 chars
+    # per 3 bytes, so an oversized payload is already visible in the encoded
+    # string and never gets allocated (reviews de #116).
     max_bytes = _max_render_bytes()
+    encoded_png = getattr(image_block, "data", None) or ""
+    max_encoded_chars = ((max_bytes + 2) // 3) * 4
+    if len(encoded_png) > max_encoded_chars:
+        _LOGGER.warning(
+            "Render server-side: screenshot codificado de %d chars excede el "
+            "tope de %d bytes (PUPPETEER_MAX_RENDER_BYTES); se descarta el "
+            "render sin decodificar.",
+            len(encoded_png),
+            max_bytes,
+        )
+        return None
+
+    raw_bytes = base64.b64decode(encoded_png)
     if len(raw_bytes) > max_bytes:
         _LOGGER.warning(
             "Render server-side: screenshot de %d bytes excede el tope de "
@@ -671,6 +693,11 @@ async def _render_mermaid_server_side(
             max_bytes,
         )
         return None
+
+    attachment_id = str(uuid.uuid4())
+    mime = getattr(image_block, "mimeType", None) or "image/png"
+    ext = "png" if "png" in mime else "jpg"
+    filename = f"{attachment_id}.{ext}"
 
     uploads_dir = _ensure_uploads_dir()
     storage_path = os.path.join(uploads_dir, filename)
@@ -690,6 +717,7 @@ async def _astream_agent(
     message: str,
     callbacks: list[Any],
     *,
+    history: list[dict] | None = None,
     user_id: int | None = None,
     project_id: int | None = None,
     model_name: str | None = None,
@@ -718,9 +746,14 @@ async def _astream_agent(
             f"chat/user-{user_id if user_id is not None else 'anon'}/project-{metadata['project_id']}",
         )
 
+    # Prior turns travel as real messages before the current one, so the system
+    # prompt stays free of user content (see ``_build_history_messages``).
+    messages = _build_history_messages(history)
+    messages.append({"role": "user", "content": message})
+
     try:
         event_iter = agent.astream_events(
-            {"messages": [{"role": "user", "content": message}]},
+            {"messages": messages},
             config=config,
             version="v2",
         )
@@ -789,9 +822,10 @@ async def run_agent(
     para renderizar el mermaid que el modelo haya escrito.
 
     Args:
-        history: Optional list of prior conversation messages for context.
-            Each dict should have 'role' and 'content' keys. Capped at 5
-            entries by the caller to bound token cost.
+        history: Optional prior conversation turns as dicts with ``role`` and
+            ``content``. They are normalized (role filter, orphan drop,
+            per-message truncation, even cap) and forwarded to the agent as
+            real messages; the system prompt never carries user content.
     """
     docs = _coerce_documents(rag_documents)
 
@@ -835,11 +869,6 @@ async def run_agent(
     tools: list[Any] = list(context7_tools)
 
     system_prompt = _build_system_prompt(docs)
-
-    # Prepend conversation history to the system prompt if provided
-    if history:
-        history_recap = _format_history_recap(history)
-        system_prompt = history_recap + "\n\n" + system_prompt
     agent = build_agent(model=model, system_prompt=system_prompt, tools=tools)
 
     model_name = getattr(model, "model_name", None) or getattr(model, "name", None)
@@ -853,6 +882,7 @@ async def run_agent(
         agent,
         message,
         callbacks,
+        history=history,
         user_id=user_id,
         project_id=project_id,
         model_name=model_name,

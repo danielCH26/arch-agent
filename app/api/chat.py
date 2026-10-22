@@ -509,12 +509,14 @@ async def chat(
                         if session is None:
                             return []
                         rows = list_recent(
-                            db, session.id, project_id=body.project_id, limit=5
+                            db, session.id, project_id=body.project_id, limit=6
                         )
                     finally:
                         db.close()
                     # ``list_recent`` returns newest-first; the agent needs
-                    # chronological order. Empty contents are skipped.
+                    # chronological order. Empty contents are skipped. Even
+                    # limit (6 = 3 whole turns) so the oldest entry is a
+                    # question, not an orphan answer.
                     for row in reversed(rows):
                         if not row.content:
                             continue
