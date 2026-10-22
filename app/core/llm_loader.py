@@ -192,28 +192,39 @@ def _cadena_de_causas(exc: BaseException) -> list[BaseException]:
     return vistas
 
 
+def _status_code_de_la_cadena(causas: list[BaseException]) -> Optional[int]:
+    """El primer ``status_code`` entero de la cadena (del envoltorio hacia la causa)."""
+    for e in causas:
+        status_code = getattr(e, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+    return None
+
+
 def is_temperature_rejection(exc: BaseException) -> bool:
     """¿El provider rechazo el parametro `temperature`?
 
     Exige que el mensaje mencione ``temperature`` Y que sea un 400 (por
     ``status_code`` o por el texto) o diga ``unsupported``/``invalid``: la
-    palabra sola no alcanza. Si el error trae ``status_code``, manda ese
-    codigo y el "400" del texto se ignora (un 429 que repite los parametros
-    del request no es un rechazo). Recorre la cadena de causas porque los call
-    sites envuelven el error del SDK (ej. ``ElicitationLLMError``).
+    palabra sola no alcanza. Recorre la cadena de causas porque los call
+    sites envuelven el error del SDK (ej. ``ElicitationLLMError``, que copia
+    el mensaje pero no el ``status_code``). Si algun eslabon de la cadena trae
+    ``status_code``, manda ese codigo y el texto se ignora: un 429 que repite
+    los parametros del request no es un rechazo, aunque el envoltorio diga
+    "400 tokens".
     """
-    for e in _cadena_de_causas(exc):
-        texto = str(e).lower()
-        if "temperature" not in texto:
-            continue
-        status_code = getattr(e, "status_code", None)
-        if status_code == 400:
-            return True
-        if status_code is None and _CODIGO_400_RE.search(texto):
-            return True
-        if any(marca in texto for marca in _RECHAZO_MARCAS):
-            return True
-    return False
+    causas = _cadena_de_causas(exc)
+    textos = [str(e).lower() for e in causas]
+    textos = [t for t in textos if "temperature" in t]
+    if not textos:
+        return False
+    status_code = _status_code_de_la_cadena(causas)
+    if status_code is not None:
+        return status_code == 400
+    return any(
+        _CODIGO_400_RE.search(t) or any(marca in t for marca in _RECHAZO_MARCAS)
+        for t in textos
+    )
 
 
 def explain_llm_error(exc: BaseException) -> str:

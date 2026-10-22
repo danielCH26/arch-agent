@@ -494,6 +494,31 @@ class TestIsTemperatureRejection:
         exc.status_code = 429
         assert is_temperature_rejection(exc) is False
 
+    def test_status_code_de_la_causa_manda_sobre_el_envoltorio(self):
+        # ElicitationLLMError copia el mensaje del SDK pero no su status_code:
+        # el "400" del envoltorio no debe ganarle al 429 de la causa.
+        from app.core.elicitation_agent import ElicitationLLMError
+
+        mensaje = "Error code: 429 - retry; request had temperature=0.0, 400 tokens"
+        sdk = Exception(mensaje)
+        sdk.status_code = 429
+        try:
+            try:
+                raise sdk
+            except Exception as inner:
+                raise ElicitationLLMError(str(inner)) from inner
+        except ElicitationLLMError as outer:
+            assert is_temperature_rejection(outer) is False
+
+    def test_status_code_400_de_la_causa_con_envoltorio(self):
+        from app.core.elicitation_agent import ElicitationLLMError
+
+        sdk = Exception("'temperature' must be 1")
+        sdk.status_code = 400
+        outer = ElicitationLLMError(f"La llamada al modelo fallo: {sdk}")
+        outer.__cause__ = sdk
+        assert is_temperature_rejection(outer) is True
+
     def test_recorre_la_cadena_de_causas(self):
         try:
             try:
