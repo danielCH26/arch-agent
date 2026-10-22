@@ -18,7 +18,9 @@ from app.core.llm_loader import (
     astream_with_temperature_fallback,
     build_langchain_model,
     explain_llm_error,
+    http_status_for,
     LLMConfigError,
+    user_facing_message,
 )
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
@@ -222,20 +224,25 @@ async def chat(
     """
     Stream agent chat responses as SSE.
 
-    POST /api/chat  ╬ô├Ñ├å  text/event-stream
+    POST /api/chat  →  text/event-stream
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream ╬ô├ç├╢ "sources" event (metadata RAG) +
+        200 text/event-stream — "sources" event (metadata RAG) +
             ("tool_start" / "tool_end")* + tokens as "event: token" +
             optional "event: degraded" + final "event: done".
             On hard failure, "event: error" terminates the stream.
-        400 ╬ô├ç├╢ no message provided
-        401 ╬ô├ç├╢ invalid JWT
-        404 ╬ô├ç├╢ project not found or not owned
-        409 ╬ô├ç├╢ LLM not configured for user
+        400 — no message provided
+        401 — invalid JWT
+        404 — project not found or not owned
+        409 — LLM not configured for user (incl. wizard stopped before step 3)
+        500 — the user's LLM config is complete but the model failed to
+            initialize (``reason="initialization_failed"``)
+        Status and message come from ``http_status_for`` /
+        ``user_facing_message`` (``app/core/llm_loader.py``), shared with
+        elicitation.
 
-    F11 changes (issue #13, design.md Γö¼┬║6.5):
+    F11 changes (issue #13, design.md §6.5):
       - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
         callbacks=..., rag_documents=...)`` which drives a
         ``create_agent`` runtime.
@@ -257,7 +264,7 @@ async def chat(
     AFTER the commit. Either store degrades gracefully when the other is down.
     """
     if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacΓö£┬ío")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacío")
 
     user_id = current_user["user_id"]
 
@@ -308,14 +315,12 @@ async def chat(
     try:
         model = build_langchain_model(user_id)
     except LLMConfigError as e:
-        if e.reason == "initialization_failed":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            )
+        # El detalle técnico va al log; al usuario, un mensaje según el motivo
+        # (p. ej. "te falta elegir el modelo" si dejó el wizard en el paso 3).
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+            status_code=http_status_for(e),
+            detail=user_facing_message(e),
         )
 
     # Build SSE streaming handler + optional Langfuse callback
@@ -398,7 +403,7 @@ async def chat(
         """
         SSE generator that yields events as they arrive from the agent runtime.
 
-        Ordering (design.md Γö¼┬║5.2):
+        Ordering (design.md §5.2):
           sources -> (tool_start/tool_end)* -> token*N -> done
 
         ``sources`` is emitted by this route BEFORE the agent runs (the agent
@@ -580,7 +585,7 @@ async def chat(
             if not emitted_done:
                 # Defensive: if ``run_agent`` returned without yielding
                 # ``done`` or ``error``, fire ``done`` to keep the FE
-                # contract stable (design.md Γö¼┬║9).
+                # contract stable (design.md §9).
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
@@ -634,7 +639,7 @@ def chat_history(
 
         # Resolve the user's session id (lazy-upsert so a fresh user still
         # gets an empty list, not an exception). REQ-11: any DB failure on
-        # the read path ╬ô├Ñ├å 200 with empty messages (graceful degradation).
+        # the read path → 200 with empty messages (graceful degradation).
         try:
             session = (
                 db.query(UserSession).filter(UserSession.user_id == user_id).first()

@@ -616,7 +616,7 @@ class TestSendElicitationMessage:
                 "resumen": None,
             }}}
         }
-        mock_build_model.side_effect = LLMConfigError("sin config")
+        mock_build_model.side_effect = LLMConfigError("sin modelo", reason="missing")
 
         with pytest.raises(HTTPException) as exc_info:
             run(send_elicitation_message(
@@ -625,6 +625,37 @@ class TestSendElicitationMessage:
             ))
 
         assert exc_info.value.status_code == 409
+        # Quien dejó el wizard en el paso 3 sabe qué le falta.
+        assert "paso 3" in exc_info.value.detail
+
+    @patch("app.api.elicitation.save_session_state")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
+    def test_500_when_model_fails_to_initialize_like_chat(
+        self, mock_load, mock_require, mock_build_model, mock_save
+    ):
+        """Mismo status que el chat (``http_status_for``) y sin el detalle técnico."""
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
+                "pending_question": "pregunta pendiente",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.side_effect = LLMConfigError(
+            "boom: token sk-123", reason="initialization_failed"
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            run(send_elicitation_message(
+                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
+                current_user=CURRENT_USER,
+            ))
+
+        assert exc_info.value.status_code == 500
+        assert "sk-123" not in exc_info.value.detail
 
     @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.elicitation_agent.next_step")
