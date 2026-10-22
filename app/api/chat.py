@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user
@@ -203,7 +203,7 @@ def _is_near_miss(doc) -> bool:
 
 class ChatRequest(BaseModel):
     project_id: int | None = None
-    message: str
+    message: str = Field(description="Mensaje del usuario (vacio -> 400 manual; whitespace-only -> 400)")
     # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
     # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
     # el prompt de "Solicitar cambios" sobre un diagrama, que agrega

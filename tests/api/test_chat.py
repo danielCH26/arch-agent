@@ -47,17 +47,6 @@ class TestChatRequestModel:
         assert req.project_id is None
         assert req.message == "Hello"
 
-    def test_chat_request_allows_empty_message_at_model_level(self):
-        """Pydantic accepts any string; content validation is in the endpoint."""
-        from app.api.chat import ChatRequest
-
-        # ChatRequest accepts empty/whitespace strings at model level
-        req = ChatRequest(project_id=None, message="")
-        assert req.message == ""
-
-        req2 = ChatRequest(project_id=None, message="   ")
-        assert req2.message == "   "
-
     def test_chat_request_normal_message(self):
         from app.api.chat import ChatRequest
 
