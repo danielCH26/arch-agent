@@ -6,22 +6,18 @@ Usa mocking puro (sin TestClient) para evitar el overhead de langchain.
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Configurar entorno antes de importar la app.
-#
-# IMPORTANT: do NOT set DATABASE_URL here. The hard-coded CI URL would
-# defeat the skipif in Postgres-backed tests like
-# ``tests/models/test_approval.py`` and
-# ``tests/core/test_phase_decisions_concurrency.py``. The runner (CI or
-# local) is responsible for setting DATABASE_URL when those tests need
-# to run; otherwise they skip cleanly (HU10 v3 fix). Tampoco lo pisamos:
-# en una corrida completa los tests con Postgres real
-# (tests/test_document_storage.py) se conectarían como "test" y fallarían.
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32ch"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# setdefault: el CI (o cualquier runner externo) puede exportar las suyas.
+# DATABASE_URL NO lleva default a propósito: los tests Postgres-backed usan
+# skipif(not DATABASE_URL) y deben omitirse limpio cuando el runner no la
+# exporta (ver tests/conftest.py y HU10 v3). Un default "test:test" los
+# activaba y los hacía fallar al conectarse a una base inexistente.
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32ch")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 @pytest.fixture

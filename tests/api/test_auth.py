@@ -9,13 +9,13 @@ import pytest
 import os
 
 # Configurar entorno antes de cualquier import de app.
-# DATABASE_URL NO se fija aquí (HU10 v3): un default "test:test" pisaba el
-# de app.core.database en una corrida completa y rompía los tests con
-# Postgres real (tests/test_document_storage.py) y el skipif de HU10.
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# setdefault: respeta lo que el CI o un runner externo exporten (PR #102
+# round 2). DATABASE_URL NO lleva default: los tests Postgres-backed se
+# omiten limpio cuando el runner no la exporta (HU10 v3).
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 class TestGetUserByLogin:
@@ -162,3 +162,22 @@ class TestJWTTokens:
 
         # Cleanup
         JWT_REVOKED.discard("test-jti-123")
+
+
+def test_logout_limpia_la_config_llm_cacheada():
+    """Revisión: tras logout + login no se debe ver la config LLM cacheada
+    (TTL de 5 min); la siguiente request la vuelve a leer de la DB."""
+    import asyncio
+
+    from app.api.auth import logout
+    from app.core import llm_loader
+
+    config = llm_loader.UserLLMConfig(
+        user_id=4242, base_url="https://api.example.com/v1", model="m", api_key="k"
+    )
+    llm_loader._session_cache[4242] = (config, float("inf"))
+    try:
+        asyncio.run(logout(current_user={"user_id": 4242, "username": "u", "jti": None}))
+        assert 4242 not in llm_loader._session_cache
+    finally:
+        llm_loader._session_cache.pop(4242, None)

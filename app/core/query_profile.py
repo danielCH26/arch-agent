@@ -24,6 +24,8 @@ import os
 import re
 from typing import Any
 
+from app.core.llm_loader import ainvoke_with_temperature_fallback, is_temperature_rejection
+
 logger = logging.getLogger(__name__)
 
 PROFILE_ENABLED = os.getenv("PROPOSAL_QUERY_PROFILE", "on").lower() not in {"off", "0", "false"}
@@ -135,9 +137,22 @@ async def extract_project_profile(model: Any, text: str) -> dict[str, Any] | Non
         return None
     prompt = _PROFILE_PROMPT.format(text=text.strip()[:PROFILE_INPUT_MAX_CHARS])
     try:
-        message = await asyncio.wait_for(model.ainvoke(prompt), timeout=PROFILE_TIMEOUT_S)
+        message = await asyncio.wait_for(
+            ainvoke_with_temperature_fallback(model, prompt), timeout=PROFILE_TIMEOUT_S
+        )
         profile = normalize_profile(parse_json_object(_message_text(message)))
     except Exception as exc:  # modelo sin ainvoke, timeout, red, JSON roto...
+        if is_temperature_rejection(exc):
+            # No es un corte transitorio: el modelo rechaza `temperature` aun
+            # sin el parametro. La propuesta sigue, pero degradada; que quede
+            # visible para el operador y no como un warning generico mas.
+            logger.warning(
+                "Perfil del proyecto omitido: el modelo rechazo 'temperature' (%s). "
+                "La propuesta usa la consulta clasica; revisar el modelo o "
+                "LLM_MODELS_WITHOUT_TEMPERATURE",
+                exc,
+            )
+            return None
         logger.warning("Perfil del proyecto no disponible (%s); se usa la consulta clasica", exc)
         return None
     if profile is None:

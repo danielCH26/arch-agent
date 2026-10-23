@@ -26,7 +26,11 @@ from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
 from app.core.env import env_float
 from app.core.phase_decisions import PhaseDecisionError, record_decision
-from app.core.proposal_generator import PROPOSAL_MAX_ITER, ProposalGenerator
+from app.core.proposal_generator import (
+    PROPOSAL_MAX_ITER,  # noqa: F401  re-export: development lo expone aqui
+    ProposalGenerator,
+    proposal_max_iter,
+)
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
 from app.models.approval import Approval
@@ -40,8 +44,23 @@ logger = logging.getLogger(__name__)
 # con un warning, en lugar de recortarse en silencio.
 SSE_HEARTBEAT_SECONDS = env_float("SSE_HEARTBEAT_SECONDS", 15.0, minimum=1.0)
 
-PROPOSAL_REJECT_REVERTS_TO = os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
-# PROPOSAL_MAX_ITER se importa de proposal_generator (una sola definicion).
+
+def _proposal_reject_reverts_to() -> str:
+    """Read the env var at call time so tests don't need to reload the module.
+
+    F18 (PR #102): this used to be a module-level constant read once at
+    import time, which forced tests to do ``importlib.reload(proposals)``
+    to pick up changes to ``PROPOSAL_REJECT_REVERTS_TO``. The reload
+    redefined the ``ProposalOut`` class and broke ``isinstance`` checks
+    in ``test_proposals_endpoints.py``. Reading the env var on each call
+    keeps the same semantics without the reload footgun.
+    """
+    return os.getenv("PROPOSAL_REJECT_REVERTS_TO", "requerimientos")
+
+
+# PROPOSAL_MAX_ITER no se define aca: vive en proposal_generator como
+# proposal_max_iter(), que lee la env var en cada llamada y conserva el
+# ``minimum=1`` de development. Importarlo evita tener dos fuentes de verdad.
 PHASE = AVAILABLE_PHASES[1]  # "propuesta"
 MAX_SNAPSHOT_CHARS = 20_000
 
@@ -81,6 +100,10 @@ class ProposalStateOut(BaseModel):
     approval_id: Optional[int]
     proposal_snapshot_chars: int
     last_decision: Optional[str]
+    # Tope de iteraciones vigente en este deploy: el frontend lo lee de aquí
+    # en lugar de duplicar el literal. F18: ``default_factory`` porque el tope
+    # es un getter (``proposal_max_iter``) que lee la env var en cada llamada.
+    max_iterations: int = Field(default_factory=proposal_max_iter)
 
 
 class ProposalOut(BaseModel):
@@ -175,6 +198,8 @@ def _project_key(project_id: int) -> str:
 
 
 def _load_project_state(session_row: UserSession, project_id: int) -> tuple[dict, dict]:
+    if session_row is None:
+        return {}, {}
     engram_state = dict(session_row.engram_state or {})
     raw = engram_state.get(_project_key(project_id))
     project_state = dict(raw) if isinstance(raw, dict) else {}
@@ -329,10 +354,11 @@ def _raise_if_iteration_cap_reached(db: Session, *, project_id: int) -> None:
         .order_by(Proposal.iteration.desc())
         .first()
     )
-    if latest is not None and int(latest.iteration) >= PROPOSAL_MAX_ITER:
+    max_iterations = proposal_max_iter()
+    if latest is not None and int(latest.iteration) >= max_iterations:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})",
+            detail=f"Has alcanzado el máximo de iteraciones ({max_iterations})",
         )
 
 
@@ -410,10 +436,11 @@ async def modify_proposal(
                     "y no se puede modificar."
                 ),
             )
-        if prior.iteration >= PROPOSAL_MAX_ITER:
+        max_iterations = proposal_max_iter()
+        if prior.iteration >= max_iterations:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})",
+                detail=f"Has alcanzado el máximo de iteraciones ({max_iterations})",
             )
         latest = (
             db.query(Proposal)
@@ -529,6 +556,11 @@ async def decide_proposal(
             )
         else:
             proposal.lifecycle = "rejected"
+            # NO se revierte la fase acá: development lo hacía en este punto,
+            # antes de registrar la decisión, y eso rompe el gate de
+            # record_decision (PhaseMismatchError -> 500 con str(exc) en el
+            # detail, REQ-SA-34). El revert va más abajo, después de
+            # _apply_project_proposal_decision (Soomri round-2, B5).
             decision_for_hu6 = "reject"
             db.add(
                 ProposalApproval(
@@ -568,7 +600,9 @@ async def decide_proposal(
         # into a 500 with str(exc) leaked into the detail (REQ-SA-34).
         # Approve leaves the phase untouched; reject reverts it here.
         if body.decision == "reject":
-            project.current_phase = PROPOSAL_REJECT_REVERTS_TO
+            # development (#102) reemplazó la constante por un helper que lee la
+            # env en cada llamada; el revert sigue ACA por el gate (B5).
+            project.current_phase = _proposal_reject_reverts_to()
         # phase_ready is now set by record_decision - do NOT manually set it
 
         db.commit()
