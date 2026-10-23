@@ -22,6 +22,7 @@ import os
 import unicodedata
 from typing import Any
 
+from app.core.llm_loader import ainvoke_with_temperature_fallback, is_temperature_rejection
 from app.core.query_profile import _message_text, parse_json_object
 
 logger = logging.getLogger(__name__)
@@ -101,9 +102,19 @@ async def rank_candidates(
         candidates="\n".join(_candidate_block(i, c) for i, c in enumerate(candidates, start=1)),
     )
     try:
-        message = await asyncio.wait_for(model.ainvoke(prompt), timeout=RERANK_TIMEOUT_S)
+        message = await asyncio.wait_for(
+            ainvoke_with_temperature_fallback(model, prompt), timeout=RERANK_TIMEOUT_S
+        )
         return parse_ranking(_message_text(message), names)
     except Exception as exc:
+        if is_temperature_rejection(exc):
+            logger.warning(
+                "Re-ranking omitido: el modelo rechazo 'temperature' (%s). Se "
+                "conserva el orden por similitud; revisar el modelo o "
+                "LLM_MODELS_WITHOUT_TEMPERATURE",
+                exc,
+            )
+            return None
         logger.warning("Re-ranking con LLM no disponible (%s); se conserva el orden por similitud", exc)
         return None
 

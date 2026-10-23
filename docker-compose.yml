@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # Docker Compose — arch-agent stack completo
 #
 # Servicios (post-migración Chainlit → FastAPI):
@@ -49,9 +49,16 @@ services:
       ENGRAM_PROJECT: ${ENGRAM_PROJECT}
       ENGRAM_URL: http://engram:7437
 
-      # LLM defaults (configurables luego en UI por usuario)
+      # Referencia para scripts locales; el backend no las usa como default
+      # (cada usuario configura su LLM en el wizard).
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_MODEL: ${LLM_MODEL}
+
+      # LLM por defecto del backend (issue #98): se pasa al servicio backend,
+      # que es quien la lee (app/core/llm_loader.py). Si un usuario no
+      # configuro el suyo, la app usa la key de Groq del operador. Vacia = sin
+      # default. No definirla con registro abierto (ver .env.example).
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
 
       # F13 — Puppeteer MCP sidecar (issue #17).
       PUPPETEER_MCP_URL: ${PUPPETEER_MCP_URL:-http://puppeteer-mcp:8931/mcp}

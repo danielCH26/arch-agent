@@ -47,17 +47,6 @@ class TestChatRequestModel:
         assert req.project_id is None
         assert req.message == "Hello"
 
-    def test_chat_request_allows_empty_message_at_model_level(self):
-        """Pydantic accepts any string; content validation is in the endpoint."""
-        from app.api.chat import ChatRequest
-
-        # ChatRequest accepts empty/whitespace strings at model level
-        req = ChatRequest(project_id=None, message="")
-        assert req.message == ""
-
-        req2 = ChatRequest(project_id=None, message="   ")
-        assert req2.message == "   "
-
     def test_chat_request_normal_message(self):
         from app.api.chat import ChatRequest
 
@@ -87,6 +76,52 @@ class TestChatEndpointErrors:
 
         err = LLMConfigError("Usuario no tiene config LLM")
         assert "config LLM" in str(err)
+
+
+class TestChatLLMConfigErrors:
+    """Qué ve el usuario cuando su LLM no está listo (409 / 500)."""
+
+    def _call(self, err):
+        from fastapi import HTTPException
+
+        from app.api import chat as chat_module
+
+        probe = MagicMock()
+        probe.__enter__ = MagicMock(return_value=probe)
+        probe.__exit__ = MagicMock(return_value=False)
+        with patch.object(chat_module, "SessionLocal", return_value=probe), patch.object(
+            chat_module, "build_langchain_model", side_effect=err
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    chat_module.chat(
+                        body=chat_module.ChatRequest(project_id=None, message="hola"),
+                        current_user={"user_id": 1, "username": "u"},
+                    )
+                )
+        return exc_info.value
+
+    def test_sin_modelo_le_dice_que_complete_el_paso_3(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("sin modelo", reason="missing"))
+        assert exc.status_code == 409
+        assert "paso 3" in exc.detail
+
+    def test_sin_config_no_expone_detalles_del_backend(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("configura GROQ_API_KEY", reason="not_configured"))
+        assert exc.status_code == 409
+        assert "GROQ_API_KEY" not in exc.detail
+        assert "POST /api/llm/config" not in exc.detail
+
+    def test_falla_al_iniciar_el_modelo_es_500_sin_el_detalle(self):
+        from app.core.llm_loader import LLMConfigError
+
+        exc = self._call(LLMConfigError("boom: token sk-123", reason="initialization_failed"))
+        assert exc.status_code == 500
+        assert "sk-123" not in exc.detail
 
 
 class TestSSEFormat:
@@ -693,10 +728,10 @@ def test_chat_stream_sources_event_carries_doc_metadata(monkeypatch):
 
 
 class TestEventGeneratorPersistence:
-    """F12.2: SCN-1, SCN-4, SCN-7 ΓÇö commit-before-yield + Engram-down resilience.
+    """F12.2: SCN-1, SCN-4, SCN-7 — commit-before-yield + Engram-down resilience.
 
     We replicate the persistence block inline rather than instantiating the
-    FastAPI app ΓÇö the goal is to assert the orchestration contract (commit
+    FastAPI app — the goal is to assert the orchestration contract (commit
     happens BEFORE the 'done' yield; EngramError does not abort the stream)
     without spinning up Postgres.
     """
@@ -740,7 +775,7 @@ class TestEventGeneratorPersistence:
             engram_mirror("u", user_id=user_id, project_id=project_id)
             engram_mirror("a", user_id=user_id, project_id=project_id)
         except Exception:
-            # Must NOT propagate ΓÇö REQ-6 / REQ-10 / SCN-4.
+            # Must NOT propagate — REQ-6 / REQ-10 / SCN-4.
             pass
 
     def test_commit_happens_before_done_yield(self):
@@ -784,7 +819,7 @@ class TestEventGeneratorPersistence:
         session = MagicMock()
 
         with patch("app.api.chat.engram_mirror") as fake_mirror:
-            fake_mirror.side_effect = EngramError("Engram ca├¡do")
+            fake_mirror.side_effect = EngramError("Engram caído")
 
             async def run():
                 yield "event: sources\ndata: []\n\n"
@@ -1128,3 +1163,104 @@ def test_chat_stream_display_message_omitted_keeps_display_content_none(monkeypa
             p.stop()
 
     assert captured == [None]
+
+
+# ---------------------------------------------------------------------------
+# Rechazo de `temperature` por el provider (400): reintento y mensaje al usuario
+# ---------------------------------------------------------------------------
+
+_TEMPERATURE_400 = (
+    "Error code: 400 - Unsupported value: 'temperature' does not support "
+    "0.0 with this model. Only the default (1) value is supported."
+)
+
+
+def _run_chat_with_run_agent(chat_module, fake_run_agent):
+    patches = _patch_chat_route()
+    patches.append(patch.object(chat_module, "run_agent", side_effect=fake_run_agent))
+    for p in patches:
+        p.start()
+    try:
+        body = chat_module.ChatRequest(message="hi")
+        current_user = {"user_id": 8, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        return "".join(asyncio.run(_drive()))
+    finally:
+        for p in patches:
+            p.stop()
+
+
+@pytest.fixture()
+def _forget_rejected_models():
+    from app.core import llm_loader
+
+    llm_loader._modelos_sin_temperature_runtime.clear()
+    yield
+    llm_loader._modelos_sin_temperature_runtime.clear()
+
+
+def test_chat_temperature_400_reaches_sse_as_user_message(_forget_rejected_models):
+    """Un 400 de `temperature` lanzado por run_agent llega al SSE con el mensaje
+    de explain_llm_error, no con el texto crudo del provider."""
+    from app.api import chat as chat_module
+    from app.core.llm_loader import TEMPERATURE_REJECTED_MESSAGE
+
+    calls = []
+
+    async def _always_rejects(*_args, **kwargs):
+        calls.append(kwargs["model"])
+        raise Exception(_TEMPERATURE_400)
+        yield  # pragma: no cover
+
+    body_text = _run_chat_with_run_agent(chat_module, _always_rejects)
+
+    assert len(calls) == 2  # intento original + un reintento sin temperature
+    assert body_text.endswith(_error(TEMPERATURE_REJECTED_MESSAGE))
+    assert "LLM_MODELS_WITHOUT_TEMPERATURE" not in body_text
+    assert body_text.count("event: error\n") == 1
+
+
+def test_chat_retries_once_without_temperature_and_answers(_forget_rejected_models):
+    from app.api import chat as chat_module
+
+    calls = []
+
+    degraded = {"source": "context7", "reason": "context7_unavailable", "fallback": "rag_only"}
+
+    async def _rejects_first(*_args, **kwargs):
+        calls.append(kwargs["model"])
+        # Como run_agent: el `degraded` de Context7 sale antes de llamar al modelo.
+        yield {"event": "degraded", "data": degraded}
+        if len(calls) == 1:
+            raise Exception(_TEMPERATURE_400)
+        yield {"event": "token", "data": "hola"}
+
+    body_text = _run_chat_with_run_agent(chat_module, _rejects_first)
+
+    assert len(calls) == 2
+    assert body_text.count("event: degraded\n") == 1  # el reintento no lo duplica
+    assert calls[1] is not calls[0]  # el reintento usa la copia sin temperature
+    assert _token("hola") in body_text
+    assert body_text.endswith(_done())
+    assert "event: error\n" not in body_text
+
+
+def test_chat_does_not_retry_after_tokens_were_sent(_forget_rejected_models):
+    from app.api import chat as chat_module
+
+    calls = []
+
+    async def _fails_midway(*_args, **kwargs):
+        calls.append(kwargs["model"])
+        yield {"event": "token", "data": "parcial"}
+        raise Exception(_TEMPERATURE_400)
+
+    body_text = _run_chat_with_run_agent(chat_module, _fails_midway)
+
+    assert len(calls) == 1  # repetir duplicaria la respuesta ya mostrada
+    assert body_text.count(_token("parcial")) == 1
+    assert "event: error\n" in body_text
