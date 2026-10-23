@@ -334,7 +334,17 @@ WEB_SEARCH_API_KEY=
 # LLM (default; el usuario puede override vía UI)
 LLM_BASE_URL=http://host.docker.internal:11434/v1
 LLM_MODEL=llama3
+LLM_TEMPERATURE=                 # opcional, 0-2; por defecto 0.0
+LLM_MODELS_WITHOUT_TEMPERATURE=  # opcional, nombres separados por coma
 ```
+
+### Temperatura del LLM
+
+- La app manda `temperature=0.0` a todo modelo que construye (`app/core/llm_loader.py::_init_model`), en vez de heredar el default del provider (1.0). Reduce la variación entre iteraciones de una propuesta, pero **no garantiza determinismo** en OpenAI ni en Groq.
+- **Modelos excluidos** (no se les manda el parámetro, muestrean con el default de la API): la serie de razonamiento `o*` de OpenAI (`o1`, `o3-mini`, ...) y `gpt-5*` salvo las variantes `*chat*`, con o sin prefijo de provider (`openai/o1-mini`). Con esos modelos el golden set no queda estable.
+- `LLM_TEMPERATURE` sobrescribe el 0.0 (ej. `0.6` para modelos de razonamiento de Groq/Ollama como `qwen/qwen3-32b` o `deepseek-r1-distill-*`, para los que Groq recomienda 0.5-0.7).
+- `LLM_MODELS_WITHOUT_TEMPERATURE` lista modelos con nombre no estándar (ej. deployments de Azure) a los que tampoco se les manda el parámetro.
+- Respaldo automático: si el provider responde 400 por `temperature`, la llamada se reintenta una vez sin el parámetro y el modelo queda recordado en memoria hasta reiniciar el proceso. Si aun así falla, el usuario ve "El modelo configurado no admite el parámetro de temperatura..." y el log del servidor nombra `LLM_MODELS_WITHOUT_TEMPERATURE`.
 
 ### Levantar el entorno
 
@@ -371,10 +381,10 @@ curl http://localhost:8000/health
 
 | Métrica | Target | Validación |
 |---------|--------|------------|
-| Tiempo de propuesta | < 5 min | HU9, F19 |
+| Tiempo de propuesta | < 5 min | HU9, F19: tope `PROPOSAL_MAX_SECONDS` (300 s) sobre todo el flujo; `elapsed_ms` en el evento SSE `done` y `latency_ms` en logs; `SSE_HEARTBEAT_SECONDS` (15 s) mantiene viva la conexión tras proxies con idle timeout (nginx: 330 s) |
 | Tiempo de respuesta promedio | < 3 min | KR4 Santiago |
 | Embeddings de 100 chunks | ~5 seg | Bench local |
-| Búsqueda k=5 (10k vectores) | ~50 ms | PGVector con IVFFLAT |
+| Búsqueda RAG k=5 (10k vectores por tabla) | `search_ms` < 100 ms | PGVector (patrones con IVFFLAT; documentos con índice por `document_id` y orden exacto, ver limitaciones); F19 midió p95 de 14 a 17 ms en corpus sintético (ver `docs/BENCHMARK_F19.md`) |
 | Cobertura de tests | ≥ 80% | F18 |
 
 ---
@@ -392,5 +402,5 @@ iteraciones refinarán:
 ---
 
 **Mantenedor:** Daniel (Tech Lead)
-**Última actualización:** 2026-08-23
+**Última actualización:** 2026-10-03
 **Versión:** 1.0

@@ -5,8 +5,13 @@ import { DuplicateModal } from './DuplicateModal'
 
 interface ChatInputProps {
   projectId: number
-  onSend: (text: string) => void
+  // Si devuelve (o resuelve) `false`, el texto no se borra (envío fallido).
+  onSend: (text: string) => void | boolean | Promise<void | boolean>
   disabled?: boolean
+  // La elicitación reutiliza esta caja sin adjuntos.
+  allowAttachments?: boolean
+  placeholder?: string
+  ariaLabel?: string
 }
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.md']
@@ -16,6 +21,9 @@ export function ChatInput({
   projectId,
   onSend,
   disabled = false,
+  allowAttachments = true,
+  placeholder = 'Escribe un mensaje...',
+  ariaLabel = 'Mensaje para ArchAgent',
 }: ChatInputProps) {
   const [text, setText] = useState('')
   const [uploading, setUploading] = useState(false)
@@ -37,21 +45,25 @@ export function ChatInput({
     }
   }, [text])
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!text.trim() || disabled) return
-    onSend(text.trim())
+    const sent = text
     setText('')
+    if ((await onSend(sent.trim())) === false) {
+      // Restaurar solo si el usuario no empezó a escribir otra cosa.
+      setText((current) => current || sent)
+    }
   }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    handleSend()
+    void handleSend()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      handleSend()
+      void handleSend()
     }
   }
 
@@ -144,37 +156,44 @@ const handleCancelDuplicate = () => {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Escribe un mensaje..."
+          placeholder={placeholder}
+          aria-label={ariaLabel}
           disabled={disabled}
           rows={1}
           className="flex-1 px-4 py-2 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
         />
 
+        {allowAttachments && (
         <button
           type="button"
           onClick={handleClipClick}
           disabled={uploading || disabled}
           title="Adjuntar archivo (PDF o MD)"
+          aria-label="Adjuntar archivo (PDF o MD)"
           className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
           </svg>
         </button>
+        )}
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="hidden"
-          accept={ALLOWED_EXTENSIONS.join(',')}
-          onChange={handleFileSelect}
-          disabled={uploading}
-        />
+        {allowAttachments && (
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            accept={ALLOWED_EXTENSIONS.join(',')}
+            onChange={handleFileSelect}
+            disabled={uploading}
+          />
+        )}
 
         <button
           type="submit"
+          aria-label="Enviar mensaje"
           disabled={disabled || !text.trim() || uploading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -197,13 +216,13 @@ const handleCancelDuplicate = () => {
 
       {/* Error de upload */}
       {uploadError && (
-        <div className="mt-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+        <div role="alert" className="mt-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
           {uploadError}
         </div>
       )}
 
       <p className="mt-1 text-xs text-gray-500">
-        Presiona Enter para enviar, Shift+Enter para nueva línea. Adjunta PDF o MD con el clip.
+        Presiona Enter para enviar, Shift+Enter para nueva línea.{allowAttachments && ' Adjunta PDF o MD con el clip.'}
       </p>
 
       {/* Modal de duplicados */}

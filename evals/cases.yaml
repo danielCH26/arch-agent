@@ -14,12 +14,11 @@
 # Como en produccion (`k=5`), un caso puede traer hasta 5 citations y repetir
 # el mismo patron con chunks distintos.
 #
-# Nota sobre `descripcion`: en produccion la descripcion viaja al modelo solo
-# por el camino del RAG (`_build_summary_query` la concatena a la query del
-# recuperador). NO entra al prompt del LLM: `_build_prompt` recibe citations,
-# prior_content, feedback y project_name. Aca es documental: explica el
-# escenario y de donde salen las citations. Ver "Limitaciones honestas" en el
-# README.
+# Nota sobre `descripcion`: entra al prompt del LLM. `_build_prompt` la acepta
+# como parametro (desde que produccion la paso a incluir, #112) y el runner se
+# la pasa igual, para medir el mismo prompt que arma la app. Aca ademas
+# documenta el escenario y de donde salen las citations. Ver "Limitaciones
+# honestas" en el README.
 #
 # `feedback` y `prior_content` son opcionales y cubren el camino de iteracion
 # ("modificar propuesta"), que produccion arma con el mismo `_build_prompt`.
@@ -41,7 +40,7 @@ casos:
       - pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
         snippet: "Arquitectura hexagonal (Puertos y Adaptadores) - señales de decision: ¿Anticipas cambiar de proveedor de base de datos, mensajería o API externa? -> sí -> Arquitectura hexagonal (Puertos y Adaptadores); ¿Necesitas probar reglas de dominio s"
       - pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
-        snippet: "Arquitectura hexagonal (Puertos y Adaptadores) - ventajas: Dominio testeable de forma aislada, sin dependencias externas; Cambiar de tecnología externa (DB, cola, UI) no afecta la lógica de negocio. Desventajas: Más código repetitivo (boile"
+        snippet: "Arquitectura hexagonal (Puertos y Adaptadores) - ventajas: Núcleo de dominio sin dependencias externas: la lógica de negocio se prueba de forma unitaria inyectando mocks de los puertos, sin levantar base de datos, UI ni servicios; Evita el "
       - pattern_name: "Clean Architecture"
         snippet: "Clean Architecture: Organiza la aplicación alrededor de reglas de negocio y casos de uso en el centro, haciendo que las dependencias del código apunten hacia adentro. La UI, la base de datos, frameworks y servicios externos quedan como deta"
 
@@ -57,7 +56,7 @@ casos:
       - pattern_name: "Arquitectura en capas (Layered)"
         snippet: "Arquitectura en capas (Layered): Organiza el sistema en capas horizontales (presentación, lógica de negocio, acceso a datos), cada una dependiendo solo de la capa inmediatamente inferior.\n Aplicaciones CRUD de tamaño pequeño a mediano, equi"
       - pattern_name: "Arquitectura en capas (Layered)"
-        snippet: "Arquitectura en capas (Layered) - ventajas: Curva de aprendizaje baja, fácil de entender para equipos nuevos; Despliegue único, sin complejidad de infraestructura distribuida. Desventajas: Escala como una sola unidad, no permite escalar mód"
+        snippet: "Arquitectura en capas (Layered) - ventajas: Curva de aprendizaje baja: separar presentación, lógica y datos es un modelo que casi todo desarrollador conoce, así que un equipo nuevo entrega funcionalidades sin formarse antes en patrones avan"
       - pattern_name: "Monolito modular (Modular Monolith)"
         snippet: "Monolito modular (Modular Monolith): Un único despliegue, pero organizado internamente en módulos con límites explícitos (bounded contexts), como paso intermedio antes de migrar a microservicios. Es una práctica de la industria, con Shopify"
 
@@ -75,7 +74,7 @@ casos:
       - pattern_name: "Monolito modular (Modular Monolith)"
         snippet: "Monolito modular (Modular Monolith): Un único despliegue, pero organizado internamente en módulos con límites explícitos (bounded contexts), como paso intermedio antes de migrar a microservicios. Es una práctica de la industria, con Shopify"
       - pattern_name: "Monolito modular (Modular Monolith)"
-        snippet: "Monolito modular (Modular Monolith) - ventajas: Mantiene la simplicidad operativa de un solo despliegue; Facilita una futura migración a microservicios si el proyecto crece. Desventajas: Requiere disciplina del equipo para no romper los lím"
+        snippet: "Monolito modular (Modular Monolith) - ventajas: Una sola base de código, una canalización de pruebas y despliegue y una sola infraestructura: evita el costo de múltiples pipelines y las llamadas entre módulos son directas, sin red ni versio"
       - pattern_name: "Clean Architecture"
         snippet: "Clean Architecture: Organiza la aplicación alrededor de reglas de negocio y casos de uso en el centro, haciendo que las dependencias del código apunten hacia adentro. La UI, la base de datos, frameworks y servicios externos quedan como deta"
 
@@ -94,7 +93,7 @@ casos:
       - pattern_name: "Microservicios"
         snippet: "Microservicios - señales de decision: ¿Hay varios equipos que necesitan desplegar dominios distintos sin coordinar cada release? -> sí -> Microservicios; ¿Algunos módulos tienen necesidades de escalado muy diferentes al resto? -> sí -> Micr"
       - pattern_name: "Microservicios"
-        snippet: "Microservicios - ventajas: Escalado y despliegue independiente por servicio; Equipos pueden trabajar y liberar en paralelo sin bloquearse entre sí. Desventajas: Alta complejidad operativa: red, observabilidad, consistencia de datos; Requier"
+        snippet: "Microservicios - ventajas: Despliegue independiente: cada servicio se publica y se revierte sin rehacer toda la aplicación, así que un bug en una parte no bloquea el release del resto; Escalado independiente: solo se escalan los servicios q"
       - pattern_name: "API Gateway + Backend for Frontend (BFF)"
         snippet: "API Gateway + Backend for Frontend (BFF): Un punto de entrada único (API Gateway) enruta y agrega llamadas a servicios internos, con una capa BFF adaptada a las necesidades de cada tipo de cliente (web, móvil).\n Sistemas con múltiples clien"
       - pattern_name: "CQRS (Command Query Responsibility Segregation)"
@@ -115,7 +114,7 @@ casos:
       - pattern_name: "Serverless (Function-as-a-Service)"
         snippet: "Serverless (Function-as-a-Service): La lógica se despliega como funciones individuales que ejecuta el proveedor cloud bajo demanda, sin gestionar servidores directamente.\n Cargas de trabajo intermitentes o impredecibles, equipos sin capacid"
       - pattern_name: "Arquitectura orientada a eventos (Event-Driven)"
-        snippet: "Arquitectura orientada a eventos (Event-Driven) - ventajas: Bajo acoplamiento: los productores no conocen a los consumidores; Buen ajuste natural para notificaciones y procesamiento asíncrono. Desventajas: Depurar el flujo completo de un ev"
+        snippet: "Arquitectura orientada a eventos (Event-Driven) - ventajas: Productores y consumidores desacoplados: el productor no sabe quién consume, así que se agregan consumidores nuevos (notificaciones, auditoría) sin modificar el productor ni crear "
       - pattern_name: "CQRS (Command Query Responsibility Segregation)"
         snippet: "CQRS (Command Query Responsibility Segregation): Separa el modelo de escritura (comandos) del modelo de lectura (consultas), permitiendo optimizar cada uno de forma independiente.\n Sistemas con patrones de lectura y escritura muy distintos "
 
@@ -138,9 +137,9 @@ casos:
       - pattern_name: "CQRS (Command Query Responsibility Segregation)"
         snippet: "CQRS (Command Query Responsibility Segregation): Separa el modelo de escritura (comandos) del modelo de lectura (consultas), permitiendo optimizar cada uno de forma independiente.\n Sistemas con patrones de lectura y escritura muy distintos "
       - pattern_name: "Event sourcing"
-        snippet: "Event sourcing - ventajas: Auditoría completa: cada cambio queda registrado como evento inmutable; Permite reconstruir el estado en cualquier punto del tiempo (replay). Desventajas: Modelo mental más complejo que CRUD tradicional; Las consu"
+        snippet: "Event sourcing - ventajas: Auditoría completa por construcción: cada cambio queda como evento inmutable en un almacén append-only, lo que da historial y permite analizar el comportamiento del sistema; Reconstrucción del estado: reproducir ("
       - pattern_name: "CQRS (Command Query Responsibility Segregation)"
-        snippet: "CQRS (Command Query Responsibility Segregation) - ventajas: Permite optimizar y escalar lecturas y escrituras de forma independiente; Modelos de lectura simplificados, adaptados exactamente a cada vista. Desventajas: Añade complejidad de si"
+        snippet: "CQRS (Command Query Responsibility Segregation) - ventajas: Escalado independiente: el modelo de lectura puede crecer horizontalmente (réplicas o un almacén aparte) mientras el de escritura corre en pocas instancias, lo que reduce la conten"
 
   - id: mob-001
     nombre: "Aplicación móvil con agregación de datos de varios backends"
@@ -207,7 +206,7 @@ casos:
       - pattern_name: "Serverless (Function-as-a-Service)"
         snippet: "Serverless (Function-as-a-Service): La lógica se despliega como funciones individuales que ejecuta el proveedor cloud bajo demanda, sin gestionar servidores directamente.\n Cargas de trabajo intermitentes o impredecibles, equipos sin capacid"
       - pattern_name: "Serverless (Function-as-a-Service)"
-        snippet: "Serverless (Function-as-a-Service) - ventajas: Sin gestión de servidores; se paga solo por ejecución real; Escala automáticamente ante picos de tráfico sin intervención manual. Desventajas: Cold starts pueden afectar la latencia en funcione"
+        snippet: "Serverless (Function-as-a-Service) - ventajas: Menos operación de infraestructura: el proveedor aprovisiona, escala y mantiene los servidores, así que no hay administración de sistema, aunque sigan existiendo monitoreo, seguridad y desplieg"
 
   # --- Camino de iteración ---------------------------------------------------
   # El usuario rechaza una propuesta previa y pide un cambio. Es el camino que
@@ -246,6 +245,6 @@ casos:
       - pattern_name: "Monolito modular (Modular Monolith)"
         snippet: "Monolito modular (Modular Monolith): Un único despliegue, pero organizado internamente en módulos con límites explícitos (bounded contexts), como paso intermedio antes de migrar a microservicios. Es una práctica de la industria, con Shopify"
       - pattern_name: "Monolito modular (Modular Monolith)"
-        snippet: "Monolito modular (Modular Monolith) - ventajas: Mantiene la simplicidad operativa de un solo despliegue; Facilita una futura migración a microservicios si el proyecto crece. Desventajas: Requiere disciplina del equipo para no romper los lím"
+        snippet: "Monolito modular (Modular Monolith) - ventajas: Una sola base de código, una canalización de pruebas y despliegue y una sola infraestructura: evita el costo de múltiples pipelines y las llamadas entre módulos son directas, sin red ni versio"
       - pattern_name: "Microservicios"
         snippet: "Microservicios - no usar cuando: No es buena opción para equipos pequeños, presupuesto operativo limitado o dominios que todavía no tienen límites claros.\n"

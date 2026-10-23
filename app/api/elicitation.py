@@ -10,7 +10,15 @@ from app.api.projects import AVAILABLE_PHASES, _require_project
 from app.core import elicitation_agent
 from app.core.database import SessionLocal
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import (
+    build_langchain_model,
+    explain_llm_error,
+    http_status_for,
+    is_temperature_rejection,
+    LLMConfigError,
+    user_facing_message,
+)
+from app.core.project_context import load_documents_text
 from app.core.session_store import load_session_state, record_approval_decision, save_session_state
 from app.models.project import Project
 from app.models.session import UserSession
@@ -128,6 +136,8 @@ async def send_elicitation_message(
     400 — no hay pregunta pendiente para responder, o ya existe un resumen
           (hay que pasar por /elicitation/decision antes de seguir)
     409 — LLM no configurado para este usuario
+    500 — la config LLM está completa pero el modelo no se pudo iniciar
+          (mismo status y mensaje que el chat: ``http_status_for``)
     502 — el modelo respondió pero con contenido no parseable
     503 — la llamada al modelo falló (rate limit, timeout, proveedor caído)
     """
@@ -156,6 +166,28 @@ async def send_elicitation_message(
             )
         history = history + [{"pregunta": pending_question, "respuesta": body.answer.strip()}]
         pending_question = None
+        # Se persiste la respuesta YA, antes de llamar al LLM para la
+        # siguiente pregunta. Antes, si esa llamada fallaba (ver los
+        # "except" de más abajo), la función salía sin guardar nada: la
+        # respuesta se perdía y, al recargar, "/elicitation" devolvía otra
+        # vez la pregunta vieja como si no se hubiera contestado. Guardarla
+        # aquí hace que, ante un fallo del LLM, quede sin pregunta pendiente
+        # ni resumen -- el reintento automático del frontend (ChatWindow:
+        # "if (!state.done && !state.question)") hace que la próxima carga
+        # pida la siguiente pregunta usando este historial ya completo, sin
+        # que el usuario tenga que volver a escribir su respuesta.
+        engram_state = _set_phase_data(
+            engram_state,
+            project_id,
+            {
+                "preguntas_respuestas": history,
+                "pending_question": None,
+                "resumen": None,
+            },
+        )
+        save_session_state(
+            user_id, project_id=project.id, active_phase=PHASE, engram_state=engram_state
+        )
     elif pending_question is not None:
         # Ya se había hecho esta pregunta y no llegó una respuesta nueva:
         # se re-devuelve tal cual, sin gastar otra llamada al LLM.
@@ -165,27 +197,41 @@ async def send_elicitation_message(
 
     try:
         model = build_langchain_model(user_id)
-    except LLMConfigError:
+    except LLMConfigError as e:
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+            status_code=http_status_for(e),
+            detail=user_facing_message(e),
         )
 
     # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).
     langfuse_handler = get_langfuse_handler()
     callbacks = [langfuse_handler] if langfuse_handler is not None else None
 
+    # PDF/MD que el usuario subió al proyecto: se le pasan al agente para que
+    # no repregunte lo que ya está en los documentos y el resumen los refleje.
+    documents_text, _names = load_documents_text(user_id, project_id)
+    doc_kwargs = {"documents_context": documents_text} if documents_text else {}
+
     try:
         decision = elicitation_agent.next_step(
-            model, history, project.description or "", callbacks=callbacks
+            model, history, project.description or "", callbacks=callbacks, **doc_kwargs
         )
         if decision.done:
             resumen = elicitation_agent.generate_summary(
-                model, history, project.description or "", callbacks=callbacks
+                model, history, project.description or "", callbacks=callbacks, **doc_kwargs
             )
         else:
             resumen = None
     except elicitation_agent.ElicitationLLMError as e:
+        if is_temperature_rejection(e):
+            # El modelo rechaza `temperature` aun despues del reintento sin el
+            # parametro: reintentar no lo arregla nunca, asi que NO se usa el
+            # mensaje de "limite de tasa" de abajo. 502 + causa accionable.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=explain_llm_error(e),
+            )
         # Falla real de la llamada (rate limit, timeout, proveedor caído) --
         # el usuario puede reintentar, no es un problema con lo que respondió.
         raise HTTPException(
@@ -207,8 +253,9 @@ async def send_elicitation_message(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="El modelo de IA no devolvió una respuesta válida esta vez "
             "(puede pasar con algunos modelos de razonamiento que se quedan "
-            "sin espacio de salida). Intenta de nuevo o prueba con otro "
-            "modelo en la configuración de LLM.",
+            "sin espacio de salida). Prueba con otro modelo en la "
+            "configuración de LLM: con el mismo modelo, reintentar suele "
+            "devolver la misma respuesta.",
         )
     finally:
         # F14: exportar la traza de inmediato -- no depender solo del ciclo

@@ -507,6 +507,7 @@ class TestSendElicitationMessage:
 
         mock_flush.assert_called_once()
 
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.flush_langfuse")
     @patch("app.api.elicitation.get_langfuse_handler")
     @patch("app.api.elicitation.build_langchain_model")
@@ -515,7 +516,7 @@ class TestSendElicitationMessage:
     @patch("app.core.elicitation_agent.next_step")
     def test_flushes_langfuse_even_when_the_llm_call_fails(
         self, mock_next_step, mock_load, mock_require, mock_build_model,
-        mock_get_handler, mock_flush,
+        mock_get_handler, mock_flush, mock_save,
     ):
         """La traza de una llamada fallida tambien debe exportarse -- por
         eso el flush vive en un ``finally``, no solo en el camino feliz."""
@@ -602,10 +603,11 @@ class TestSendElicitationMessage:
         assert result.question == "¿Y las restricciones de tiempo?"
         mock_build_model.assert_not_called()
 
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
-    def test_409_when_llm_not_configured(self, mock_load, mock_require, mock_build_model):
+    def test_409_when_llm_not_configured(self, mock_load, mock_require, mock_build_model, mock_save):
         mock_require.return_value = make_project()
         mock_load.return_value = {
             "engram_state": {"1": {"requerimientos": {
@@ -614,7 +616,7 @@ class TestSendElicitationMessage:
                 "resumen": None,
             }}}
         }
-        mock_build_model.side_effect = LLMConfigError("sin config")
+        mock_build_model.side_effect = LLMConfigError("sin modelo", reason="missing")
 
         with pytest.raises(HTTPException) as exc_info:
             run(send_elicitation_message(
@@ -623,12 +625,44 @@ class TestSendElicitationMessage:
             ))
 
         assert exc_info.value.status_code == 409
+        # Quien dejó el wizard en el paso 3 sabe qué le falta.
+        assert "paso 3" in exc_info.value.detail
 
+    @patch("app.api.elicitation.save_session_state")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
+    def test_500_when_model_fails_to_initialize_like_chat(
+        self, mock_load, mock_require, mock_build_model, mock_save
+    ):
+        """Mismo status que el chat (``http_status_for``) y sin el detalle técnico."""
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
+                "pending_question": "pregunta pendiente",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.side_effect = LLMConfigError(
+            "boom: token sk-123", reason="initialization_failed"
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            run(send_elicitation_message(
+                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
+                current_user=CURRENT_USER,
+            ))
+
+        assert exc_info.value.status_code == 500
+        assert "sk-123" not in exc_info.value.detail
+
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.elicitation_agent.next_step")
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
-    def test_503_when_llm_call_fails(self, mock_load, mock_require, mock_build_model, mock_next_step):
+    def test_503_when_llm_call_fails(self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save):
         mock_require.return_value = make_project()
         mock_load.return_value = {
             "engram_state": {"1": {"requerimientos": {
@@ -648,12 +682,54 @@ class TestSendElicitationMessage:
 
         assert exc_info.value.status_code == 503
 
+    @patch("app.api.elicitation.save_session_state")
+    @patch("app.api.elicitation.elicitation_agent.next_step")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
+    def test_502_with_actionable_message_when_model_rejects_temperature(
+        self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save
+    ):
+        """Un 400 de `temperature` no es un limite de tasa: reintentar no lo
+        arregla, asi que no debe mostrarse el mensaje de "intenta de nuevo en
+        unos segundos" del 503."""
+        from app.core.llm_loader import TEMPERATURE_REJECTED_MESSAGE
+
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [{"pregunta": "p1", "respuesta": "r1"}],
+                "pending_question": "pregunta pendiente",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.return_value = MagicMock()
+        provider_error = Exception(
+            "Error code: 400 - Unsupported value: 'temperature' does not support 0.0"
+        )
+        llm_error = elicitation_agent.ElicitationLLMError(
+            f"La llamada al modelo falló: {provider_error}"
+        )
+        llm_error.__cause__ = provider_error
+        mock_next_step.side_effect = llm_error
+
+        with pytest.raises(HTTPException) as exc_info:
+            run(send_elicitation_message(
+                project_id=1, body=ElicitationMessageIn(answer="respuesta 2"),
+                current_user=CURRENT_USER,
+            ))
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == TEMPERATURE_REJECTED_MESSAGE
+        assert "límite de tasa" not in exc_info.value.detail
+
+    @patch("app.api.elicitation.save_session_state")
     @patch("app.api.elicitation.elicitation_agent.next_step")
     @patch("app.api.elicitation.build_langchain_model")
     @patch("app.api.elicitation._require_project")
     @patch("app.api.elicitation.load_session_state")
     def test_502_when_model_returns_invalid_json(
-        self, mock_load, mock_require, mock_build_model, mock_next_step
+        self, mock_load, mock_require, mock_build_model, mock_next_step, mock_save
     ):
         mock_require.return_value = make_project()
         mock_load.return_value = {
@@ -678,6 +754,55 @@ class TestSendElicitationMessage:
         assert exc_info.value.status_code == 502
         assert "JSON" not in exc_info.value.detail
         assert "modelo de ia" in exc_info.value.detail.lower()
+
+    @patch("app.api.elicitation.elicitation_agent.next_step")
+    @patch("app.api.elicitation.build_langchain_model")
+    @patch("app.api.elicitation._require_project")
+    @patch("app.api.elicitation.load_session_state")
+    def test_answer_is_persisted_even_if_the_llm_call_then_fails(
+        self, mock_load, mock_require, mock_build_model, mock_next_step
+    ):
+        """Antes, si next_step fallaba, la respuesta recien dada se perdia:
+        la funcion salia por el except sin llamar a save_session_state, asi
+        que la respuesta del usuario (ya aceptada por el endpoint) nunca
+        quedaba en el historial. Al recargar, GET /elicitation devolvia otra
+        vez la pregunta vieja como si no se hubiera contestado."""
+        mock_require.return_value = make_project()
+        mock_load.return_value = {
+            "engram_state": {"1": {"requerimientos": {
+                "preguntas_respuestas": [],
+                "pending_question": "¿cual es el presupuesto?",
+                "resumen": None,
+            }}}
+        }
+        mock_build_model.return_value = MagicMock()
+        mock_next_step.side_effect = elicitation_agent.ElicitationAgentError("JSON invalido")
+
+        saved_state = {}
+
+        def fake_save(user_id, project_id, active_phase, engram_state):
+            saved_state.update(engram_state)
+
+        with patch("app.api.elicitation.save_session_state", side_effect=fake_save):
+            with pytest.raises(HTTPException) as exc_info:
+                run(send_elicitation_message(
+                    project_id=1,
+                    body=ElicitationMessageIn(answer="el presupuesto subio a 13000 dolares"),
+                    current_user=CURRENT_USER,
+                ))
+
+        assert exc_info.value.status_code == 502
+        # La respuesta quedo guardada aunque la llamada al LLM haya fallado.
+        phase = saved_state["1"]["requerimientos"]
+        assert phase["preguntas_respuestas"] == [
+            {"pregunta": "¿cual es el presupuesto?", "respuesta": "el presupuesto subio a 13000 dolares"}
+        ]
+        # Sin pregunta pendiente ni resumen: el reintento automatico del
+        # frontend (ChatWindow: "if (!state.done && !state.question)")
+        # dispara otro POST sin "answer" para generar la siguiente pregunta
+        # con este mismo historial, sin que el usuario reescriba nada.
+        assert phase["pending_question"] is None
+        assert phase["resumen"] is None
 
     @patch("app.api.elicitation.elicitation_agent.next_step")
     @patch("app.api.elicitation.build_langchain_model")

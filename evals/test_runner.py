@@ -44,7 +44,19 @@ SALIDA_PERFECTA = (
     "- Python\n"
     "- PostgreSQL\n\n"
     "## Patrones\n"
-    "- Arquitectura en capas (Layered) [1]\n"
+    "- Arquitectura en capas (Layered) [1]\n\n"
+    "## Justificación del patrón principal\n"
+    "- El dominio cambia seguido, así que la lógica queda aislada [1]\n"
+    "- Riesgo: cada capa nueva sube el coste de despliegue\n\n"
+    "## Trade-offs y decisión\n"
+    "| Opción | Ventajas | Desventajas | Complejidad |\n"
+    "| --- | --- | --- | --- |\n"
+    "| Capas [1] | Simple | Acoplamiento | Baja |\n"
+    "| Hexagonal [2] | Aislada | Más código | Media |\n"
+    "| Microservicios [2] | Escala | Ops | Alta |\n"
+    "\n"
+    "- Recomendación: Capas [1]\n"
+    "- Punto de decisión: arrancar con Capas\n"
 )
 
 
@@ -65,10 +77,24 @@ def caso(citations: list[dict] | None = None) -> dict:
 
 
 def _con_cuerpo(componentes: str, patrones: str = "- Patron A [1]") -> str:
+    """Salida valida segun produccion, con las secciones de componentes y
+    patrones que se pidan (el resto del contrato va fijo)."""
     return (
         f"## Componentes\n{componentes}\n\n"
         "## Tecnologías\n- Python\n\n"
-        f"## Patrones\n{patrones}\n"
+        f"## Patrones\n{patrones}\n\n"
+        "## Justificación del patrón principal\n"
+        "- El dominio cambia seguido, así que la lógica queda aislada\n"
+        "- Riesgo: cada capa nueva sube el coste de despliegue\n\n"
+        "## Trade-offs y decisión\n"
+        "| Opción | Ventajas | Desventajas | Complejidad |\n"
+        "| --- | --- | --- | --- |\n"
+        "| Capas | Simple | Acoplamiento | Baja |\n"
+        "| Hexagonal | Aislada | Más código | Media |\n"
+        "| Microservicios | Escala | Ops | Alta |\n"
+        "\n"
+        "- Recomendación: Capas\n"
+        "- Punto de decision: arrancar con Capas\n"
     )
 
 
@@ -95,19 +121,29 @@ def test_sin_ninguna_seccion_es_fallo():
     assert score["secciones_ok"] is False
 
 
-def test_tecnologias_sin_tilde_incumple_el_contrato():
-    """El prompt pide 'Tecnologías' con tilde: sin ella la seccion falta."""
+def test_tecnologias_sin_tilde_cumple_el_contrato():
+    """Produccion normaliza acentos: responder 'Tecnologias' sin tilde es valido.
+
+    El scorer exigia la tilde y media como fallida toda propuesta valida de
+    produccion (review de #108, lau2413).
+    """
     sin_tilde = SALIDA_PERFECTA.replace("## Tecnologías", "## Tecnologias")
     assert sin_tilde != SALIDA_PERFECTA
     score = score_output(sin_tilde, caso())
-    assert score["secciones_ok"] is False
-    assert "Tecnologias" in score["secciones_extra"]
-    assert score["pass_estructural"] is False
+    assert score["secciones_ok"] is True
+    assert score["sin_secciones_extra"] is True
+    assert score["pass_estructural"] is True
 
 
 def test_secciones_requeridas_son_las_del_prompt_real():
-    """Guarda contra cambiar el contrato por accidente desde el harness."""
-    assert SECCIONES_REQUERIDAS == ("Componentes", "Tecnologías", "Patrones")
+    """El contrato es el de produccion (5 secciones), no una copia del harness."""
+    assert SECCIONES_REQUERIDAS == (
+        "Componentes",
+        "Tecnologias",
+        "Patrones",
+        "Justificación del patrón principal",
+        "Trade-offs y decisión",
+    )
 
 
 # --- Orden, extras, preambulo y cierre ---------------------------------------
@@ -118,11 +154,15 @@ def test_orden_correcto_de_las_tres_secciones():
 
 
 def test_orden_incorrecto_es_fallo():
-    desordenado = (
-        "## Patrones\n- Arquitectura en capas (Layered) [1]\n\n"
-        "## Componentes\n- API de pedidos [1]\n\n"
-        "## Tecnologías\n- Python\n"
-    )
+    """Las mismas secciones, en otro orden: el contrato de produccion se
+    cumple pero el orden no."""
+    valida = _con_cuerpo("- Componente [1]", "- Patron A [1]")
+    cuerpos = [
+        s.replace("## ", "", 1) if s.startswith("## ") else s
+        for s in valida.split("\n## ")
+    ]
+    desordenado = "## " + "\n## ".join(cuerpos[4:] + cuerpos[:4])
+
     score = score_output(desordenado, caso())
     assert score["secciones_ok"] is True
     assert score["orden_ok"] is False
@@ -255,7 +295,13 @@ def test_indice_en_codigo_inline_no_es_cita():
 
 def test_bullets_por_seccion_se_cuentan_por_seccion():
     score = score_output(SALIDA_PERFECTA, caso())
-    assert score["bullets_por_seccion"] == {"Componentes": 2, "Tecnologías": 2, "Patrones": 1}
+    assert score["bullets_por_seccion"] == {
+        "Componentes": 2,
+        "Tecnologias": 2,
+        "Patrones": 1,
+        "Justificación del patrón principal": 2,
+        "Trade-offs y decisión": 2,
+    }
 
 
 def test_bullets_numerados_y_con_punto_medio():
@@ -619,13 +665,13 @@ def test_dry_run_ok_con_el_corpus_real():
 
 def test_construir_modelo_omite_temperature_para_serie_o():
     """Igual que produccion: la serie o* solo admite 1 y responde 400 a otro valor."""
-    with patch("app.core.llm_loader.init_chat_model") as mock_init:
+    with patch("langchain.chat_models.init_chat_model") as mock_init:
         construir_modelo("o1-mini", "https://api.openai.com/v1", "sk-test", 0.0)
     assert "temperature" not in mock_init.call_args.kwargs
 
 
 def test_construir_modelo_manda_temperature_para_familia_comun():
-    with patch("app.core.llm_loader.init_chat_model") as mock_init:
+    with patch("langchain.chat_models.init_chat_model") as mock_init:
         construir_modelo("gpt-4o-mini", "https://api.openai.com/v1", "sk-test", 0.0)
     kwargs = mock_init.call_args.kwargs
     assert kwargs["temperature"] == 0.0

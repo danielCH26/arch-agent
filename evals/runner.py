@@ -51,10 +51,30 @@ from typing import Any
 import yaml
 
 # --- Contrato del prompt de produccion ---------------------------------------
-# Estos tres encabezados son los literales de ``_build_prompt``, con la tilde
-# en "Tecnologías". El scorer compara sin normalizar acentos: responder
-# "Tecnologias" es incumplir el contrato y se mide como tal.
-SECCIONES_REQUERIDAS: tuple[str, ...] = ("Componentes", "Tecnologías", "Patrones")
+# Las secciones obligatorias son las de PRODUCCION, no una copia local. La copia
+# anterior (3 secciones, "Tecnologías" con tilde, comparada sin normalizar
+# acentos) se desincronizo del prompt y media como fallida toda propuesta
+# valida de produccion (review de #108, lau2413). Se resuelve lazy porque
+# importar app.core es caro y el runner debe arrancar rapido en --dry-run.
+_SECCIONES_CACHE: tuple[str, ...] | None = None
+
+
+def _secciones_requeridas() -> tuple[str, ...]:
+    """Las secciones obligatorias del prompt, segun produccion."""
+    global _SECCIONES_CACHE
+    if _SECCIONES_CACHE is None:
+        from app.core.proposal_generator import _REQUIRED_HEADINGS
+
+        _SECCIONES_CACHE = tuple(label for label, _ in _REQUIRED_HEADINGS)
+    return _SECCIONES_CACHE
+
+
+def __getattr__(nombre: str):
+    # ``from evals.runner import SECCIONES_REQUERIDAS`` (lo usan los tests)
+    # entra por aca: el contrato vive en produccion y no se copia.
+    if nombre == "SECCIONES_REQUERIDAS":
+        return _secciones_requeridas()
+    raise AttributeError(f"module {__name__!r} has no attribute {nombre!r}")
 
 RUTA_CASES = Path(__file__).with_name("cases.yaml")
 RUTA_RESULTADOS = Path(__file__).with_name("results")
@@ -100,12 +120,35 @@ _RE_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+\S")
 
 
 def _normalizar_heading(texto: str) -> str:
-    """Compara encabezados ignorando mayusculas y espacios sobrantes.
+    """Compara encabezados como hace produccion: sin acentos, sin mayusculas
+    y sin espacios sobrantes.
 
-    NO normaliza acentos: el prompt pide ``Tecnologías`` con tilde y eso es
-    parte del contrato que se quiere medir.
+    Antes NO normalizaba acentos porque el prompt pedia ``Tecnologías`` con
+    tilde y eso seEDIA como parte del contrato. Produccion normaliza (su
+    ``_normalize_text`` quita acentos), asi que el scorer media como fallida
+    toda propuesta valida de produccion (review de #108, lau2413).
     """
-    return " ".join(texto.strip().split()).casefold()
+    from app.core.proposal_generator import _normalize_text
+
+    return " ".join(_normalize_text(texto).split())
+
+
+def _clave_de_seccion(texto: str) -> str:
+    """Clave normalizada de la seccion obligatoria que matchea este encabezado.
+
+    Usa los patrones de produccion (``_REQUIRED_HEADINGS``), asi que el scorer
+    acepta las mismas variantes que el validador de produccion (plural,
+    numeracion, negritas, acentos). Si no matchea ninguna seccion obligatoria,
+    devuelve el texto normalizado: se cuenta como seccion extra.
+    """
+    from app.core.proposal_generator import _REQUIRED_HEADINGS
+
+    limpio = re.sub(r"^[*_`\d.)\s]*", "", texto.strip())
+    normalizado = _normalizar_heading(limpio)
+    for label, patron in _REQUIRED_HEADINGS:
+        if re.match(patron, normalizado):
+            return _normalizar_heading(label)
+    return normalizado
 
 
 def _sin_codigo(markdown: str) -> list[str]:
@@ -188,34 +231,42 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
     markdown = markdown or ""
     citas = caso.get("citations") or []
     total_citas = len(citas)
-    requeridas = {_normalizar_heading(s) for s in SECCIONES_REQUERIDAS}
+    requeridas = {_normalizar_heading(s) for s in _secciones_requeridas()}
 
     lineas = _sin_codigo(markdown)
     lineas_originales = markdown.splitlines()
     headings = _headings(lineas)
     de_nivel_2 = [(i, t) for i, nivel, t in headings if nivel == 2]
 
-    # Presencia de cada seccion obligatoria (primera aparicion).
+    # Presencia de cada seccion obligatoria (primera aparicion). Los patrones
+    # son los de produccion, asi que el scorer acepta las mismas variantes.
     primera: dict[str, int] = {}
     duplicadas: list[str] = []
     for indice, texto in de_nivel_2:
-        clave = _normalizar_heading(texto)
+        clave = _clave_de_seccion(texto)
         if clave in requeridas:
             if clave in primera:
                 duplicadas.append(texto)
             else:
                 primera[clave] = indice
 
-    secciones_ok = all(_normalizar_heading(s) in primera for s in SECCIONES_REQUERIDAS)
+    # El veredicto de "secciones completas" es el de PRODUCCION: su
+    # ``_missing_sections`` (mismos patrones, mismo criterio de justificacion
+    # que llega al riesgo o costo). Medirlo con una lista propia hacia que
+    # toda propuesta valida se midiera como fallida.
+    from app.core.proposal_generator import _missing_sections
+
+    faltantes = _missing_sections(markdown, 0)
+    secciones_ok = not faltantes
 
     orden_ok = False
     if secciones_ok:
-        orden = [primera[_normalizar_heading(s)] for s in SECCIONES_REQUERIDAS]
+        orden = [primera[_normalizar_heading(s)] for s in _secciones_requeridas()]
         orden_ok = orden == sorted(orden) and len(set(orden)) == len(orden)
 
     # Extra: cualquier `##` que no sea obligatorio y cualquier `#` (H1). Repetir
     # una obligatoria no cuenta como extra; se reporta en `secciones_duplicadas`.
-    extras = [t for _, t in de_nivel_2 if _normalizar_heading(t) not in requeridas]
+    extras = [t for _, t in de_nivel_2 if _clave_de_seccion(t) not in requeridas]
     extras += [f"# {t}" for _, nivel, t in headings if nivel == 1]
     sin_secciones_extra = not extras
 
@@ -248,7 +299,7 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
     # Bullets por seccion: lineas con `-`, `*`, `+`, `•` o `1.` dentro del
     # tramo que va desde el encabezado de la seccion hasta el siguiente `##`.
     bullets_por_seccion: dict[str, int] = {}
-    for seccion in SECCIONES_REQUERIDAS:
+    for seccion in _secciones_requeridas():
         clave = _normalizar_heading(seccion)
         if clave not in primera:
             bullets_por_seccion[seccion] = 0
@@ -353,6 +404,12 @@ def armar_prompt(caso: dict) -> str:
         caso.get("prior_content"),
         caso.get("feedback"),
         caso["project_name"],
+        # La descripcion entra al prompt desde que produccion la acepta
+        # (#112). El harness tiene que medir EL MISMO prompt: sin esto,
+        # mediria un prompt que la app nunca arma.
+        description=caso.get("descripcion"),
+        requirements_text=caso.get("requirements_text"),
+        documents_text=caso.get("documents_text"),
     )
 
 
@@ -372,7 +429,7 @@ def dry_run(casos: list[dict]) -> int:
     print()
     print(f"Casos con citations: [] -> {len(sin_citas)} ({', '.join(sin_citas) or '-'})")
     print(
-        f"Secciones obligatorias: {', '.join(SECCIONES_REQUERIDAS)} "
+        f"Secciones obligatorias: {', '.join(_secciones_requeridas())} "
         f"(comparacion estricta, sin normalizar acentos)"
     )
 
@@ -615,18 +672,24 @@ def construir_modelo(modelo: str, base_url: str, api_key: str, temperature: floa
 
     La app fija ``temperature`` via ``DEFAULT_LLM_TEMPERATURE`` (0.0) en
     ``app/core/llm_loader.py``; aca queda parametrizable para poder medir como
-    se comporta el corpus con otros valores. La construccion del modelo (y la
-    omision de ``temperature`` para la serie ``o*``) se delega a
-    ``_build_chat_model`` para no duplicar la regla.
+    se comporta el corpus con otros valores. La regla de si el modelo acepta
+    ``temperature`` (la serie ``o*`` no) se delega a produccion
+    (``_acepta_temperature``) para no duplicarla.
     """
-    from app.core.llm_loader import _build_chat_model
+    from langchain.chat_models import init_chat_model
 
-    return _build_chat_model(
-        model=modelo,
-        base_url=base_url,
-        api_key=api_key,
-        temperature=temperature,
-    )
+    from app.core.llm_loader import _acepta_temperature
+
+    kwargs: dict = {
+        "model": modelo,
+        "model_provider": "openai",
+        "base_url": base_url,
+        "api_key": api_key,
+    }
+    if _acepta_temperature(modelo):
+        kwargs["temperature"] = temperature
+
+    return init_chat_model(**kwargs)
 
 
 def resolver_proveedor(env: dict[str, str]) -> tuple[str, str, str]:
@@ -652,7 +715,12 @@ def _es_rate_limit(exc: Exception) -> bool:
     if getattr(exc, "status_code", None) == 429:
         return True
     texto = str(exc).lower()
-    return "429" in texto or "rate limit" in texto or "too many requests" in texto
+    # "429" como palabra: un numero mayor (p.ej. "4290") no es un rate limit.
+    return (
+        re.search(r"\b429\b", texto) is not None
+        or "rate limit" in texto
+        or "too many requests" in texto
+    )
 
 
 def _contenido(respuesta: Any) -> str:
@@ -907,7 +975,7 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
                     "reintentos_429": args.retries,
                     "min_ok_rate": args.min_ok_rate,
                     "stream_usage": args.stream_usage,
-                    "secciones_requeridas": list(SECCIONES_REQUERIDAS),
+                    "secciones_requeridas": list(_secciones_requeridas()),
                     "procedencia": procedencia(prompts),
                 },
                 "gate": {"paso": not motivos, "motivos": motivos},

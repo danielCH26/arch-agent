@@ -8,12 +8,14 @@ Los imports de app.api.* se hacen DENTRO de cada test.
 import pytest
 import os
 
-# Configurar entorno antes de cualquier import de app
-os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+# Configurar entorno antes de cualquier import de app.
+# setdefault en las 5 variables: respeta lo que el CI o un runner externo
+# exporten, sin pisarlo (PR #102 round 2).
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 class TestGetUserByLogin:
@@ -160,3 +162,22 @@ class TestJWTTokens:
 
         # Cleanup
         JWT_REVOKED.discard("test-jti-123")
+
+
+def test_logout_limpia_la_config_llm_cacheada():
+    """Revisión: tras logout + login no se debe ver la config LLM cacheada
+    (TTL de 5 min); la siguiente request la vuelve a leer de la DB."""
+    import asyncio
+
+    from app.api.auth import logout
+    from app.core import llm_loader
+
+    config = llm_loader.UserLLMConfig(
+        user_id=4242, base_url="https://api.example.com/v1", model="m", api_key="k"
+    )
+    llm_loader._session_cache[4242] = (config, float("inf"))
+    try:
+        asyncio.run(logout(current_user={"user_id": 4242, "username": "u", "jti": None}))
+        assert 4242 not in llm_loader._session_cache
+    finally:
+        llm_loader._session_cache.pop(4242, None)

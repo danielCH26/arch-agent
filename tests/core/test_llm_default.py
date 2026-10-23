@@ -33,13 +33,6 @@ def _patch_user(monkeypatch, user):
     """Parchea la sesion de DB para que devuelva `user` sin tocar Postgres."""
     from app.core import llm_loader
 
-    class _Result:
-        def get(self, _model, _user_id):
-            return user
-
-        def close(self):
-            pass
-
     class _Session:
         def get(self, _model, _user_id):
             return user
@@ -60,23 +53,27 @@ class TestConstantesDelDefault:
         # Production, no Preview. Ver la nota de descarte de qwen3.8-27b en #98.
         assert DEFAULT_LLM_MODEL == "openai/gpt-oss-120b"
 
-    def test_el_default_no_viene_del_entorno(self):
-        """La URL del default es constante, no se overridea por env.
+    def test_el_default_no_viene_del_entorno(self, monkeypatch):
+        """La URL y el modelo del default son constantes, no se overridean por env.
 
-        Si fuera configurable, alguien la podria apuntar a cualquier endpoint
-        y el default del sistema dejaria de ser un default.
+        Si fueran configurables, alguien podria apuntarlos a cualquier
+        endpoint y el default del sistema dejaria de ser un default. Se llama a
+        ``_load_system_default`` con las variables de entorno seteadas: si la
+        funcion las leyera, este test falla (antes solo comparaba la constante
+        consigo misma y no detectaba nada).
         """
-        import os
+        from app.core.llm_loader import _load_system_default
 
-        original = os.environ.get("LLM_BASE_URL")
-        os.environ["LLM_BASE_URL"] = "https://evil.example.com/v1"
-        try:
-            assert DEFAULT_LLM_BASE_URL == "https://api.groq.com/openai/v1"
-        finally:
-            if original is None:
-                os.environ.pop("LLM_BASE_URL", None)
-            else:
-                os.environ["LLM_BASE_URL"] = original
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
+        monkeypatch.setenv("LLM_BASE_URL", "https://evil.example.com/v1")
+        monkeypatch.setenv("LLM_MODEL", "modelo-del-entorno")
+
+        default = _load_system_default(user_id=1)
+
+        assert default is not None
+        assert default.base_url == DEFAULT_LLM_BASE_URL
+        assert default.model == DEFAULT_LLM_MODEL
+        assert default.source == "system_default"
 
 
 class TestFallbackAlDefault:
@@ -311,8 +308,10 @@ class TestUsuarioDesconocido:
         monkeypatch.setattr(llm_loader, "SessionLocal", lambda: _Session())
         monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
 
-        with pytest.raises(LLMConfigError):
+        with pytest.raises(LLMConfigError) as exc:
             load_user_llm_config(user_id=999)
+        # Motivo propio: no se confunde con "missing" (falta el modelo).
+        assert exc.value.reason == "user_not_found"
 
 
 class TestAllowDefault:
@@ -345,3 +344,90 @@ class TestAllowDefault:
 
         assert config.source == "system_default"
         assert config.api_key == "gsk_test_default"
+
+
+class TestMensajeParaElUsuario:
+    """Lo que ve el usuario final (chat, elicitacion, propuestas)."""
+
+    def test_quien_dejo_el_wizard_en_el_paso_3_sabe_que_le_falta_el_modelo(self):
+        from app.core.llm_loader import user_facing_message
+
+        mensaje = user_facing_message(LLMConfigError("x", reason="missing"))
+        assert "paso 3" in mensaje
+        assert "modelo" in mensaje
+
+    def test_no_expone_detalles_del_backend(self):
+        from app.core.llm_loader import user_facing_message
+
+        for reason in ("missing", "not_configured", "decryption_failed",
+                       "initialization_failed", "user_not_found", "otro"):
+            mensaje = user_facing_message(LLMConfigError("GROQ_API_KEY detalle", reason=reason))
+            assert "GROQ_API_KEY" not in mensaje
+            assert "POST /api" not in mensaje
+
+    def test_status_http_igual_en_chat_y_elicitacion(self):
+        """Solo ``initialization_failed`` es 500; el resto lo resuelve el usuario (409)."""
+        from app.core.llm_loader import http_status_for
+
+        assert http_status_for(LLMConfigError("x", reason="initialization_failed")) == 500
+        for reason in ("missing", "not_configured", "decryption_failed",
+                       "user_not_found", "otro"):
+            assert http_status_for(LLMConfigError("x", reason=reason)) == 409, reason
+
+
+class TestTransicionDelDefaultAlWizard:
+    """Un usuario que venia con el default y recorre el wizard paso a paso.
+
+    Se usa ``build_langchain_model`` (no solo ``load_user_llm_config``) para
+    cubrir tambien la cache: el default nunca se cachea, asi que en cuanto el
+    usuario guarda su key el siguiente request ya no puede seguir en Groq.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _entorno(self, monkeypatch):
+        from app.core import llm_loader
+
+        llm_loader.clear_session_cache()
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test_default")
+        monkeypatch.setattr(llm_loader, "decrypt", lambda _x: "sk-user-real")
+        # El "modelo" construido son los kwargs que recibio init_chat_model.
+        monkeypatch.setattr(llm_loader, "init_chat_model", lambda **kwargs: kwargs)
+        yield
+        llm_loader.clear_session_cache()
+
+    def test_default_paso_1_paso_2_409_y_paso_3_usa_su_config(self, monkeypatch):
+        from app.core.llm_loader import (
+            build_langchain_model,
+            http_status_for,
+            user_facing_message,
+        )
+
+        user = _FakeUser()
+        _patch_user(monkeypatch, user)
+
+        # Sin config: usa el default de Groq.
+        modelo = build_langchain_model(user_id=1)
+        assert modelo["base_url"] == DEFAULT_LLM_BASE_URL
+        assert modelo["model"] == DEFAULT_LLM_MODEL
+
+        # Paso 1 (solo base_url, sin key): sigue en el default.
+        user.llm_base_url = "https://api.openai.com/v1"
+        modelo = build_langchain_model(user_id=1)
+        assert modelo["base_url"] == DEFAULT_LLM_BASE_URL
+        assert modelo["api_key"] == "gsk_test_default"
+
+        # Paso 2 (base_url + key, sin modelo): pierde el chat hasta el paso 3.
+        # No hay cache del default que lo deje seguir en Groq.
+        user.encrypted_api_key = "enc"
+        with pytest.raises(LLMConfigError) as exc:
+            build_langchain_model(user_id=1)
+        assert exc.value.reason == "missing"
+        assert http_status_for(exc.value) == 409
+        assert "paso 3" in user_facing_message(exc.value)
+
+        # Paso 3: usa su endpoint, su key y su modelo; nunca el modelo de Groq.
+        user.llm_model = "gpt-4o-mini"
+        modelo = build_langchain_model(user_id=1)
+        assert modelo["base_url"] == "https://api.openai.com/v1"
+        assert modelo["api_key"] == "sk-user-real"
+        assert modelo["model"] == "gpt-4o-mini"

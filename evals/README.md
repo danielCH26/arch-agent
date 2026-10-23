@@ -97,8 +97,19 @@ presupuesto de tokens) y su `usage`.
 | `2` | Error de uso o de configuración (flags, API key, `--case` inexistente) |
 
 El gate dice si la corrida **midió**, no si el modelo es bueno: no hay umbral
-de `struct_ok` ni de `exacta`. En CI la puerta de calidad sin costo sigue
-siendo `--dry-run` más `pytest evals/test_runner.py`.
+de `struct_ok` ni de `exacta`. La puerta de calidad sin costo (`--dry-run` más
+`pytest evals/test_runner.py`) corre en el job de backend de
+`.github/workflows/ci.yml`.
+
+### El contrato es el de producción
+
+El scorer **no** mantiene su propia lista de secciones obligatorias: importa
+`_REQUIRED_HEADINGS` y juzga con `_missing_sections` de
+`app/core/proposal_generator.py`. Antes el harness llevaba una copia local (3
+secciones, "Tecnologías" con tilde y comparación sin normalizar acentos) que
+se desincronizó del prompt: cualquier propuesta válida de producción se
+medía como fallida. Ahora, si producción cambia el contrato, el scorer lo
+sigue sin tocar el harness.
 
 ## Qué mide cada métrica
 

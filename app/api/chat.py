@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import re
@@ -7,36 +7,39 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user
 from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
-from app.core.llm_loader import build_langchain_model, LLMConfigError
+from app.core.llm_loader import (
+    astream_with_temperature_fallback,
+    build_langchain_model,
+    explain_llm_error,
+    http_status_for,
+    LLMConfigError,
+    user_facing_message,
+)
 from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
-# RAG_MIN_SIMILARITY viene de app/core/rag_config.py, que es su unico lugar de
-# definicion junto con la evidencia que justifica el 0.85.
-from app.core.rag_config import RAG_MIN_SIMILARITY
+# RAG_MIN_SIMILARITY y RAG_NEAR_MISS_MARGIN vienen de app/core/rag_config.py,
+# su unico lugar de definicion junto con la evidencia que justifica el 0.85.
+from app.core.rag_config import RAG_MIN_SIMILARITY, RAG_NEAR_MISS_MARGIN
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
-# El umbral de similitud y su justificacion viven en app/core/rag_config.py
-# (importado arriba). Este archivo solo lo usa.
-
-# Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
-# solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
-# distinto resultado en similarity). No cambia que se cita o no.
-RAG_NEAR_MISS_MARGIN = 0.05
-
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Eventos de run_agent que el usuario ya vio como respuesta: despues de uno de
+# estos, un error del provider no se reintenta (duplicaria la salida).
+_AGENT_OUTPUT_EVENTS = frozenset({"token", "tool_start", "tool_end", "attachment", "done"})
 logger = logging.getLogger(__name__)
 
 DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
@@ -200,7 +203,7 @@ def _is_near_miss(doc) -> bool:
 
 class ChatRequest(BaseModel):
     project_id: int | None = None
-    message: str
+    message: str = Field(description="Mensaje del usuario (vacio -> 400 manual; whitespace-only -> 400)")
     # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
     # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
     # el prompt de "Solicitar cambios" sobre un diagrama, que agrega
@@ -221,20 +224,25 @@ async def chat(
     """
     Stream agent chat responses as SSE.
 
-    POST /api/chat  ╬ô├Ñ├å  text/event-stream
+    POST /api/chat  →  text/event-stream
         body: {"project_id": int | null, "message": str}
 
     Returns:
-        200 text/event-stream ╬ô├ç├╢ "sources" event (metadata RAG) +
+        200 text/event-stream — "sources" event (metadata RAG) +
             ("tool_start" / "tool_end")* + tokens as "event: token" +
             optional "event: degraded" + final "event: done".
             On hard failure, "event: error" terminates the stream.
-        400 ╬ô├ç├╢ no message provided
-        401 ╬ô├ç├╢ invalid JWT
-        404 ╬ô├ç├╢ project not found or not owned
-        409 ╬ô├ç├╢ LLM not configured for user
+        400 — no message provided
+        401 — invalid JWT
+        404 — project not found or not owned
+        409 — LLM not configured for user (incl. wizard stopped before step 3)
+        500 — the user's LLM config is complete but the model failed to
+            initialize (``reason="initialization_failed"``)
+        Status and message come from ``http_status_for`` /
+        ``user_facing_message`` (``app/core/llm_loader.py``), shared with
+        elicitation.
 
-    F11 changes (issue #13, design.md Γö¼┬║6.5):
+    F11 changes (issue #13, design.md §6.5):
       - swaps ``model.astream(prompt)`` for ``run_agent(model, message,
         callbacks=..., rag_documents=...)`` which drives a
         ``create_agent`` runtime.
@@ -256,7 +264,7 @@ async def chat(
     AFTER the commit. Either store degrades gracefully when the other is down.
     """
     if not body.message or not body.message.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacΓö£┬ío")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mensaje vacío")
 
     user_id = current_user["user_id"]
 
@@ -307,14 +315,12 @@ async def chat(
     try:
         model = build_langchain_model(user_id)
     except LLMConfigError as e:
-        if e.reason == "initialization_failed":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            )
+        # El detalle técnico va al log; al usuario, un mensaje según el motivo
+        # (p. ej. "te falta elegir el modelo" si dejó el wizard en el paso 3).
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="LLM no configurado. Ejecuta POST /api/llm/config primero.",
+            status_code=http_status_for(e),
+            detail=user_facing_message(e),
         )
 
     # Build SSE streaming handler + optional Langfuse callback
@@ -397,7 +403,7 @@ async def chat(
         """
         SSE generator that yields events as they arrive from the agent runtime.
 
-        Ordering (design.md Γö¼┬║5.2):
+        Ordering (design.md §5.2):
           sources -> (tool_start/tool_end)* -> token*N -> done
 
         ``sources`` is emitted by this route BEFORE the agent runs (the agent
@@ -419,6 +425,10 @@ async def chat(
 
             emitted_done = False
             full_response = ""
+            # `degraded` ya enviados, por (source, reason). El reintento sin
+            # `temperature` vuelve a correr run_agent, que reemite el de
+            # Context7 antes de llamar al modelo: el cliente lo recibe una vez.
+            sent_degraded: set[tuple[Any, Any]] = set()
             # F13 (REQ-ATT-1 / REQ-PMCP-1): collected attachment dicts from
             # ``event: attachment`` SSE payloads. Persisted alongside the
             # assistant row in the same pre-``done`` transaction so a
@@ -465,18 +475,34 @@ async def chat(
                 finally:
                     db.close()
 
-            async for sse_dict in run_agent(
-                model=model,
-                message=body.message,
-                callbacks=callbacks,
-                rag_documents=docs,
-                user_id=user_id,
-                project_id=body.project_id,
-            ):
+            # Si el provider rechaza `temperature`, se reintenta el turno una
+            # vez sin el parametro, siempre que el usuario no haya visto
+            # todavia ninguna salida (ver llm_loader).
+            agent_events = astream_with_temperature_fallback(
+                model,
+                lambda m: run_agent(
+                    model=m,
+                    message=body.message,
+                    callbacks=callbacks,
+                    rag_documents=docs,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                ),
+                counts_as_output=lambda ev: ev.get("event") in _AGENT_OUTPUT_EVENTS,
+            )
+            async for sse_dict in agent_events:
                 event_name = sse_dict.get("event")
                 payload = sse_dict.get("data")
 
                 if event_name == "degraded":
+                    degraded_key = (
+                        (payload.get("source"), payload.get("reason"))
+                        if isinstance(payload, dict)
+                        else (None, json.dumps(payload, ensure_ascii=False, default=str))
+                    )
+                    if degraded_key in sent_degraded:
+                        continue
+                    sent_degraded.add(degraded_key)
                     logger.warning(
                         "Context7 unavailable for user_id=%s project_id=%s; "
                         "falling back to RAG-only: %s",
@@ -559,11 +585,11 @@ async def chat(
             if not emitted_done:
                 # Defensive: if ``run_agent`` returned without yielding
                 # ``done`` or ``error``, fire ``done`` to keep the FE
-                # contract stable (design.md Γö¼┬║9).
+                # contract stable (design.md §9).
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps(explain_llm_error(e), ensure_ascii=False)}\n\n"
         finally:
             # F14: exporta la traza de inmediato en vez de depender solo del
             # ciclo en segundo plano del SDK de Langfuse (PR #79 review).
@@ -613,7 +639,7 @@ def chat_history(
 
         # Resolve the user's session id (lazy-upsert so a fresh user still
         # gets an empty list, not an exception). REQ-11: any DB failure on
-        # the read path ╬ô├Ñ├å 200 with empty messages (graceful degradation).
+        # the read path → 200 with empty messages (graceful degradation).
         try:
             session = (
                 db.query(UserSession).filter(UserSession.user_id == user_id).first()

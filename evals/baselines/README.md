@@ -50,7 +50,9 @@ python -m evals.runner --models openai/gpt-oss-120b --temperature 0.0 --repeats 
 python -m evals.runner --models openai/gpt-oss-120b --temperature 1.0 --repeats 5
 ```
 
-Cada corrida son 11 casos × 5 repeats = 55 llamadas, ~2 minutos con
+Cada corrida son 11 casos × 5 repeats = 55 llamadas. Con `--sleep 2.2`
+solo las esperas entre llamadas ya suman ~2 minutos; el total (con la
+generacion de cada respuesta) es mayor.
 `--sleep 2.2`.
 
 Criterio de lau2413 (I5): al menos 2 corridas por temperatura, con 5 repeats o

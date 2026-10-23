@@ -1,5 +1,20 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { apiUrl, errorMessageFromResponse, safeFetch } from '../api/client'
+
+// Datos por usuario guardados en el navegador (p. ej. la última propuesta de
+// cada proyecto, ver proposalsStore): se borran al cerrar sesión.
+const USER_SCOPED_STORAGE_PREFIX = 'archagent:user:'
+
+function clearUserScopedStorage() {
+  try {
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith(USER_SCOPED_STORAGE_PREFIX))
+      .forEach((key) => localStorage.removeItem(key))
+  } catch {
+    // Sin acceso a localStorage: no hay nada que limpiar.
+  }
+}
 
 interface User {
   id: number
@@ -32,7 +47,7 @@ export const authStore = create<AuthState>()(
       login: async (username: string, password: string) => {
         set({ status: 'loading', error: null })
         try {
-          const response = await fetch('/api/auth/login', {
+          const response = await safeFetch(apiUrl('/api/auth/login'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password }),
@@ -40,7 +55,11 @@ export const authStore = create<AuthState>()(
 
           if (!response.ok) {
             const data = await response.json().catch(() => ({}))
-            throw new Error((data.detail as string) || 'Invalid credentials')
+            throw new Error(
+              response.status === 401
+                ? (typeof data.detail === 'string' && data.detail) || 'Usuario o contraseña incorrectos.'
+                : errorMessageFromResponse(response.status, data),
+            )
           }
 
           const data = await response.json() as { user_id: number; username: string; token: string }
@@ -50,7 +69,7 @@ export const authStore = create<AuthState>()(
             status: 'idle',
           })
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Login failed'
+          const message = error instanceof Error ? error.message : 'No se pudo iniciar sesión.'
           set({ status: 'error', error: message })
           throw error
         }
@@ -59,7 +78,7 @@ export const authStore = create<AuthState>()(
       register: async (username: string, email: string, password: string) => {
         set({ status: 'loading', error: null })
         try {
-          const response = await fetch('/api/auth/register', {
+          const response = await safeFetch(apiUrl('/api/auth/register'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, email, password }),
@@ -67,7 +86,7 @@ export const authStore = create<AuthState>()(
 
           if (!response.ok) {
             const data = await response.json().catch(() => ({}))
-            throw new Error((data.detail as string) || 'Registration failed')
+            throw new Error(errorMessageFromResponse(response.status, data))
           }
 
           const data = await response.json() as { user_id: number; username: string; token: string }
@@ -77,7 +96,7 @@ export const authStore = create<AuthState>()(
             status: 'idle',
           })
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Registration failed'
+          const message = error instanceof Error ? error.message : 'No se pudo crear la cuenta.'
           set({ status: 'error', error: message })
           throw error
         }
@@ -87,7 +106,7 @@ export const authStore = create<AuthState>()(
         const token = get().token
         if (token) {
           try {
-            await fetch('/api/auth/logout', {
+            await fetch(apiUrl('/api/auth/logout'), {
               method: 'POST',
               headers: { Authorization: `Bearer ${token}` },
             })
@@ -95,6 +114,7 @@ export const authStore = create<AuthState>()(
             // Ignore logout errors
           }
         }
+        clearUserScopedStorage()
         set({ token: null, user: null, status: 'idle', error: null })
       },
 
@@ -104,7 +124,7 @@ export const authStore = create<AuthState>()(
 
         set({ status: 'loading' })
         try {
-          const response = await fetch('/api/auth/me', {
+          const response = await fetch(apiUrl('/api/auth/me'), {
             headers: { Authorization: `Bearer ${token}` },
           })
 
