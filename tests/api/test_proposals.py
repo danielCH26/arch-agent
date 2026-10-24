@@ -141,37 +141,25 @@ class TestRejectRevertsToEnv:
 
     def test_default_is_requerimientos(self):
         os.environ.pop("PROPOSAL_REJECT_REVERTS_TO", None)
-        # Re-import the module so the module-level constant is recomputed.
-        import importlib
+        from app.api.proposals import _proposal_reject_reverts_to
 
-        import app.api.proposals as proposals_module
-
-        importlib.reload(proposals_module)
-        assert proposals_module.PROPOSAL_REJECT_REVERTS_TO == "requerimientos"
+        assert _proposal_reject_reverts_to() == "requerimientos"
 
     def test_env_override_takes_effect(self):
         os.environ["PROPOSAL_REJECT_REVERTS_TO"] = "propuesta"
-        import importlib
+        from app.api.proposals import _proposal_reject_reverts_to
 
-        import app.api.proposals as proposals_module
-
-        importlib.reload(proposals_module)
-        assert proposals_module.PROPOSAL_REJECT_REVERTS_TO == "propuesta"
+        assert _proposal_reject_reverts_to() == "propuesta"
 
 
 # --- RAG constant sync ----------------------------------------------------
 
 
 class TestRAGConstants:
-    def test_chat_keeps_its_rag_min_similarity_floor(self):
-        # El piso de 0.85 solo gobierna el chat (preguntas fuera de tema). La
-        # fase de propuesta NO lo usa: trae los PROPOSAL_RAG_TOP_N patrones mas
-        # cercanos sin piso; ese comportamiento se prueba en
-        # TestCitationSelection y en tests/core/test_proposal_generator.py.
-        from app.api import chat as chat_module
-
-        assert chat_module.RAG_MIN_SIMILARITY == 0.85
-
+    # El piso de 0.85 del chat lo fija tests/core/test_rag_config.py. La fase de
+    # propuesta NO lo usa: trae los PROPOSAL_RAG_TOP_N patrones mas cercanos sin
+    # piso; ese comportamiento se prueba en TestCitationSelection y en
+    # tests/core/test_proposal_generator.py.
     def test_proposal_modules_do_not_expose_a_similarity_floor_they_do_not_use(self):
         from app.api import proposals as proposals_module
         from app.core import proposal_generator as generator_module
@@ -285,16 +273,18 @@ class TestGenerateIterationCap:
     """``/generate`` debe fallar con 409 ANTES de gastar una generacion."""
 
     @staticmethod
-    def _call_generate(latest_iteration):
+    def _call_generate(latest_iteration, monkeypatch=None):
         from app.api import proposals as mod
 
         db = MagicMock()
         latest = MagicMock(iteration=latest_iteration) if latest_iteration else None
         db.query.return_value.filter.return_value.order_by.return_value.first.return_value = latest
 
+        if monkeypatch is not None:
+            monkeypatch.setenv("PROPOSAL_MAX_ITER", "5")
+
         with patch.object(mod, "SessionLocal", return_value=db), \
             patch.object(mod, "_require_owned_project", return_value=MagicMock()), \
-            patch.object(mod, "PROPOSAL_MAX_ITER", 5), \
             patch.object(mod, "ProposalGenerator") as generator_cls:
             try:
                 response = asyncio.run(
@@ -307,28 +297,34 @@ class TestGenerateIterationCap:
             except Exception as exc:  # HTTPException
                 return None, generator_cls, exc
 
-    def test_returns_409_without_starting_a_generation_at_the_cap(self):
+    def test_returns_409_without_starting_a_generation_at_the_cap(self, monkeypatch):
         from fastapi import HTTPException
 
-        response, generator_cls, error = self._call_generate(latest_iteration=5)
+        response, generator_cls, error = self._call_generate(
+            latest_iteration=5, monkeypatch=monkeypatch
+        )
 
         assert isinstance(error, HTTPException)
         assert error.status_code == 409
         assert "máximo de iteraciones (5)" in error.detail
         generator_cls.assert_not_called()
 
-    def test_a_rejected_proposal_at_the_cap_also_blocks_a_new_generation(self):
+    def test_a_rejected_proposal_at_the_cap_also_blocks_a_new_generation(self, monkeypatch):
         # La cuenta es max(iteration)+1 sobre todas las propuestas, rechazadas
         # incluidas: tras rechazar la 5, "Generar propuesta" no puede gastar
         # una generacion para recibir el 409 al final.
-        _, generator_cls, error = self._call_generate(latest_iteration=5)
+        _, generator_cls, error = self._call_generate(
+            latest_iteration=5, monkeypatch=monkeypatch
+        )
 
         assert error is not None and error.status_code == 409
         generator_cls.assert_not_called()
 
-    def test_generates_when_there_is_room_or_no_proposal_yet(self):
+    def test_generates_when_there_is_room_or_no_proposal_yet(self, monkeypatch):
         for latest in (None, 4):
-            response, generator_cls, error = self._call_generate(latest_iteration=latest)
+            response, generator_cls, error = self._call_generate(
+                latest_iteration=latest, monkeypatch=monkeypatch
+            )
 
             assert error is None
             assert response.media_type == "text/event-stream"
@@ -410,9 +406,64 @@ class TestLifecycleSideEffects:
         assert "phase_ready = True" in source
         assert "phase_ready = False" in source
         # Reject branch must revert current_phase
-        assert "PROPOSAL_REJECT_REVERTS_TO" in source
+        # F18 round 3: PROPOSAL_REJECT_REVERTS_TO -> _proposal_reject_reverts_to()
+        assert "_proposal_reject_reverts_to" in source
 
 # --- F19: cancelacion desde el cliente ------------------------------------
+
+
+class TestProposalMaxIterGetter:
+    """F18 round 3: ``PROPOSAL_MAX_ITER`` es un getter lazy."""
+
+    def setup_method(self):
+        self._original = os.environ.get("PROPOSAL_MAX_ITER")
+
+    def teardown_method(self):
+        if self._original is None:
+            os.environ.pop("PROPOSAL_MAX_ITER", None)
+        else:
+            os.environ["PROPOSAL_MAX_ITER"] = self._original
+
+    def test_state_exposes_env_iteration_cap(self):
+        """El tope llega al frontend por ``ProposalStateOut``, no solo por el getter.
+
+        F18 round 4 (PR #102, Soomri round 3 punto 3): el test anterior solo
+        miraba ``_proposal_max_iter()`` y perdia el contrato que realmente
+        importa, que es que ``ProposalStateOut`` exponga el valor vigente.
+
+        Con ``default_factory=proposal_max_iter`` la asercion sobre el modelo
+        funciona sin ``importlib.reload``: el getter corre al construir el
+        modelo. Asi que las dos mitades se prueban juntas.
+        """
+        os.environ["PROPOSAL_MAX_ITER"] = "3"
+
+        from app.api.proposals import ProposalStateOut
+        from app.core.proposal_generator import proposal_max_iter
+
+        # El getter lee la env var en cada llamada.
+        assert proposal_max_iter() == 3
+
+        # Y el modelo lo expone al frontend sin necesitar reload.
+        state = ProposalStateOut(
+            approved=False,
+            approved_at=None,
+            approval_id=None,
+            proposal_snapshot_chars=0,
+            last_decision=None,
+        )
+        assert state.max_iterations == 3
+
+    def test_proposals_uses_the_generator_getter(self):
+        """Una sola fuente de verdad: ``proposals`` no redefine el tope."""
+        import inspect
+
+        from app.api import proposals
+        from app.core import proposal_generator
+
+        assert proposals.proposal_max_iter is proposal_generator.proposal_max_iter
+        # Y no queda una constante local que pueda divergir.
+        source = inspect.getsource(proposals)
+        assert "_proposal_max_iter" not in source
 
 
 class TestSSEStreamCancellation:
@@ -577,3 +628,4 @@ class TestSSEStreamKeepsOneContext:
             return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
 
         assert asyncio.run(run()) == []
+

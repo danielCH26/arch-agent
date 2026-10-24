@@ -8,15 +8,14 @@ Los imports de app.api.* se hacen DENTRO de cada test.
 import pytest
 import os
 
-# Configurar entorno antes de cualquier import de app
-# setdefault, NO asignación directa: pisaba el DATABASE_URL de tests/conftest.py al
-# importarse y, en una corrida completa, los tests con Postgres real
-# (tests/test_document_storage.py) se conectaban como "test" y fallaban.
+# Configurar entorno antes de cualquier import de app.
+# setdefault en las 5 variables: respeta lo que el CI o un runner externo
+# exporten, sin pisarlo (PR #102 round 2).
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 class TestGetUserByLogin:

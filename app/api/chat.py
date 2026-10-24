@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user
@@ -15,7 +15,9 @@ from app.api.sse import SSEStreamCallbackHandler, format_done_event
 from app.core.agent import run_agent
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import (
+    astream_with_temperature_fallback,
     build_langchain_model,
+    explain_llm_error,
     http_status_for,
     LLMConfigError,
     user_facing_message,
@@ -24,24 +26,23 @@ from app.core.database import SessionLocal
 from app.core.attachment_tokens import build_attachment_url
 from app.core.message_store import ensure_user_session, engram_mirror, list_recent, save_message
 from app.core.rag import similarity_search
-# RAG_MIN_SIMILARITY viene de app/core/rag_config.py, que es su unico lugar de
-# definicion junto con la evidencia que justifica el 0.85.
-from app.core.rag_config import RAG_MIN_SIMILARITY
+# RAG_MIN_SIMILARITY y RAG_NEAR_MISS_MARGIN vienen de app/core/rag_config.py,
+# su unico lugar de definicion junto con la evidencia que justifica el 0.85.
+from app.core.rag_config import RAG_MIN_SIMILARITY, RAG_NEAR_MISS_MARGIN
 from app.core.session_store import latest_diagram_decisions
 from app.models.approval import Approval
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
-# El umbral de similitud y su justificacion viven en app/core/rag_config.py
-# (importado arriba). Este archivo solo lo usa.
-
-# Margen por debajo de RAG_MIN_SIMILARITY que se loguea como "near-miss" --
-# solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
-# distinto resultado en similarity). No cambia que se cita o no.
-RAG_NEAR_MISS_MARGIN = 0.05
+# El umbral de similitud, su justificacion y RAG_NEAR_MISS_MARGIN viven en
+# app/core/rag_config.py (importado arriba). Este archivo solo los usa.
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Eventos de run_agent que el usuario ya vio como respuesta: despues de uno de
+# estos, un error del provider no se reintenta (duplicaria la salida).
+_AGENT_OUTPUT_EVENTS = frozenset({"token", "tool_start", "tool_end", "attachment", "done"})
 logger = logging.getLogger(__name__)
 
 DIAGRAM_PHASES = {"refinamiento", "diagram", "diagrama"}
@@ -205,7 +206,7 @@ def _is_near_miss(doc) -> bool:
 
 class ChatRequest(BaseModel):
     project_id: int | None = None
-    message: str
+    message: str = Field(description="Mensaje del usuario (vacio -> 400 manual; whitespace-only -> 400)")
     # F14 (migracion 0015): opcional. Cuando el frontend manda un mensaje
     # "tecnico" mas largo que lo que el usuario realmente escribio (hoy:
     # el prompt de "Solicitar cambios" sobre un diagrama, que agrega
@@ -427,6 +428,10 @@ async def chat(
 
             emitted_done = False
             full_response = ""
+            # `degraded` ya enviados, por (source, reason). El reintento sin
+            # `temperature` vuelve a correr run_agent, que reemite el de
+            # Context7 antes de llamar al modelo: el cliente lo recibe una vez.
+            sent_degraded: set[tuple[Any, Any]] = set()
             # F13 (REQ-ATT-1 / REQ-PMCP-1): collected attachment dicts from
             # ``event: attachment`` SSE payloads. Persisted alongside the
             # assistant row in the same pre-``done`` transaction so a
@@ -473,18 +478,34 @@ async def chat(
                 finally:
                     db.close()
 
-            async for sse_dict in run_agent(
-                model=model,
-                message=body.message,
-                callbacks=callbacks,
-                rag_documents=docs,
-                user_id=user_id,
-                project_id=body.project_id,
-            ):
+            # Si el provider rechaza `temperature`, se reintenta el turno una
+            # vez sin el parametro, siempre que el usuario no haya visto
+            # todavia ninguna salida (ver llm_loader).
+            agent_events = astream_with_temperature_fallback(
+                model,
+                lambda m: run_agent(
+                    model=m,
+                    message=body.message,
+                    callbacks=callbacks,
+                    rag_documents=docs,
+                    user_id=user_id,
+                    project_id=body.project_id,
+                ),
+                counts_as_output=lambda ev: ev.get("event") in _AGENT_OUTPUT_EVENTS,
+            )
+            async for sse_dict in agent_events:
                 event_name = sse_dict.get("event")
                 payload = sse_dict.get("data")
 
                 if event_name == "degraded":
+                    degraded_key = (
+                        (payload.get("source"), payload.get("reason"))
+                        if isinstance(payload, dict)
+                        else (None, json.dumps(payload, ensure_ascii=False, default=str))
+                    )
+                    if degraded_key in sent_degraded:
+                        continue
+                    sent_degraded.add(degraded_key)
                     logger.warning(
                         "Context7 unavailable for user_id=%s project_id=%s; "
                         "falling back to RAG-only: %s",
@@ -571,7 +592,7 @@ async def chat(
                 yield format_done_event()
         except Exception as e:
             logger.exception("event_generator failed: %s", e)
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps(explain_llm_error(e), ensure_ascii=False)}\n\n"
         finally:
             # F14: exporta la traza de inmediato en vez de depender solo del
             # ciclo en segundo plano del SDK de Langfuse (PR #79 review).

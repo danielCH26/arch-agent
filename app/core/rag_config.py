@@ -16,8 +16,11 @@ Consumidores (este docstring es el único lugar donde se lista):
   default 0.0, ver ``app/core/proposal_generator.py``). El router de proposals
   tampoco lo usa.
 - ``/api/rag/search`` (y ``/patterns/search``, ``/documents/search``): NO aplica
-  el piso. Devuelve los top-k con su ``similarity`` cruda, que es lo que permite
-  ver qué quedó por debajo de 0.85.
+  el piso, por decisión. Es el endpoint de diagnóstico: devuelve los top-k con
+  su ``similarity`` cruda justamente para poder ver qué quedó por debajo de
+  0.85 (los near-miss del chat se reproducen ahí). Filtrarlo escondería esa
+  información; quien lo use para algo más que diagnosticar debe aplicar
+  ``RAG_MIN_SIMILARITY`` del lado del cliente.
 """
 
 # Umbral MÍNIMO de similitud para considerar un chunk/patrón "relevante".
@@ -49,3 +52,8 @@ Consumidores (este docstring es el único lugar donde se lista):
 # lo usan (tienen su propio ``PROPOSAL_RAG_MIN_SIMILARITY``). Si hay que moverlo,
 # se mueve acá y en un solo lugar.
 RAG_MIN_SIMILARITY: float = 0.85
+
+# Margen por debajo de RAG_MIN_SIMILARITY que el chat loguea como "near-miss"
+# -- solo para diagnostico (ej. QA F07: misma intencion, distinta redaccion,
+# distinto resultado en similarity). No cambia que se cita o no.
+RAG_NEAR_MISS_MARGIN: float = 0.05

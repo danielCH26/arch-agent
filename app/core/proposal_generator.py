@@ -30,7 +30,14 @@ from sqlalchemy import text
 from app.core.database import SessionLocal
 from app.core.engram_client import EngramClient, EngramError
 from app.core.env import env_float, env_int
-from app.core.llm_loader import build_langchain_model, LLMConfigError, user_facing_message
+from app.core.llm_loader import (
+    astream_with_temperature_fallback,
+    build_langchain_model,
+    explain_llm_error,
+    is_temperature_rejection,
+    LLMConfigError,
+    user_facing_message,
+)
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
 from app.core.pattern_catalog import load_patterns, pattern_family, pattern_sources
@@ -57,7 +64,7 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 # En la fase de propuesta no hay umbral fijo de similitud (el piso de 0.85,
-# RAG_MIN_SIMILARITY, se define en ``app/core/rag_config.py`` y solo lo usa el
+# RAG_MIN_SIMILARITY, vive en ``app/core/rag_config.py`` y solo lo usa el
 # chat). La
 # consulta se arma con el nombre/descripcion/requerimientos del proyecto, asi
 # que siempre esta dentro del dominio: en vez de descartar candidatos por un
@@ -108,9 +115,27 @@ _PROGRESS_STAGES = {
 _GEN_START, _GEN_END = 20, 92
 
 # Default maximum number of iterations per project. Mirrors the design
-# (§5 + §17 #6). Per-project override is not yet implemented; the cap is read
-# at request time so ops can tune it without code changes.
-PROPOSAL_MAX_ITER = env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
+# (§5 + §17 #6). Per-project override is not yet implemented.
+
+
+def proposal_max_iter() -> int:
+    """Devuelve el tope de iteraciones leyendo la env var en cada llamada.
+
+    F18 (PR #102): esto era una constante de módulo evaluada al importar. Los
+    tests needing ``importlib.reload`` para tomar un valor nuevo, y ese reload
+    redefinía las clases del módulo, rompiendo los ``isinstance`` de
+    ``test_proposals_endpoints.py``. Leer por ``env_int`` en cada llamada deja
+    el tope ajustable por request sin perder la validación de ``development``
+    (``minimum=1``).
+    """
+    return env_int("PROPOSAL_MAX_ITER", 5, minimum=1)
+
+
+# Compatibilidad: fijada al importar. NO leerla durante un request, porque
+# no ve cambios de la env var; para eso esta proposal_max_iter(), que es la
+# que usan los tres cortes de iteracion. Esta constante existe para el
+# re-export de app.api.proposals y para el test de una-sola-definicion.
+PROPOSAL_MAX_ITER = proposal_max_iter()
 
 # Engram port per ADR-008: the memory mirror is best-effort, never blocking
 # (REQ-9 / SCN-10). Override for tests/dev with ENGRAM_URL.
@@ -197,7 +222,7 @@ def _format_duration(seconds: float) -> str:
 # Los codigos son estables: agregar nuevos esta bien, renombrarlos rompe al front.
 ERR_INVALID_REQUEST = "invalid_request"  # falta project_id / user_id
 ERR_REJECTED = "rejected"  # _ProposalDomainError: causa accionable (max. iteraciones, 409...)
-ERR_LLM_CONFIG = "llm_config"  # configuracion LLM invalida o ausente
+ERR_LLM_CONFIG = "llm_config"  # configuracion LLM invalida o ausente (incluye modelo que rechaza `temperature`)
 ERR_LLM_STREAM = "llm_stream_failed"  # el proveedor fallo (incluye su propio timeout)
 ERR_LLM_EMPTY = "llm_empty"  # el modelo no devolvio contenido
 ERR_INCOMPLETE = "incomplete_proposal"  # cortada por tokens o sin secciones obligatorias
@@ -684,8 +709,12 @@ class ProposalGenerator:
         # si cabe en el tope de tiempo. Antes el usuario tenía que esperar y
         # darle a "Reintentar". Un 413 (petición demasiado grande) no se
         # reintenta: volvería a fallar igual.
+        # Ademas, si el provider rechaza `temperature`, se reintenta una vez
+        # sin el parametro antes del primer token (ver llm_loader).
         for attempt in range(2):
-            stream = model.astream(prompt).__aiter__()
+            stream = astream_with_temperature_fallback(
+                model, lambda m: m.astream(prompt)
+            ).__aiter__()
             retry_wait: float | None = None
             try:
                 while True:
@@ -718,6 +747,11 @@ class ProposalGenerator:
                 logger.warning("Proposal LLM stream cut by time budget chars=%s", chars_received)
                 raise  # lo convierte en el evento ``error`` generate_stream
             except Exception as exc:
+                if is_temperature_rejection(exc):
+                    # Ya se reintento sin `temperature` y no alcanzo: repetir la
+                    # peticion no lo arregla, hay que cambiar de modelo.
+                    yield _error_event(explain_llm_error(exc), ERR_LLM_CONFIG, retryable=False)
+                    return
                 # Antes se mostraba el error crudo del proveedor ("LLM stream
                 # failed: Error code: 413 - {...}").
                 kind = classify_llm_error(exc)
@@ -769,7 +803,13 @@ class ProposalGenerator:
             # LLM emitted nothing useful -- treat as a hard error so the
             # frontend can show a banner and the user can retry without an
             # empty ``proposed`` row confusing the lifecycle.
-            yield _error_event("LLM returned no content", ERR_LLM_EMPTY)
+            # Con temperatura baja el mismo prompt tiende a dar lo mismo: el
+            # mensaje sugiere otro modelo en vez de solo reintentar.
+            yield _error_event(
+                "El modelo no devolvió contenido. No se guardó ni consumió una "
+                "iteración; prueba con otro modelo en la configuración del LLM.",
+                ERR_LLM_EMPTY,
+            )
             return
 
         # Una propuesta cortada a la mitad (limite de tokens del modelo, stream
@@ -1980,7 +2020,8 @@ def _incomplete_proposal_message(
     return (
         "El modelo dejó la propuesta incompleta: no incluyó todas las "
         f"secciones obligatorias{missing}. No se guardó ni consumió una "
-        "iteración; intenta de nuevo."
+        "iteración. Con el mismo modelo, reintentar suele dar el mismo "
+        "resultado: prueba con otro modelo en la configuración del LLM."
     )
 
 
@@ -3369,9 +3410,10 @@ def _persist_proposal_and_log(
             )
             iteration = (max_iter.iteration + 1) if max_iter else 1
 
-        if iteration > PROPOSAL_MAX_ITER:
+        max_iterations = proposal_max_iter()
+        if iteration > max_iterations:
             raise _ProposalDomainError(
-                f"Has alcanzado el máximo de iteraciones ({PROPOSAL_MAX_ITER})"
+                f"Has alcanzado el máximo de iteraciones ({max_iterations})"
             )
 
         latest = (

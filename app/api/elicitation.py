@@ -12,7 +12,9 @@ from app.core.database import SessionLocal
 from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
 from app.core.llm_loader import (
     build_langchain_model,
+    explain_llm_error,
     http_status_for,
+    is_temperature_rejection,
     LLMConfigError,
     user_facing_message,
 )
@@ -249,6 +251,14 @@ async def send_elicitation_message(
         else:
             resumen = None
     except elicitation_agent.ElicitationLLMError as e:
+        if is_temperature_rejection(e):
+            # El modelo rechaza `temperature` aun despues del reintento sin el
+            # parametro: reintentar no lo arregla nunca, asi que NO se usa el
+            # mensaje de "limite de tasa" de abajo. 502 + causa accionable.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=explain_llm_error(e),
+            )
         # Falla real de la llamada (rate limit, timeout, proveedor caído) --
         # el usuario puede reintentar, no es un problema con lo que respondió.
         raise HTTPException(
@@ -270,8 +280,9 @@ async def send_elicitation_message(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="El modelo de IA no devolvió una respuesta válida esta vez "
             "(puede pasar con algunos modelos de razonamiento que se quedan "
-            "sin espacio de salida). Intenta de nuevo o prueba con otro "
-            "modelo en la configuración de LLM.",
+            "sin espacio de salida). Prueba con otro modelo en la "
+            "configuración de LLM: con el mismo modelo, reintentar suele "
+            "devolver la misma respuesta.",
         )
     finally:
         # F14: exportar la traza de inmediato -- no depender solo del ciclo

@@ -334,7 +334,17 @@ WEB_SEARCH_API_KEY=
 # LLM (default; el usuario puede override vía UI)
 LLM_BASE_URL=http://host.docker.internal:11434/v1
 LLM_MODEL=llama3
+LLM_TEMPERATURE=                 # opcional, 0-2; por defecto 0.0
+LLM_MODELS_WITHOUT_TEMPERATURE=  # opcional, nombres separados por coma
 ```
+
+### Temperatura del LLM
+
+- La app manda `temperature=0.0` a todo modelo que construye (`app/core/llm_loader.py::_init_model`), en vez de heredar el default del provider (1.0). Reduce la variación entre iteraciones de una propuesta, pero **no garantiza determinismo** en OpenAI ni en Groq.
+- **Modelos excluidos** (no se les manda el parámetro, muestrean con el default de la API): la serie de razonamiento `o*` de OpenAI (`o1`, `o3-mini`, ...) y `gpt-5*` salvo las variantes `*chat*`, con o sin prefijo de provider (`openai/o1-mini`). Con esos modelos el golden set no queda estable.
+- `LLM_TEMPERATURE` sobrescribe el 0.0 (ej. `0.6` para modelos de razonamiento de Groq/Ollama como `qwen/qwen3-32b` o `deepseek-r1-distill-*`, para los que Groq recomienda 0.5-0.7).
+- `LLM_MODELS_WITHOUT_TEMPERATURE` lista modelos con nombre no estándar (ej. deployments de Azure) a los que tampoco se les manda el parámetro.
+- Respaldo automático: si el provider responde 400 por `temperature`, la llamada se reintenta una vez sin el parámetro y el modelo queda recordado en memoria hasta reiniciar el proceso. Si aun así falla, el usuario ve "El modelo configurado no admite el parámetro de temperatura..." y el log del servidor nombra `LLM_MODELS_WITHOUT_TEMPERATURE`.
 
 ### Levantar el entorno
 
