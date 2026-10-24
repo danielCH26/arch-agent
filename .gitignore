@@ -63,3 +63,8 @@ frontend/.env.local
 .freebuff/
 .patch
 
+
+# Cobertura de pytest-cov
+.coverage
+.coverage.*
+htmlcov/

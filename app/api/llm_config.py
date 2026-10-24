@@ -388,8 +388,12 @@ async def wizard_step3(
 
     # Cargar config actual de DB. step1 y step2 ya debieron persistir
     # base_url + api_key; si no estan, devolvemos 404 claro.
+    # ``allow_default=False`` evita que el loader devuelva una config
+    # sintetica con el modelo del sistema cuando el usuario todavia no
+    # completo el wizard: el step3 NO debe "ver" un modelo del operador
+    # mezclado con su endpoint.
     try:
-        existing = load_user_llm_config(current_user["user_id"])
+        existing = load_user_llm_config(current_user["user_id"], allow_default=False)
     except LLMConfigError as e:
         if e.reason == "decryption_failed":
             logger.warning(
@@ -480,7 +484,7 @@ async def wizard_available_models(
     sin pedirle al usuario que re-ingrese la key.
     """
     try:
-        config = load_user_llm_config(current_user["user_id"])
+        config = load_user_llm_config(current_user["user_id"], allow_default=False)
     except LLMConfigError as e:
         if e.reason == "decryption_failed":
             # La config existe en DB pero la API key esta corrupta

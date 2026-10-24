@@ -6,17 +6,17 @@ Usa mocking puro (sin TestClient) para evitar el overhead de langchain.
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-# Configurar entorno antes de importar la app
-# setdefault, NO asignación directa: pisaba el DATABASE_URL de tests/conftest.py al
-# importarse y, en una corrida completa, los tests con Postgres real
-# (tests/test_document_storage.py) se conectaban como "test" y fallaban.
+# Configurar entorno antes de importar la app.
+# setdefault en las 5 variables: el CI (y cualquier runner externo) puede
+# exportar sus propias; pisarlas aqui rompia los guards de skip de los tests
+# Postgres-backed y acoplaba la suite a una URL hardcoded (PR #102 round 2).
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-32ch"
-os.environ["JWT_ALGORITHM"] = "HS256"
-os.environ["JWT_EXPIRES_MINUTES"] = "60"
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32ch")
+os.environ.setdefault("JWT_ALGORITHM", "HS256")
+os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 
 @pytest.fixture
