@@ -165,12 +165,6 @@ def _modelos_sin_temperature_env() -> frozenset[str]:
     raw = os.getenv(LLM_MODELS_WITHOUT_TEMPERATURE_ENV, "")
     return frozenset(m.strip().lower() for m in raw.split(",") if m.strip())
 
-# patron se agrega ACA. Este es el unico lugar que decide si se manda la
-# temperatura. La regex es la misma que la de #106 (feat/llm-temperature-rag-
-# config), que ademas agrega ``LLM_MODELS_WITHOUT_TEMPERATURE`` para nombres
-# arbitrarios (deployments de Azure tipo ``my-o1-deployment``).
-_RECHAZA_TEMPERATURE_RE = re.compile(r"(?:^|/)(?:o\d|gpt-5(?![^/]*chat))")
-
 
 def _acepta_temperature(model: str) -> bool:
     """¿Este modelo acepta un valor de `temperature` distinto de 1?

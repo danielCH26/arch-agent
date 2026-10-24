@@ -160,7 +160,7 @@ casos:
 
   # --- Casos con RAG vacío -------------------------------------------------
   # Miden el comportamiento cuando el recuperador no encuentra nada: el modelo
-  # debe producir las tres secciones igual, sin inventar referencias [N].
+  # debe producir las cinco secciones igual, sin inventar referencias [N].
   # Cualquier marcador [N] en la salida hace fallar `citas_validas`.
 
   - id: vacio-001
@@ -186,10 +186,9 @@ casos:
 
   # --- Caso que no encaja en ningún patrón, pero con contexto disponible ---
   # El modelo tiene citas sobre microservicios y serverless, pero el proyecto no
-  # pide ninguno de los dos. OJO: como `descripcion` no llega al prompt, el
-  # modelo solo ve el project_name y los snippets; no tiene con qué juzgar si
-  # aplican. El caso mide si cita patrones por reflejo, no si razona bien
-  # (ver "Limitaciones honestas" en el README).
+  # pide ninguno de los dos. La `descripcion` entra al prompt, así que el
+  # modelo tiene con qué juzgar que no aplican: el caso mide si los descarta
+  # o si los cita por reflejo.
 
   - id: fuera-001
     nombre: "Ajuste de curva de un motor físico ya existente"

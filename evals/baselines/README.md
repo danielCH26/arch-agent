@@ -21,8 +21,9 @@ Contenido mínimo:
 
 - Fecha y hora (UTC) de inicio y fin. La variación por hora es real y afecta
   la comparabilidad.
-- Proveedor (`base_url`), id exacto del modelo, temperatura solicitada y
-  efectiva, n (casos × repeats).
+- Proveedor (`base_url`), id exacto del modelo, temperatura solicitada,
+  su origen (`temperature_origen`: `--temperature`, `LLM_TEMPERATURE` o
+  `DEFAULT_LLM_TEMPERATURE`) y efectiva, n (casos × repeats).
 - Procedencia, copiada de `metadata.procedencia` del JSON: `git_commit` (y
   `git_sucio`, que debe ser `false`), `cases_yaml_sha256`,
   `build_prompt_fuente_sha256` y versiones de paquetes.
@@ -53,7 +54,6 @@ python -m evals.runner --models openai/gpt-oss-120b --temperature 1.0 --repeats 
 Cada corrida son 11 casos × 5 repeats = 55 llamadas. Con `--sleep 2.2`
 solo las esperas entre llamadas ya suman ~2 minutos; el total (con la
 generacion de cada respuesta) es mayor.
-`--sleep 2.2`.
 
 Criterio de lau2413 (I5): al menos 2 corridas por temperatura, con 5 repeats o
 más, en horarios distintos; guardar todos los resúmenes acá. `temperature=0`

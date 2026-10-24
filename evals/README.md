@@ -4,10 +4,12 @@ Mide cuánta variabilidad hay **de verdad** entre dos ejecuciones idénticas del
 generador de propuestas.
 
 La pregunta que responde: *¿el mismo caso, enviado dos veces al mismo modelo,
-produce la misma propuesta?* Producción ya fija `temperature=0.0`
-(`DEFAULT_LLM_TEMPERATURE` en `app/core/llm_loader.py`, desde #106), así que lo
-que queda por medir es cuánta dispersión sobrevive a temperatura 0 y cuánta
-agrega subirla. Ver [Limitaciones honestas](#limitaciones-honestas).
+produce la misma propuesta?* Producción manda la temperatura de
+`llm_temperature()` (`app/core/llm_loader.py`, desde #106): `LLM_TEMPERATURE`
+si es válida, si no `DEFAULT_LLM_TEMPERATURE` (0.0). El runner usa la misma
+regla cuando no se pasa `--temperature`, y registra el valor y su origen en la
+metadata (`temperature_solicitada`, `temperature_origen`). Lo que queda por
+medir es cuánta dispersión sobrevive a temperatura 0 y cuánta agrega subirla. Ver [Limitaciones honestas](#limitaciones-honestas).
 
 El corpus es **hermético**: `cases.yaml` trae las citations congeladas, así que
 no hace falta base de datos, PGVector ni el modelo de embeddings corriendo. Sí
@@ -105,7 +107,9 @@ de `struct_ok` ni de `exacta`. La puerta de calidad sin costo (`--dry-run` más
 
 El scorer **no** mantiene su propia lista de secciones obligatorias: importa
 `_REQUIRED_HEADINGS` y juzga con `_missing_sections` de
-`app/core/proposal_generator.py`. Antes el harness llevaba una copia local (3
+`app/core/proposal_generator.py`, con los mismos argumentos que
+`generate_stream` (`source_count=len(citations)`: con fuentes, la tabla de
+trade-offs tiene que citarlas como `[n]` distintos). Antes el harness llevaba una copia local (3
 secciones, "Tecnologías" con tilde y comparación sin normalizar acentos) que
 se desincronizó del prompt: cualquier propuesta válida de producción se
 medía como fallida. Ahora, si producción cambia el contrato, el scorer lo
@@ -115,20 +119,36 @@ sigue sin tocar el harness.
 
 El scorer (`score_output`) es puro: sin red, sin DB, sin LLM. Verifica el
 contrato de formato del prompt de producción. Una salida tiene
-`pass_estructural=True` si cumple las cinco condiciones:
+`pass_estructural=True` si cumple las seis condiciones:
 
-1. `secciones_ok`: están `## Componentes`, `## Tecnologías` y `## Patrones`
-   (con tilde; sin normalizar acentos).
-2. `orden_ok`: en ese orden.
-3. `sin_secciones_extra`: ningún otro `##` ni ningún `#` (H1).
+1. `secciones_ok`: `_missing_sections` de producción no reporta nada. Es
+   decir, están las cinco secciones (Componentes, Tecnologias, Patrones,
+   Justificación del patrón principal, Trade-offs y decisión), en cualquier
+   nivel de encabezado y sin distinguir acentos, mayúsculas, plural,
+   numeración ni negritas; la justificación llega al riesgo o costo; la tabla
+   de trade-offs tiene 3 opciones y 3 criterios y, si hubo citations, cita
+   `min(n, 3)` fuentes `[n]` distintas; y hay recomendación y punto de
+   decisión. Lo que falta queda en `secciones_faltantes`.
+2. `orden_ok`: las cinco secciones en ese orden.
+3. `sin_secciones_extra`: ningún `#` (H1) ni `##` que no sea una sección
+   obligatoria. Los subtítulos `###` dentro de una sección se permiten.
 4. `sin_preambulo`: nada antes de la primera sección. El prompt pide responder
-   "exactamente" con las tres secciones.
+   "exactamente" con las cinco secciones.
 5. `citas_validas`: todo marcador cae dentro de las citations provistas. Se
    reconocen `[1]`, `[1, 2]` y `[1-3]`; con `citations: []` cualquier marcador
    es inválido.
+6. `sin_corte`: `finish_reason` no es `"length"`. Producción descarta esa
+   propuesta aunque tenga todas las secciones.
+
+Si el scorer fallara con una salida rara, la ejecución queda como fallida
+(`error del scorer: ...`, con el markdown guardado) y la corrida sigue: nunca se
+pierde el JSON de una corrida por una excepción del scorer.
 
 El código (bloques cercados y `inline`) se ignora: un `## Algo` o un `arr[0]`
-dentro de un bloque no es un encabezado ni una cita. `cierre_suelto` (la última
+dentro de un bloque no es un encabezado ni una cita. Excepción: el veredicto
+de `secciones_ok` es el de producción, que no ignora el código; si una sección
+solo aparece dentro de un bloque, `secciones_ok` puede dar `True` pero
+`orden_ok` da `False` (no tiene posición real). `cierre_suelto` (la última
 línea no es un bullet, p. ej. "Espero que te sirva") se reporta pero no entra
 al pass, porque un párrafo final legítimo también lo dispara.
 `bullets_por_seccion` cuenta `-`, `*`, `+`, `•` y `1.`; es informativo y queda
@@ -182,12 +202,12 @@ que un `struct_ok 1.000` sobre 1 de 30 no pase por buena noticia.
    producción el recall también varía, y `RAG_MIN_SIMILARITY` es una frontera:
    dos consultas casi iguales pueden caer de un lado o del otro. La
    variabilidad de punta a punta es **mayor o igual** a la que mide el harness.
-5. **`descripcion` no llega al modelo.** En producción solo alimenta
-   `_build_summary_query`, y llega al prompt únicamente a través de los
-   snippets recuperados. El modelo ve el `project_name`, los snippets y, en
-   iteración, el feedback y la propuesta previa. Por eso `fuera-001` mide si el
-   modelo cita patrones por reflejo, no si juzga bien que no aplican: no tiene
-   con qué juzgarlo. Es una limitación de producción, no del harness.
+5. **El prompt se mide sin `requirements_text` ni `documents_text`.** La
+   `descripcion` sí entra al prompt, igual que en producción (#112): el runner
+   se la pasa a `_build_prompt`. Pero los requisitos y los documentos que en
+   producción vienen del proyecto no están en el corpus, así que el harness
+   mide el prompt sin ellos. Un proyecto real con requisitos cargados manda un
+   prompt más largo y con más contexto que el que se mide acá.
 6. **El scorer juzga formato, no calidad.** Detecta secciones faltantes o citas
    fuera de rango. No dice si el consejo de arquitectura es correcto, ni
    verifica que la cita respalde lo que se afirma.
@@ -237,8 +257,10 @@ solo los scores.
   `cases.yaml`, del código de `_build_prompt` y de cada prompt armado, versión
   de Python y de `langchain`, `langchain-core`, `langchain-openai`, `openai` y
   `pyyaml`, y los argumentos de la corrida.
-- `metadata.temperature_solicitada` y `metadata.temperature_efectiva` por
-  modelo (`null` = el kwarg se omitió y el proveedor usó la suya).
+- `metadata.temperature_solicitada`, `metadata.temperature_origen`
+  (`--temperature`, `LLM_TEMPERATURE` o `DEFAULT_LLM_TEMPERATURE`) y
+  `metadata.temperature_efectiva` por modelo (`null` = el kwarg se omitió y el
+  proveedor usó la suya).
 - `gate`: si la corrida pasó y por qué no.
 - `errores_construccion`: modelos que no se pudieron construir.
 - `ejecuciones`: cada invocación con orden, hora, intentos, latencia,

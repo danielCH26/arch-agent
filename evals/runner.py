@@ -20,6 +20,9 @@ Variables de entorno:
                    de la app (Groq), se usa GROQ_API_KEY, igual que produccion.
     LLM_BASE_URL   endpoint OpenAI-compatible. Default: DEFAULT_LLM_BASE_URL.
     LLM_MODEL      modelo si no se pasa --models. Default: DEFAULT_LLM_MODEL.
+    LLM_TEMPERATURE  temperatura si no se pasa --temperature, con la misma
+                   regla que produccion (llm_temperature()). Default:
+                   DEFAULT_LLM_TEMPERATURE.
 
 Exit codes:
     0  la corrida midio y paso el gate (--min-ok-rate, todos los modelos
@@ -124,7 +127,7 @@ def _normalizar_heading(texto: str) -> str:
     y sin espacios sobrantes.
 
     Antes NO normalizaba acentos porque el prompt pedia ``Tecnologías`` con
-    tilde y eso seEDIA como parte del contrato. Produccion normaliza (su
+    tilde y eso se media como parte del contrato. Produccion normaliza (su
     ``_normalize_text`` quita acentos), asi que el scorer media como fallida
     toda propuesta valida de produccion (review de #108, lau2413).
     """
@@ -136,14 +139,15 @@ def _normalizar_heading(texto: str) -> str:
 def _clave_de_seccion(texto: str) -> str:
     """Clave normalizada de la seccion obligatoria que matchea este encabezado.
 
-    Usa los patrones de produccion (``_REQUIRED_HEADINGS``), asi que el scorer
-    acepta las mismas variantes que el validador de produccion (plural,
-    numeracion, negritas, acentos). Si no matchea ninguna seccion obligatoria,
-    devuelve el texto normalizado: se cuenta como seccion extra.
+    Usa los patrones y la decoracion tolerada de produccion
+    (``_REQUIRED_HEADINGS`` y ``_HEADING_DECOR``), asi que el scorer acepta las
+    mismas variantes que el validador de produccion (plural, numeracion,
+    negritas, acentos). Si no matchea ninguna seccion obligatoria, devuelve el
+    texto normalizado: se cuenta como seccion extra.
     """
-    from app.core.proposal_generator import _REQUIRED_HEADINGS
+    from app.core.proposal_generator import _HEADING_DECOR, _REQUIRED_HEADINGS
 
-    limpio = re.sub(r"^[*_`\d.)\s]*", "", texto.strip())
+    limpio = re.sub("^" + _HEADING_DECOR, "", texto.strip())
     normalizado = _normalizar_heading(limpio)
     for label, patron in _REQUIRED_HEADINGS:
         if re.match(patron, normalizado):
@@ -217,72 +221,99 @@ def marcadores_cita(markdown: str) -> list[int]:
     return marcadores
 
 
-def score_output(markdown: str, caso: dict) -> dict[str, Any]:
+def score_output(
+    markdown: str, caso: dict, finish_reason: str | None = None
+) -> dict[str, Any]:
     """Puntua una propuesta generada contra el caso del golden set.
 
     Funcion pura: no hace red, no usa DB, no llama al LLM.
 
-    ``pass_estructural`` exige cinco condiciones: las tres secciones
-    (``secciones_ok``), en orden (``orden_ok``), sin encabezados extra
+    ``pass_estructural`` exige seis condiciones: el contrato de produccion
+    completo (``secciones_ok``: las cinco secciones, el riesgo o costo de la
+    justificacion, la tabla de trade-offs citando fuentes ``[n]`` distintas y
+    el punto de decision), en orden (``orden_ok``), sin encabezados extra
     (``sin_secciones_extra``), sin texto antes de la primera seccion
-    (``sin_preambulo``) y con todas las citas dentro de rango
-    (``citas_validas``). ``cierre_suelto`` es informativo y no entra al pass.
+    (``sin_preambulo``), con todas las citas dentro de rango
+    (``citas_validas``) y sin corte por limite de tokens (``sin_corte``).
+    ``cierre_suelto`` es informativo y no entra al pass.
+
+    Las secciones se reconocen en cualquier nivel de encabezado (``#`` a
+    ``######``), igual que produccion: un ``### Componentes`` es la seccion
+    Componentes, no un encabezado desconocido.
     """
     markdown = markdown or ""
     citas = caso.get("citations") or []
     total_citas = len(citas)
-    requeridas = {_normalizar_heading(s) for s in _secciones_requeridas()}
+    claves_requeridas = [_normalizar_heading(s) for s in _secciones_requeridas()]
+    requeridas = set(claves_requeridas)
 
     lineas = _sin_codigo(markdown)
     lineas_originales = markdown.splitlines()
     headings = _headings(lineas)
-    de_nivel_2 = [(i, t) for i, nivel, t in headings if nivel == 2]
 
-    # Presencia de cada seccion obligatoria (primera aparicion). Los patrones
-    # son los de produccion, asi que el scorer acepta las mismas variantes.
-    primera: dict[str, int] = {}
+    # Primera aparicion de cada seccion obligatoria, en cualquier nivel. Los
+    # patrones son los de produccion, asi que el scorer acepta las mismas
+    # variantes. ``primera[clave] = (indice_linea, nivel)``.
+    primera: dict[str, tuple[int, int]] = {}
     duplicadas: list[str] = []
-    for indice, texto in de_nivel_2:
+    for indice, nivel, texto in headings:
         clave = _clave_de_seccion(texto)
         if clave in requeridas:
             if clave in primera:
                 duplicadas.append(texto)
             else:
-                primera[clave] = indice
+                primera[clave] = (indice, nivel)
 
-    # El veredicto de "secciones completas" es el de PRODUCCION: su
-    # ``_missing_sections`` (mismos patrones, mismo criterio de justificacion
-    # que llega al riesgo o costo). Medirlo con una lista propia hacia que
-    # toda propuesta valida se midiera como fallida.
+    # El veredicto de "secciones completas" es el de PRODUCCION, con los mismos
+    # argumentos que ``generate_stream``: ``source_count`` es el numero de
+    # citas, y con fuentes la tabla de trade-offs debe citarlas como ``[n]``
+    # distintos. Con 0 esa regla se salteaba y el scorer aprobaba propuestas
+    # que produccion rechaza (re-review de #108).
     from app.core.proposal_generator import _missing_sections
 
-    faltantes = _missing_sections(markdown, 0)
+    faltantes = _missing_sections(markdown, source_count=total_citas)
     secciones_ok = not faltantes
 
+    # Orden, sobre los encabezados reales (fuera del codigo). El validador de
+    # produccion no ignora el codigo: si una seccion solo aparece dentro de un
+    # bloque cercado, produccion la da por presente pero aca no tiene posicion,
+    # y el orden no se puede afirmar (False, nunca un KeyError).
     orden_ok = False
-    if secciones_ok:
-        orden = [primera[_normalizar_heading(s)] for s in _secciones_requeridas()]
-        orden_ok = orden == sorted(orden) and len(set(orden)) == len(orden)
+    if secciones_ok and all(c in primera for c in claves_requeridas):
+        orden = [primera[c][0] for c in claves_requeridas]
+        orden_ok = orden == sorted(orden)
 
-    # Extra: cualquier `##` que no sea obligatorio y cualquier `#` (H1). Repetir
-    # una obligatoria no cuenta como extra; se reporta en `secciones_duplicadas`.
-    extras = [t for _, t in de_nivel_2 if _clave_de_seccion(t) not in requeridas]
-    extras += [f"# {t}" for _, nivel, t in headings if nivel == 1]
+    # Extra: cualquier `#` o `##` que no sea una seccion obligatoria. Los
+    # subtitulos (`###` o mas) dentro de una seccion se permiten. Repetir una
+    # obligatoria no cuenta como extra; se reporta en `secciones_duplicadas`.
+    extras = [
+        f"# {t}" if nivel == 1 else t
+        for _, nivel, t in headings
+        if nivel <= 2 and _clave_de_seccion(t) not in requeridas
+    ]
     sin_secciones_extra = not extras
 
     # Preambulo: cualquier contenido (incluido un H1 o un bloque de codigo)
-    # antes del primer `##`. El prompt pide responder "exactamente" con las
-    # tres secciones.
-    primer_h2 = de_nivel_2[0][0] if de_nivel_2 else len(lineas_originales)
-    sin_preambulo = not any(l.strip() for l in lineas_originales[:primer_h2])
+    # antes del primer encabezado de cuerpo (una seccion obligatoria en
+    # cualquier nivel, o cualquier `##` o menor). El prompt pide responder
+    # "exactamente" con las cinco secciones.
+    inicio_cuerpo = next(
+        (
+            i
+            for i, nivel, t in headings
+            if nivel >= 2 or _clave_de_seccion(t) in requeridas
+        ),
+        len(lineas_originales),
+    )
+    sin_preambulo = not any(l.strip() for l in lineas_originales[:inicio_cuerpo])
 
     # Cierre suelto: la ultima linea con contenido no es un bullet ni la
     # continuacion indentada de uno (p.ej. "Espero que te sirva"). Es
-    # informativo: un parrafo final legitimo dentro de Patrones tambien lo
-    # dispara, asi que no se usa para el pass.
+    # informativo: un parrafo final legitimo dentro de Trade-offs y decision
+    # tambien lo dispara, asi que no se usa para el pass.
     ultima = next((l for l in reversed(lineas) if l.strip()), "")
     cierre_suelto = bool(
-        de_nivel_2
+        primera
         and ultima.strip()
         and not _RE_BULLET.match(ultima)
         and not ultima.startswith((" ", "\t"))
@@ -296,16 +327,25 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
     fuera_de_rango = [n for n in marcadores if n < 1 or n > total_citas]
     citas_validas = not fuera_de_rango
 
+    # Corte por limite de tokens: produccion descarta la propuesta con
+    # ``finish_reason == "length"`` aunque tenga todas las secciones.
+    sin_corte = finish_reason != "length"
+
     # Bullets por seccion: lineas con `-`, `*`, `+`, `•` o `1.` dentro del
-    # tramo que va desde el encabezado de la seccion hasta el siguiente `##`.
+    # tramo que va desde el encabezado de la seccion hasta el siguiente
+    # encabezado de su mismo nivel o superior (el criterio de produccion para
+    # delimitar la seccion de trade-offs). Una seccion sin encabezado real
+    # cuenta 0.
     bullets_por_seccion: dict[str, int] = {}
-    for seccion in _secciones_requeridas():
-        clave = _normalizar_heading(seccion)
+    for seccion, clave in zip(_secciones_requeridas(), claves_requeridas):
         if clave not in primera:
             bullets_por_seccion[seccion] = 0
             continue
-        inicio = primera[clave]
-        fin = next((i for i, _ in de_nivel_2 if i > inicio), len(lineas))
+        inicio, nivel_seccion = primera[clave]
+        fin = next(
+            (i for i, nivel, _ in headings if i > inicio and nivel <= nivel_seccion),
+            len(lineas),
+        )
         bullets_por_seccion[seccion] = sum(
             1 for l in lineas[inicio + 1 : fin] if _RE_BULLET.match(l)
         )
@@ -316,15 +356,18 @@ def score_output(markdown: str, caso: dict) -> dict[str, Any]:
         and sin_secciones_extra
         and sin_preambulo
         and citas_validas
+        and sin_corte
     )
 
     return {
         "vacio": not markdown.strip(),
         "secciones_ok": secciones_ok,
+        "secciones_faltantes": faltantes,
         "orden_ok": orden_ok,
         "sin_secciones_extra": sin_secciones_extra,
         "sin_preambulo": sin_preambulo,
         "citas_validas": citas_validas,
+        "sin_corte": sin_corte,
         "pass_estructural": pass_estructural,
         "cierre_suelto": cierre_suelto,
         "bullets_por_seccion": bullets_por_seccion,
@@ -430,7 +473,8 @@ def dry_run(casos: list[dict]) -> int:
     print(f"Casos con citations: [] -> {len(sin_citas)} ({', '.join(sin_citas) or '-'})")
     print(
         f"Secciones obligatorias: {', '.join(_secciones_requeridas())} "
-        f"(comparacion estricta, sin normalizar acentos)"
+        f"(contrato de produccion: cualquier nivel de encabezado, sin "
+        f"distinguir acentos ni mayusculas)"
     )
 
     # Se arma el prompt real de CADA caso: si alguno no se puede construir, el
@@ -667,14 +711,36 @@ def procedencia(prompts: dict[str, str]) -> dict[str, Any]:
 # =============================================================================
 
 
+def resolver_temperatura(solicitada: float | None) -> tuple[float, str]:
+    """``(temperatura, origen)`` con la misma regla que produccion.
+
+    Sin ``--temperature`` se usa ``llm_temperature()`` de
+    ``app/core/llm_loader.py``: ``LLM_TEMPERATURE`` si es valida, si no
+    ``DEFAULT_LLM_TEMPERATURE``. El origen va a la metadata para que un
+    baseline diga de donde salio el valor.
+    """
+    if solicitada is not None:
+        return solicitada, "--temperature"
+
+    from app.core.llm_loader import LLM_TEMPERATURE_ENV, llm_temperature
+
+    valor = llm_temperature()
+    raw = os.getenv(LLM_TEMPERATURE_ENV, "").strip()
+    try:
+        desde_env = bool(raw) and float(raw) == valor
+    except ValueError:
+        desde_env = False
+    return valor, LLM_TEMPERATURE_ENV if desde_env else "DEFAULT_LLM_TEMPERATURE"
+
+
 def construir_modelo(modelo: str, base_url: str, api_key: str, temperature: float):
     """Construye el modelo LangChain igual que lo hace la app en produccion.
 
-    La app fija ``temperature`` via ``DEFAULT_LLM_TEMPERATURE`` (0.0) en
-    ``app/core/llm_loader.py``; aca queda parametrizable para poder medir como
-    se comporta el corpus con otros valores. La regla de si el modelo acepta
-    ``temperature`` (la serie ``o*`` no) se delega a produccion
-    (``_acepta_temperature``) para no duplicarla.
+    La temperatura llega resuelta por ``resolver_temperatura`` (por defecto, la
+    misma que manda produccion); ``--temperature`` permite medir el corpus con
+    otros valores. La regla de si el modelo acepta ``temperature`` (la serie
+    ``o*``, ``gpt-5`` no-chat y ``LLM_MODELS_WITHOUT_TEMPERATURE``) se delega a
+    produccion (``_acepta_temperature``) para no duplicarla.
     """
     from langchain.chat_models import init_chat_model
 
@@ -808,7 +874,17 @@ def _ejecutar_una(
                 error=f"contenido vacio (finish_reason={respuesta['finish_reason']})",
             )
             return resultado
-        resultado.update(ok=True, score=score_output(markdown, caso))
+        # Un bug del scorer no puede tirar la corrida: la excepcion subiria
+        # hasta `main` sin escribir el JSON y se perderia todo lo medido (con
+        # tokens reales). La salida queda guardada para re-puntuarla despues.
+        try:
+            score = score_output(markdown, caso, respuesta["finish_reason"])
+        except Exception as exc:  # noqa: BLE001 -- nunca lanza
+            resultado.update(
+                ok=False, error=f"error del scorer: {type(exc).__name__}: {exc}"
+            )
+            return resultado
+        resultado.update(ok=True, score=score)
         return resultado
 
 
@@ -879,12 +955,14 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
         print(f"[ERROR] No se pudo construir el prompt: {exc}", file=sys.stderr)
         return 1
 
+    temperature, origen_temperatura = resolver_temperatura(args.temperature)
+
     planeadas = len(casos_seleccionados) * len(modelos) * args.repeats
     print(f"Proveedor  : {base_url}")
     print(f"Modelos    : {', '.join(modelos)}")
     print(f"Casos      : {len(casos_seleccionados)}")
     print(f"Repeats    : {args.repeats} (intercalados: repeat > caso > modelo)")
-    print(f"Temperatura: {args.temperature}")
+    print(f"Temperatura: {temperature} (origen: {origen_temperatura})")
     print(f"Espera     : {args.sleep}s entre llamadas, {args.retries} reintentos ante 429")
     print(f"Total de invocaciones: {planeadas}\n")
 
@@ -894,7 +972,7 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
         if "groq.com" in base_url and modelo.startswith("gpt-oss"):
             print(f"[AVISO] Groq publica '{modelo}' como 'openai/{modelo}'.")
         try:
-            chats[modelo] = construir_modelo(modelo, base_url, api_key, args.temperature)
+            chats[modelo] = construir_modelo(modelo, base_url, api_key, temperature)
         except Exception as exc:  # noqa: BLE001 -- un modelo malo no corta todo
             mensaje = f"{type(exc).__name__}: {exc}"
             print(f"[ERROR] No se pudo construir el modelo '{modelo}': {mensaje}")
@@ -967,9 +1045,10 @@ def ejecutar_corrida(args: argparse.Namespace) -> int:
                     "casos": [c["id"] for c in casos_seleccionados],
                     "repeats": args.repeats,
                     "orden": "repeat > caso > modelo",
-                    "temperature_solicitada": args.temperature,
+                    "temperature_solicitada": temperature,
+                    "temperature_origen": origen_temperatura,
                     "temperature_efectiva": {
-                        m: temperatura_efectiva(m, args.temperature) for m in modelos
+                        m: temperatura_efectiva(m, temperature) for m in modelos
                     },
                     "sleep_s": args.sleep,
                     "reintentos_429": args.retries,
@@ -1140,11 +1219,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.0,
+        default=None,
         help=(
-            "Temperatura de muestreo (default: 0). Coincide con "
-            "DEFAULT_LLM_TEMPERATURE de app/core/llm_loader.py, que es lo que "
-            "usa produccion. La serie o* la ignora."
+            "Temperatura de muestreo. Si se omite usa la de produccion "
+            "(llm_temperature() de app/core/llm_loader.py: LLM_TEMPERATURE si "
+            "es valida, si no DEFAULT_LLM_TEMPERATURE). A los modelos que no "
+            "la admiten (serie o*, gpt-5 no-chat) no se les manda."
         ),
     )
     parser.add_argument(
