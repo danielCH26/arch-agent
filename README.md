@@ -155,8 +155,9 @@ Copia `.env.example` a `.env`. Las variables marcadas con `*` son obligatorias.
 | `JWT_ALGORITHM` | Algoritmo JWT | `HS256` (default) |
 | `JWT_EXPIRES_MINUTES` | TTL del token | `60` (default) |
 | `* DATABASE_URL` | Conexión a PostgreSQL | `postgresql://asistente:asistente@localhost:5432/asistente_db` |
-| `LLM_BASE_URL` | Default LLM base URL para usuarios nuevos | `http://host.docker.internal:11434/v1` |
-| `LLM_MODEL` | Default LLM model para usuarios nuevos | `llama3` |
+| `GROQ_API_KEY` | LLM por defecto del backend (Groq, `openai/gpt-oss-120b`) para usuarios que no configuraron el suyo en el wizard. Vacía = sin default. **No definirla con registro abierto** hasta que haya rate limiting | `gsk_...` (opcional) |
+| `LLM_BASE_URL` | Referencia para scripts locales; el backend **no** la usa como default (cada usuario configura su LLM en el wizard) | `http://host.docker.internal:11434/v1` |
+| `LLM_MODEL` | Ídem: referencia para scripts locales, no es el default de los usuarios | `llama3` |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key | `pk-lf-...` |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key | `sk-lf-...` |
 | `LANGFUSE_BASE_URL` | URL de Langfuse (interno Docker) | `http://langfuse-web:3000` |
@@ -270,7 +271,7 @@ arch-agent/
 
 ## ⚠️ Tool Calling y modelos para F13 (Puppeteer MCP)
 
-**F11 (Context7) y F13 (Puppeteer MCP) dependen de Tool Calling nativo del modelo.** El modelo por defecto en `.env.example` es `llama3` (Ollama, 8k ctx), que **NO tiene soporte sólido de tool calling** — emite texto libre en lugar de un `tool_calls` válido cuando se le pide invocar una herramienta, lo que rompe el end-to-end test de F13 (el sidecar Puppeteer nunca recibe la llamada `puppeteer_screenshot` y no se renderiza el diagrama Mermaid).
+**F11 (Context7) y F13 (Puppeteer MCP) dependen de Tool Calling nativo del modelo.** El ejemplo de `LLM_MODEL` en `.env.example` es `llama3` (Ollama, 8k ctx; el default real del backend, si se define `GROQ_API_KEY`, es `openai/gpt-oss-120b`), que **NO tiene soporte sólido de tool calling** — emite texto libre en lugar de un `tool_calls` válido cuando se le pide invocar una herramienta, lo que rompe el end-to-end test de F13 (el sidecar Puppeteer nunca recibe la llamada `puppeteer_screenshot` y no se renderiza el diagrama Mermaid).
 
 Para verificar F11 / F13 end-to-end **usa uno de estos modelos** (cualquiera con buen soporte de function/tool calling):
 

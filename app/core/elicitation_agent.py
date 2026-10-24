@@ -25,6 +25,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.domain_concerns import concern_by_question, relevant_concerns, uncovered_concerns
+from app.core.llm_loader import invoke_with_temperature_fallback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -375,12 +376,14 @@ def _invoke_json(
             config: dict[str, Any] = {"callbacks": callbacks}
             if run_name:
                 config["run_name"] = run_name
-            response = model.invoke(messages, config=config)
+            response = invoke_with_temperature_fallback(model, messages, config=config)
         else:
-            response = model.invoke(messages)
+            response = invoke_with_temperature_fallback(model, messages)
     except Exception as e:
         # Cualquier falla real de la llamada (429 rate limit, timeout, error
-        # de red o del proveedor) -- no solo errores de parseo de JSON.
+        # de red o del proveedor) -- no solo errores de parseo de JSON. Un
+        # rechazo de `temperature` ya se reintento una vez sin el parametro;
+        # si llega aca, el call site lo distingue con is_temperature_rejection.
         raise ElicitationLLMError(f"La llamada al modelo falló: {e}") from e
 
     cleaned = _strip_json_fences(response.content)

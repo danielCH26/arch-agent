@@ -9,8 +9,8 @@ import pytest
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-os.environ["JWT_SECRET_KEY"] = "test-secret!"  # solo para el import
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-32-chars!!"
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret!")  # solo para el import
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key-32-chars!!")
 
 # --- Extraer funciones puras de document_processing sin importar langchain ---
 import re

@@ -22,7 +22,7 @@ Concretamente:
 2. **Mismo handler**: `SSEStreamCallbackHandler` de `app/api/sse.py`. Sin reescritura.
 3. **Mismos headers**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`. Crítico para no introducir regresiones en el proxy.
 4. **`event: done` extendido** con `{proposal_id, citations}` — la única adición. Es backward-compatible: el frontend de chat ignora el payload porque llega `null` (no `proposal_id`); el frontend de propuestas sabe esperar `proposal_id`.
-5. **~~`RAG_MIN_SIMILARITY = 0.85` se re-declara en `app/api/proposals.py`~~ (reemplazado en F10, ver *Actualización*).** En v1 el umbral se duplicaba en `proposals.py` y `proposal_generator.py` con el mismo valor que `chat.py`. Hoy el piso de 0.85 vive **solo** en `app/api/chat.py`; la fase de propuesta no lo usa.
+5. **~~`RAG_MIN_SIMILARITY = 0.85` se re-declara en `app/api/proposals.py`~~ (reemplazado en F10, ver *Actualización*).** En v1 el umbral se duplicaba en `proposals.py` y `proposal_generator.py` con el mismo valor que `chat.py`. Hoy el piso de 0.85 se define **solo** en `app/core/rag_config.py` y lo aplica únicamente el chat; la fase de propuesta no lo usa (ver *Actualización (rag_config)*).
 6. **Parser frontend**: `frontend/src/api/proposals.ts` replica la lógica de `frontend/src/api/chat.ts`. La duplicación es aceptable v1 (≈90 LoC) y se unificará en un módulo `frontend/src/api/sse.ts` cuando exista un tercer consumidor.
 
 ## Consecuencias
@@ -48,11 +48,17 @@ Concretamente:
 La decisión de reutilizar el patrón SSE **se mantiene**. Cambia solo el punto 5 (el umbral de similitud):
 
 - **Qué cambió.** La consulta de propuesta se arma con el nombre, la descripción y los requerimientos del proyecto, así que siempre está dentro del dominio. Con `multilingual-e5-small` un piso fijo de 0.85 dejaba la lista de patrones vacía, y la tabla de trade-offs necesita al menos 3 opciones. La fase de propuesta ahora trae los `PROPOSAL_RAG_TOP_N` patrones más cercanos (por defecto 3) con un piso **opcional** `PROPOSAL_RAG_MIN_SIMILARITY` (por defecto `0.0`, sin piso).
-- **Qué ya no es cierto.** Las constantes `RAG_MIN_SIMILARITY` de `app/api/proposals.py` y `app/core/proposal_generator.py` se eliminaron. **No hay nada que mantener "en lock-step"**: el único `RAG_MIN_SIMILARITY = 0.85` está en `app/api/chat.py`, donde sí hay preguntas fuera de tema que descartar.
-- **Test.** El test que fijaba las tres constantes en 0.85 se reemplazó por uno que fija el piso del chat (`tests/api/test_proposals.py::TestRAGConstants`). El comportamiento sin piso de la propuesta se cubre en `TestCitationSelection` y `tests/core/test_proposal_generator.py`.
-- **Si se retoma el módulo compartido** (`app/core/rag_config.py`), solo haría falta para el chat y `/api/rag/search`.
+- **Qué ya no es cierto.** Las constantes `RAG_MIN_SIMILARITY` de `app/api/proposals.py` y `app/core/proposal_generator.py` se eliminaron. **No hay nada que mantener "en lock-step"**: el único `RAG_MIN_SIMILARITY = 0.85` lo usa el chat, donde sí hay preguntas fuera de tema que descartar (desde el refactor `rag_config` se define en `app/core/rag_config.py`).
+- **Test.** El test que fijaba las tres constantes en 0.85 se reemplazó por uno que fija el piso del chat; hoy ese papel lo cumple `tests/core/test_rag_config.py`. El comportamiento sin piso de la propuesta se cubre en `TestCitationSelection` y `tests/core/test_proposal_generator.py`.
+- **Si se retoma el módulo compartido** (`app/core/rag_config.py`), solo haría falta para el chat y `/api/rag/search`. *(Se retomó: ver la actualización siguiente.)*
 
 El resto del ADR (eventos, handler, headers, `event: done` extendido, parser frontend) sigue vigente.
+
+## Actualización (rag_config)
+
+- **Dónde vive el piso.** `RAG_MIN_SIMILARITY = 0.85` (y `RAG_NEAR_MISS_MARGIN`) se movieron de `app/api/chat.py` a `app/core/rag_config.py`, junto con la evidencia que justifica el número. El chat lo importa; no hay otra definición en `app/`.
+- **Test.** `tests/core/test_rag_config.py` fija el valor (0.85), recorre `app/` con `ast` para asegurar que no haya otra asignación y comprueba que el chat use el mismo objeto. `tests/api/test_proposals.py::TestRAGConstants` solo conserva el test de que la fase de propuesta no expone un piso.
+- **`/api/rag/search` no aplica el piso, por decisión.** Es el endpoint de diagnóstico: devuelve los top-k con su `similarity` cruda para poder ver qué quedó por debajo de 0.85. La lista de consumidores y esta decisión se documentan en un solo lugar: el docstring de `app/core/rag_config.py`.
 
 ## Alternativas consideradas
 
