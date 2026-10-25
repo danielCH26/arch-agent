@@ -709,6 +709,17 @@ _COVERAGE_REGEXES = {
     for name, patterns, _asked, _question in (*_COVERAGE_CATEGORIES, *_DRIVER_CATEGORIES)
 }
 
+# Campo de ``contexto_tecnico`` que corresponde a cada categoría de
+# _DRIVER_CATEGORIES, en su mismo orden: si se agrega una categoría y no su
+# campo, ``zip`` la descarta en silencio.
+_DRIVER_SUMMARY_FIELDS = (
+    "plataforma",
+    "habilidades_equipo",
+    "fuentes_de_datos",
+    "tecnologias_no_dominadas",
+)
+assert len(_DRIVER_SUMMARY_FIELDS) == len(_DRIVER_CATEGORIES)
+
 # Como mucho este número de preguntas de dominio forzadas por el código en una
 # elicitación (ubicación, archivos, pagos...). Las demás preocupaciones sin
 # respuesta llegan al ADR como preguntas abiertas obligatorias (sección 7.8).
@@ -859,15 +870,6 @@ def summary_gaps(
     # "no definido" y la pregunta no se hizo, se hace antes de cerrar (la
     # detección por palabras puede dar falsos positivos; el resumen no).
     tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
-    # Un campo por categoría de _DRIVER_CATEGORIES y en su mismo orden: si se
-    # agrega una categoría y no su campo, ``zip`` la descarta en silencio.
-    _DRIVER_SUMMARY_FIELDS = (
-        "plataforma",
-        "habilidades_equipo",
-        "fuentes_de_datos",
-        "tecnologias_no_dominadas",
-    )
-    assert len(_DRIVER_SUMMARY_FIELDS) == len(_DRIVER_CATEGORIES)
     for (name, _patterns, asked_markers, question), field in zip(
         _DRIVER_CATEGORIES, _DRIVER_SUMMARY_FIELDS
     ):
@@ -1107,8 +1109,13 @@ _ADJUSTMENT_QUESTION = "(ajuste solicitado por el usuario)"
 
 def _first_matching_sentence(name: str, text: str) -> str:
     """Primera oración de ``text`` que menciona el factor ``name``."""
-    for sentence in re.split(r"(?<=[.;\n])\s+", text):
-        if _VIABILITY_REGEXES[name].search(_normalize_text(sentence)):
+    return _sentence_matching(_VIABILITY_REGEXES[name], text)
+
+
+def _sentence_matching(pattern: "re.Pattern[str]", text: str) -> str:
+    """Primera oración de ``text`` que casa con ``pattern`` (ya normalizado)."""
+    for sentence in re.split(r"(?<=[.;\n])\s+", text or ""):
+        if pattern.search(_normalize_text(sentence)):
             return sentence.strip()
     return ""
 
@@ -1268,4 +1275,76 @@ def generate_summary(
         # (ver format_requirements_summary). Del LLM solo se toma la
         # corrección de errores de escritura evidentes, si no cambia cifras.
         summary["datos_viabilidad"] = _merge_viability_facts(facts, from_llm)
+    _fill_from_what_the_user_said(summary, history, project_description, documents_context)
     return summary
+
+
+def _fill_from_what_the_user_said(
+    summary: dict,
+    history: list[dict],
+    project_description: str,
+    documents_context: Optional[str],
+) -> None:
+    """Completa lo que el usuario YA dijo y el LLM dejó vacío.
+
+    El LLM a veces no conecta lo que se dijo en un punto con el campo del
+    resumen: el usuario pide "una página web" en la descripción y la
+    plataforma sale "no definido", o responde presupuesto, equipo y plazo y
+    "restricciones" queda vacío aunque esos mismos datos estén en
+    ``datos_viabilidad``.
+
+    Mismo criterio que ``viability_facts``: se copian las PALABRAS del
+    usuario, nunca se inventa ni se reinterpreta, y solo se toca un campo
+    que quedó vacío o en "no definido".
+    """
+    # 1. Restricciones: presupuesto, equipo y plazo SON restricciones, y ya
+    #    están extraídos literalmente en datos_viabilidad.
+    if not _as_str_list(summary.get("restricciones")):
+        datos = summary.get("datos_viabilidad")
+        if isinstance(datos, dict):
+            etiquetas = (("presupuesto", "Presupuesto"), ("equipo", "Equipo"), ("plazo", "Plazo"))
+            summary["restricciones"] = [
+                f"{etiqueta}: {str(datos.get(clave) or '').strip()}"
+                for clave, etiqueta in etiquetas
+                if str(datos.get(clave) or "").strip()
+            ]
+
+    # 2. Contexto técnico: la oración del usuario donde aparece el dato. Es
+    #    la misma detección que decide si la pregunta hacía falta, así que un
+    #    campo "no definido" con la pregunta nunca hecha era justo el caso en
+    #    que la respuesta ya estaba en el texto.
+    tecnico = summary.get("contexto_tecnico")
+    if not isinstance(tecnico, dict):
+        return
+    # Cada respuesta se mira POR SEPARADO, no en un solo texto pegado: el
+    # usuario rara vez escribe puntos, así que al unirlo todo el cortador de
+    # oraciones devolvía la conversación entera como una sola frase.
+    # Lo más reciente primero: si después dijo "mejor móvil", esa gana sobre
+    # la "página web" de la descripción.
+    fuentes = [
+        str(item.get("respuesta") or "")
+        for item in reversed(history)
+        if str(item.get("respuesta") or "").strip()
+    ]
+    fuentes += [project_description or "", documents_context or ""]
+    for (name, _patterns, _asked, _question), field in zip(
+        _DRIVER_CATEGORIES, _DRIVER_SUMMARY_FIELDS
+    ):
+        actual = _normalize_text(str(tecnico.get(field) or "")).strip(" .")
+        if actual and actual not in _UNDEFINED_VALUES:
+            continue
+        frase = next(
+            (hit for texto in fuentes for hit in [_sentence_matching(_COVERAGE_REGEXES[name], texto)] if hit),
+            "",
+        )
+        if frase:
+            tecnico[field] = _shorten(frase)
+
+
+def _shorten(text: str, limit: int = 160) -> str:
+    """Recorta en el último espacio antes de ``limit`` (no parte palabras)."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    corte = text.rfind(" ", 0, limit)
+    return text[: corte if corte > 0 else limit].rstrip(" ,;.") + "…"

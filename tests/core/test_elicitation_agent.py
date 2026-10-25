@@ -1004,6 +1004,69 @@ class TestViabilityFacts:
         )
         assert summary["datos_viabilidad"] == {"equipo": "4 devs, 3 front y 1 PM"}
 
+    def test_las_restricciones_vacias_se_llenan_con_los_datos_de_viabilidad(self):
+        """El usuario dio presupuesto, equipo y plazo, pero el LLM dejó
+        "restricciones" vacío: esos datos SON restricciones y ya están
+        extraídos literalmente en datos_viabilidad."""
+        model = _FakeModel(
+            ['{"problema": "x", "usuarios": "y", "funcionalidades": [], '
+             '"restricciones": [], "calidad": []}']
+        )
+        summary = generate_summary(model, history=[
+            {"pregunta": _VIABILITY_FACTORS[0][2], "respuesta": "1000 dolares"},
+            {"pregunta": _VIABILITY_FACTORS[1][2], "respuesta": "3 dev"},
+            {"pregunta": _VIABILITY_FACTORS[2][2], "respuesta": "2 meses"},
+        ])
+        assert summary["restricciones"] == [
+            "Presupuesto: 1000 dolares",
+            "Equipo: 3 dev",
+            "Plazo: 2 meses",
+        ]
+
+    def test_no_pisa_las_restricciones_que_el_llm_si_armo(self):
+        model = _FakeModel(
+            ['{"problema": "x", "usuarios": "y", "funcionalidades": [], '
+             '"restricciones": ["Solo navegadores modernos"], "calidad": []}']
+        )
+        summary = generate_summary(model, history=[
+            {"pregunta": _VIABILITY_FACTORS[0][2], "respuesta": "1000 dolares"},
+        ])
+        assert summary["restricciones"] == ["Solo navegadores modernos"]
+
+    def test_la_plataforma_sale_de_lo_que_el_usuario_ya_dijo(self):
+        """"Quiero una página web" en la descripción y el LLM igual ponía
+        "no definido": el dato estaba, solo que en otro punto."""
+        model = _FakeModel(
+            ['{"problema": "x", "usuarios": "y", "funcionalidades": [], '
+             '"restricciones": [], "calidad": [], "contexto_tecnico": '
+             '{"plataforma": "no definido", "habilidades_equipo": "java", '
+             '"fuentes_de_datos": "no definido", "tecnologias_no_dominadas": "no definido"}}']
+        )
+        summary = generate_summary(
+            model,
+            history=[{"pregunta": "p", "respuesta": "pedidos y crear cuenta"}],
+            project_description="quiero una pagina web para vender panes de mi panaderia",
+        )
+        tecnico = summary["contexto_tecnico"]
+        assert "pagina web" in tecnico["plataforma"]
+        # Lo que el LLM sí resolvió no se toca, y lo que nadie dijo tampoco se
+        # inventa: esa pregunta la hace summary_gaps antes de cerrar.
+        assert tecnico["habilidades_equipo"] == "java"
+        assert tecnico["tecnologias_no_dominadas"] == "no definido"
+
+    def test_gana_lo_que_el_usuario_dijo_despues(self):
+        model = _FakeModel(
+            ['{"problema": "x", "usuarios": "y", "funcionalidades": [], '
+             '"restricciones": [], "calidad": [], '
+             '"contexto_tecnico": {"plataforma": "no definido"}}']
+        )
+        summary = generate_summary(
+            model,
+            history=[{"pregunta": "p", "respuesta": "mejor una app movil"}],
+            project_description="quiero una pagina web",
+        )
+        assert "movil" in summary["contexto_tecnico"]["plataforma"]
+
     def test_el_prompt_del_resumen_pide_no_reinterpretar_el_equipo(self):
         assert "3 front y 1 PM" in elicitation_agent.SUMMARY_SYSTEM_PROMPT
         assert '"contexto_tecnico"' in elicitation_agent.SUMMARY_SYSTEM_PROMPT
