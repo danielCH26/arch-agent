@@ -121,7 +121,7 @@ export function CreateProjectDialog({ isOpen, onClose }: CreateProjectDialogProp
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              className="rounded-lg border border-blue-600 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={isCreating || !name.trim()}
             >
               {isCreating ? 'Creando...' : 'Crear'}

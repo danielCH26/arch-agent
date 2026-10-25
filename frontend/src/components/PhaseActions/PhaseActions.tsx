@@ -3,7 +3,8 @@
  *
  * Reads the pending decision from `useApprovalsStore` and renders one
  * button per available action. Closes PR #78 findings:
- *   * Aprobar button has `text-white` so the green background is readable.
+ *   * Aprobar is an outlined button (green border and text), like Rechazar:
+ *     el verde sólido con texto blanco pesaba demasiado en la pantalla.
  *   * Reject opens the inline `<RejectDialog>` -- never `window.prompt`.
  *   * Calls the typed `decidePhase` client; 409 responses surface as
  *     `ApiConflictError` (REQ-SA-29, REQ-SA-34).
@@ -205,9 +206,10 @@ export function PhaseActions({
             onClick={() => void handle(a.action)}
             className={
               a.action === 'approve'
-                // PR #78 finding: Aprobar was unreadable because the green
-                // background lacked a contrasting text colour.
-                ? 'rounded bg-green-600 px-3 py-2 font-medium text-white hover:bg-green-700 disabled:opacity-50'
+                // Mismo tratamiento que Rechazar: borde y letra del color de
+                // la acción, sin relleno. El verde sólido llamaba más la
+                // atención que el contenido que hay que revisar.
+                ? 'rounded border border-green-300 px-3 py-2 font-medium text-green-700 hover:bg-green-50 disabled:opacity-50'
                 : 'rounded border border-blue-600 px-3 py-2 font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50'
             }
           >

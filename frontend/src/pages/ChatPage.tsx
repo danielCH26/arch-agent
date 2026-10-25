@@ -146,6 +146,16 @@ function ChatPageContent() {
   }
 
   const isElicitationPhase = phase?.current_phase === ELICITATION_PHASE
+
+  // El historial de Diagramas solo se ofrece desde Refinamiento: antes de esa
+  // fase todavía no se ha generado ninguno y el botón llevaba a un panel
+  // vacío. Se compara por posición dentro de `available_phases` en vez de por
+  // nombre, para no depender de cómo se llamen las fases intermedias; si
+  // Refinamiento no estuviera en la lista, se cae al criterio anterior.
+  const phaseIndex = phase ? phase.available_phases.indexOf(phase.current_phase ?? '') : -1
+  const refinementIndex = phase ? phase.available_phases.indexOf(REFINEMENT_PHASE) : -1
+  const showDiagramHistory =
+    refinementIndex >= 0 ? phaseIndex >= refinementIndex : !isElicitationPhase
   // En la última fase no hay a dónde avanzar. Con HU10 se completa aprobando
   // la fase `final` desde <PhaseActions> (mark-ready se retiró, REQ-SA-23).
   const isLastPhase =
@@ -176,7 +186,7 @@ function ChatPageContent() {
                 : 'Fase en progreso.'}
           </span>
           <div className="flex flex-wrap gap-2">
-            {!isElicitationPhase && (
+            {showDiagramHistory && (
               <button
                 type="button"
                 onClick={() => setDiagramHistoryOpen(true)}

@@ -147,7 +147,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
       {proposal?.id && proposal.lifecycle === 'proposed' && !streaming && (
         <div className="mt-4 border-t border-gray-100 pt-4">
           <div className="flex flex-wrap gap-2">
-            <button type="button" disabled={busy} onClick={() => void handleDecision('approve')} data-testid="proposal-approve" className="rounded-lg bg-solid-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50">Aprobar</button>
+            <button type="button" disabled={busy} onClick={() => void handleDecision('approve')} data-testid="proposal-approve" className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm font-medium text-green-700 hover:bg-green-100 disabled:opacity-50">Aprobar</button>
             <button
               type="button"
               disabled={busy || iterationLimitReached}
