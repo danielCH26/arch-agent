@@ -96,6 +96,14 @@ jobs:
           PUPPETEER_UPLOADS_DIR: ${{ runner.temp }}/uploads
         run: python -m pytest tests -v --tb=short
 
+      - name: Evals (harness offline)
+        # El golden set no llama a la API: es el scorer offline del harness,
+        # sin red y sin API key (--dry-run solo arma los prompts). Es la
+        # puerta de calidad barata del harness (review de #108, lau2413).
+        run: |
+          python -m pytest -q evals/test_runner.py
+          python -m evals.runner --dry-run
+
   frontend:
     name: dev-frontend-tests
     runs-on: ubuntu-latest

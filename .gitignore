@@ -61,8 +61,15 @@ frontend/.env.local
 # CodeGraph local index (per-worktree, never shared)
 .codegraph/
 .freebuff/
-.patch
 
+# Evals: resultados de corridas y cobertura. Los resumenes de baselines SI se
+# versionan: son la referencia auditable de cada medicion (ver
+# evals/baselines/README.md), y sin esta excepcion los atrapa `*.md`.
+evals/results/
+!evals/baselines/
+!evals/baselines/*.md
+
+.patch
 
 # Cobertura de pytest-cov
 .coverage
