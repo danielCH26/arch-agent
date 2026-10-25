@@ -877,6 +877,7 @@ class TestSummaryGaps:
             "funcionalidades": ["Registrar inventario"],
             "restricciones": ["Presupuesto de 20000 USD", "Equipo de 3 personas", "Plazo de 3 meses"],
             "calidad": ["Seguridad"],
+            "escala": "unos 40 operadores, 200 registros al día",
             "contexto_tecnico": {
                 "plataforma": "Web",
                 "habilidades_equipo": "Python",
@@ -900,6 +901,23 @@ class TestSummaryGaps:
     def test_missing_budget_in_the_summary_is_a_gap(self):
         summary = self._complete(restricciones=["Equipo de 3 personas", "Plazo de 3 meses"])
         assert [name for name, _ in summary_gaps(summary, [])] == ["presupuesto"]
+
+    def test_escala_sin_cifras_es_un_hueco(self):
+        """El prompt del resumen pide "escala", pero nada la exigía: salía
+        "no definido" salvo que el usuario diera las cifras por su cuenta."""
+        assert [name for name, _ in summary_gaps(self._complete(escala="no definido"), [])] == [
+            "escala"
+        ]
+        assert [name for name, _ in summary_gaps(self._complete(escala=""), [])] == ["escala"]
+
+    def test_escala_con_cifras_no_es_un_hueco(self):
+        assert summary_gaps(self._complete(escala="unos 500 usuarios"), []) == []
+
+    def test_la_pregunta_de_escala_no_es_compuesta(self):
+        from app.core.elicitation_agent import ESCALA_QUESTION
+
+        assert ESCALA_QUESTION.count("?") == 1
+        assert not _es_pregunta_compuesta(ESCALA_QUESTION)
 
     def test_a_category_already_asked_is_not_asked_again(self):
         question = summary_gaps(self._complete(calidad=[]), [])[0][1]

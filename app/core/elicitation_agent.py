@@ -877,6 +877,14 @@ def summary_gaps(
         if any(re.search(marker, text) for marker in asked_markers for text in asked):
             continue
         gaps.append((name, question))
+    # "escala": el prompt del resumen la pide, pero nada la exigía, así que
+    # salía "no definido" salvo que el usuario diera las cifras por su cuenta.
+    # El volumen decide la arquitectura tanto como la plataforma: no es lo
+    # mismo una app para una persona que para diez mil.
+    escala = _normalize_text(str(resumen.get("escala") or "")).strip(" .")
+    if not escala or escala in _UNDEFINED_VALUES:
+        if not any(re.search(marker, text) for marker in _ESCALA_ASKED_MARKERS for text in asked):
+            gaps.append(("escala", ESCALA_QUESTION))
     restrictions = " ".join(_as_str_list(resumen.get("restricciones")))
     for factor, question in _missing_viability_factors(
         history,
@@ -888,6 +896,17 @@ def summary_gaps(
 
 
 _UNDEFINED_VALUES = {"no definido", "no definida", "no especificado", "no especificada", "n/a", "ninguno", "-"}
+
+# Volumen del sistema (campo "escala" del resumen). Un solo aspecto: la
+# pregunta compuesta ("¿cuántos usuarios Y cuántos registros?") la rechaza
+# el guardarraíl _es_pregunta_compuesta.
+ESCALA_QUESTION = "¿Cuántas personas usarían el sistema aproximadamente?"
+_ESCALA_ASKED_MARKERS = (
+    r"cuantas\s+personas\s+usarian",
+    r"cuantos\s+usuarios",
+    r"volumen",
+    r"cuantos\s+registros",
+)
 
 
 def _as_str_list(value: Any) -> list[str]:

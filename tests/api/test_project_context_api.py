@@ -156,6 +156,7 @@ class TestElicitationReceivesDocuments:
             "funcionalidades": ["Agendar citas"],
             "restricciones": ["Presupuesto de 5000 USD", "Equipo de 3 personas", "Plazo de 8 meses"],
             "calidad": ["Seguridad de los datos"],
+            "escala": "unas 20 recepcionistas, 100 citas al día",
             "contexto_tecnico": {
                 "plataforma": "Web",
                 "habilidades_equipo": "Python",
