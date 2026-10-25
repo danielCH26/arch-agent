@@ -81,6 +81,14 @@ jobs:
         # para sembrar; se activará cuando el CI cargue las migraciones.
         run: python -m pytest -q tests --ignore=tests/test_seed_idempotent.py
 
+      - name: Evals (harness offline)
+        # El golden set no llama a la API: es el scorer offline del harness,
+        # sin red y sin API key (--dry-run solo arma los prompts). Es la
+        # puerta de calidad barata del harness (review de #108, lau2413).
+        run: |
+          python -m pytest -q evals/test_runner.py
+          python -m evals.runner --dry-run
+
   frontend:
     name: Frontend (vitest + build)
     runs-on: ubuntu-latest
