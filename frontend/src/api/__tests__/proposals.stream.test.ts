@@ -56,8 +56,25 @@ describe('createProposalStream (F19)', () => {
 
     expect(cb.onProgress).toHaveBeenCalledWith(progress)
     expect(cb.onToken).toHaveBeenCalledWith('Hola')
-    expect(cb.onDone).toHaveBeenCalledWith(9, [])
+    // La iteración la decide el backend (HU8, punto 19 de la review).
+    expect(cb.onDone).toHaveBeenCalledWith(9, [], 1)
     expect(cb.onError).not.toHaveBeenCalled()
+  })
+
+  it('un done sin iteración (backend viejo) no inventa una', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        body: sseBody(['event: done\ndata: {"proposal_id": 9, "citations": []}\n\n']),
+      }),
+    )
+    const cb = callbacks()
+
+    createProposalStream('generate', { projectId: 1 }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalled())
+
+    expect(cb.onDone).toHaveBeenCalledWith(9, [])
   })
 
   it('ignora un progress ilegible y no rompe la generación', async () => {
