@@ -880,6 +880,7 @@ class TestSummaryGaps:
                 "plataforma": "Web",
                 "habilidades_equipo": "Python",
                 "fuentes_de_datos": "Los ingresan los operadores",
+                "tecnologias_no_dominadas": "No manejan Kubernetes",
             },
         }
         summary.update(overrides)
@@ -907,7 +908,8 @@ class TestSummaryGaps:
 
 
 class TestArchitectureDrivers:
-    """Plataforma, habilidades del equipo y fuente de los datos."""
+    """Plataforma, habilidades del equipo, fuente de los datos y lo que el
+    equipo NO maneja."""
 
     def _base(self):
         return [
@@ -919,7 +921,12 @@ class TestArchitectureDrivers:
 
     def test_no_cierra_sin_saber_plataforma_habilidades_y_fuente_de_datos(self):
         missing = [name for name, _ in missing_coverage(self._base())]
-        assert missing == ["plataforma", "habilidades", "fuente_datos"]
+        assert missing == [
+            "plataforma",
+            "habilidades",
+            "fuente_datos",
+            "tecnologias_no_dominadas",
+        ]
 
         model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])
         decision = next_step(model, history=self._base())
@@ -931,8 +938,19 @@ class TestArchitectureDrivers:
         history = self._base() + [
             {"pregunta": "p", "respuesta": "Desde el navegador; sabemos React y Node."},
             {"pregunta": "p", "respuesta": "Los datos vienen de sensores en tiempo real."},
+            {"pregunta": "p", "respuesta": "No manejamos Kubernetes."},
         ]
         assert missing_coverage(history) == []
+
+    def test_una_respuesta_normal_no_da_por_cubiertas_las_habilidades(self):
+        """Antes "experiencia de usuario" o "manejar pedidos" cubrían la
+        categoría por las palabras sueltas, y la pregunta por las habilidades
+        del equipo no se hacía nunca."""
+        history = self._base() + [
+            {"pregunta": "p", "respuesta": "Queremos mejorar la experiencia de usuario."},
+            {"pregunta": "p", "respuesta": "El sistema debe manejar pedidos."},
+        ]
+        assert "habilidades" in [name for name, _ in missing_coverage(history)]
 
     def test_las_preguntas_de_los_drivers_son_granulares(self):
         from app.core.elicitation_agent import _DRIVER_CATEGORIES
@@ -1004,7 +1022,8 @@ class TestNoSeCierraSinLoQueDecideLaArquitectura:
     def test_el_resumen_con_no_definido_obliga_a_preguntar(self):
         summary = TestSummaryGaps()._complete(
             contexto_tecnico={"plataforma": "no definido", "habilidades_equipo": "Python",
-                              "fuentes_de_datos": "No definido."},
+                              "fuentes_de_datos": "No definido.",
+                              "tecnologias_no_dominadas": "Ninguna en particular"},
         )
         assert [name for name, _ in summary_gaps(summary, [])] == ["plataforma", "fuente_datos"]
 
@@ -1013,7 +1032,8 @@ class TestNoSeCierraSinLoQueDecideLaArquitectura:
 
         summary = TestSummaryGaps()._complete(
             contexto_tecnico={"plataforma": "no definido", "habilidades_equipo": "Python",
-                              "fuentes_de_datos": "API del banco"},
+                              "fuentes_de_datos": "API del banco",
+                              "tecnologias_no_dominadas": "Ninguna en particular"},
         )
         history = [{"pregunta": _DRIVER_CATEGORIES[0][3], "respuesta": "Todavía no sabemos"}]
         assert summary_gaps(summary, history) == []

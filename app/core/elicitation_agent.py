@@ -646,11 +646,24 @@ _DRIVER_CATEGORIES = (
     (
         "habilidades",
         (
-            r"experiencia", r"sabemos", r"saben", r"conoce\w*", r"domina\w*", r"manej\w+",
+            # Una tecnología nombrada ya es señal de que se habló del stack.
             r"python", r"java", r"javascript", r"typescript", r"react", r"angular",
             r"vue", r"node(?:\.?js)?", r"django", r"flask", r"fastapi", r"spring",
             r"laravel", r"php", r"kotlin", r"swift", r"flutter", r"\.net", r"c#",
             r"golang", r"ruby", r"rails",
+            # La habilidad tiene que estar ATRIBUIDA AL EQUIPO. Antes bastaban
+            # "experiencia" o "manej\w+" sueltos, y los traía cualquier
+            # respuesta normal ("mejorar la experiencia de usuario", "el
+            # sistema debe manejar pedidos", "los administradores manejan el
+            # inventario"): la categoría se daba por cubierta y la pregunta
+            # por las habilidades del equipo no se hacía nunca.
+            r"(?:equipo|desarrollador\w*|programador\w*|ingenier\w+|nosotros)"
+            r"[^.]{0,40}(?:sab\w+|conoc\w+|domin\w+|manej\w+|experiencia)",
+            r"(?:sab\w+|conoc\w+|domin\w+|manej\w+|experiencia)"
+            r"[^.]{0,40}(?:equipo|desarrollador\w*|programador\w*|ingenier\w+)",
+            # Primera persona: el que responde habla por el equipo.
+            r"sabemos", r"dominamos", r"conocemos", r"manejamos",
+            r"experiencia\s+(?:en|con)\s+\w+",
         ),
         (r"experiencia", r"tecnolog", r"lenguaje", r"habilidad", r"conoce", r"domina"),
         "¿Qué lenguajes o tecnologías domina el equipo?",
@@ -671,6 +684,23 @@ _DRIVER_CATEGORIES = (
         ),
         (r"de\s+donde", r"fuente", r"origen\s+de\s+los\s+datos", r"tiempo\s+real"),
         "¿De dónde salen los datos que el sistema muestra: los ingresan los usuarios o vienen de otro sistema o fuente externa?",
+    ),
+    (
+        # El resumen declara ``tecnologias_no_dominadas`` (ver el esquema de
+        # ``contexto_tecnico``), pero no había ninguna pregunta que lo
+        # cubriera: el campo salía siempre "no definido". Lo que el equipo NO
+        # maneja descarta patrones tanto como lo que sí maneja.
+        "tecnologias_no_dominadas",
+        (
+            r"no\s+(?:sab\w+|conoc\w+|domin\w+|manej\w+)",
+            r"nadie\s+(?:sab\w+|conoc\w+|domin\w+|manej\w+)",
+            r"sin\s+experiencia",
+            r"no\s+(?:tenemos|tienen|hay|tiene)\s+experiencia",
+            r"(?:evitar|descartar|preferimos\s+no\s+usar|no\s+queremos\s+usar)\s+\w+",
+            r"nunca\s+(?:hemos|han)\s+\w+",
+        ),
+        (r"no\s+domin", r"no\s+manej", r"no\s+conoc", r"evitar", r"sin\s+experiencia"),
+        "¿Hay alguna tecnología que el equipo no maneje o que prefieran evitar en este proyecto?",
     ),
 )
 
@@ -829,8 +859,17 @@ def summary_gaps(
     # "no definido" y la pregunta no se hizo, se hace antes de cerrar (la
     # detección por palabras puede dar falsos positivos; el resumen no).
     tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
+    # Un campo por categoría de _DRIVER_CATEGORIES y en su mismo orden: si se
+    # agrega una categoría y no su campo, ``zip`` la descarta en silencio.
+    _DRIVER_SUMMARY_FIELDS = (
+        "plataforma",
+        "habilidades_equipo",
+        "fuentes_de_datos",
+        "tecnologias_no_dominadas",
+    )
+    assert len(_DRIVER_SUMMARY_FIELDS) == len(_DRIVER_CATEGORIES)
     for (name, _patterns, asked_markers, question), field in zip(
-        _DRIVER_CATEGORIES, ("plataforma", "habilidades_equipo", "fuentes_de_datos")
+        _DRIVER_CATEGORIES, _DRIVER_SUMMARY_FIELDS
     ):
         value = _normalize_text(str(tecnico.get(field) or "")).strip(" .")
         if value and value not in _UNDEFINED_VALUES:

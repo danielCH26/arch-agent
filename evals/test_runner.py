@@ -275,17 +275,47 @@ def test_orden_correcto_de_las_cinco_secciones():
 
 def test_orden_incorrecto_es_fallo():
     """Las mismas secciones, en otro orden: el contrato de produccion se
-    cumple pero el orden no."""
+    cumple pero el orden no.
+
+    Se intercambian las dos PRIMERAS secciones (Componentes y Tecnologias).
+    No vale cualquier reordenamiento: produccion busca el encabezado de
+    trade-offs DESPUES del de la justificacion (``_tradeoff_heading``, para no
+    confundirlo con un subtitulo "Opciones"/"Alternativas" de otra seccion),
+    asi que mover los trade-offs delante de la justificacion los reporta como
+    seccion FALTANTE y ``secciones_ok`` ya no aisla el orden. Ese caso se
+    cubre aparte, en el test de abajo.
+    """
     valida = _con_cuerpo("- Componente [1]", "- Patron A [1]")
     cuerpos = [
         s.replace("## ", "", 1) if s.startswith("## ") else s
         for s in valida.split("\n## ")
     ]
-    desordenado = "## " + "\n## ".join(cuerpos[4:] + cuerpos[:4])
+    desordenado = "## " + "\n## ".join([cuerpos[1], cuerpos[0]] + cuerpos[2:])
 
     score = score_output(desordenado, caso())
     assert score["secciones_ok"] is True
     assert score["orden_ok"] is False
+    assert score["pass_estructural"] is False
+
+
+def test_tradeoffs_antes_de_la_justificacion_cuenta_como_seccion_faltante():
+    """Los trade-offs delante de la justificacion: produccion no los reconoce.
+
+    ``_tradeoff_heading`` solo acepta el encabezado de trade-offs despues del
+    de la justificacion. Puesto antes, produccion lo da por ausente, asi que
+    el scorer (que delega en ``_missing_sections``) reporta la seccion como
+    faltante, no solo como desordenada. De cualquier forma no pasa.
+    """
+    valida = _con_cuerpo("- Componente [1]", "- Patron A [1]")
+    cuerpos = [
+        s.replace("## ", "", 1) if s.startswith("## ") else s
+        for s in valida.split("\n## ")
+    ]
+    tradeoffs_primero = "## " + "\n## ".join(cuerpos[4:] + cuerpos[:4])
+
+    score = score_output(tradeoffs_primero, caso())
+    assert score["secciones_ok"] is False
+    assert "Trade-offs y decisión" in score["secciones_faltantes"]
     assert score["pass_estructural"] is False
 
 

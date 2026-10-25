@@ -11,6 +11,9 @@ interface AdrPanelProps {
   projectName?: string | null
   // Se llama al aprobar el ADR (proyecto terminado) para refrescar la página.
   onCompleted?: () => void | Promise<void>
+  // Avisa si el ADR ya se puede leer. <ChatWindow> lo usa para no mostrar el
+  // panel de decisión de la fase mientras el documento todavía se genera.
+  onReadyChange?: (ready: boolean) => void
 }
 
 // Nombre de archivo seguro a partir del nombre del proyecto.
@@ -94,7 +97,7 @@ function formatDate(iso: string | null): string {
  * Markdown (GitHub/GitLab renderizan el diagrama Mermaid) o en PDF, con el
  * diagrama como imagen, para quien no es técnico.
  */
-export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps) {
+export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }: AdrPanelProps) {
   const navigate = useNavigate()
   const [adr, setAdr] = useState<AdrOut | null>(null)
   const [showChanges, setShowChanges] = useState(false)
@@ -175,6 +178,14 @@ export function AdrPanel({ projectId, projectName, onCompleted }: AdrPanelProps)
   const markdown = adr?.markdown ?? null
   const completed = Boolean(adr?.approved_at)
   const busy = generating || approving || loading
+
+  // El ADR está listo cuando hay documento y ya no se está cargando ni
+  // generando. Se avisa hacia arriba para que la decisión de la fase no
+  // aparezca antes que el documento sobre el que se decide.
+  const adrReady = Boolean(markdown) && !loading && !generating
+  useEffect(() => {
+    onReadyChange?.(adrReady)
+  }, [adrReady, onReadyChange])
   const diagram = pickAdrDiagram(diagrams, adr?.diagram_attachment_id)
   // Copia del ADR armada para imprimir (oculta): el diagrama va como imagen.
   const printRef = useRef<HTMLDivElement>(null)

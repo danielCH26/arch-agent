@@ -117,6 +117,31 @@ export function ChatWindow({
   // disponible debajo y un mensaje suelto ahí podía confundir al agente
   // -- no hay ningún flujo que lo espere en esta fase.
   const hideChatInput = currentPhase === 'propuesta'
+  // Cada fase tiene UNA superficie de decisión, la de su propio contenido:
+  // la propuesta en <ProposalCard> y el diagrama en sus botones (Aprobar /
+  // Rechazar / Solicitar cambios). Montar además <PhaseActions> por fuera
+  // duplicaba la decisión y, en Refinamiento, aparecía nada más entrar,
+  // cuando el diagrama todavía se estaba generando.
+  //
+  // Se mira la imagen adjunta, no el mermaid del texto: los botones del
+  // diagrama cuelgan de ese adjunto, así que un mermaid que no llegó a
+  // renderizarse deja la burbuja SIN botones y la fase sin cómo decidirse.
+  const hasDiagram = messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      (message.attachments ?? []).some((attachment) => attachment.kind === 'screenshot'),
+  )
+  const generatingDiagram = isRefinementPhase(currentPhase) && (checkingDiagrams || isStreaming)
+  const decisionLivesInTheContent =
+    currentPhase === 'propuesta' || (isRefinementPhase(currentPhase) && hasDiagram)
+  // Revisión: el panel de decisión espera a que el ADR esté escrito. Antes
+  // salía mientras el documento decía "Generando…": botones para aprobar
+  // algo que todavía no se podía leer. En Refinamiento el equivalente es
+  // esperar a que termine de generarse el diagrama: si al final no hay
+  // ninguno, <PhaseActions> queda como salida de emergencia para no dejar
+  // la fase bloqueada.
+  const [adrReady, setAdrReady] = useState(false)
+  const phaseContentReady = showAdrPanel ? adrReady : !generatingDiagram
 
   useEffect(() => {
     if (isStreaming && !wasStreaming.current) {
@@ -238,7 +263,12 @@ export function ChatWindow({
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {showAdrPanel && (
-          <AdrPanel projectId={projectId} projectName={projectName} onCompleted={onProjectCompleted} />
+          <AdrPanel
+            projectId={projectId}
+            projectName={projectName}
+            onCompleted={onProjectCompleted}
+            onReadyChange={setAdrReady}
+          />
         )}
         {showProposalCard && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
@@ -304,13 +334,14 @@ export function ChatWindow({
             reject->revert), so <PhaseActions> only offers "Avanzar"
             there (hideDecision). La elicitación (`requerimientos`) no
             monta este componente: la maneja <ElicitationPanel>. */}
-        {(pendingDecision || storePhaseReady) && (
+        {pendingDecision && phaseContentReady && !decisionLivesInTheContent && (
           <PhaseActions
             projectId={projectId}
             phase={currentPhase ?? pendingDecision?.phase ?? ''}
             allowModify={currentPhase !== 'final'}
-            phaseReady={storePhaseReady}
-            hideDecision={currentPhase === 'propuesta'}
+            /* "Avanzar" vive en la barra superior de <ChatPage>: un solo
+               botón, siempre visible, en vez de uno al final del chat. */
+            phaseReady={false}
             onPhaseChanged={onProposalPhaseChanged}
           />
         )}
