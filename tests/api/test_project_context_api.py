@@ -160,6 +160,7 @@ class TestElicitationReceivesDocuments:
                 "plataforma": "Web",
                 "habilidades_equipo": "Python",
                 "fuentes_de_datos": "Los ingresan las recepcionistas",
+                "tecnologias_no_dominadas": "No manejan Kubernetes",
             },
         }
 

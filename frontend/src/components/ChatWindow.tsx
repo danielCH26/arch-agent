@@ -70,9 +70,9 @@ export function ChatWindow({
   // Fase: la que pasa la página o, si no viene, la del proyecto activo.
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
   const currentPhase = phase ?? storePhase
-  // B3 (Soomri round-2 re-review): the Avanzar surface must mount when the
-  // phase is ready even though pending_decision is null (approved phase).
-  const storePhaseReady = projectsStore((s) => s.currentProject?.phase_ready ?? false)
+  // B3 (Soomri round-2 re-review) montaba acá la superficie de "Avanzar" con
+  // `phase_ready`. Ese botón vive ahora en la barra superior de <ChatPage>,
+  // así que de este store solo hace falta la decisión pendiente.
   const fetchApprovalsHistory = useApprovalsStore((s) => s.fetchHistory)
   const refreshApprovals = useApprovalsStore((s) => s.refresh)
   const pendingDecision = useApprovalsStore(

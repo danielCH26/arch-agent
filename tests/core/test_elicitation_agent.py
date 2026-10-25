@@ -70,7 +70,8 @@ HISTORY_1_VIABLE = [{"pregunta": "p0", "respuesta": _RESPUESTA_VIABILIDAD}]
 _DOCS_COMPLETOS = (
     "Usuarios: operadores de bodega. Deben poder registrar inventario. "
     "Seguridad básica. Presupuesto definido. Equipo disponible. Plazo acordado. "
-    "App web. El equipo domina Python. Los datos los ingresan los operadores."
+    "App web. El equipo domina Python. Los datos los ingresan los operadores. "
+    "No manejan Kubernetes."
 )
 HISTORY_5_VIABLE = HISTORY_1_VIABLE + HISTORY_5[1:]
 
@@ -569,7 +570,7 @@ class TestNextStepHardRules:
             {"pregunta": "equipo", "respuesta": "Equipo de 3 desarrolladores senior."},
             {"pregunta": "plazo", "respuesta": "MVP en 12 semanas."},
             {"pregunta": "calidad", "respuesta": "Que sea seguro y rápido."},
-            {"pregunta": "plataforma", "respuesta": "Web, en Python; los datos los registran los operadores."},
+            {"pregunta": "plataforma", "respuesta": "Web, en Python; los datos los registran los operadores. No manejamos Kubernetes."},
         ]
         model = _FakeModel(['{"done": true, "question": null, "reason": "ya"}'])
 
@@ -841,7 +842,7 @@ class TestCoverageChecklist:
             {"pregunta": "¿Quiénes usarán el sistema?", "respuesta": "Dueños de mascotas perdidas."},
             {"pregunta": "¿Qué debe hacer?", "respuesta": "Publicar avisos."},
             {"pregunta": "calidad", "respuesta": "Que sea rápido."},
-            {"pregunta": "plataforma", "respuesta": "App móvil en Flutter; los datos los suben los usuarios."},
+            {"pregunta": "plataforma", "respuesta": "App móvil en Flutter; los datos los suben los usuarios. No manejamos Kubernetes."},
             *_VIABLE_ANSWERS,
         ]
         model = _FakeModel(['{"done": true, "question": null, "reason": "listo"}'])

@@ -253,7 +253,7 @@ describe('MessageBubble', () => {
         />,
       )
 
-      await user.click(screen.getByRole('button', { name: '✅ Aprobar' }))
+      await user.click(screen.getByRole('button', { name: 'Aprobar' }))
 
       await waitFor(() => expect(onDiagramApproved).toHaveBeenCalledTimes(1))
       expect(submitDecisionMock).toHaveBeenCalledWith(1, 'approve', undefined, 'att-1')
@@ -273,7 +273,7 @@ describe('MessageBubble', () => {
         />,
       )
 
-      await user.click(screen.getByRole('button', { name: '✅ Aprobar' }))
+      await user.click(screen.getByRole('button', { name: 'Aprobar' }))
 
       await waitFor(() => expect(submitDecisionMock).toHaveBeenCalled())
       expect(onDiagramApproved).not.toHaveBeenCalled()
