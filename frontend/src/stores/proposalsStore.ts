@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { ApiError } from '../api/client'
 import { authStore } from './authStore'
+import { useApprovalsStore } from './approvalsStore'
+import { projectsStore } from './projectsStore'
 import {
   createProposalStream,
   decideProposal,
@@ -425,6 +427,17 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         if (projectId) {
           if (result.lifecycle === 'rejected') forgetProposal(projectId)
           void getProjectProposalState(projectId).then((projectState) => set({ projectState })).catch(() => undefined)
+        }
+        // HU10: en `propuesta` esta tarjeta y <PhaseActions> leen el MISMO
+        // estado del servidor (pending decision + phase_ready + current_phase).
+        // La decisión lo cambió, así que re-sincronizamos ambos stores; si no,
+        // PhaseActions sigue mostrando botones pendientes y "Avanzar" nunca
+        // aparece hasta un mensaje de chat o un reload. Ninguno puede hacer
+        // fallar la decisión.
+        void Promise.resolve(useApprovalsStore.getState().refresh()).catch(() => undefined)
+        const loadedProjectId = projectsStore.getState().currentProject?.id ?? projectId
+        if (loadedProjectId != null) {
+          void Promise.resolve(projectsStore.getState().getProject(loadedProjectId)).catch(() => undefined)
         }
         return result
       } catch (error) {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { apiFetch } from '../client'
+import { apiFetch, detailToMessage } from '../client'
 import { authStore } from '../../stores/authStore'
 
 const { mockRedirectToLogin } = vi.hoisted(() => ({
@@ -106,5 +106,28 @@ describe('apiFetch', () => {
     global.fetch = mockFetch
 
     await expect(apiFetch('/api/test')).rejects.toMatchObject({ name: 'ApiError', status: 400, message: 'El nombre es obligatorio' })
+  })
+})
+
+describe('detailToMessage', () => {
+  it('returns string details unchanged (legacy errors)', () => {
+    expect(detailToMessage('Propuesta no encontrada')).toBe('Propuesta no encontrada')
+  })
+
+  it('maps typed error bodies to a readable message instead of [object Object]', () => {
+    expect(detailToMessage({ error: 'phase_mismatch', current_phase: 'x' })).toMatch(/fase/i)
+    expect(detailToMessage({ error: 'internal_error' })).toMatch(/inesperado/i)
+  })
+
+  it('prefers an explicit message field', () => {
+    expect(detailToMessage({ error: 'phase_mismatch', message: 'Texto propio' })).toBe(
+      'Texto propio',
+    )
+  })
+
+  it('returns null for unknown shapes so the caller can use its fallback', () => {
+    expect(detailToMessage({ error: 'codigo_desconocido' })).toBeNull()
+    expect(detailToMessage(undefined)).toBeNull()
+    expect(detailToMessage(42)).toBeNull()
   })
 })

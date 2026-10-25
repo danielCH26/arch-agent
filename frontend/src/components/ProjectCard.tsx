@@ -14,6 +14,8 @@ const PHASE_LABELS: Record<string, string> = {
   propuesta: 'Propuesta',
   refinamiento: 'Refinamiento',
   revision: 'Revisión',
+  // HU10: quinta fase (mismo label que PHASE_LABELS del backend).
+  final: 'Cierre',
 }
 
 // Íconos de línea (Heroicons outline), como el resto de la interfaz.
@@ -31,7 +33,8 @@ function CardIcon({ d, className }: { d: string; className: string }) {
 }
 
 function statusBadge(project: Project): { label: string; className: string } {
-  if (project.current_phase === 'revision' && project.phase_ready) {
+  // HU10: la última fase es `final` (antes era `revision`).
+  if (project.current_phase === 'final' && project.phase_ready) {
     return { label: 'Completado', className: 'bg-green-100 text-green-800' }
   }
   if (project.current_phase === 'requerimientos') {
@@ -73,7 +76,8 @@ export function ProjectCard({ project }: ProjectCardProps) {
   }
 
   const badge = statusBadge(project)
-  const isComplete = project.current_phase === 'revision' && project.phase_ready
+  // HU10: el proyecto termina al aprobar la fase final (Cierre), no Revisión.
+  const isComplete = project.current_phase === 'final' && project.phase_ready
 
   return (
     <div className="group rounded-[10px] border border-gray-300 bg-gray-50 p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">

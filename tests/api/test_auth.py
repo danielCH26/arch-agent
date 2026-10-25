@@ -9,9 +9,9 @@ import pytest
 import os
 
 # Configurar entorno antes de cualquier import de app.
-# setdefault en las 5 variables: respeta lo que el CI o un runner externo
-# exporten, sin pisarlo (PR #102 round 2).
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+# setdefault: respeta lo que el CI o un runner externo exporten (PR #102
+# round 2). DATABASE_URL NO lleva default: los tests Postgres-backed se
+# omiten limpio cuando el runner no la exporta (HU10 v3).
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-32chars!")
 os.environ.setdefault("JWT_ALGORITHM", "HS256")
 os.environ.setdefault("JWT_EXPIRES_MINUTES", "60")

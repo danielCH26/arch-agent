@@ -63,10 +63,10 @@ El proveedor está limitando las solicitudes o no tienes cuota. Espera unos segu
 ## Proyectos y fases
 
 **¿Cuáles son las fases y en qué orden van?**
-Requerimientos → Propuesta → Refinamiento → Revisión. Ver el [glosario](04-glosario.md#fases).
+Requerimientos → Propuesta → Refinamiento → Revisión → Cierre. Ver el [glosario](04-glosario.md#fases).
 
 **¿Puedo saltarme una fase?**
-No. El botón **Avanzar fase →** solo se habilita cuando la fase actual está lista ("Fase lista para avanzar."). En Requerimientos y Propuesta la fase queda lista al aprobar el resumen o la propuesta; en Refinamiento y Revisión, con **Marcar fase como lista**.
+No. Solo se avanza cuando la fase actual está aprobada. En Requerimientos y Propuesta la fase queda lista al aprobar el resumen o la propuesta; en Refinamiento, Revisión y Cierre, con **Aprobar** en el panel de decisión del chat. Si después rechazas, la fase vuelve a quedar pendiente.
 
 **¿Qué significa "Lista para avanzar" en la tarjeta de un proyecto?**
 Que la fase actual ya fue aprobada y el proyecto puede avanzar a la siguiente. Si dice **En progreso**, la fase todavía no está lista. Con **Continuar** retomas el proyecto.

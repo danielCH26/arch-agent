@@ -8,20 +8,21 @@ vi.mock('../../api/projects', async (importOriginal) => {
     ...actual,
     getProject: vi.fn(),
     getProjectPhase: vi.fn(),
-    markReady: vi.fn(),
     advancePhase: vi.fn(),
   }
 })
 
-// Solo interesa la barra de fase: el chat y el historial se reemplazan.
+// Solo interesa la barra de fase: el chat, la elicitación y el historial se reemplazan.
 vi.mock('../../components/ChatWindow', () => ({ ChatWindow: () => null }))
+vi.mock('../../components/ElicitationPanel', () => ({ ElicitationPanel: () => null }))
 vi.mock('../../components/DiagramHistoryPanel', () => ({ DiagramHistoryPanel: () => null }))
 
 import { ChatPage } from '../ChatPage'
 import { getProject, getProjectPhase, type PhaseInfo } from '../../api/projects'
 import { projectsStore } from '../../stores/projectsStore'
 
-const PHASES = ['requerimientos', 'propuesta', 'revision']
+// HU10: cinco fases; la última es `final` (Cierre).
+const PHASES = ['requerimientos', 'propuesta', 'refinamiento', 'revision', 'final']
 
 function renderWithPhase(phase: PhaseInfo) {
   vi.mocked(getProject).mockResolvedValue({
@@ -42,38 +43,48 @@ function renderWithPhase(phase: PhaseInfo) {
   )
 }
 
-describe('ChatPage — barra de fase', () => {
+describe('ChatPage — barra de fase (HU10)', () => {
   afterEach(() => {
     vi.clearAllMocks()
     projectsStore.setState({ projects: [], currentProject: null, status: 'idle', error: null })
   })
 
-  it('en la última fase muestra "Completar proyecto" y oculta "Avanzar fase"', async () => {
-    renderWithPhase({ current_phase: 'revision', phase_ready: false, available_phases: PHASES })
+  it('en la última fase indica que se aprueba en el panel de decisión, sin botones de avance', async () => {
+    renderWithPhase({ current_phase: 'final', phase_ready: false, available_phases: PHASES })
 
-    expect(await screen.findByRole('button', { name: 'Completar proyecto' })).toBeInTheDocument()
+    expect(
+      await screen.findByText('Última fase: apruébala en el panel de decisión para completar el proyecto.'),
+    ).toBeInTheDocument()
+    // HU10 (REQ-SA-23): mark-ready se retiró; la decisión vive en <PhaseActions>.
+    expect(screen.queryByRole('button', { name: 'Completar proyecto' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Marcar fase como lista' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Avanzar fase/ })).not.toBeInTheDocument()
-    expect(screen.getByText('Última fase: usa «Completar proyecto» cuando termines.')).toBeInTheDocument()
   })
 
-  it('con la última fase lista muestra "Proyecto completado."', async () => {
-    renderWithPhase({ current_phase: 'revision', phase_ready: true, available_phases: PHASES })
+  it('con la última fase aprobada muestra "Proyecto completado."', async () => {
+    renderWithPhase({ current_phase: 'final', phase_ready: true, available_phases: PHASES })
 
     expect(await screen.findByText('Proyecto completado.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Completar proyecto' })).not.toBeInTheDocument()
   })
 
-  it('en una fase intermedia muestra "Marcar fase como lista" y "Avanzar fase"', async () => {
-    renderWithPhase({ current_phase: 'diseno', phase_ready: false, available_phases: ['requerimientos', 'diseno', 'revision'] })
+  it('en una fase intermedia no muestra "Marcar fase como lista" ni "Avanzar fase" en la barra', async () => {
+    renderWithPhase({ current_phase: 'refinamiento', phase_ready: false, available_phases: PHASES })
 
-    expect(await screen.findByRole('button', { name: 'Marcar fase como lista' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Avanzar fase/ })).toBeInTheDocument()
+    expect(await screen.findByText('Fase en progreso.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Marcar fase como lista' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Avanzar fase/ })).not.toBeInTheDocument()
+  })
+
+  it('en requerimientos "Avanzar fase" queda deshabilitado hasta que la fase esté lista', async () => {
+    renderWithPhase({ current_phase: 'requerimientos', phase_ready: false, available_phases: PHASES })
+
+    expect(await screen.findByRole('button', { name: /Avanzar fase/ })).toBeDisabled()
   })
 
   it('sin fases disponibles no se considera última fase', async () => {
-    renderWithPhase({ current_phase: 'diseno', phase_ready: false, available_phases: [] })
+    renderWithPhase({ current_phase: 'refinamiento', phase_ready: false, available_phases: [] })
 
-    expect(await screen.findByRole('button', { name: /Avanzar fase/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Completar proyecto' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Fase en progreso.')).toBeInTheDocument()
+    expect(screen.queryByText('Proyecto completado.')).not.toBeInTheDocument()
   })
 })

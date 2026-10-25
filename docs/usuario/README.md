@@ -2,12 +2,14 @@
 
 Esta carpeta reúne la documentación pensada para **quien usa Arch Agent** (no para quien lo desarrolla). Si buscas cómo levantar el stack o contribuir al código, mira el [README principal](../../README.md) y [ARCHITECTURE.md](../ARCHITECTURE.md).
 
-Arch Agent es un asistente con IA que te acompaña desde la idea de un producto hasta una **propuesta de arquitectura justificada**, con diagramas y trade-offs, en cuatro fases:
+Arch Agent es un asistente con IA que te acompaña desde la idea de un producto hasta una **propuesta de arquitectura justificada**, con diagramas y trade-offs, en cinco fases:
 
 ```
-Requerimientos  →  Propuesta  →  Refinamiento  →  Revisión
+Requerimientos  →  Propuesta  →  Refinamiento  →  Revisión  →  Cierre
  (elicitación)    (arquitectura)   (diagrama)
 ```
+
+Cada fase se aprueba antes de avanzar a la siguiente.
 
 ![Página principal de Arch Agent](screenshots/pagina-principal.png)
 

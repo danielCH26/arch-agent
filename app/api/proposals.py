@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from contextlib import aclosing
+from datetime import datetime
 from typing import AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,10 +21,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.dependencies import get_current_user
+from app.api.phase_errors import INTERNAL_ERROR_DETAIL, phase_decision_http_error
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
 from app.core.env import env_float
 from app.core.pattern_justification import analyze_justification, summarize_citation_rate
+from app.core.phase_decisions import PhaseDecisionError, record_decision
 from app.core.proposal_generator import (
     PROPOSAL_MAX_ITER,  # noqa: F401  re-export: development lo expone aqui
     ProposalGenerator,
@@ -350,28 +353,34 @@ def _apply_project_proposal_decision(
             else "Propuesta rechazada."
         )
 
-    approval = record_approval_decision(
+    # Route through record_decision for proper HU10 ownership:
+    #   - FOR UPDATE lock prevents race conditions
+    #   - Phase validation (phase == current_phase)
+    #   - Correct phase_ready flipping (no manual assignment needed)
+    result = record_decision(
         db,
         user_id=user_id,
-        phase=PHASE,
-        decision=decision,
-        feedback=feedback,
         project_id=int(project.id),
+        phase=PHASE,
+        action=decision,
+        feedback=feedback,
     )
+    # The approval row is in result.approval; record_decision already set
+    # project.phase_ready correctly - DO NOT manually set it here.
+
     if session_row is None:
-        session_row = db.query(UserSession).filter(UserSession.id == approval.session_id).first()
+        session_row = db.query(UserSession).filter(UserSession.id == result.approval.session_id).first()
     if session_row is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="No se pudo resolver la sesión del usuario.",
         )
 
-    project.phase_ready = decision == "approve"
     engram_state[_project_key(int(project.id))] = project_state
     session_row.engram_state = engram_state
     flag_modified(session_row, "engram_state")
 
-    return approval, len(snapshot), message
+    return result.approval, len(snapshot), message
 
 
 def _raise_if_iteration_cap_reached(db: Session, *, project_id: int) -> None:
@@ -557,13 +566,24 @@ async def decide_proposal(
             )
 
         action_type = "approve" if body.decision == "approve" else "reject"
+        # ``interaction_logs`` has no proposal_id, so the duplicate-decision
+        # guard is scoped by time instead: only a decision logged at or after
+        # THIS proposal was created can refer to it. Without the lower bound,
+        # reject -> revert -> new proposal -> reject again returned a bogus
+        # 409 "ya fue rechazada" because the previous proposal's log row
+        # matched (project, phase, action). All conditions stay in ONE
+        # ``.filter()`` call. The ``isinstance`` keeps the bound off when the
+        # row has no usable timestamp (e.g. a bare mock).
+        guard_conditions = [
+            InteractionLog.project_id == proposal.project_id,
+            InteractionLog.phase == PHASE,
+            InteractionLog.action_type == action_type,
+        ]
+        if isinstance(proposal.created_at, datetime):
+            guard_conditions.append(InteractionLog.created_at >= proposal.created_at)
         existing = (
             db.query(InteractionLog)
-            .filter(
-                InteractionLog.project_id == proposal.project_id,
-                InteractionLog.phase == PHASE,
-                InteractionLog.action_type == action_type,
-            )
+            .filter(*guard_conditions)
             .order_by(InteractionLog.created_at.desc())
             .first()
         )
@@ -588,7 +608,11 @@ async def decide_proposal(
             )
         else:
             proposal.lifecycle = "rejected"
-            project.current_phase = _proposal_reject_reverts_to()
+            # NO se revierte la fase acá: development lo hacía en este punto,
+            # antes de registrar la decisión, y eso rompe el gate de
+            # record_decision (PhaseMismatchError -> 500 con str(exc) en el
+            # detail, REQ-SA-34). El revert va más abajo, después de
+            # _apply_project_proposal_decision (Soomri round-2, B5).
             decision_for_hu6 = "reject"
             db.add(
                 ProposalApproval(
@@ -598,6 +622,12 @@ async def decide_proposal(
                 )
             )
 
+        # NOTE (idempotency): ``record_decision`` dedupes identical retries
+        # inside its 60s window, but the ProposalApproval / InteractionLog
+        # rows added here are NOT deduped by it. A retry never reaches this
+        # point twice only because the lifecycle check above (``!= "proposed"``)
+        # and the InteractionLog guard reject it first. Keep those two guards
+        # in front of any change to this block.
         db.add(
             InteractionLog(
                 session_id=proposal.session_id,
@@ -615,10 +645,17 @@ async def decide_proposal(
             feedback=body.comment,
             proposal_text=_content_to_text(proposal.content),
         )
-        if body.decision == "approve":
-            project.phase_ready = True
-        else:
-            project.phase_ready = False
+        # Soomri round-2 re-review (B5): the phase revert MUST happen AFTER
+        # the decision is registered -- record_decision's gate
+        # (phase == current_phase) raises PhaseMismatchError if the phase
+        # was reverted first, and the generic except below converted that
+        # into a 500 with str(exc) leaked into the detail (REQ-SA-34).
+        # Approve leaves the phase untouched; reject reverts it here.
+        if body.decision == "reject":
+            # development (#102) reemplazó la constante por un helper que lee la
+            # env en cada llamada; el revert sigue ACA por el gate (B5).
+            project.current_phase = _proposal_reject_reverts_to()
+        # phase_ready is now set by record_decision - do NOT manually set it
 
         db.commit()
         db.refresh(proposal)
@@ -633,12 +670,17 @@ async def decide_proposal(
     except HTTPException:
         db.rollback()
         raise
+    except PhaseDecisionError as exc:
+        # REQ-SA-28 / REQ-SA-34: e.g. a stale tab hitting a proposal whose
+        # phase moved on -> typed 409, not a 500 that leaks str(exc).
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     except Exception as exc:
         db.rollback()
         logger.exception("decide_proposal failed for proposal_id=%s", proposal_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"No se pudo registrar la decisión: {exc}",
+            detail=INTERNAL_ERROR_DETAIL,
         ) from exc
     finally:
         db.close()
@@ -848,11 +890,17 @@ async def decide_project_proposal(
     except HTTPException:
         db.rollback()
         raise
+    except PhaseDecisionError as exc:
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     except Exception as exc:
         db.rollback()
+        logger.exception(
+            "decide_project_proposal failed for project_id=%s", project_id
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=INTERNAL_ERROR_DETAIL,
         ) from exc
     finally:
         db.close()
