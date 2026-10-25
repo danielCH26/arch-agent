@@ -151,7 +151,7 @@ describe('MessageBubble', () => {
 
     renderMessage(content, 'assistant', attachments, onSendMessage)
 
-    await user.click(screen.getByRole('button', { name: '✏️ Solicitar cambios' }))
+    await user.click(screen.getByRole('button', { name: 'Solicitar cambios' }))
     await user.type(screen.getByLabelText('¿Qué debe ajustarse en el diagrama?'), 'Agrega Redis entre gateway y ordenes')
     await user.click(screen.getByRole('button', { name: 'Enviar ajuste' }))
 
@@ -202,9 +202,9 @@ describe('MessageBubble', () => {
     it('sin decision previa muestra los tres botones', () => {
       renderMessage('Diagrama', 'assistant', diagram(), vi.fn())
 
-      expect(screen.getByRole('button', { name: '✅ Aprobar' })).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '❌ Rechazar' })).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '✏️ Solicitar cambios' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Aprobar' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Rechazar' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Solicitar cambios' })).toBeInTheDocument()
     })
 
     it.each([
@@ -217,27 +217,27 @@ describe('MessageBubble', () => {
         renderMessage('Diagrama', 'assistant', diagram({ decision }), vi.fn())
 
         expect(screen.getByText(text)).toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: '✅ Aprobar' })).not.toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: '❌ Rechazar' })).not.toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: '✏️ Solicitar cambios' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Aprobar' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Rechazar' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Solicitar cambios' })).not.toBeInTheDocument()
       }
     )
 
     it('decision=null se trata como sin decidir', () => {
       renderMessage('Diagrama', 'assistant', diagram({ decision: null }), vi.fn())
 
-      expect(screen.getByRole('button', { name: '❌ Rechazar' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Rechazar' })).toBeInTheDocument()
     })
 
     it('rechazar manda el id del diagrama, muestra la confirmacion y oculta los botones', async () => {
       const user = userEvent.setup()
       renderMessage('Diagrama', 'assistant', diagram(), vi.fn())
 
-      await user.click(screen.getByRole('button', { name: '❌ Rechazar' }))
+      await user.click(screen.getByRole('button', { name: 'Rechazar' }))
 
       await waitFor(() => expect(screen.getByText('Diagrama rechazado.')).toBeInTheDocument())
       expect(submitDecisionMock).toHaveBeenCalledWith(1, 'reject', undefined, 'att-1')
-      expect(screen.queryByRole('button', { name: '❌ Rechazar' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Rechazar' })).not.toBeInTheDocument()
     })
 
     it('aprobar manda el id del diagrama', async () => {
@@ -245,7 +245,7 @@ describe('MessageBubble', () => {
       const onSendMessage = vi.fn()
       renderMessage('Diagrama', 'assistant', diagram(), onSendMessage)
 
-      await user.click(screen.getByRole('button', { name: '✅ Aprobar' }))
+      await user.click(screen.getByRole('button', { name: 'Aprobar' }))
 
       await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('Apruebo el diagrama, continuemos.'))
       expect(submitDecisionMock).toHaveBeenCalledWith(1, 'approve', undefined, 'att-1')
@@ -256,11 +256,11 @@ describe('MessageBubble', () => {
       submitDecisionMock.mockRejectedValueOnce(new Error('Este diagrama ya tiene una decisión registrada.'))
       renderMessage('Diagrama', 'assistant', diagram(), vi.fn())
 
-      await user.click(screen.getByRole('button', { name: '❌ Rechazar' }))
+      await user.click(screen.getByRole('button', { name: 'Rechazar' }))
 
       expect(await screen.findByText('Este diagrama ya tiene una decisión registrada.')).toBeInTheDocument()
       expect(screen.queryByText('Diagrama rechazado.')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '❌ Rechazar' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Rechazar' })).toBeInTheDocument()
     })
 
     it('con dos diagramas en la misma burbuja cada uno tiene su propio estado', () => {
@@ -270,7 +270,7 @@ describe('MessageBubble', () => {
       ]
       renderMessage('Dos diagramas', 'assistant', two, vi.fn())
 
-      expect(screen.getAllByRole('button', { name: '❌ Rechazar' })).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: 'Rechazar' })).toHaveLength(1)
       expect(screen.getByText('Diagrama rechazado.')).toBeInTheDocument()
     })
   })

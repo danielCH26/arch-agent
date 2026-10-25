@@ -4,6 +4,7 @@ import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
 import { useDialog } from '../hooks/useDialog'
 import type { Message } from '../stores/chatStore'
 import robotAvatar from '../assets/robot-avatar.webp'
+import { DecisionIcon, WarningIcon } from './NavIcons'
 
 // Devuelve false (o una promesa que resuelve false) si no se pudo enviar.
 type SendMessage = (text: string, displayText?: string) => unknown
@@ -548,8 +549,9 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
           />
         )}
         {!isUser && message.notices?.map((notice, index) => (
-          <p key={index} role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            ⚠️ {notice}
+          <p key={index} role="status" className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <WarningIcon className="mt-0.5 h-4 w-4" />
+            <span>{notice}</span>
           </p>
         ))}
         {!isUser && renderSources(message.sources)}
@@ -693,25 +695,28 @@ function DiagramAttachments({
                     onClick={async () => {
                       if (await recordDecision(index, 'approve')) await send('Apruebo el diagrama, continuemos.')
                     }}
-                    className="rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
                   >
-                    ✅ Aprobar
+                    <DecisionIcon decision="approve" />
+                    Aprobar
                   </button>
                   <button
                     type="button"
                     disabled={isSubmitting}
                     onClick={() => void recordDecision(index, 'reject')}
-                    className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
                   >
-                    ❌ Rechazar
+                    <DecisionIcon decision="reject" />
+                    Rechazar
                   </button>
                   <button
                     type="button"
                     disabled={isSubmitting || busy}
                     onClick={() => { setFeedbackIndex(index); setFeedback(''); setError('') }}
-                    className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
                   >
-                    ✏️ Solicitar cambios
+                    <DecisionIcon decision="modify" />
+                    Solicitar cambios
                   </button>
                 </div>
 

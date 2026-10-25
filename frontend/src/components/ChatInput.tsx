@@ -40,7 +40,14 @@ export function ChatInput({
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
-      const maxHeight = 4 * 24
+      // 4 líneas + padding vertical + borde: con border-box, scrollHeight
+      // incluye el padding, así que hay que sumarlo para no cortar la cuarta.
+      const style = getComputedStyle(textareaRef.current)
+      const px = (value: string) => parseFloat(value) || 0
+      const maxHeight =
+        4 * (px(style.lineHeight) || 24) +
+        px(style.paddingTop) + px(style.paddingBottom) +
+        px(style.borderTopWidth) + px(style.borderBottomWidth)
       const newHeight = Math.min(textareaRef.current.scrollHeight, maxHeight)
       textareaRef.current.style.height = `${newHeight}px`
       // Barra de scroll solo cuando el texto supera el alto máximo.
@@ -175,7 +182,7 @@ const handleCancelDuplicate = () => {
           aria-label="Adjuntar archivo (PDF o MD)"
           className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg aria-hidden="true" className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
           </svg>
         </button>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { fetchDiagramHistory, type DiagramDecision, type DiagramVersion } from '../api/diagrams'
 import { useDialog } from '../hooks/useDialog'
 import { formatDateTime } from '../lib/format'
+import { DecisionIcon } from './NavIcons'
 
 interface DiagramHistoryPanelProps {
   projectId: number
@@ -16,13 +17,6 @@ const labels: Record<DiagramDecision, string> = {
   approve: 'Aprobado',
   reject: 'Rechazado',
   modify: 'Cambios solicitados',
-}
-
-// Íconos de línea en lugar de emojis (los emojis no siguen el tema).
-const iconPaths: Record<DiagramDecision, string> = {
-  approve: 'M4.5 12.75l6 6 9-13.5',
-  reject: 'M6 18L18 6M6 6l12 12',
-  modify: 'M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z',
 }
 
 const styles: Record<DiagramDecision, string> = {
@@ -100,9 +94,7 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
                 <span className="text-xs text-gray-500">{formatDateTime(diagram.created_at)}</span>
                 <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${diagram.decision ? styles[diagram.decision] : 'bg-gray-100 text-gray-600'}`}>
                   {diagram.decision && (
-                    <svg aria-hidden="true" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={iconPaths[diagram.decision]} />
-                    </svg>
+                    <DecisionIcon decision={diagram.decision} />
                   )}
                   {diagram.decision ? labels[diagram.decision] : 'Sin decisión'}
                 </span>

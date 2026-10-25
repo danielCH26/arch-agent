@@ -46,8 +46,9 @@ function PasswordField({ id, label, value, onChange, autoComplete }: PasswordFie
         <button
           type="button"
           onClick={() => setVisible(!visible)}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-600"
-          aria-label={`${visible ? 'Ocultar' : 'Mostrar'} texto de «${label}»`}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+          aria-label={`Mostrar texto de «${label}»`}
+          aria-pressed={visible}
         >
           <svg aria-hidden="true" className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             {(visible ? [EYE_OFF_PATH] : EYE_PATHS).map((d) => (
