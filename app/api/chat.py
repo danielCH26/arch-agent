@@ -425,10 +425,14 @@ async def chat(
             # ChatWindow consumes this in parallel with the `/phases` fetch
             # path (REQ-SA-26.1 defense-in-depth: even if the SSE channel is
             # missed, the surface still mounts from `fetchApprovalsHistory`).
+            # ``is True`` / ``isinstance(str)``: solo se emite con los tipos
+            # reales del modelo (Boolean / String). Un valor raro (p. ej. un
+            # MagicMock en los tests de memoria de conversación) hacía fallar
+            # ``json.dumps`` y cortaba el stream entero con ``event: error``.
             if (
                 current_project is not None
-                and current_project.phase_ready
-                and current_project.current_phase is not None
+                and current_project.phase_ready is True
+                and isinstance(current_project.current_phase, str)
             ):
                 yield (
                     f"event: phase_locked\ndata: "
