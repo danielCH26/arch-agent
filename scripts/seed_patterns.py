@@ -157,8 +157,16 @@ def upsert_pattern(cur, pattern: dict) -> int:
 
 
 def seed_pattern_chunks(cur, pattern_id: int, pattern: dict) -> int:
-    """Recrea los chunks indexables del patron."""
-    cur.execute("DELETE FROM architect_pattern_chunks WHERE pattern_id = %s", (pattern_id,))
+    """Recrea los chunks indexables del patron.
+
+    Solo borra los chunks que genera el catalogo: los ``source_upload`` vienen
+    de scripts/ingest_pattern_source.py y no se pueden recrear desde el YAML.
+    """
+    cur.execute(
+        "DELETE FROM architect_pattern_chunks "
+        "WHERE pattern_id = %s AND chunk_type <> 'source_upload'",
+        (pattern_id,),
+    )
     # build_pattern_chunks vive en app/core/pattern_catalog.py: es la misma
     # logica que usa scripts/eval_pattern_retrieval.py, asi la evaluacion mide
     # exactamente lo que se indexa.

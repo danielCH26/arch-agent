@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
-import { advancePhase, getProject, getProjectPhase, markReady, PhaseInfo, Project } from '../api/projects'
+import { advancePhase, getProject, getProjectPhase, PhaseInfo, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
 import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
 import { ElicitationPanel } from '../components/ElicitationPanel'
@@ -10,7 +10,6 @@ import { projectsStore } from '../stores/projectsStore'
 import { projectUnavailableMessage } from '../stores/authStore'
 
 const ELICITATION_PHASE = 'requerimientos'
-const PROPOSAL_PHASE = 'propuesta'
 
 /**
  * Se vuelve a montar al cambiar de proyecto (`key`), para que ningún render
@@ -86,27 +85,14 @@ function ChatPageContent() {
     projectsStore.getState().setCurrentProject(projectData)
   }, [projectId])
 
-  const handleMarkReady = async () => {
-    setPhaseActionError('')
-    setPhaseActionLoading(true)
-    try {
-      await markReady(projectId)
-      await refreshAfterPhaseChange()
-    } catch (err) {
-      setPhaseActionError(err instanceof Error ? err.message : 'Error al marcar la fase como lista')
-    } finally {
-      setPhaseActionLoading(false)
-    }
-  }
-
   // Refinamiento: aprobar el diagrama en el chat cierra la fase y lleva a
-  // Revisión, sin pasar por "Marcar fase como lista" + "Avanzar fase".
+  // Revisión. HU10 (REQ-SA-23) retiró `mark-ready`: la aprobación del diagrama
+  // ya deja la fase lista en el backend (record_decision), así que acá solo
+  // queda avanzar.
   const handleDiagramApproved = async () => {
     setPhaseActionError('')
     setPhaseActionLoading(true)
     try {
-      const current = await getProjectPhase(projectId)
-      if (!current.phase_ready) await markReady(projectId)
       await advancePhase(projectId)
       await refreshAfterPhaseChange()
     } catch (err) {
@@ -151,18 +137,12 @@ function ChatPageContent() {
   }
 
   const isElicitationPhase = phase?.current_phase === ELICITATION_PHASE
-  // En la fase propuesta la fase queda lista al aprobar la propuesta.
-  const isProposalPhase = phase?.current_phase === PROPOSAL_PHASE
-  // Última fase (Revisión): se termina aprobando el ADR, no hay a dónde avanzar.
+  // En la última fase no hay a dónde avanzar. Con HU10 se completa aprobando
+  // la fase `final` desde <PhaseActions> (mark-ready se retiró, REQ-SA-23).
   const isLastPhase =
-    !!phase && phase.available_phases[phase.available_phases.length - 1] === phase.current_phase
-  const phaseStatus = isLastPhase
-    ? phase?.phase_ready
-      ? 'Proyecto completado.'
-      : 'Última fase: revisa y aprueba el ADR para terminar.'
-    : phase?.phase_ready
-      ? 'Fase lista para avanzar.'
-      : 'Fase en progreso.'
+    !!phase &&
+    phase.available_phases.length > 0 &&
+    phase.available_phases.indexOf(phase.current_phase ?? '') === phase.available_phases.length - 1
 
   return (
     <div className="h-full flex flex-col">
@@ -178,34 +158,37 @@ function ChatPageContent() {
       {phase && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
           <span className="text-sm text-gray-600">
-            {phaseStatus}
+            {isLastPhase
+              ? phase.phase_ready
+                ? 'Proyecto completado.'
+                : 'Última fase: apruébala en el panel de decisión para completar el proyecto.'
+              : phase.phase_ready
+                ? 'Fase lista para avanzar.'
+                : 'Fase en progreso.'}
           </span>
           <div className="flex flex-wrap gap-2">
             {!isElicitationPhase && (
               <button
                 type="button"
                 onClick={() => setDiagramHistoryOpen(true)}
-                className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-sm text-sky-700 hover:bg-sky-50"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
               >
+                <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+                </svg>
                 Diagramas
               </button>
             )}
-            {!isElicitationPhase && !isProposalPhase && !isLastPhase && !phase.phase_ready && (
-              <button
-                type="button"
-                onClick={handleMarkReady}
-                disabled={phaseActionLoading}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-              >
-                Marcar fase como lista
-              </button>
-            )}
-            {!isLastPhase && (
+            {/* HU10 (REQ-SA-23): "Marcar fase como lista" se retiró (mark-ready
+                responde 404). En las fases HU10 la aprobación y "Avanzar" viven
+                en <PhaseActions> dentro del chat; esta barra solo avanza la
+                elicitación (F05 es dueño de `requerimientos`). */}
+            {isElicitationPhase && (
               <button
                 type="button"
                 onClick={handleAdvance}
                 disabled={phaseActionLoading || !phase.phase_ready}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 Avanzar fase →
               </button>

@@ -1,0 +1,131 @@
+# =============================================================================
+# PR - Development — lane rápido de cada PR que NO apunta a main
+#
+# Corre en PRs contra development y en PRs encadenados (feature → feature),
+# más cada push a development para que la rama tenga siempre una corrida
+# verde (los required checks que nunca reportaron dejan los PRs trabados).
+# Absorbe al antiguo ci.yml: mismo criterio de torch CPU y caché de HF.
+#
+# Checks que produce (son los "contexts" de branch protection):
+#   dev-backend-tests   schema.sql + migraciones sobre pgvector, luego pytest
+#   dev-frontend-tests  vitest + build (tsc + vite)
+# =============================================================================
+name: PR - Development
+
+on:
+  pull_request:
+    branches-ignore: [main]
+  push:
+    branches: [development]
+
+concurrency:
+  group: pr-development-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: dev-backend-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      # Misma imagen que postgres-app en docker-compose.yml: schema.sql y las
+      # migraciones 0005/0008 usan vector(384), que postgres:16 no trae.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Los conftest usan setdefault, así que estos valores ganan sobre sus defaults.
+      DATABASE_URL: postgresql://test:test@localhost:5432/test
+      JWT_SECRET_KEY: test-secret-key-for-testing-only-32chars
+      # Igual que backend/Dockerfile: wheels de torch SOLO CPU (sin esto
+      # sentence-transformers arrastra torch+CUDA, varios GB).
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      # No cargar el modelo de embeddings al importar la app.
+      EMBEDDINGS_WARMUP: "off"
+      # Un test descarga multilingual-e5-small (~470 MB): se cachea entre corridas.
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # igual que backend/Dockerfile
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .hf-cache
+          key: hf-${{ runner.os }}-multilingual-e5-small
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      # Misma secuencia que el command del backend en docker-compose.yml: las
+      # migraciones son incrementales (0001 hace ALTER TABLE projects) y las
+      # tablas base las crea init_db.py desde schema.sql.
+      - name: Apply schema + migrations
+        run: |
+          python scripts/init_db.py
+          python -m migrations.run_migrations
+
+      - name: Run tests
+        env:
+          # El default (/app/uploads) es la ruta del contenedor, no del runner.
+          # Va en el env del paso y no en el del job porque el contexto
+          # `runner` solo existe dentro de steps (actionlint lo marca).
+          PUPPETEER_UPLOADS_DIR: ${{ runner.temp }}/uploads
+        run: python -m pytest tests -v --tb=short
+
+      - name: Evals (harness offline)
+        # El golden set no llama a la API: es el scorer offline del harness,
+        # sin red y sin API key (--dry-run solo arma los prompts). Es la
+        # puerta de calidad barata del harness (review de #108, lau2413).
+        run: |
+          python -m pytest -q evals/test_runner.py
+          python -m evals.runner --dry-run
+
+  frontend:
+    name: dev-frontend-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # igual que frontend/Dockerfile
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      # vitest cubre el comportamiento; el build cubre el contrato de
+      # compilación (tsc falla con un import inexistente, el caso de HU10 B1').
+      - name: Unit tests (vitest)
+        run: npm run test:run
+
+      - name: Build (tsc + vite)
+        run: npm run build

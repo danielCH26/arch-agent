@@ -223,7 +223,7 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
               <button
                 type="submit"
                 disabled={loading || !feedback.trim()}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 Enviar cambios
               </button>

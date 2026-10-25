@@ -280,6 +280,7 @@ describe('proposalsStore progreso y cancelación (F19)', () => {
 
     await proposalsStore.getState().decide(5, 'approve')
 
+    expect(api.decideProposal).toHaveBeenCalledWith(5, 'approve', undefined, undefined)
     expect(proposalsStore.getState().cancelled).toBe(false)
     expect(proposalsStore.getState().current?.lifecycle).toBe('approved')
   })
@@ -520,5 +521,30 @@ describe('proposalsStore: errorRetryable viene del backend, no del texto', () =>
 
     expect(proposalsStore.getState().error).toBeNull()
     expect(proposalsStore.getState().errorRetryable).toBe(false)
+  })
+})
+
+describe('proposalsStore HU8', () => {
+  it('usa la iteración que guardó el backend en el evento done', () => {
+    withCurrentProposal()
+    proposalsStore.getState().modify(5, 'cambia a capas')
+    // El cliente calcularía 2; el backend guardó 3 (p. ej. hubo otra iteración antes).
+    streams[1].onDone(6, [], 3)
+
+    expect(proposalsStore.getState().current?.iteration).toBe(3)
+  })
+
+  it('envía el proyecto abierto al decidir', async () => {
+    vi.mocked(api.decideProposal).mockResolvedValue({
+      proposal_id: 5,
+      lifecycle: 'rejected',
+      current_phase: 'requerimientos',
+      phase_ready: false,
+    })
+    withCurrentProposal()
+
+    await proposalsStore.getState().decide(5, 'reject', 'no sirve', PROJECT_ID)
+
+    expect(api.decideProposal).toHaveBeenCalledWith(5, 'reject', 'no sirve', PROJECT_ID)
   })
 })

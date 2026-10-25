@@ -120,7 +120,7 @@ Si ya tienes una configuración guardada, verás **Tu configuración actual** (U
 3. **Descripción** (opcional, pero ayuda al agente): `App web para que clínicas pequeñas gestionen turnos, recordatorios y cancelaciones de pacientes.`
 4. Haz clic en **Crear**.
 
-La app abre el **chat** del proyecto, en la fase **Requerimientos**. Arriba ves el nombre del proyecto y las cuatro fases, con la actual resaltada.
+La app abre el **chat** del proyecto, en la fase **Requerimientos**. Arriba ves el nombre del proyecto y las cinco fases, con la actual resaltada.
 
 ![Diálogo de nuevo proyecto](screenshots/nuevo-proyecto-turnofacil.png)
 
@@ -260,7 +260,7 @@ Cuando generaste más de una iteración, al pie de la tarjeta aparece **"N itera
 
 ![Aviso de iteraciones generadas en la sesión](screenshots/evolucion-diseno.png)
 
-Con la propuesta aprobada, haz clic en **Avanzar fase →**.
+Con la propuesta aprobada, debajo del chat aparece el botón **Avanzar**. Haz clic en él para pasar a Refinamiento.
 
 ---
 
@@ -302,11 +302,25 @@ También puedes seguir conversando con el agente en el chat (cuadro **"Escribe u
 
 Cuando estés conforme, haz clic en **✅ Aprobar** en el diagrama: la fase queda lista y el proyecto pasa solo a Revisión.
 
+### Aprobar la fase
+
+Debajo del chat aparece el panel **"Decisión pendiente para la fase refinamiento"** con tres botones:
+
+| Botón | Qué hace |
+|-------|----------|
+| **Aprobar** | Da la fase por terminada. Aparece el botón **Avanzar** para pasar a Revisión. |
+| **Modificar** | Pide un ajuste: describe qué cambiar. La fase sigue pendiente. |
+| **Rechazar** | Rechaza el resultado de la fase. Los botones de decisión siguen disponibles. |
+
+Si apruebas y luego cambias de opinión, puedes rechazar: la fase vuelve a quedar pendiente.
+
 ---
 
 ## 9. Fase 4 — Revisión
 
-Es la última fase del flujo. En lugar del chat aparece el panel **Documento de arquitectura (ADR)**: un documento que reúne todo lo decidido en las fases anteriores y una guía para empezar a construir. La conversación anterior sigue disponible con el botón **Ver la conversación de las fases anteriores**.
+Aparece el panel **Documento de arquitectura (ADR)**: un documento que reúne todo lo decidido en las fases anteriores y una guía para empezar a construir. La conversación anterior sigue disponible con el botón **Ver la conversación de las fases anteriores**.
+
+Para terminar la fase, usa el panel de decisión (**Aprobar**, **Modificar** o **Rechazar**) y luego **Avanzar** para pasar a Cierre.
 
 ![Proyecto en fase de Revisión](screenshots/revision.png)
 
@@ -326,6 +340,10 @@ Es la última fase del flujo. En lugar del chat aparece el panel **Documento de 
 En **Mis proyectos**, la tarjeta del proyecto muestra la etiqueta **Revisión** mientras el ADR no esté aprobado:
 
 ![Proyecto en fase de Revisión en Mis proyectos](screenshots/revision-2.png)
+
+### Fase 5 — Cierre
+
+Es la aprobación final del proyecto. Solo tiene **Aprobar** y **Rechazar** (no se pueden pedir modificaciones en esta fase). Al aprobar, el proyecto pasa a mostrarse como **Completado** en **Mis proyectos** y su botón cambia a **Ver arquitectura**.
 
 ---
 

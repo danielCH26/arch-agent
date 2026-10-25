@@ -119,7 +119,7 @@ export function LoginPage() {
         <button
           type="submit"
           disabled={isSubmitting || status === 'loading'}
-          className="w-full rounded-xl bg-[#0e54ce] py-3 text-base font-semibold text-white shadow-[0px_4px_14px_rgba(14,84,206,0.35)] transition-colors hover:bg-[#0b45ab] disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-xl bg-blue-600 py-3 text-base font-semibold text-white shadow-[0px_4px_14px_rgba(37,99,235,0.35)] transition-colors hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:shadow-none"
         >
           {isSubmitting ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>

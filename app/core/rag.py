@@ -133,6 +133,9 @@ def _pattern_chunk_to_document(
         "complexity": getattr(pattern, "complexity", None),
         "fuentes": getattr(pattern, "fuentes", None) or [],
         "chunk_type": chunk.chunk_type,
+        # HU8: los chunks subidos con ingest_pattern_source.py guardan el
+        # archivo original; se expone para que la cita muestre su fuente.
+        "source_filename": (getattr(chunk, "chunk_metadata", None) or {}).get("filename"),
         "distance": float(distance) if distance is not None else None,
         "similarity": _similarity_from_cosine_distance(distance),
     }

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from contextlib import aclosing
+from datetime import datetime
 from typing import AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,9 +21,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.dependencies import get_current_user
+from app.api.phase_errors import INTERNAL_ERROR_DETAIL, phase_decision_http_error
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
 from app.core.env import env_float
+from app.core.pattern_justification import analyze_justification, summarize_citation_rate
+from app.core.phase_decisions import PhaseDecisionError, record_decision
 from app.core.proposal_generator import (
     PROPOSAL_MAX_ITER,  # noqa: F401  re-export: development lo expone aqui
     ProposalGenerator,
@@ -75,6 +79,9 @@ class ModifyRequest(BaseModel):
 class DecideRequest(BaseModel):
     decision: Literal["approve", "modify", "reject"]
     comment: Optional[str] = Field(None, max_length=2000)
+    # Proyecto abierto en la UI. Si llega y no es el dueño de la propuesta se
+    # responde 409 en vez de aprobar/rechazar la propuesta de otro proyecto.
+    project_id: Optional[int] = None
 
 
 class ProposalDecisionIn(BaseModel):
@@ -112,6 +119,29 @@ class ProposalOut(BaseModel):
     feedback: Optional[str]
     lifecycle: str
     created_at: str
+    # HU8: si la propuesta cita patrones (ver app/core/pattern_justification.py).
+    justification: Optional[dict] = None
+
+
+class JustificationStatsItem(BaseModel):
+    project_id: int
+    proposal_id: int
+    iteration: int
+    lifecycle: str
+    cites_patterns: bool
+    declared_primary: Optional[str]
+    primary_pattern_name: Optional[str]
+
+
+class JustificationStatsOut(BaseModel):
+    # None cuando se agregan todos los proyectos del usuario.
+    project_id: Optional[int]
+    proposals_total: int
+    proposals_citing: int
+    citation_rate: float
+    target: float
+    meets_target: bool
+    items: list[JustificationStatsItem]
 
 
 def _emit_sse(event: str, data) -> str:
@@ -255,6 +285,23 @@ def _content_to_text(content) -> str:
     return str(content)
 
 
+def _proposal_out(proposal: Proposal) -> ProposalOut:
+    content = _content_to_text(proposal.content)
+    citations = list(proposal.citations or [])
+    return ProposalOut(
+        id=int(proposal.id),
+        project_id=int(proposal.project_id),
+        iteration=int(proposal.iteration),
+        content=content,
+        citations=citations,
+        feedback=proposal.feedback,
+        lifecycle=proposal.lifecycle,
+        created_at=proposal.created_at.isoformat() if proposal.created_at else "",
+        # Se calcula al leer: asi tambien lo exponen las propuestas anteriores a HU8.
+        justification=analyze_justification(content, citations),
+    )
+
+
 def _apply_project_proposal_decision(
     db: Session,
     *,
@@ -306,28 +353,34 @@ def _apply_project_proposal_decision(
             else "Propuesta rechazada."
         )
 
-    approval = record_approval_decision(
+    # Route through record_decision for proper HU10 ownership:
+    #   - FOR UPDATE lock prevents race conditions
+    #   - Phase validation (phase == current_phase)
+    #   - Correct phase_ready flipping (no manual assignment needed)
+    result = record_decision(
         db,
         user_id=user_id,
-        phase=PHASE,
-        decision=decision,
-        feedback=feedback,
         project_id=int(project.id),
+        phase=PHASE,
+        action=decision,
+        feedback=feedback,
     )
+    # The approval row is in result.approval; record_decision already set
+    # project.phase_ready correctly - DO NOT manually set it here.
+
     if session_row is None:
-        session_row = db.query(UserSession).filter(UserSession.id == approval.session_id).first()
+        session_row = db.query(UserSession).filter(UserSession.id == result.approval.session_id).first()
     if session_row is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="No se pudo resolver la sesión del usuario.",
         )
 
-    project.phase_ready = decision == "approve"
     engram_state[_project_key(int(project.id))] = project_state
     session_row.engram_state = engram_state
     flag_modified(session_row, "engram_state")
 
-    return approval, len(snapshot), message
+    return result.approval, len(snapshot), message
 
 
 def _raise_if_iteration_cap_reached(db: Session, *, project_id: int) -> None:
@@ -498,6 +551,14 @@ async def decide_proposal(
             user_id=user_id,
             project_id=int(proposal.project_id),
         )
+        if body.project_id is not None and body.project_id != int(proposal.project_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "La propuesta no pertenece al proyecto abierto. Recarga el "
+                    "proyecto antes de aprobar o rechazar."
+                ),
+            )
         if proposal.lifecycle != "proposed":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -505,13 +566,24 @@ async def decide_proposal(
             )
 
         action_type = "approve" if body.decision == "approve" else "reject"
+        # ``interaction_logs`` has no proposal_id, so the duplicate-decision
+        # guard is scoped by time instead: only a decision logged at or after
+        # THIS proposal was created can refer to it. Without the lower bound,
+        # reject -> revert -> new proposal -> reject again returned a bogus
+        # 409 "ya fue rechazada" because the previous proposal's log row
+        # matched (project, phase, action). All conditions stay in ONE
+        # ``.filter()`` call. The ``isinstance`` keeps the bound off when the
+        # row has no usable timestamp (e.g. a bare mock).
+        guard_conditions = [
+            InteractionLog.project_id == proposal.project_id,
+            InteractionLog.phase == PHASE,
+            InteractionLog.action_type == action_type,
+        ]
+        if isinstance(proposal.created_at, datetime):
+            guard_conditions.append(InteractionLog.created_at >= proposal.created_at)
         existing = (
             db.query(InteractionLog)
-            .filter(
-                InteractionLog.project_id == proposal.project_id,
-                InteractionLog.phase == PHASE,
-                InteractionLog.action_type == action_type,
-            )
+            .filter(*guard_conditions)
             .order_by(InteractionLog.created_at.desc())
             .first()
         )
@@ -536,7 +608,11 @@ async def decide_proposal(
             )
         else:
             proposal.lifecycle = "rejected"
-            project.current_phase = _proposal_reject_reverts_to()
+            # NO se revierte la fase acá: development lo hacía en este punto,
+            # antes de registrar la decisión, y eso rompe el gate de
+            # record_decision (PhaseMismatchError -> 500 con str(exc) en el
+            # detail, REQ-SA-34). El revert va más abajo, después de
+            # _apply_project_proposal_decision (Soomri round-2, B5).
             decision_for_hu6 = "reject"
             db.add(
                 ProposalApproval(
@@ -546,6 +622,12 @@ async def decide_proposal(
                 )
             )
 
+        # NOTE (idempotency): ``record_decision`` dedupes identical retries
+        # inside its 60s window, but the ProposalApproval / InteractionLog
+        # rows added here are NOT deduped by it. A retry never reaches this
+        # point twice only because the lifecycle check above (``!= "proposed"``)
+        # and the InteractionLog guard reject it first. Keep those two guards
+        # in front of any change to this block.
         db.add(
             InteractionLog(
                 session_id=proposal.session_id,
@@ -563,10 +645,17 @@ async def decide_proposal(
             feedback=body.comment,
             proposal_text=_content_to_text(proposal.content),
         )
-        if body.decision == "approve":
-            project.phase_ready = True
-        else:
-            project.phase_ready = False
+        # Soomri round-2 re-review (B5): the phase revert MUST happen AFTER
+        # the decision is registered -- record_decision's gate
+        # (phase == current_phase) raises PhaseMismatchError if the phase
+        # was reverted first, and the generic except below converted that
+        # into a 500 with str(exc) leaked into the detail (REQ-SA-34).
+        # Approve leaves the phase untouched; reject reverts it here.
+        if body.decision == "reject":
+            # development (#102) reemplazó la constante por un helper que lee la
+            # env en cada llamada; el revert sigue ACA por el gate (B5).
+            project.current_phase = _proposal_reject_reverts_to()
+        # phase_ready is now set by record_decision - do NOT manually set it
 
         db.commit()
         db.refresh(proposal)
@@ -581,13 +670,102 @@ async def decide_proposal(
     except HTTPException:
         db.rollback()
         raise
+    except PhaseDecisionError as exc:
+        # REQ-SA-28 / REQ-SA-34: e.g. a stale tab hitting a proposal whose
+        # phase moved on -> typed 409, not a 500 that leaks str(exc).
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     except Exception as exc:
         db.rollback()
         logger.exception("decide_proposal failed for proposal_id=%s", proposal_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"No se pudo registrar la decisión: {exc}",
+            detail=INTERNAL_ERROR_DETAIL,
         ) from exc
+    finally:
+        db.close()
+
+
+# Debe declararse ANTES de /api/proposals/{proposal_id}: si no, FastAPI
+# intentaria convertir "justification-stats" a int y responderia 422.
+@router.get("/api/proposals/justification-stats", response_model=JustificationStatsOut)
+async def get_justification_stats(
+    project_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """KR de HU8: porcentaje de propuestas que citan patrones.
+
+    Solo cuenta la ultima iteracion viva (``proposed``/``approved``) de cada
+    proyecto, la misma que devuelve ``/api/projects/{id}/proposals/latest``:
+    las iteraciones viejas y las rechazadas no inflan ni bajan la medida.
+
+    Si la ultima iteracion de un proyecto esta rechazada, el proyecto se mide
+    con la iteracion viva anterior: ``modify`` no cambia el ``lifecycle`` de la
+    iteracion que reemplaza, asi que esa sigue en ``proposed``. Es a proposito
+    y coincide con ``latest``: el KR mide la propuesta que el usuario tiene
+    vigente en el proyecto; un proyecto sin ninguna iteracion viva no cuenta.
+
+    Con ``project_id`` mide ese proyecto (debe ser del usuario). Sin el,
+    agrega todos los proyectos del usuario y ``project_id`` vuelve ``null``.
+    Sin propuestas devuelve totales en 0 y ``meets_target: false``.
+    """
+    user_id = int(current_user["user_id"])
+
+    db = SessionLocal()
+    try:
+        if project_id is not None:
+            _require_owned_project(db, user_id=user_id, project_id=project_id)
+            project_ids = [project_id]
+        else:
+            project_ids = [
+                int(row.id)
+                for row in db.query(Project.id).filter(Project.user_id == user_id).all()
+            ]
+
+        rows: list[Proposal] = []
+        if project_ids:
+            rows = (
+                db.query(Proposal)
+                .filter(
+                    Proposal.project_id.in_(project_ids),
+                    Proposal.lifecycle.in_(("proposed", "approved")),
+                )
+                .order_by(
+                    Proposal.project_id,
+                    Proposal.iteration.desc(),
+                    Proposal.id.desc(),
+                )
+                .all()
+            )
+
+        latest_by_project: dict[int, Proposal] = {}
+        for proposal in rows:
+            latest_by_project.setdefault(int(proposal.project_id), proposal)
+
+        items: list[JustificationStatsItem] = []
+        analyses: list[dict] = []
+        for proposal in latest_by_project.values():
+            analysis = analyze_justification(
+                _content_to_text(proposal.content), list(proposal.citations or [])
+            )
+            analyses.append(analysis)
+            items.append(
+                JustificationStatsItem(
+                    project_id=int(proposal.project_id),
+                    proposal_id=int(proposal.id),
+                    iteration=int(proposal.iteration),
+                    lifecycle=proposal.lifecycle,
+                    cites_patterns=analysis["cites_patterns"],
+                    declared_primary=analysis["declared_primary"],
+                    primary_pattern_name=analysis["primary_pattern_name"],
+                )
+            )
+
+        return JustificationStatsOut(
+            project_id=project_id,
+            items=items,
+            **summarize_citation_rate(analyses),
+        )
     finally:
         db.close()
 
@@ -608,18 +786,7 @@ async def get_proposal(
                 detail="Propuesta no encontrada",
             )
         _require_owned_project(db, user_id=user_id, project_id=int(proposal.project_id))
-        created_at = proposal.created_at.isoformat() if proposal.created_at else ""
-
-        return ProposalOut(
-            id=int(proposal.id),
-            project_id=int(proposal.project_id),
-            iteration=int(proposal.iteration),
-            content=_content_to_text(proposal.content),
-            citations=list(proposal.citations or []),
-            feedback=proposal.feedback,
-            lifecycle=proposal.lifecycle,
-            created_at=created_at,
-        )
+        return _proposal_out(proposal)
     finally:
         db.close()
 
@@ -644,19 +811,7 @@ async def get_proposal_history(
             .order_by(Proposal.iteration.desc(), Proposal.id.desc())
             .all()
         )
-        return [
-            ProposalOut(
-                id=int(proposal.id),
-                project_id=int(proposal.project_id),
-                iteration=int(proposal.iteration),
-                content=_content_to_text(proposal.content),
-                citations=list(proposal.citations or []),
-                feedback=proposal.feedback,
-                lifecycle=proposal.lifecycle,
-                created_at=proposal.created_at.isoformat() if proposal.created_at else "",
-            )
-            for proposal in proposals
-        ]
+        return [_proposal_out(proposal) for proposal in proposals]
     finally:
         db.close()
 
@@ -693,16 +848,7 @@ async def get_latest_proposal(
         )
         if proposal is None:
             return None
-        return ProposalOut(
-            id=int(proposal.id),
-            project_id=int(proposal.project_id),
-            iteration=int(proposal.iteration),
-            content=_content_to_text(proposal.content),
-            citations=list(proposal.citations or []),
-            feedback=proposal.feedback,
-            lifecycle=proposal.lifecycle,
-            created_at=proposal.created_at.isoformat() if proposal.created_at else "",
-        )
+        return _proposal_out(proposal)
     finally:
         db.close()
 
@@ -744,11 +890,17 @@ async def decide_project_proposal(
     except HTTPException:
         db.rollback()
         raise
+    except PhaseDecisionError as exc:
+        db.rollback()
+        raise phase_decision_http_error(exc) from exc
     except Exception as exc:
         db.rollback()
+        logger.exception(
+            "decide_project_proposal failed for project_id=%s", project_id
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=INTERNAL_ERROR_DETAIL,
         ) from exc
     finally:
         db.close()

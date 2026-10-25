@@ -127,14 +127,37 @@ CREATE INDEX IF NOT EXISTS idx_pattern_chunks_pattern_id
 CREATE TABLE IF NOT EXISTS approvals (
     id SERIAL PRIMARY KEY,
     session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    -- HU10 v2 (migration 0016 / 0020): project_id identifica a qué proyecto
+    -- pertenece la decisión. Nullable a propósito (las filas anteriores a
+    -- 0016 nacieron sin este dato; 0020 hace el backfill desde sessions).
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    -- HU10 v2 (migration 0017): UUID del adjunto (fase "diagram"). Las
+    -- decisiones de otras fases quedan NULL.
+    attachment_id VARCHAR(64),
     phase VARCHAR(50) NOT NULL,
     decision VARCHAR(20) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
     feedback TEXT,
+    -- HU10 v2 (migration 0020): snapshot del output previo en modify; '{}' en
+    -- el resto (REQ-SA-16).
+    previous_output JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- HU10 v2 (migration 0020): payload arbitrario del request de decisión
+    -- (REQ-SA-30 idempotency derivation).
+    payload JSONB,
+    -- HU10 v2 (migration 0020): SHA256 hex truncado de (action, payload) —
+    -- idempotency key per (project_id, phase, action, payload_hash)
+    -- (REQ-SA-30).
+    payload_hash VARCHAR(32),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_approvals_session_phase
     ON approvals (session_id, phase);
+
+-- HU10 v2 (migration 0020): read path principal por (project_id, phase,
+-- created_at DESC). F05 retiene el path por session para `requerimientos`;
+-- HU10 v2 necesita el path por project para los 4 phases que controla.
+CREATE INDEX IF NOT EXISTS ix_approvals_project_phase_created
+    ON approvals (project_id, phase, created_at DESC);
 
 -- =============================================================================
 -- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
@@ -211,6 +234,46 @@ ALTER TABLE approvals
 
 CREATE INDEX IF NOT EXISTS idx_approvals_attachment_id
     ON approvals (attachment_id);
+
+-- =============================================================================
+-- HU10 v2 — capability staged-approvals (change hu10-staged-approvals-v2,
+-- Engram topic sdd/hu10-staged-approvals-v2/spec, proposal #109,
+-- ADR-015 successsor to ADR-014).
+--
+-- Migration 0020 (antes 0018):
+--   * backfill `approvals.project_id` desde `sessions.project_id` (migration
+--     0016 agregó la columna NULL; HU10 v2 la rellena para no perder
+--     aprobaciones históricas al filtrar por proyecto, REQ-SA-27);
+--   * extender el índice a `(project_id, phase, created_at DESC)` para el
+--     read path caliente `latest decision for (project, phase)`
+--     (REQ-SA-12, REQ-SA-18, REQ-SA-26);
+--   * agregar `approvals.previous_output JSONB NOT NULL DEFAULT '{}'`
+--     (REQ-SA-16: snapshot del output LLM previo en decisiones modify);
+--   * agregar `approvals.payload JSONB` y `approvals.payload_hash VARCHAR(32)`
+--     (REQ-SA-30: idempotency key por (action, payload)).
+-- =============================================================================
+-- Mismo criterio que migrations/0020: solo usuarios con un único proyecto
+-- (sessions.project_id es el último proyecto abierto; para usuarios con
+-- varios proyectos mezclaba aprobaciones entre proyectos). Ver también 0021.
+UPDATE approvals
+SET project_id = sessions.project_id
+FROM sessions
+WHERE approvals.session_id = sessions.id
+  AND approvals.project_id IS NULL
+  AND sessions.project_id IS NOT NULL
+  AND (SELECT count(*) FROM projects p WHERE p.user_id = sessions.user_id) = 1;
+
+CREATE INDEX IF NOT EXISTS ix_approvals_project_phase_created
+    ON approvals (project_id, phase, created_at DESC);
+
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS previous_output JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS payload JSONB;
+
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS payload_hash VARCHAR(32);
 
 -- =============================================================================
 -- F14 — display_content (migracion 0015). Idempotente para DBs creadas por

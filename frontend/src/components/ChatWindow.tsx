@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchDiagramHistory } from '../api/diagrams'
 import { chatStore, HISTORY_LIMIT } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
+import { useApprovalsStore } from '../stores/approvalsStore'
 import { AdrPanel } from './AdrPanel'
+import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ChatInput } from './ChatInput'
 import { ElicitationDocuments } from './ElicitationDocuments'
 import { MessageBubble } from './MessageBubble'
@@ -68,12 +70,20 @@ export function ChatWindow({
   // Fase: la que pasa la página o, si no viene, la del proyecto activo.
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
   const currentPhase = phase ?? storePhase
+  // B3 (Soomri round-2 re-review): the Avanzar surface must mount when the
+  // phase is ready even though pending_decision is null (approved phase).
+  const storePhaseReady = projectsStore((s) => s.currentProject?.phase_ready ?? false)
+  const fetchApprovalsHistory = useApprovalsStore((s) => s.fetchHistory)
+  const refreshApprovals = useApprovalsStore((s) => s.refresh)
+  const pendingDecision = useApprovalsStore(
+    (s) => (currentPhase ? s.pendingByPhase[currentPhase] ?? null : null),
+  )
   // La tarjeta de propuesta se mantiene montada mientras se genera o
   // modifica una propuesta, aunque la fase cambie durante el stream.
   const proposalStreaming = proposalsStore((s) => s.activity === 'generating' || s.activity === 'modifying')
   const showProposalCard = currentPhase === 'propuesta' || proposalStreaming
   // Revisión: el ADR del proyecto (aprobado o no; ahí también se vuelve a descargar).
-  // El flujo termina en Revisión: ahí vive el ADR (no hay fase 'final').
+  // El ADR vive en Revisión; después queda la fase 'final' (Cierre).
   const showAdrPanel = currentPhase === 'revision'
   const projectName = projectsStore((s) => (s.currentProject?.id === projectId ? s.currentProject?.name : null))
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -189,6 +199,23 @@ export function ChatWindow({
       }
     })()
   }, [currentPhase, projectId])
+  // HU10 v2 (REQ-SA-26.1): mount `<PhaseActions>` from the `/phases` fetch
+  // path. The store re-derives `pendingDecision` server-side, so even when
+  // the SSE `event: phase_locked` consumer is missed (the v1 production
+  // bug), the surface still mounts on the first render and after every
+  // chat response via the `refresh` call below.
+  //
+  // Also re-fetch when the phase changes (e.g. after "Avanzar"):
+  // `pendingByPhase` is rebuilt from /phases for the phase that was current
+  // at fetch time, so the new phase would otherwise have no pending entry
+  // and <PhaseActions> would not show its decision buttons.
+  useEffect(() => {
+    void fetchApprovalsHistory(projectId)
+  }, [fetchApprovalsHistory, projectId, currentPhase])
+
+  const refreshApprovalsAfterChat = useCallback(() => {
+    void refreshApprovals()
+  }, [refreshApprovals])
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -196,8 +223,13 @@ export function ChatWindow({
     messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' })
   }, [messages, isStreaming])
 
-  const handleSend = (text: string, displayText?: string) =>
-    chatStore.getState().sendMessage(projectId, text, displayText)
+  const handleSend = async (text: string, displayText?: string) => {
+    // ChatInput / MessageBubble usan el booleano para restaurar el texto
+    // si el envío no se aceptó: hay que devolverlo.
+    const sent = await chatStore.getState().sendMessage(projectId, text, displayText)
+    refreshApprovalsAfterChat()
+    return sent
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -262,6 +294,25 @@ export function ChatWindow({
           <p className="text-center text-xs text-gray-500" data-testid="auto-diagram-checking">
             Preparando el diagrama de la propuesta aprobada…
           </p>
+        )}
+
+        {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the
+            pendingDecision derived server-side via /phases. Independent of
+            the SSE `event: phase_locked` consumer so production never
+            silently fails to render the surface. On `propuesta` the
+            decision lives in <ProposalCard> (lifecycle, snapshot,
+            reject->revert), so <PhaseActions> only offers "Avanzar"
+            there (hideDecision). La elicitación (`requerimientos`) no
+            monta este componente: la maneja <ElicitationPanel>. */}
+        {(pendingDecision || storePhaseReady) && (
+          <PhaseActions
+            projectId={projectId}
+            phase={currentPhase ?? pendingDecision?.phase ?? ''}
+            allowModify={currentPhase !== 'final'}
+            phaseReady={storePhaseReady}
+            hideDecision={currentPhase === 'propuesta'}
+            onPhaseChanged={onProposalPhaseChanged}
+          />
         )}
 
         {isStreaming && (

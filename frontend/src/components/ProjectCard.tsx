@@ -14,10 +14,27 @@ const PHASE_LABELS: Record<string, string> = {
   propuesta: 'Propuesta',
   refinamiento: 'Refinamiento',
   revision: 'Revisión',
+  // HU10: quinta fase (mismo label que PHASE_LABELS del backend).
+  final: 'Cierre',
+}
+
+// Íconos de línea (Heroicons outline), como el resto de la interfaz.
+const LAYERS_PATH =
+  'M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0l4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0l-5.571 3-5.571-3'
+const CHECK_PATH = 'M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z'
+const CLOCK_PATH = 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z'
+
+function CardIcon({ d, className }: { d: string; className: string }) {
+  return (
+    <svg aria-hidden="true" className={`h-4 w-4 shrink-0 ${className}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={d} />
+    </svg>
+  )
 }
 
 function statusBadge(project: Project): { label: string; className: string } {
-  if (project.current_phase === 'revision' && project.phase_ready) {
+  // HU10: la última fase es `final` (antes era `revision`).
+  if (project.current_phase === 'final' && project.phase_ready) {
     return { label: 'Completado', className: 'bg-green-100 text-green-800' }
   }
   if (project.current_phase === 'requerimientos') {
@@ -59,7 +76,8 @@ export function ProjectCard({ project }: ProjectCardProps) {
   }
 
   const badge = statusBadge(project)
-  const isComplete = project.current_phase === 'revision' && project.phase_ready
+  // HU10: el proyecto termina al aprobar la fase final (Cierre), no Revisión.
+  const isComplete = project.current_phase === 'final' && project.phase_ready
 
   return (
     <div className="group rounded-[10px] border border-gray-300 bg-gray-50 p-5 shadow-[0px_2px_6px_0px_rgba(0,0,0,0.12)] transition-shadow hover:shadow-md">
@@ -103,23 +121,28 @@ export function ProjectCard({ project }: ProjectCardProps) {
 
       <div className="mt-4 space-y-2 text-sm text-gray-700">
         <div className="flex items-center gap-2">
-          <span aria-hidden="true">📚</span>
+          <CardIcon d={LAYERS_PATH} className="text-gray-500" />
           <span>Fase: {PHASE_LABELS[project.current_phase || ''] || 'Sin fase'}</span>
         </div>
         <div className="flex items-center gap-2">
-          <span aria-hidden="true">{project.phase_ready ? '✅' : '🕓'}</span>
-          <span>{project.phase_ready ? 'Lista para avanzar' : 'En progreso'}</span>
+          {project.phase_ready ? (
+            <CardIcon d={CHECK_PATH} className="text-emerald-600" />
+          ) : (
+            <CardIcon d={CLOCK_PATH} className="text-gray-500" />
+          )}
+          {/* En la última fase, "lista" significa que el proyecto terminó. */}
+          <span>{isComplete ? 'Arquitectura aprobada' : project.phase_ready ? 'Lista para avanzar' : 'En progreso'}</span>
         </div>
       </div>
 
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex items-center justify-between gap-3">
         <span className="text-xs text-gray-500">Creado: {formatDate(project.created_at)}</span>
         <button
           onClick={() => navigate(`/projects/${project.id}/chat`)}
           className={
             isComplete
-              ? 'rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700'
-              : 'rounded-lg border border-blue-600 px-4 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50'
+              ? 'shrink-0 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700'
+              : 'shrink-0 whitespace-nowrap rounded-lg border border-blue-600 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50'
           }
         >
           {isComplete ? 'Ver arquitectura' : 'Continuar'}
@@ -145,7 +168,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
                 ref={cancelButtonRef}
                 type="button"
                 onClick={closeDeleteConfirm}
-                className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg"
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
                 disabled={isDeleting}
               >
                 Cancelar

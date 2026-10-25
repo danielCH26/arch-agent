@@ -4,6 +4,7 @@ import { projectsStore } from '../stores/projectsStore'
 import { ProjectCard } from '../components/ProjectCard'
 import { CreateProjectDialog } from '../components/CreateProjectDialog'
 import { ProjectCardsSkeleton } from '../components/Skeleton'
+import { PageHeader } from '../components/PageHeader'
 
 export function ProjectsPage() {
   const location = useLocation()
@@ -30,21 +31,21 @@ export function ProjectsPage() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-semibold md:text-3xl text-gray-700">Mis proyectos</h1>
-          <p className="mt-1 text-gray-600">Gestiona y revisa tus diseños de arquitectura</p>
-        </div>
-        <button
-          onClick={() => setShowCreateDialog(true)}
-          className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 transition-colors"
-        >
-          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Nuevo proyecto
-        </button>
-      </div>
+      <PageHeader
+        title="Mis proyectos"
+        subtitle="Gestiona y revisa tus diseños de arquitectura"
+        actions={
+          <button
+            onClick={() => setShowCreateDialog(true)}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 transition-colors"
+          >
+            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Nuevo proyecto
+          </button>
+        }
+      />
 
       {error && (
         <div role="alert" className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">

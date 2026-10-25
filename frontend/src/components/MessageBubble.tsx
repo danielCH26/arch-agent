@@ -4,6 +4,7 @@ import { submitDiagramDecision, type DiagramDecision } from '../api/diagrams'
 import { useDialog } from '../hooks/useDialog'
 import type { Message } from '../stores/chatStore'
 import robotAvatar from '../assets/robot-avatar.webp'
+import { DecisionIcon, WarningIcon } from './NavIcons'
 
 // Devuelve false (o una promesa que resuelve false) si no se pudo enviar.
 type SendMessage = (text: string, displayText?: string) => unknown
@@ -299,6 +300,12 @@ function parseHtmlTable(tableMarkup: string) {
   return rows.filter((row) => row.length > 0)
 }
 
+// Las tablas se ajustan al ancho de su contenido (sin estirarse a todo el
+// mensaje) y los encabezados resaltan: más grandes, en negrita y centrados.
+const TABLE_HEADER_CELL = 'border border-gray-300 bg-gray-200 px-3 py-2 text-center align-middle text-[15px] font-bold'
+// En las celdas, el texto en negrita (p. ej. los pasos numerados) va en semibold.
+const TABLE_BODY_CELL = 'border border-gray-300 px-3 py-2 align-top [&_strong]:font-semibold'
+
 function renderTable(rows: string[][], keyPrefix: string) {
   if (rows.length === 0) return null
 
@@ -306,11 +313,11 @@ function renderTable(rows: string[][], keyPrefix: string) {
 
   return (
     <div key={keyPrefix} className="my-3 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-auto max-w-full border-collapse text-left text-sm">
         <thead>
           <tr>
             {headers.map((header, index) => (
-              <th key={index} className="border border-gray-300 bg-gray-200 px-3 py-2 font-semibold">
+              <th key={index} className={TABLE_HEADER_CELL}>
                 {renderInline(header)}
               </th>
             ))}
@@ -320,7 +327,7 @@ function renderTable(rows: string[][], keyPrefix: string) {
           {bodyRows.map((row, rowIndex) => (
             <tr key={rowIndex} className="odd:bg-white even:bg-gray-50">
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="border border-gray-300 px-3 py-2 align-top">
+                <td key={cellIndex} className={TABLE_BODY_CELL}>
                   {renderInline(cell)}
                 </td>
               ))}
@@ -338,7 +345,7 @@ function renderHtmlTable(tableMarkup: string, keyPrefix: string) {
 
   return (
     <div key={keyPrefix} className="my-3 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-auto max-w-full border-collapse text-left text-sm">
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex} className="odd:bg-white even:bg-gray-50">
@@ -348,9 +355,7 @@ function renderHtmlTable(tableMarkup: string, keyPrefix: string) {
                 return (
                   <Cell
                     key={cellIndex}
-                    className={`border border-gray-300 px-3 py-2 align-top ${
-                      Cell === 'th' ? 'bg-gray-200 font-semibold' : ''
-                    }`}
+                    className={Cell === 'th' ? TABLE_HEADER_CELL : TABLE_BODY_CELL}
                   >
                     {renderInline(cell.text)}
                   </Cell>
@@ -567,7 +572,9 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false,
         className={`max-w-[85%] px-4 py-2 break-words md:max-w-[70%] ${
           isUser
             ? 'whitespace-pre-wrap rounded-lg bg-blue-600 text-white dark:bg-blue-100'
-            : 'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm'
+            : // En oscuro, la burbuja usa la superficie de tarjetas (no turquesa)
+              // para que las tablas y adjuntos se integren con el resto.
+              'rounded-2xl rounded-tl-sm border border-sky-200 bg-sky-50 text-gray-900 shadow-sm dark:border-gray-200 dark:bg-[rgb(var(--surface))]'
         }`}
       >
         {isUser ? message.content : renderMarkdownBlocks(message.content)}
@@ -582,8 +589,9 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false,
           />
         )}
         {!isUser && message.notices?.map((notice, index) => (
-          <p key={index} role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            ⚠️ {notice}
+          <p key={index} role="status" className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <WarningIcon className="mt-0.5 h-4 w-4" />
+            <span>{notice}</span>
           </p>
         ))}
         {!isUser && onSendMessage && !busy && diagramRenderFailed(message) && (
@@ -743,25 +751,28 @@ function DiagramAttachments({
                       if (onDiagramApproved) await onDiagramApproved()
                       else await send('Apruebo el diagrama, continuemos.')
                     }}
-                    className="rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
                   >
-                    ✅ Aprobar
+                    <DecisionIcon decision="approve" />
+                    Aprobar
                   </button>
                   <button
                     type="button"
                     disabled={isSubmitting}
                     onClick={() => void recordDecision(index, 'reject')}
-                    className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
                   >
-                    ❌ Rechazar
+                    <DecisionIcon decision="reject" />
+                    Rechazar
                   </button>
                   <button
                     type="button"
                     disabled={isSubmitting || busy}
                     onClick={() => { setFeedbackIndex(index); setFeedback(''); setError('') }}
-                    className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-50"
                   >
-                    ✏️ Solicitar cambios
+                    <DecisionIcon decision="modify" />
+                    Solicitar cambios
                   </button>
                 </div>
 
@@ -777,7 +788,7 @@ function DiagramAttachments({
                       placeholder="Describe los cambios que necesitas en el diagrama..."
                     />
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isSubmitting || busy} onClick={() => void requestChanges(index)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Enviar ajuste</button>
+                      <button type="button" disabled={isSubmitting || busy} onClick={() => void requestChanges(index)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300">Enviar ajuste</button>
                       <button type="button" disabled={isSubmitting} onClick={() => { setFeedbackIndex(null); setFeedback(''); setError('') }} className="rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100">Cancelar</button>
                     </div>
                   </div>
