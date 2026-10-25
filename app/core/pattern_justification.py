@@ -37,7 +37,7 @@ _PRIMARY_LINE_RE = re.compile(
 _HEADING_RE = re.compile(r"^[ \t]*(#{1,6})[ \t]+(.*)$", re.MULTILINE)
 # Mismo criterio que el encabezado "Patrones" de proposal_generator._REQUIRED_HEADINGS.
 _PATTERNS_HEADING_RE = re.compile(r"^[*_`\d.)\s]*patr(?:on|ones)\b")
-_CODE_FENCE_RE = re.compile(r"^[ \t]*```.*?^[ \t]*```[^\n]*$", re.MULTILINE | re.DOTALL)
+_CODE_FENCE_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
 _PARENTHETICAL_RE = re.compile(r"\s*\([^)]*\)")
 _TRAILING_REFS_RE = re.compile(r"(?:\s*\[\d+\])+\s*$")
 

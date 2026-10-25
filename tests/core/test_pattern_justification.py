@@ -121,10 +121,11 @@ class TestAnalyzeJustification:
         )
         assert analyze_justification(markdown, CITATIONS)["declared_primary"] is None
 
-    def test_primary_line_inside_code_block_is_ignored(self):
+    @pytest.mark.parametrize("fence", ["```", "~~~"])
+    def test_primary_line_inside_code_block_is_ignored(self, fence):
         markdown = PROPOSAL.replace(
             "- Patrón principal: **Monolito modular** [1]",
-            "```\nPatrón principal: Monolito modular\n```",
+            f"{fence}\nPatrón principal: Monolito modular\n{fence}",
         )
         assert analyze_justification(markdown, CITATIONS)["declared_primary"] is None
 
