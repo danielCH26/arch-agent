@@ -1264,3 +1264,113 @@ def test_chat_does_not_retry_after_tokens_were_sent(_forget_rejected_models):
     assert len(calls) == 1  # repetir duplicaria la respuesta ya mostrada
     assert body_text.count(_token("parcial")) == 1
     assert "event: error\n" in body_text
+
+
+# Conversation memory: wiring of _load_history (reviews de #116)
+# ---------------------------------------------------------------------------
+
+
+def _recording_run_agent(recorder, events=None):
+    """Fake ``run_agent`` that stores the ``history`` kwarg it received."""
+
+    async def _fake_run_agent(*_args, **kwargs):
+        recorder["history"] = kwargs.get("history")
+        for ev in events or [{"event": "token", "data": "hola"},
+                             {"event": "done", "data": None}]:
+            yield ev
+
+    return _fake_run_agent
+
+
+def test_chat_feeds_prior_turns_to_run_agent_chronologically(monkeypatch):
+    """Reviews de #116: nada cubria el cableado de ``_load_history``. El
+    historial llega cronologico, scopeado al proyecto, con ventana par y sin
+    el turno actual (que todavia no se persisto)."""
+    from app.api import chat as chat_module
+
+    recorder: dict = {}
+    list_recent_calls: dict = {}
+
+    # ``list_recent`` devuelve newest-first.
+    rows = [
+        MagicMock(role="assistant", content="respuesta vieja",
+                  display_content="burbuja visible"),
+        MagicMock(role="user", content="pregunta vieja", display_content=None),
+    ]
+
+    def _fake_list_recent(_db, _session_id, project_id=None, limit=None):
+        list_recent_calls.update({"project_id": project_id, "limit": limit})
+        return rows
+
+    patches = _patch_chat_route()
+    patches.append(
+        patch.object(chat_module, "run_agent",
+                     side_effect=_recording_run_agent(recorder))
+    )
+    patches.append(
+        patch.object(chat_module, "list_recent", side_effect=_fake_list_recent)
+    )
+    for p in patches:
+        p.start()
+    try:
+        body = chat_module.ChatRequest(project_id=42, message="pregunta actual")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        body_text = "".join(asyncio.run(_drive()))
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert body_text.endswith(_done())
+    # Cronologico (user -> assistant), sin display_content (REQ-EM-DELTA-2).
+    assert recorder["history"] == [
+        {"role": "user", "content": "pregunta vieja"},
+        {"role": "assistant", "content": "respuesta vieja"},
+    ]
+    # El turno actual no se duplica: se lee antes de _persist_turn.
+    assert "pregunta actual" not in str(recorder["history"])
+    # Scope por proyecto y ventana par (6 = 3 turnos completos).
+    assert list_recent_calls["project_id"] == 42
+    assert list_recent_calls["limit"] == 6
+
+
+def test_chat_history_degrades_to_empty_on_db_error():
+    """Una DB caída no puede romper el stream: el historial degrada a []."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.api import chat as chat_module
+
+    recorder: dict = {}
+
+    def _boom_list_recent(*_args, **_kwargs):
+        raise SQLAlchemyError("db down")
+
+    patches = _patch_chat_route()
+    patches.append(
+        patch.object(chat_module, "run_agent",
+                     side_effect=_recording_run_agent(recorder))
+    )
+    patches.append(
+        patch.object(chat_module, "list_recent", side_effect=_boom_list_recent)
+    )
+    for p in patches:
+        p.start()
+    try:
+        body = chat_module.ChatRequest(project_id=42, message="hola")
+        current_user = {"user_id": 1, "username": "architect"}
+
+        async def _drive():
+            response = await _call_chat(chat_module, body, current_user)
+            return await _drive_event_generator(response.body_iterator)
+
+        body_text = "".join(asyncio.run(_drive()))
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert recorder["history"] == []
+    assert body_text.endswith(_done())

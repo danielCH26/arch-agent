@@ -30,6 +30,8 @@ import os
 import time as _time
 from typing import Any
 
+from app.core.env import env_int
+
 _LOGGER = logging.getLogger(__name__)
 
 # Default URL matches docker-compose.yml. Tests should monkeypatch the env
@@ -74,6 +76,19 @@ _PUPPETEER_ALLOWED_TOOLS: frozenset = frozenset({"puppeteer_screenshot"})
 _RATE_LIMIT_WINDOW_SECONDS: int = 60
 _RATE_LIMITER: dict[int, list[float]] = {}
 _RATE_LIMIT_LOCK = None  # lazily created; see ``_check_rate_limit``
+
+# REQ-PMCP-3: byte cap on render results. Hardcoded default mirrors ADR-013 §2 (2 MB).
+# Override via env var for tests / future tuning. Values below 1 fall back to
+# the default with a warning instead of silently disabling every render
+# (reviews de #116, lau2413).
+_DEFAULT_MAX_RENDER_BYTES: int = 2_097_152  # 2 MiB
+
+
+def _max_render_bytes() -> int:
+    """Read ``PUPPETEER_MAX_RENDER_BYTES`` at call-time (test-friendly)."""
+    return env_int(
+        "PUPPETEER_MAX_RENDER_BYTES", _DEFAULT_MAX_RENDER_BYTES, minimum=1
+    )
 
 
 def _rate_limit_per_minute() -> int:
