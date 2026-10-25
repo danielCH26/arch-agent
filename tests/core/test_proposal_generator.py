@@ -297,6 +297,21 @@ def _pat(name, pid, similarity, complexity=None, chunk_type="summary"):
     )
 
 
+def test_citations_preserve_curated_sources_for_the_ui():
+    from app.core.proposal_generator import _select_citations
+
+    source = {
+        "titulo": "Hexagonal architecture (Alistair Cockburn)",
+        "url": "https://alistair.cockburn.us/hexagonal-architecture/",
+    }
+    doc = _pat("Arquitectura hexagonal", 7, 0.91)
+    doc.metadata["fuentes"] = [source]
+
+    citations = _select_citations([doc], top_n=1, min_similarity=0.0)
+
+    assert citations[0]["fuentes"] == [source]
+
+
 def test_complexity_penalty_prefers_simple_pattern_on_close_similarity():
     from unittest.mock import patch
 
@@ -585,6 +600,15 @@ def test_prompt_caps_technologies_and_blocks_heavy_primary_patterns():
     assert "no son el patrón principal de un proyecto sencillo" in prompt
 
 
+def test_prompt_requires_technology_justification_and_motivating_requirement():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(citations=[], prior_content=None, feedback=None, project_name="P")
+
+    assert "| Tecnología | Justificación | Requisito que lo motiva |" in prompt
+    assert "no una ventaja genérica" in prompt
+
+
 def test_tight_mvp_prohibits_distributed_patterns_as_the_primary_choice():
     from app.core.proposal_generator import _select_citations
 
@@ -792,11 +816,24 @@ def test_truncated_proposal_is_not_persisted_and_yields_error():
     assert not any(name == "done" for name, _ in events)
 
 
-def test_finish_reason_length_is_not_persisted_even_if_sections_exist():
+def test_finish_reason_length_with_every_section_is_persisted():
+    """Antes se descartaba siempre. La validación ya exige la tabla completa y
+    el punto de decisión (lo último de la propuesta): si pasa, no se perdió nada."""
     events, persisted = _stream_with(None, _FULL_PROPOSAL, finish_reason="length")
 
-    assert persisted == []
-    assert events[-1][0] == "error"
+    assert len(persisted) == 1
+    assert events[-1][0] == "done"
+
+
+def test_finish_reason_length_with_a_cut_table_is_rebuilt_from_the_catalog():
+    cut = _FULL_PROPOSAL.split("| Modular |")[0]
+    events, persisted = _stream_with(None, cut + "| Modular | Límites", finish_reason="length")
+
+    # Sin LLM para reparar (el modelo falso no tiene ainvoke) y sin patrones
+    # recuperados, la tabla se arma con el catálogo, marcada "Sin fuente RAG".
+    assert events[-1][0] == "done"
+    assert persisted[0]["markdown"].count("Sin fuente RAG") == 3
+    assert "- Punto de decisión: ¿Aprueba los trade-offs?" in persisted[0]["markdown"]
 
 
 def test_complete_proposal_is_persisted_and_done_is_emitted():
@@ -1240,6 +1277,44 @@ def test_missing_sections_tolerates_decorated_tradeoff_headings():
     ):
         proposal = _with_tradeoff_heading(heading)
         assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_missing_sections_tolerates_reworded_tradeoff_headings():
+    # Caso real (Groq gpt-oss-20b): propuesta completa (finish_reason=stop,
+    # ~5700 caracteres) descartada solo porque el modelo titulo la seccion de
+    # otra forma. El contenido (tabla + punto de decision) se sigue exigiendo.
+    from app.core.proposal_generator import _missing_sections
+
+    for heading in (
+        "## Trade-offs",
+        "## Decisión y trade-offs",
+        "## Análisis de trade-offs",
+        "## Trade-offs y la decisión",
+        "## Alternativas consideradas",
+        "## Opciones evaluadas y decisión",
+        "## Tradeoffs & decisión",
+    ):
+        proposal = _with_tradeoff_heading(heading)
+        assert _missing_sections(proposal, source_count=3) == [], heading
+
+
+def test_reworded_tradeoff_heading_still_requires_the_table():
+    from app.core.proposal_generator import _missing_sections
+
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    proposal = head + "## Trade-offs\nNo hay comparación todavía.\n"
+
+    assert _missing_sections(proposal, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_unrelated_headings_are_not_taken_as_the_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections
+
+    head = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0]
+    for heading in ("## Decisión final", "## Riesgos", "## Conclusiones"):
+        assert "Trade-offs y decisión" in _missing_sections(head + heading + "\nx\n"), heading
 
 
 def test_missing_sections_tolerates_numbered_or_bold_headings_for_every_section():
@@ -1752,7 +1827,8 @@ def test_timeout_of_the_llm_client_is_not_reported_as_our_budget():
 
     assert persisted == []
     assert events[-1][0] == "error"
-    assert "LLM stream failed" in events[-1][1]["message"]
+    assert "No se pudo generar la propuesta" in events[-1][1]["message"]
+    assert "tardó más de lo permitido" in events[-1][1]["message"]
     assert "tiempo máximo" not in events[-1][1]["message"]
     # Un fallo del proveedor es reintentable, pero NO es nuestro tope de tiempo.
     assert _error_meta(events) == ("llm_stream_failed", True)
@@ -2384,6 +2460,600 @@ def test_saving_timeout_also_marks_the_cancel_event(monkeypatch):
 
     assert events[-1][0] == "error"
     assert seen["event"].is_set()
+
+
+
+# --- Revision del PR: encabezado de trade-offs despues de la justificacion ---
+
+
+def test_a_subheading_named_options_before_the_justification_is_not_the_tradeoff_section():
+    from app.core.proposal_generator import _missing_sections, _tradeoff_section
+
+    proposal = _FULL_PROPOSAL.replace(
+        "## Patrones\n",
+        "## Patrones\n### Alternativas descartadas\n- Microservicios: muy caro\n\n"
+        "## Opciones de despliegue\n- Un VPS\n\n",
+    )
+    section = _tradeoff_section(proposal)
+    assert section is not None
+    assert any("| Capas |" in line for line in section)
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+def test_without_justification_only_a_level_two_heading_counts():
+    from app.core.proposal_generator import _tradeoff_section
+
+    body = "## Componentes\n- API\n\n### Opciones\n- nada\n"
+    assert _tradeoff_section(body) is None
+    assert _tradeoff_section(body + "\n## Trade-offs\n| a | b |\n") is not None
+
+
+# --- Diversidad de familias en las filas de la tabla --------------------------
+
+
+def test_tradeoff_rows_prefer_alternatives_from_other_families():
+    from app.core.proposal_generator import _select_citations
+
+    # Caso real: capas, MVC y monolito modular con similitud 0.84-0.85.
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.85, "baja"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.85, "baja"),
+        _pat("MVC / MVVM (Modelo-Vista-Controlador)", 3, 0.84, "baja"),
+        _pat("Serverless (Function-as-a-Service)", 4, 0.80, "media"),
+        _pat("Microservicios", 5, 0.79, "alta"),
+    ]
+    citations = _select_citations(docs, top_n=3, min_similarity=0.0)
+    names = _names(citations)
+
+    assert names[0] == "Monolito modular (Modular Monolith)"
+    assert "Serverless (Function-as-a-Service)" in names
+    assert "Microservicios" in names
+    assert {c["family"] for c in citations} == {"monolitico", "serverless", "distribuido"}
+
+
+def test_a_viable_alternative_beats_a_scale_discarded_one_of_a_new_family():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.85, "baja"),
+        _pat("Arquitectura en capas (Layered)", 2, 0.84, "baja"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.80, "media"),
+        _pat("Microservicios", 4, 0.99, "alta"),
+        _pat("Arquitectura orientada a eventos (Event-Driven)", 5, 0.98, "alta"),
+    ]
+    citations = _select_citations(docs, top_n=3, min_similarity=0.0, explicit_text=_TIGHT)
+    names = _names(citations)
+
+    assert names[0] == "Monolito modular (Modular Monolith)"
+    assert "Serverless (Function-as-a-Service)" in names
+    # Una sola alternativa distribuida (descartada por escala), no las dos.
+    distributed = [c for c in citations if c.get("family") == "distribuido"]
+    assert len(distributed) == 1
+    assert distributed[0]["scale_disqualified"] is True
+
+
+def test_prompt_shows_the_family_of_each_row():
+    from app.core.proposal_generator import _build_prompt
+
+    prompt = _build_prompt(
+        citations=[
+            {"pattern_name": "Monolito modular", "source_role": "primary", "family": "monolitico", "level": "despliegue"},
+            {"pattern_name": "Capas", "source_role": "tradeoff_option", "family": "monolitico", "level": "codigo"},
+            {"pattern_name": "Serverless", "source_role": "tradeoff_option", "family": "serverless", "level": "despliegue"},
+        ],
+        prior_content=None,
+        feedback=None,
+        project_name="P",
+    )
+    assert "Familia: monolítico" in prompt
+    assert "Familia: serverless" in prompt
+    assert "se combina con un estilo de despliegue, no lo reemplaza" in prompt
+    assert "alternativas REALES" in prompt
+
+
+def test_prompt_states_the_thresholds_of_the_project_kind():
+    from app.core.proposal_generator import _build_prompt
+
+    academic = _build_prompt([], None, None, "P", project_kind="academico")
+    enterprise = _build_prompt([], None, None, "P", project_kind="empresarial")
+    assert "equipo de hasta 4 personas Y plazo de hasta 3 meses" in academic
+    assert "equipo de hasta 2 personas Y plazo de hasta 2 meses" in enterprise
+
+
+def test_proposal_and_adr_share_the_viability_rules():
+    from app.core.adr_generator import ADR_SYSTEM_PROMPT
+    from app.core.proposal_generator import _build_prompt
+    from app.core.viability_rules import COMMON_VIABILITY_RULES
+
+    assert COMMON_VIABILITY_RULES in _build_prompt([], None, None, "P")
+    assert COMMON_VIABILITY_RULES in ADR_SYSTEM_PROMPT
+
+
+# --- Reparación de una propuesta incompleta (antes había que regenerar) -------
+
+_REPAIR_CITATIONS = [
+    {
+        "pattern_name": "Monolito modular (Modular Monolith)",
+        "source_role": "primary",
+        "complexity": "baja",
+        "tradeoffs": {"ventajas": ["Un solo despliegue"], "desventajas": ["Escala en bloque"]},
+    },
+    {
+        "pattern_name": "Arquitectura en capas (Layered)",
+        "complexity": "baja",
+        "tradeoffs": {"ventajas": ["Fácil de entender"], "desventajas": ["Acoplamiento | entre capas"]},
+    },
+    {
+        "pattern_name": "Microservicios",
+        "complexity": "alta",
+        "scale_disqualified": True,
+        "tradeoffs": {"ventajas": ["Escala independiente"], "desventajas": ["Operación compleja"]},
+    },
+]
+
+# Propuesta real que se descartaba: la tabla quedó con 2 filas y sin punto de decisión.
+_BROKEN_TABLE = _FULL_PROPOSAL.replace(
+    "| Microservicios | Escala independiente | Operación compleja | Alta | Bajo | [3] |\n", ""
+).replace("- Punto de decisión: ¿Aprueba los trade-offs?\n", "")
+
+
+def test_the_broken_table_is_what_used_to_discard_the_proposal():
+    from app.core.proposal_generator import _missing_sections
+
+    assert _missing_sections(_BROKEN_TABLE, source_count=3) == [
+        "Tabla de trade-offs (3 opciones y 3 criterios)"
+    ]
+
+
+def test_fallback_table_uses_the_retrieved_patterns_and_passes_validation():
+    from app.core.proposal_generator import (
+        _fallback_tradeoff_section,
+        _merge_proposal_sections,
+        _missing_sections,
+    )
+
+    proposal = _BROKEN_TABLE
+    section = _fallback_tradeoff_section(proposal, _REPAIR_CITATIONS)
+    assert section is not None
+    rebuilt = _merge_proposal_sections(proposal, section)
+
+    assert _missing_sections(rebuilt, source_count=3) == []
+    # La recomendación es el patrón que la propuesta ya eligió (Capas), no la fila 1.
+    assert "- Recomendación: Arquitectura en capas (Layered)" in rebuilt
+    assert "| Microservicios | Escala independiente | Operación compleja | Alta | Descartada" in rebuilt
+    assert "Acoplamiento \\| entre capas" in rebuilt
+    # Las demás secciones quedan intactas y en orden.
+    assert rebuilt.index("## Justificación") < rebuilt.index("## Trade-offs y decisión")
+    assert "- Riesgo o costo: ..." in rebuilt
+    assert rebuilt.count("## Trade-offs y decisión") == 1
+
+
+def test_with_two_sources_the_table_is_completed_from_the_catalog():
+    """Antes no había tabla con menos de 3 fuentes y la propuesta se descartaba."""
+    from app.core.proposal_generator import (
+        _fallback_tradeoff_section,
+        _merge_proposal_sections,
+        _missing_sections,
+    )
+
+    section = _fallback_tradeoff_section(_BROKEN_TABLE, _REPAIR_CITATIONS[:2])
+    assert section is not None
+    assert section.count("Sin fuente RAG") == 1
+    rebuilt = _merge_proposal_sections(_BROKEN_TABLE, section)
+    assert _missing_sections(rebuilt, source_count=2) == []
+
+
+def test_merge_replaces_a_broken_level_three_tradeoff_heading():
+    from app.core.proposal_generator import _merge_proposal_sections, _missing_sections
+
+    broken = _BROKEN_TABLE.replace("## Trade-offs y decisión", "### Trade-offs y decisión")
+    good_section = "## Trade-offs y decisión" + _FULL_PROPOSAL.split("## Trade-offs y decisión")[1]
+
+    fixed = _merge_proposal_sections(broken, good_section)
+
+    assert "### Trade-offs y decisión" not in fixed
+    assert _missing_sections(fixed, source_count=3) == []
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+class _RepairModel:
+    def __init__(self, reply=None, error=None):
+        self.reply, self.error, self.prompts = reply, error, []
+
+    async def ainvoke(self, prompt):
+        from types import SimpleNamespace
+
+        self.prompts.append(prompt)
+        if self.error:
+            raise self.error
+        return SimpleNamespace(content=self.reply)
+
+
+def test_repair_llm_pass_returns_only_the_tradeoffs_and_is_merged():
+    from app.core.proposal_generator import _missing_sections, repair_proposal
+
+    tradeoffs = "## Trade-offs y decisión" + _FULL_PROPOSAL.split("## Trade-offs y decisión")[1]
+    model = _RepairModel(reply="Aquí está la sección corregida:\n\n" + tradeoffs)
+
+    repaired, how = _run(repair_proposal(model, _BROKEN_TABLE, _REPAIR_CITATIONS))
+
+    assert how == "llm"
+    assert _missing_sections(repaired, source_count=3) == []
+    assert "Aquí está la sección corregida" not in repaired
+    assert "## Componentes\n- API Layer - FastAPI" in repaired
+    prompt = model.prompts[0]
+    assert "Tabla de trade-offs (3 opciones y 3 criterios)" in prompt
+    assert "## Trade-offs y decisión" in prompt and "[3] Microservicios" in prompt
+
+
+def test_repair_falls_back_to_the_catalog_table_when_the_llm_fails():
+    from app.core.proposal_generator import _missing_sections, repair_proposal
+
+    model = _RepairModel(error=RuntimeError("429 rate_limit_exceeded"))
+
+    repaired, how = _run(repair_proposal(model, _BROKEN_TABLE, _REPAIR_CITATIONS))
+
+    assert how == "tabla"
+    assert _missing_sections(repaired, source_count=3) == []
+
+
+def test_repair_falls_back_when_the_llm_answer_is_still_broken():
+    from app.core.proposal_generator import repair_proposal
+
+    model = _RepairModel(reply="## Trade-offs y decisión\n| Opción | Ventajas |\n| --- | --- |\n")
+
+    _repaired, how = _run(repair_proposal(model, _BROKEN_TABLE, _REPAIR_CITATIONS))
+
+    assert how == "tabla"
+
+
+def test_repair_cannot_invent_missing_components():
+    from app.core.proposal_generator import repair_proposal
+
+    no_components = _BROKEN_TABLE.replace("## Componentes\n- API Layer - FastAPI\n- Persistence Layer - PostgreSQL\n", "")
+    model = _RepairModel(error=RuntimeError("boom"))
+
+    repaired, how = _run(repair_proposal(model, no_components, _REPAIR_CITATIONS))
+
+    assert (repaired, how) == (None, "fallo")
+
+
+def test_repair_can_be_disabled(monkeypatch):
+    from app.core import proposal_generator as gen
+
+    monkeypatch.setattr(gen, "PROPOSAL_REPAIR", False)
+    repaired, how = _run(gen.repair_proposal(_RepairModel(), _BROKEN_TABLE, _REPAIR_CITATIONS))
+
+    assert (repaired, how) == (None, "fallo")
+
+
+def test_a_complete_proposal_is_not_touched():
+    from app.core.proposal_generator import repair_proposal
+
+    model = _RepairModel(error=AssertionError("no debe llamar al LLM"))
+    repaired, how = _run(repair_proposal(model, _FULL_PROPOSAL, _REPAIR_CITATIONS))
+
+    assert (repaired, how) == (_FULL_PROPOSAL, "ok")
+
+
+def test_stream_repairs_an_incomplete_table_instead_of_failing():
+    """Lo de la demo: antes respondía "incompleta" y había que regenerar."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+
+    no_sources_table = (
+        "## Trade-offs y decisión\n"
+        "| Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| Capas | Simple | Escala conjunta | Baja | Alto | Sin fuente RAG |\n"
+        "| Modular | Límites claros | Disciplina | Media | Alto | Sin fuente RAG |\n"
+        "| Microservicios | Escala | Operación | Alta | Bajo | Sin fuente RAG |\n"
+        "- Recomendación: Capas\n"
+        "- Punto de decisión: ¿Aprueba los trade-offs?\n"
+    )
+    broken = _FULL_PROPOSAL.split("## Trade-offs y decisión")[0] + "## Trade-offs y decisión\n| Opción | Ventajas |\n"
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    class _Model:
+        async def astream(self, prompt):
+            yield _Chunk(broken)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+        async def ainvoke(self, prompt):
+            if "La validación automática encontró" not in str(prompt):
+                raise RuntimeError("solo se espera la pasada de reparación")
+            return SimpleNamespace(content=no_sources_table)
+
+    persisted = []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    with patch.object(gen, "_load_project_and_session", return_value=(project, 1)), \
+        patch.object(gen, "load_requirements_text", return_value=""), \
+        patch.object(gen, "load_documents_text", return_value=("", [])), \
+        patch.object(gen, "_retrieve_patterns", return_value=[]), \
+        patch.object(gen, "build_langchain_model", return_value=_Model()), \
+        patch.object(gen, "_persist_proposal_and_log",
+                     side_effect=lambda **kw: persisted.append(kw) or (7, 8, 1)), \
+        patch.object(gen, "_engram_mirror", new=_noop_async):
+        events = _drain(gen.ProposalGenerator(user_id=1, project_id=1).generate_stream())
+
+    assert events[-1][0] == "done"
+    assert len(persisted) == 1
+    assert "| Microservicios | Escala | Operación | Alta | Bajo | Sin fuente RAG |" in persisted[0]["markdown"]
+    stages = [payload["stage"] for name, payload in events if name == "progress"]
+    assert "repairing" in stages
+
+
+def test_a_non_breaking_hyphen_in_the_heading_is_still_the_tradeoff_section():
+    """gpt-oss escribe "Trade‑offs" (U+2011) y "Punto de decisión" con U+00A0.
+
+    A la vista es igual, pero la validación no encontraba la sección y la
+    propuesta salía como incompleta en cada corrida del proyecto complejo.
+    """
+    from app.core.proposal_generator import _missing_sections
+
+    proposal = _FULL_PROPOSAL.replace("Trade-offs y decisión", "Trade‑offs y decisión").replace(
+        "Punto de decisión", "Punto de decisión"
+    )
+    assert _missing_sections(proposal, source_count=3) == []
+
+
+# --- Prueba del observatorio de analítica (hallazgos) -------------------------
+
+
+def test_modify_keeps_the_previous_primary_pattern_when_feedback_does_not_name_one():
+    """2.3: con un comentario que no nombraba el patrón volvía Monolito modular."""
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.86, "baja"),
+        _pat("Pipeline de datos ETL / ELT por lotes", 2, 0.83, "media"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.84, "media"),
+    ]
+    citations = _select_citations(
+        docs,
+        feedback="Agrega el reporte SNIES y el tablero de ocupación",
+        keep_primary="Pipeline ETL/ELT por lotes [1]",
+    )
+    assert citations[0]["pattern_name"] == "Pipeline de datos ETL / ELT por lotes"
+
+
+def test_modify_that_asks_for_another_pattern_still_wins_over_the_previous_one():
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("Monolito modular (Modular Monolith)", 1, 0.86, "baja"),
+        _pat("Pipeline de datos ETL / ELT por lotes", 2, 0.83, "media"),
+        _pat("Serverless (Function-as-a-Service)", 3, 0.84, "media"),
+    ]
+    citations = _select_citations(
+        docs,
+        feedback="Cambia a serverless",
+        keep_primary="Pipeline de datos ETL / ELT por lotes",
+    )
+    assert citations[0]["pattern_name"] == "Serverless (Function-as-a-Service)"
+
+
+def test_prior_primary_pattern_is_read_from_the_previous_proposal():
+    from app.core.proposal_generator import _prior_primary_pattern
+
+    assert _prior_primary_pattern(_FULL_PROPOSAL) == "Arquitectura en capas (Layered)"
+    assert _prior_primary_pattern("sin patrón") is None
+
+
+def test_data_projects_prefer_data_patterns_and_a_data_alternative():
+    """2.1 / 2.9: para un observatorio de analítica salía API Gateway + BFF."""
+    from app.core.proposal_generator import _select_citations
+
+    docs = [
+        _pat("API Gateway + Backend for Frontend (BFF)", 1, 0.86, "media"),
+        _pat("Serverless (Function-as-a-Service)", 2, 0.85, "media"),
+        _pat("Monolito modular (Modular Monolith)", 3, 0.84, "baja"),
+        _pat("Pipeline de datos ETL / ELT por lotes", 4, 0.83, "media"),
+        _pat("Data Lakehouse con capas Medallion (bronce, plata, oro)", 5, 0.82, "media"),
+    ]
+    text = (
+        "Observatorio: integrar los datos del sistema académico y de Moodle en "
+        "tableros de Power BI con indicadores por programa."
+    )
+    citations = _select_citations(docs, explicit_text=text)
+    names = [c["pattern_name"] for c in citations]
+    assert names[0] == "Pipeline de datos ETL / ELT por lotes"
+    assert "Data Lakehouse con capas Medallion (bronce, plata, oro)" in names
+    # Sigue habiendo una alternativa de otra familia.
+    assert len({c.get("family") for c in citations}) >= 2
+
+
+def test_a_regular_project_is_not_a_data_project():
+    from app.core.proposal_generator import _data_project_signal
+
+    assert _data_project_signal("Agenda de citas con recordatorios por correo") is False
+    assert _data_project_signal("Tableros en Power BI con indicadores de ventas") is True
+
+
+def test_unverified_cloud_region_and_response_time_are_marked_as_assumptions():
+    """2.4 / 2.12: "región Colombia Central" de Azure y "< 1 s" se daban por hechos."""
+    from app.core.proposal_generator import mark_unverified_claims
+
+    proposal = (
+        "- Almacén: Azure Database for PostgreSQL – región Colombia Central\n"
+        "| FastAPI | Permite responder en < 1 s a los lectores | Ocupación |\n"
+        "- Disponibilidad de 99.5% pedida por el usuario\n"
+    )
+    marked = mark_unverified_claims(proposal, "Disponibilidad 99.5% en horario de atención")
+    assert "región Colombia Central (supuesto)" in marked
+    assert "< 1 s (supuesto)" in marked
+    assert "99.5% (supuesto)" not in marked  # esa cifra sí la dio el usuario
+    # No marca dos veces.
+    assert mark_unverified_claims(marked, "Disponibilidad 99.5% en horario de atención") == marked
+
+
+def test_a_region_without_a_cloud_provider_is_not_touched():
+    from app.core.proposal_generator import mark_unverified_claims
+
+    text = "- Usuarios de la región Caribe\n"
+    assert mark_unverified_claims(text, "") == text
+
+
+def test_batch_and_real_time_requirements_add_the_two_paths_rule():
+    """2.11: la justificación decía que no hacía falta tiempo real."""
+    from app.core.proposal_generator import _build_prompt
+    from app.core.viability_rules import REAL_TIME_PATH_RULE
+
+    both = _build_prompt(
+        [], None, None, "Obs",
+        requirements_text="Carga nocturna de la réplica. Tablero de ocupación actualizado cada minuto.",
+    )
+    only_batch = _build_prompt([], None, None, "Obs", requirements_text="Carga nocturna de la réplica.")
+    assert REAL_TIME_PATH_RULE in both
+    assert REAL_TIME_PATH_RULE not in only_batch
+
+
+def test_compact_prompt_is_shorter_and_keeps_the_feedback():
+    from app.core.proposal_generator import _build_prompt
+
+    citations = [
+        {
+            "pattern_name": f"Patrón {i}",
+            "source_role": "primary" if i == 1 else "tradeoff_option",
+            "snippet": "x" * 240,
+            "tradeoffs": {"ventajas": ["a" * 100] * 5, "desventajas": ["b" * 100] * 5},
+        }
+        for i in range(1, 4)
+    ]
+    args = dict(
+        citations=citations, prior_content="## Componentes\n- API", feedback="Agrega el reporte SNIES",
+        project_name="Obs", documents_text="d" * 6000,
+    )
+    full, compact = _build_prompt(**args), _build_prompt(**args, compact=True)
+    assert len(compact) < len(full) - 3000
+    assert "Agrega el reporte SNIES" in compact
+
+
+def test_a_413_from_the_provider_is_explained_and_not_retryable():
+    """3.2 / 3.4: se mostraba el error crudo de Groq y "Reintentar" fallaba igual."""
+
+    class _Model:
+        async def astream(self, _prompt):
+            raise RuntimeError(
+                "Error code: 413 - Request too large for model on tokens per minute (TPM): "
+                "Limit 8000, Requested 8117 ... rate_limit_exceeded"
+            )
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    message = events[-1][1]["message"]
+    assert "límite de tokens" in message and "Error code" not in message
+    assert _error_meta(events) == ("llm_stream_failed", False)
+
+
+def test_citations_take_the_sources_from_the_catalog_when_the_base_has_none():
+    """2.14: el patrón recomendado salía sin enlaces en Referencias."""
+    from app.core.proposal_generator import _select_citations
+
+    citations = _select_citations([_pat("Pipeline de datos ETL / ELT por lotes", 1, 0.9, "media")])
+    assert citations[0]["fuentes"], "las fuentes del YAML deberían llegar a la cita"
+
+
+def test_a_429_before_the_first_token_is_retried_once():
+    """Límite de tokens por minuto de Groq: antes había que darle a "Reintentar"."""
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    class _Model:
+        calls = 0
+
+        async def astream(self, _prompt):
+            _Model.calls += 1
+            if _Model.calls == 1:
+                raise RuntimeError("Error code: 429 - rate_limit_exceeded. Please try again in 0.01s.")
+            yield _Chunk(_FULL_PROPOSAL)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert events[-1][0] == "done"
+    assert _Model.calls == 2
+    assert "waiting" in [payload["stage"] for name, payload in events if name == "progress"]
+
+
+def test_a_second_429_is_reported_and_retryable():
+    class _Model:
+        async def astream(self, _prompt):
+            raise RuntimeError("Error code: 429 - rate_limit_exceeded. Please try again in 0.01s.")
+            yield  # pragma: no cover
+
+    stack, generator, persisted = _patched_generator(_Model())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert "límite de uso por minuto" in events[-1][1]["message"]
+    assert _error_meta(events) == ("llm_stream_failed", True)
+
+
+def test_modify_that_changes_the_pattern_without_asking_saves_a_warning():
+    """Un ajuste que no nombra el patrón y lo cambia queda avisado al principio."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.proposal_notes import NOTE_TITLE
+
+    class _Chunk:
+        def __init__(self, content, metadata=None):
+            self.content = content
+            self.response_metadata = metadata or {}
+
+    changed = _FULL_PROPOSAL.replace(
+        "- Patrón principal: Arquitectura en capas (Layered)", "- Patrón principal: Microservicios"
+    ).replace("- Recomendación: Capas", "- Recomendación: Microservicios")
+
+    class _Model:
+        async def astream(self, _prompt):
+            yield _Chunk(changed)
+            yield _Chunk("", {"finish_reason": "stop"})
+
+    persisted = []
+    project = SimpleNamespace(name="Biblioteca", description="d")
+    with patch.object(gen, "_load_project_and_session", return_value=(project, 1)), \
+        patch.object(gen, "_load_prior_proposal", return_value=(_FULL_PROPOSAL, 1)), \
+        patch.object(gen, "load_requirements_text", return_value=""), \
+        patch.object(gen, "load_documents_text", return_value=("", [])), \
+        patch.object(gen, "_retrieve_patterns", return_value=[]), \
+        patch.object(gen, "build_langchain_model", return_value=_Model()), \
+        patch.object(gen, "_persist_proposal_and_log",
+                     side_effect=lambda **kw: persisted.append(kw) or (7, 8, 2)), \
+        patch.object(gen, "_engram_mirror", new=_noop_async):
+        events = _drain(
+            gen.ProposalGenerator(user_id=1, project_id=1).generate_stream(
+                feedback="Agrega un módulo de reportes", prior_proposal_id=3
+            )
+        )
+
+    assert events[-1][0] == "done"
+    saved = persisted[0]["markdown"]
+    assert saved.startswith(NOTE_TITLE)
+    assert "cambió de «Arquitectura en capas (Layered)» a «Microservicios»" in saved
 
 
 _TEMPERATURE_400 = (

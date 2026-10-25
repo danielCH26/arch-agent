@@ -52,6 +52,38 @@ describe('renderMarkdownBlocks', () => {
     expect(document.querySelector('em')).toBeNull()
   })
 
+  describe('citas (>)', () => {
+    // Bug real (ADR del observatorio de permanencia): no había ninguna rama
+    // para líneas que empiezan con '>', así que caían al párrafo genérico y
+    // el '>' quedaba como texto literal -- tanto en el panel como en el PDF
+    // del ADR, que reutiliza este mismo parser.
+    it('convierte una línea con > en un <blockquote>, sin el carácter literal', () => {
+      const { container } = renderMarkdown('> Nota sobre la región: ver sección 4.')
+      const quote = container.querySelector('blockquote')
+      expect(quote).not.toBeNull()
+      expect(quote?.textContent).toBe('Nota sobre la región: ver sección 4.')
+      expect(container.textContent).not.toContain('>')
+    })
+
+    it('une varias líneas consecutivas de cita en un solo bloque', () => {
+      const { container } = renderMarkdown(
+        '> Este documento reúne las decisiones tomadas en cada fase\n' +
+          '> y una guía para empezar a construir el sistema.',
+      )
+      const quotes = container.querySelectorAll('blockquote')
+      expect(quotes).toHaveLength(1)
+      expect(quotes[0].textContent).toBe(
+        'Este documento reúne las decisiones tomadas en cada fase y una guía para empezar a construir el sistema.',
+      )
+    })
+
+    it('no confunde una cita con el párrafo siguiente', () => {
+      const { container } = renderMarkdown('> Cita breve\n\nPárrafo normal')
+      expect(container.querySelectorAll('blockquote')).toHaveLength(1)
+      expect(container.querySelector('p')?.textContent).toBe('Párrafo normal')
+    })
+  })
+
   describe('tablas de trade-offs', () => {
     const header = '| Opción | Ventajas | Desventajas | Complejidad/costo |\n| --- | --- | --- | --- |\n'
 

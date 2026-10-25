@@ -1,6 +1,8 @@
 pattern_name: "Pipeline de datos ETL / ELT por lotes"
 category: "Flujo de datos"
 complexity: "media"
+family: "datos"
+level: "despliegue"
 description: >
   Extrae datos de varias fuentes, los transforma (limpieza, validación,
   integración) y los carga en un almacén analítico en ejecuciones programadas

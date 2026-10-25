@@ -17,13 +17,30 @@ function toLines(text: string): string[] {
     .filter(Boolean)
 }
 
-function resumenItems(value: unknown): string[] {
+// Subcampos de contexto_tecnico y datos_viabilidad: se muestran con nombre
+// legible, no con la clave interna ("habilidades_equipo").
+const SUBFIELD_LABELS: Record<string, string> = {
+  plataforma: 'Plataforma',
+  habilidades_equipo: 'Habilidades del equipo',
+  fuentes_de_datos: 'Fuente de los datos',
+  tecnologias_no_dominadas: 'Tecnologías que el equipo no domina',
+  presupuesto: 'Presupuesto',
+  equipo: 'Equipo',
+  plazo: 'Plazo',
+  _texto_original: 'Texto original (antes de corregir la escritura)',
+}
+
+function subfieldLabel(key: string): string {
+  return SUBFIELD_LABELS[key] ?? key.replace(/_/g, ' ')
+}
+
+export function resumenItems(value: unknown): string[] {
   if (value == null) return []
   if (Array.isArray(value)) return value.flatMap((item) => resumenItems(item))
   if (typeof value === 'string') return toLines(value)
   if (typeof value === 'object') {
     return Object.entries(value as Record<string, unknown>).map(
-      ([key, item]) => `${key}: ${resumenItems(item).join('; ')}`,
+      ([key, item]) => `${subfieldLabel(key)}: ${resumenItems(item).join('; ')}`,
     )
   }
   return [String(value)]
@@ -50,10 +67,33 @@ const RESUMEN_LABELS: Record<string, string> = {
   funcionalidades: 'Funcionalidades',
   restricciones: 'Restricciones',
   calidad: 'Atributos de calidad',
+  escala: 'Escala y volumen',
+  contexto_tecnico: 'Contexto técnico',
+  datos_viabilidad: 'Datos de viabilidad (palabras del usuario)',
 }
 
 function resumenLabel(key: string): string {
   return RESUMEN_LABELS[key.toLowerCase()] ?? key.replace(/_/g, ' ')
+}
+
+// `calidad_origen` dice si cada atributo de calidad lo pidió el usuario
+// ("dicho") o lo propuso el agente ("propuesto"). No se muestra como un campo
+// aparte: marca los atributos propuestos dentro de "Atributos de calidad".
+export function resumenEntries(resumen: Record<string, unknown>): [string, unknown][] {
+  const origins = resumen.calidad_origen
+  const originMap =
+    origins && typeof origins === 'object' && !Array.isArray(origins) ? (origins as Record<string, unknown>) : {}
+  return Object.entries(resumen)
+    .filter(([key]) => key !== 'calidad_origen')
+    .map(([key, value]): [string, unknown] => {
+      if (key !== 'calidad' || !Array.isArray(value)) return [key, value]
+      return [
+        key,
+        value.map((item: unknown) =>
+          typeof item === 'string' && originMap[item] === 'propuesto' ? `${item} (propuesto por el agente)` : item,
+        ),
+      ]
+    })
 }
 
 export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelProps) {
@@ -90,7 +130,7 @@ export function ApprovalPanel({ projectId, resumen, onDecided }: ApprovalPanelPr
     <div className="rounded-lg border border-gray-200 bg-white p-4">
       <h2 className="font-semibold text-gray-900">Resumen del proyecto</h2>
       <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
-        {Object.entries(resumen).map(([key, value]) => (
+        {resumenEntries(resumen).map(([key, value]) => (
           <div key={key}>
             <dt className="text-base font-bold uppercase tracking-wide text-gray-800">{resumenLabel(key)}</dt>
             <dd className="mt-1 text-sm leading-relaxed text-gray-700"><ResumenValue value={value} /></dd>

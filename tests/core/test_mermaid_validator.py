@@ -1,4 +1,7 @@
 from app.core.mermaid_validator import (
+    sanitize_flowchart_edge_labels,
+    sanitize_pipe_edge_labels,
+    sanitize_subgraph_id_collisions,
     extract_mermaid_block,
     sanitize_class_statements,
     sanitize_mermaid,
@@ -235,3 +238,146 @@ def test_validate_mermaid_rejects_unrecognized_diagram_type():
 
     assert is_valid is False
     assert "no reconocido" in error
+
+
+# --- Flechas con etiqueta tras ":" (sintaxis de stateDiagram en un flowchart) --
+
+
+def test_sanitize_flowchart_edge_labels_converts_colon_labels():
+    code = (
+        "flowchart TD\n"
+        '    UI_Web --> API_App : "Solicitudes HTTP"\n'
+        "    API_App --> Auth_Module : Validar JWT\n"
+        "    A -.-> B : 'eventos | async'\n"
+        "    C --> D"
+    )
+    assert sanitize_flowchart_edge_labels(code) == (
+        "flowchart TD\n"
+        "    UI_Web -->|Solicitudes HTTP| API_App\n"
+        "    API_App -->|Validar JWT| Auth_Module\n"
+        "    A -.->|eventos / async| B\n"
+        "    C --> D"
+    )
+
+
+def test_sanitize_flowchart_edge_labels_result_is_valid_mermaid():
+    code = 'flowchart TD\n  A --> B : "Token válido"'
+    is_valid, error = validate_mermaid(sanitize_mermaid(code))
+    assert is_valid, error
+
+
+def test_sanitize_flowchart_edge_labels_ignores_other_diagram_types():
+    code = "sequenceDiagram\n  A->>B: hola\n  A --> B : x"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+def test_sanitize_flowchart_edge_labels_leaves_valid_edges_untouched():
+    code = "flowchart LR\n  A -->|ok| B\n  B --> C"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+# --- Subgraph con el mismo id que un nodo (Mermaid: "would create a cycle") ---
+
+
+def test_sanitize_subgraph_id_collisions_renames_only_the_subgraph():
+    code = (
+        "flowchart LR\n"
+        '  subgraph Vacunas["Módulo Registro de Vacunas"]\n'
+        "    Vacunas\n"
+        "  end\n"
+        "  subgraph Reportes\n"
+        '    Reportes["Reportes"]\n'
+        "  end\n"
+        "  API --> Vacunas"
+    )
+    assert sanitize_subgraph_id_collisions(code) == (
+        "flowchart LR\n"
+        '  subgraph Vacunas_grupo["Módulo Registro de Vacunas"]\n'
+        "    Vacunas\n"
+        "  end\n"
+        '  subgraph Reportes_grupo["Reportes"]\n'
+        '    Reportes["Reportes"]\n'
+        "  end\n"
+        "  API --> Vacunas"
+    )
+
+
+def test_sanitize_subgraph_id_collisions_keeps_subgraph_targeted_by_edges():
+    # Un subgraph que solo aparece en flechas es un destino intencional.
+    code = 'flowchart LR\n  subgraph Monolito["Monolito"]\n    A\n  end\n  X --> Monolito'
+    assert sanitize_subgraph_id_collisions(code) == code
+
+
+def test_sanitize_subgraph_id_collisions_ignores_other_diagram_types():
+    code = "sequenceDiagram\n  A->>B: hola"
+    assert sanitize_subgraph_id_collisions(code) == code
+
+
+def test_sanitize_edge_labels_keeps_class_syntax_on_the_target_node():
+    # Revisión: `A --> B:::svc` se convertía en `A -->|::svc| B`.
+    code = "flowchart TD\n  A --> B:::svc"
+    assert sanitize_flowchart_edge_labels(code) == code
+
+
+def test_sanitize_edge_labels_moves_the_label_and_keeps_both_classes():
+    code = 'flowchart TD\n  A:::web --> B:::svc : "HTTP"'
+    assert sanitize_flowchart_edge_labels(code) == "flowchart TD\n  A:::web -->|HTTP| B:::svc"
+
+
+# ---------------------------------------------------------------------------
+# sanitize_pipe_edge_labels (bug real: caso del observatorio de permanencia)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_pipe_edge_labels_quotes_unquoted_parentheses():
+    # Caso real que tumbaba el render: Mermaid interpreta el "(" dentro de
+    # `|...|` como inicio de una forma de nodo, igual que en una etiqueta
+    # [...] -- "Parse error ... Expecting ... got 'PS'".
+    code = "flowchart LR\n    FlaskApp -->|API REST (intervenciones)| PowerBI"
+
+    result = sanitize_pipe_edge_labels(code)
+
+    assert result == (
+        'flowchart LR\n    FlaskApp -->|"API REST (intervenciones)"| PowerBI'
+    )
+
+
+def test_sanitize_pipe_edge_labels_leaves_plain_text_untouched():
+    code = "flowchart LR\n    A -->|extracción nocturna| B"
+    assert sanitize_pipe_edge_labels(code) == code
+
+
+def test_sanitize_pipe_edge_labels_leaves_already_quoted_label_untouched():
+    code = 'flowchart LR\n    A -->|"ya citado (con paréntesis)"| B'
+    assert sanitize_pipe_edge_labels(code) == code
+
+
+def test_sanitize_pipe_edge_labels_ignores_non_flowchart_diagram_types():
+    code = "sequenceDiagram\n  A->>B: 1) validar (con paréntesis)"
+    assert sanitize_pipe_edge_labels(code) == code
+
+
+def test_sanitize_mermaid_fixes_the_observatorio_render_failure_end_to_end():
+    # Mismo bloque que tumbó el render en producción (ver log de agent.py);
+    # sanitize_mermaid + validate_mermaid deben dejarlo válido sin intervención
+    # manual, sin pedirle al usuario que regenere una y otra vez.
+    code = "flowchart LR\n    FlaskApp -->|API REST (intervenciones)| PowerBI"
+
+    result = sanitize_mermaid(code)
+
+    assert validate_mermaid(result) == (True, None)
+    assert '|"API REST (intervenciones)"|' in result
+
+
+def test_validate_mermaid_rejects_unquoted_specials_in_pipe_edge_label():
+    code = "flowchart LR\n    FlaskApp -->|API REST (intervenciones)| PowerBI"
+
+    is_valid, error = validate_mermaid(code)
+
+    assert is_valid is False
+    assert "API REST (intervenciones)" in error
+
+
+def test_validate_mermaid_accepts_quoted_pipe_edge_label():
+    code = 'flowchart LR\n    FlaskApp -->|"API REST (intervenciones)"| PowerBI'
+    assert validate_mermaid(code) == (True, None)

@@ -12,6 +12,9 @@ interface ChatInputProps {
   allowAttachments?: boolean
   placeholder?: string
   ariaLabel?: string
+  // Si se pasa, se llama al terminar de subir un adjunto en vez de escribir el
+  // aviso en el chat (la elicitación no muestra los mensajes del chat).
+  onUploaded?: (filename: string) => void
 }
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.md']
@@ -24,6 +27,7 @@ export function ChatInput({
   allowAttachments = true,
   placeholder = 'Escribe un mensaje...',
   ariaLabel = 'Mensaje para ArchAgent',
+  onUploaded,
 }: ChatInputProps) {
   const [text, setText] = useState('')
   const [uploading, setUploading] = useState(false)
@@ -98,7 +102,8 @@ export function ChatInput({
         suffix,
         onProgress: (p) => setProgress(p),
       })
-      chatStore.getState().addSystemMessage(`[Adjunto: ${doc.filename}] subido. Procesando embeddings en segundo plano...`)
+      if (onUploaded) onUploaded(doc.filename)
+      else chatStore.getState().addSystemMessage(`[Adjunto: ${doc.filename}] subido. Procesando embeddings en segundo plano...`)
       setPendingFile(null)
       setDuplicateInfo(null)
     } catch (err) {

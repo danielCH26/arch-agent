@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchDiagramHistory } from '../api/diagrams'
 import { chatStore, HISTORY_LIMIT } from '../stores/chatStore'
 import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
 import { useApprovalsStore } from '../stores/approvalsStore'
+import { AdrPanel } from './AdrPanel'
 import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ChatInput } from './ChatInput'
+import { ElicitationDocuments } from './ElicitationDocuments'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
 import { ChatHistorySkeleton } from './Skeleton'
@@ -22,20 +25,54 @@ function toSpokenText(markdown: string): string {
     .trim()
 }
 
+// Fase en la que se genera y refina el diagrama. "diagram"/"diagrama" son
+// nombres heredados que todavía pueden existir en proyectos viejos.
+const REFINEMENT_PHASES = new Set(['refinamiento', 'diagram', 'diagrama'])
+
+export function isRefinementPhase(phase: string | null | undefined): boolean {
+  return REFINEMENT_PHASES.has((phase ?? '').toLowerCase())
+}
+
+// Mensaje que se manda solo al entrar a Refinamiento si el proyecto todavía no
+// tiene diagramas: el usuario no tiene que pedirlo a mano. Es el mismo texto
+// que antes se escribía en el chat.
+export const AUTO_DIAGRAM_PROMPT = 'genera el diagrama de la propuesta aprobada'
+
+const HISTORY_WAIT_MS = 5000
+
+// loadHistory reemplaza los mensajes de una vez: si el mensaje automático se
+// manda antes de que termine, la carga lo pisaría.
+async function waitForHistoryLoad(timeoutMs = HISTORY_WAIT_MS) {
+  const start = Date.now()
+  while (chatStore.getState().loadingHistory && Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
 interface ChatWindowProps {
   projectId: number
   phase?: string | null
   onProposalPhaseChanged?: () => void | Promise<void>
+  // Refinamiento: aprobar el diagrama cierra la fase y avanza a Revisión.
+  onDiagramApproved?: () => void | Promise<void>
+  // Revisión: al aprobar el ADR el proyecto queda terminado.
+  onProjectCompleted?: () => void | Promise<void>
 }
 
-export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWindowProps) {
+export function ChatWindow({
+  projectId,
+  phase,
+  onProposalPhaseChanged,
+  onDiagramApproved,
+  onProjectCompleted,
+}: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
   // Fase: la que pasa la página o, si no viene, la del proyecto activo.
   const storePhase = projectsStore((s) => s.currentProject?.current_phase ?? null)
   const currentPhase = phase ?? storePhase
-  // B3 (Soomri round-2 re-review): the Avanzar surface must mount when the
-  // phase is ready even though pending_decision is null (approved phase).
-  const storePhaseReady = projectsStore((s) => s.currentProject?.phase_ready ?? false)
+  // B3 (Soomri round-2 re-review) montaba acá la superficie de "Avanzar" con
+  // `phase_ready`. Ese botón vive ahora en la barra superior de <ChatPage>,
+  // así que de este store solo hace falta la decisión pendiente.
   const fetchApprovalsHistory = useApprovalsStore((s) => s.fetchHistory)
   const refreshApprovals = useApprovalsStore((s) => s.refresh)
   const pendingDecision = useApprovalsStore(
@@ -45,12 +82,66 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
   // modifica una propuesta, aunque la fase cambie durante el stream.
   const proposalStreaming = proposalsStore((s) => s.activity === 'generating' || s.activity === 'modifying')
   const showProposalCard = currentPhase === 'propuesta' || proposalStreaming
+  // Revisión: el ADR del proyecto (aprobado o no; ahí también se vuelve a descargar).
+  // El ADR vive en Revisión; después queda la fase 'final' (Cierre).
+  const showAdrPanel = currentPhase === 'revision'
+  const projectName = projectsStore((s) => (s.currentProject?.id === projectId ? s.currentProject?.name : null))
   const messagesEndRef = useRef<HTMLDivElement>(null)
   // Anuncios para lectores de pantalla: la respuesta llega por fragmentos,
   // así que se anuncia una sola vez al terminar en vez de marcar la lista
   // de mensajes como región viva.
   const [announcement, setAnnouncement] = useState('')
   const wasStreaming = useRef(false)
+  const [checkingDiagrams, setCheckingDiagrams] = useState(false)
+  // Revisión/Cierre: el historial del chat es uno solo por proyecto (los
+  // mensajes no guardan la fase), así que la conversación de Requerimientos,
+  // Propuesta y Refinamiento se oculta detrás de un botón. `priorCount` es
+  // cuántos mensajes había al entrar a la fase; los nuevos sí se muestran.
+  // Se guarda junto con el proyecto al que pertenece: así cambiar de proyecto
+  // invalida el conteo sin un efecto aparte (que corría después y lo borraba).
+  const [prior, setPrior] = useState<{ projectId: number; count: number } | null>(null)
+  const [showPrior, setShowPrior] = useState(false)
+  const priorCount = showAdrPanel && prior?.projectId === projectId ? prior.count : null
+  // Proyecto para el que ya se intentó el diagrama automático en esta visita a
+  // Refinamiento (evita repetirlo en cada render o por StrictMode).
+  const autoDiagramFor = useRef<number | null>(null)
+  const phaseRef = useRef(currentPhase)
+  phaseRef.current = currentPhase
+  // Documentos del proyecto: visibles en todas las fases (no solo en
+  // Elicitación), porque el agente ya busca en ellos por similitud sin
+  // importar la fase (ver app.core.agent._documents_section). `docsRefreshKey`
+  // se sube al adjuntar con el clip del chat, para que la lista se actualice.
+  const [docsRefreshKey, setDocsRefreshKey] = useState(0)
+  // Propuesta: la interacción ya es 100% por los botones de ProposalCard
+  // (Aprobar / Solicitar cambios / Rechazar). Antes el chat libre seguía
+  // disponible debajo y un mensaje suelto ahí podía confundir al agente
+  // -- no hay ningún flujo que lo espere en esta fase.
+  const hideChatInput = currentPhase === 'propuesta'
+  // Cada fase tiene UNA superficie de decisión, la de su propio contenido:
+  // la propuesta en <ProposalCard> y el diagrama en sus botones (Aprobar /
+  // Rechazar / Solicitar cambios). Montar además <PhaseActions> por fuera
+  // duplicaba la decisión y, en Refinamiento, aparecía nada más entrar,
+  // cuando el diagrama todavía se estaba generando.
+  //
+  // Se mira la imagen adjunta, no el mermaid del texto: los botones del
+  // diagrama cuelgan de ese adjunto, así que un mermaid que no llegó a
+  // renderizarse deja la burbuja SIN botones y la fase sin cómo decidirse.
+  const hasDiagram = messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      (message.attachments ?? []).some((attachment) => attachment.kind === 'screenshot'),
+  )
+  const generatingDiagram = isRefinementPhase(currentPhase) && (checkingDiagrams || isStreaming)
+  const decisionLivesInTheContent =
+    currentPhase === 'propuesta' || (isRefinementPhase(currentPhase) && hasDiagram)
+  // Revisión: el panel de decisión espera a que el ADR esté escrito. Antes
+  // salía mientras el documento decía "Generando…": botones para aprobar
+  // algo que todavía no se podía leer. En Refinamiento el equivalente es
+  // esperar a que termine de generarse el diagrama: si al final no hay
+  // ninguno, <PhaseActions> queda como salida de emergencia para no dejar
+  // la fase bloqueada.
+  const [adrReady, setAdrReady] = useState(false)
+  const phaseContentReady = showAdrPanel ? adrReady : !generatingDiagram
 
   useEffect(() => {
     if (isStreaming && !wasStreaming.current) {
@@ -76,6 +167,63 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
     void state.loadHistory(projectId)
   }, [projectId])
 
+  useEffect(() => {
+    if (!showAdrPanel) {
+      setPrior(null)
+      setShowPrior(false)
+      return
+    }
+    if (prior?.projectId === projectId) return
+    // Se lee el store en vivo: el historial de ESTE proyecto debe estar cargado
+    // (si no, el conteo quedaría en 0 y se verían todos los mensajes viejos).
+    const state = chatStore.getState()
+    if (!state.loadingHistory && state.activeProjectId === projectId) {
+      setPrior({ projectId, count: state.messages.length })
+      setShowPrior(false)
+    }
+  }, [showAdrPanel, loadingHistory, messages.length, prior, projectId])
+
+  const hiddenCount = showAdrPanel && !showPrior && priorCount !== null ? priorCount : 0
+  const visibleMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages
+
+  // Refinamiento: al entrar, si el proyecto todavía no tiene ningún diagrama,
+  // se genera solo. Si ya hay diagramas (volver a entrar, F5) no se genera
+  // otro: el historial del chat ya los muestra. Ante cualquier falla no se
+  // hace nada; el usuario todavía puede pedirlo a mano.
+  useEffect(() => {
+    if (!isRefinementPhase(currentPhase)) {
+      autoDiagramFor.current = null
+      setCheckingDiagrams(false)
+      return
+    }
+    if (autoDiagramFor.current === projectId) return
+    if (proposalsStore.getState().activity !== 'idle') return
+    autoDiagramFor.current = projectId
+    setCheckingDiagrams(true)
+
+    void (async () => {
+      try {
+        await waitForHistoryLoad()
+        const diagrams = await fetchDiagramHistory(projectId)
+        if (diagrams.length > 0) return
+        // El historial solo cuenta los diagramas que se pudieron convertir a
+        // imagen. Si el de la primera visita quedó solo como código Mermaid,
+        // al volver se mandaba otro automático: ya hay diagrama, no se repite.
+        const hasMermaid = chatStore
+          .getState()
+          .messages.some((message) => message.role === 'assistant' && /```mermaid/i.test(message.content))
+        if (hasMermaid) return
+        if (!isRefinementPhase(phaseRef.current)) return
+        const state = chatStore.getState()
+        if (state.isStreaming || state.loadingHistory) return
+        await state.sendMessage(projectId, AUTO_DIAGRAM_PROMPT)
+      } catch {
+        // Silencioso a propósito: el usuario puede pedir el diagrama a mano.
+      } finally {
+        setCheckingDiagrams(false)
+      }
+    })()
+  }, [currentPhase, projectId])
   // HU10 v2 (REQ-SA-26.1): mount `<PhaseActions>` from the `/phases` fetch
   // path. The store re-derives `pendingDecision` server-side, so even when
   // the SSE `event: phase_locked` consumer is missed (the v1 production
@@ -114,9 +262,21 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         {announcement}
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {showAdrPanel && (
+          <AdrPanel
+            projectId={projectId}
+            projectName={projectName}
+            onCompleted={onProjectCompleted}
+            onReadyChange={setAdrReady}
+          />
+        )}
         {showProposalCard && (
           <ProposalCard projectId={projectId} onPhaseChanged={onProposalPhaseChanged} />
         )}
+        {/* Propuesta no tiene ChatInput (ver `hideChatInput`), así que ahí se
+            usa la caja completa -- con su propio botón de subir -- en vez de
+            depender del clip del chat para poder adjuntar documentos. */}
+        <ElicitationDocuments projectId={projectId} compact={!hideChatInput} refreshKey={docsRefreshKey} />
         {loadingHistory && messages.length === 0 && <ChatHistorySkeleton />}
 
         {historyTruncated && (
@@ -125,7 +285,22 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
           </p>
         )}
 
-        {messages.length === 0 && !isStreaming && !loadingHistory && (
+        {showAdrPanel && priorCount !== null && priorCount > 0 && (
+          <div className="text-center">
+            <button
+              type="button"
+              data-testid="toggle-prior-chat"
+              onClick={() => setShowPrior((value) => !value)}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              {showPrior
+                ? 'Ocultar la conversación de las fases anteriores'
+                : `Ver la conversación de las fases anteriores (${priorCount} mensajes)`}
+            </button>
+          </div>
+        )}
+
+        {messages.length === 0 && !isStreaming && !loadingHistory && !showAdrPanel && (
           <div className="text-center text-gray-500 py-8">
             <svg className="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -134,9 +309,22 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
           </div>
         )}
 
-        {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} projectId={projectId} onSendMessage={handleSend} busy={isStreaming} />
+        {visibleMessages.map((message) => (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            projectId={projectId}
+            onSendMessage={handleSend}
+            busy={isStreaming}
+            onDiagramApproved={isRefinementPhase(currentPhase) ? onDiagramApproved : undefined}
+          />
         ))}
+
+        {checkingDiagrams && !isStreaming && (
+          <p className="text-center text-xs text-gray-500" data-testid="auto-diagram-checking">
+            Preparando el diagrama de la propuesta aprobada…
+          </p>
+        )}
 
         {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the
             pendingDecision derived server-side via /phases. Independent of
@@ -146,13 +334,14 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
             reject->revert), so <PhaseActions> only offers "Avanzar"
             there (hideDecision). La elicitación (`requerimientos`) no
             monta este componente: la maneja <ElicitationPanel>. */}
-        {(pendingDecision || storePhaseReady) && (
+        {pendingDecision && phaseContentReady && !decisionLivesInTheContent && (
           <PhaseActions
             projectId={projectId}
             phase={currentPhase ?? pendingDecision?.phase ?? ''}
             allowModify={currentPhase !== 'final'}
-            phaseReady={storePhaseReady}
-            hideDecision={currentPhase === 'propuesta'}
+            /* "Avanzar" vive en la barra superior de <ChatPage>: un solo
+               botón, siempre visible, en vez de uno al final del chat. */
+            phaseReady={false}
             onPhaseChanged={onProposalPhaseChanged}
           />
         )}
@@ -179,7 +368,14 @@ export function ChatWindow({ projectId, phase, onProposalPhaseChanged }: ChatWin
         <div ref={messagesEndRef} />
       </div>
 
-      <ChatInput projectId={projectId} onSend={handleSend} disabled={isStreaming || loadingHistory} />
+      {!hideChatInput && (
+        <ChatInput
+          projectId={projectId}
+          onSend={handleSend}
+          disabled={isStreaming || loadingHistory}
+          onUploaded={() => setDocsRefreshKey((key) => key + 1)}
+        />
+      )}
     </div>
   )
 }

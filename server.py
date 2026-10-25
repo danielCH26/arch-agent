@@ -14,6 +14,15 @@ from dotenv import load_dotenv
 # importarse, asi que fuera de Docker (sin env_file) el .env debe estar cargado.
 load_dotenv()
 
+# Nivel de los logs de la app (app.*). Sin esto solo salían WARNING o más (el
+# "lastResort" de Python): los INFO de la reparación de propuestas, del ADR o
+# del RAG no se veían en ningún lado. LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
+# Si uvicorn u otro ya configuró el logging raíz, basicConfig no lo pisa.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").strip().upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 from app.auth.register import register_user  # noqa: E402
 from app.auth.validators import ValidationError  # noqa: E402
 
@@ -100,6 +109,7 @@ from app.api.elicitation import router as elicitation_router
 from app.api.attachments import router as attachments_router  # F13, issue #17
 from app.api.diagrams import router as diagrams_router  # HU6: historial de diagramas
 from app.api.proposals import router as proposals_router
+from app.api.adr import router as adr_router  # Revisión: ADR del proyecto
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -113,6 +123,7 @@ app.include_router(elicitation_router)
 app.include_router(attachments_router)
 app.include_router(diagrams_router)
 app.include_router(proposals_router)
+app.include_router(adr_router)
 
 # HU6: bundle de mermaid.js para el render server-side (sidecar de Puppeteer).
 # Ruta puntual (no un StaticFiles de la raiz, que expondria server.py, .env...).

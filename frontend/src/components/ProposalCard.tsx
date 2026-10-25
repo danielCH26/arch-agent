@@ -253,6 +253,18 @@ function CitationRow({ citation, position }: { citation: ProposalCitation; posit
       {citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}
       {citation.source_role === 'primary' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700">patrón principal</span>}
       {citation.source && <span className="block pl-6 text-gray-500">Fuente: {citation.source.label}</span>}
+      {/* Fuentes curadas del patrón (libros, papers, docs oficiales): respaldo verificable de la cita. */}
+      {(citation.fuentes?.length ?? 0) > 0 && (
+        <ul className="ml-4 mt-0.5 list-disc space-y-0.5">
+          {citation.fuentes!.map((source) => (
+            <li key={`${source.titulo}-${source.url}`}>
+              <a className="text-blue-700 underline hover:text-blue-900 dark:text-sky-300" href={source.url} target="_blank" rel="noopener noreferrer">
+                {source.titulo}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
       {patternId != null && (
         <button type="button" onClick={() => void toggle()} aria-expanded={open} className="ml-6 text-blue-600 hover:underline">
           {open ? 'Ocultar fuente' : 'Verificar fuente'}

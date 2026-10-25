@@ -15,6 +15,9 @@ interface MessageBubbleProps {
   onSendMessage?: SendMessage
   // Hay una respuesta del agente en curso: no se envían mensajes nuevos.
   busy?: boolean
+  // Refinamiento: al aprobar un diagrama se pasa a la fase siguiente en vez de
+  // mandarle "Apruebo el diagrama" al agente (que respondía con un texto largo).
+  onDiagramApproved?: () => void | Promise<void>
 }
 
 type InlineToken =
@@ -33,10 +36,29 @@ const safeLinkPattern = /^(https?:\/\/|mailto:)/i
 
 const markdownTableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const htmlTablePattern = /<table[\s\S]*?<\/table>/gi
+// Cita (`> texto`). Bug real: no existía ninguna rama para esto, así que el
+// `>` quedaba como texto literal al principio del párrafo (visible tanto en
+// el panel como en el PDF del ADR, que reutiliza este mismo parser).
+const blockquotePattern = /^>\s?(.*)$/
 
 const explicitMermaidFencePattern = /```mermaid\s*\n([\s\S]*?)```/i
 const anyCodeFencePattern = /```[^\n]*\n([\s\S]*?)```/g
 const mermaidFirstLinePattern = /^(flowchart|graph|sequenceDiagram|classDiagram)\b/
+
+// Pedido que se envía al pulsar "Volver a generar el diagrama" cuando la
+// respuesta trajo un bloque Mermaid pero no se pudo convertir a imagen.
+export const DIAGRAM_RETRY_PROMPT =
+  'El diagrama anterior no se pudo convertir a imagen. Genera de nuevo el diagrama de la ' +
+  'propuesta aprobada con sintaxis Mermaid flowchart válida: las etiquetas de las flechas van ' +
+  'como A -->|texto| B (nunca "A --> B : texto") y los textos con espacios o acentos entre comillas.'
+
+// Respuesta con diagrama Mermaid que no llegó a tener su imagen (el render
+// falló): se ofrece volver a generarlo en vez de dejar al usuario sin salida.
+export function diagramRenderFailed(message: Pick<Message, 'role' | 'content' | 'attachments'>): boolean {
+  if (message.role !== 'assistant') return false
+  const hasImage = (message.attachments ?? []).length > 0
+  return !hasImage && extractMermaidBlocks(message.content).length > 0
+}
 
 function extractMermaidBlocks(content: string): string[] {
   const explicit = [...content.matchAll(new RegExp(explicitMermaidFencePattern.source, 'gi'))]
@@ -419,6 +441,23 @@ export function renderMarkdownBlocks(content: string) {
         continue
       }
 
+      if (blockquotePattern.test(line)) {
+        const quoteLines: string[] = []
+        while (index < lines.length && blockquotePattern.test(lines[index])) {
+          quoteLines.push(lines[index].replace(blockquotePattern, '$1'))
+          index += 1
+        }
+        blocks.push(
+          <blockquote
+            key={`blockquote-${partIndex}-${index}`}
+            className="my-2 border-l-4 border-indigo-300 bg-indigo-50 py-1 pl-3 pr-2 text-gray-700"
+          >
+            {renderInline(quoteLines.join(' ').trim())}
+          </blockquote>,
+        )
+        continue
+      }
+
       if (line.trim().startsWith('```')) {
         const codeLines: string[] = []
         index += 1
@@ -515,7 +554,7 @@ function renderSources(sources: Message['sources']) {
   )
 }
 
-export function MessageBubble({ message, projectId, onSendMessage, busy = false }: MessageBubbleProps) {
+export function MessageBubble({ message, projectId, onSendMessage, busy = false, onDiagramApproved }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   return (
@@ -546,6 +585,7 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
             projectId={projectId}
             onSendMessage={onSendMessage}
             busy={busy}
+            onDiagramApproved={onDiagramApproved}
           />
         )}
         {!isUser && message.notices?.map((notice, index) => (
@@ -554,6 +594,16 @@ export function MessageBubble({ message, projectId, onSendMessage, busy = false 
             <span>{notice}</span>
           </p>
         ))}
+        {!isUser && onSendMessage && !busy && diagramRenderFailed(message) && (
+          <button
+            type="button"
+            data-testid="diagram-retry"
+            onClick={() => void onSendMessage(DIAGRAM_RETRY_PROMPT, 'Volver a generar el diagrama')}
+            className="mt-2 rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-sm font-medium text-sky-800 hover:bg-sky-100"
+          >
+            Volver a generar el diagrama
+          </button>
+        )}
         {!isUser && renderSources(message.sources)}
       </div>
     </div>
@@ -575,11 +625,13 @@ function DiagramAttachments({
   projectId,
   onSendMessage,
   busy,
+  onDiagramApproved,
 }: {
   attachments: Message['attachments']
   assistantContent: string
   projectId?: number
   onSendMessage?: SendMessage
+  onDiagramApproved?: () => void | Promise<void>
   busy: boolean
 }) {
   const [feedbackIndex, setFeedbackIndex] = useState<number | null>(null)
@@ -693,7 +745,11 @@ function DiagramAttachments({
                     type="button"
                     disabled={isSubmitting || busy}
                     onClick={async () => {
-                      if (await recordDecision(index, 'approve')) await send('Apruebo el diagrama, continuemos.')
+                      if (!(await recordDecision(index, 'approve'))) return
+                      // En Refinamiento aprobar cierra la fase y lleva a la siguiente;
+                      // fuera de ella se mantiene el comportamiento anterior.
+                      if (onDiagramApproved) await onDiagramApproved()
+                      else await send('Apruebo el diagrama, continuemos.')
                     }}
                     className="inline-flex items-center gap-1 rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
                   >

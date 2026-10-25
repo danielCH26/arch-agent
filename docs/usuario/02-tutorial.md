@@ -300,6 +300,8 @@ Cada diagrama del chat tiene sus propios botones:
 
 También puedes seguir conversando con el agente en el chat (cuadro **"Escribe un mensaje..."**) para hacerle preguntas sobre la arquitectura o pedir aclaraciones.
 
+Cuando estés conforme, haz clic en **✅ Aprobar** en el diagrama: la fase queda lista y el proyecto pasa solo a Revisión.
+
 ### Aprobar la fase
 
 Debajo del chat aparece el panel **"Decisión pendiente para la fase refinamiento"** con tres botones:
@@ -316,11 +318,26 @@ Si apruebas y luego cambias de opinión, puedes rechazar: la fase vuelve a queda
 
 ## 9. Fase 4 — Revisión
 
-El chat sigue disponible para consultar al agente sobre la arquitectura final. Para terminar la fase, usa el mismo panel de decisión (**Aprobar**, **Modificar** o **Rechazar**) y luego **Avanzar** para pasar a Cierre.
+Aparece el panel **Documento de arquitectura (ADR)**: un documento que reúne todo lo decidido en las fases anteriores y una guía para empezar a construir. La conversación anterior sigue disponible con el botón **Ver la conversación de las fases anteriores**.
+
+Para terminar la fase, usa el panel de decisión (**Aprobar**, **Modificar** o **Rechazar**) y luego **Avanzar** para pasar a Cierre.
 
 ![Proyecto en fase de Revisión](screenshots/revision.png)
 
-En **Mis proyectos**, la tarjeta del proyecto muestra la etiqueta **Revisión**:
+1. Haz clic en **Generar ADR**. Tarda hasta un minuto.
+2. Revisa el documento. Empieza con un **Resumen ejecutivo** de media página (qué problema resuelve, qué se decidió, con qué presupuesto, equipo y plazo, los principales riesgos y qué falta decidir), pensado para quien no es técnico. Después vienen las secciones para el equipo de desarrollo.
+3. Para guardarlo o compartirlo:
+
+| Botón | Para qué sirve |
+|-------|----------------|
+| **Descargar PDF** | Para compartirlo con personas no técnicas o imprimirlo. Se abre el documento listo para imprimir; en el destino elige **Guardar como PDF**. El diagrama aparece como imagen. Si no se abre, permite las ventanas emergentes del sitio. |
+| **Descargar .md** | Para el equipo de desarrollo: se puede guardar en el repositorio, y GitHub o VS Code dibujan el diagrama. |
+| **Copiar** | Copia el texto del documento al portapapeles. |
+
+4. Si algo no está bien, usa **Solicitar cambios**, describe el ajuste y haz clic en **Aplicar cambios y regenerar**.
+5. Cuando estés conforme, haz clic en **Aprobar y finalizar proyecto**. El proyecto pasa a mostrarse como **Completado** y su botón cambia a **Ver arquitectura**. Si después necesitas cambiar algo, **Pedir cambios (reabre el proyecto)** lo vuelve a abrir.
+
+En **Mis proyectos**, la tarjeta del proyecto muestra la etiqueta **Revisión** mientras el ADR no esté aprobado:
 
 ![Proyecto en fase de Revisión en Mis proyectos](screenshots/revision-2.png)
 

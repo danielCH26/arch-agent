@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.core.domain_concerns import concern_by_question, relevant_concerns, uncovered_concerns
 from app.core.llm_loader import invoke_with_temperature_fallback
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +34,12 @@ _LOGGER = logging.getLogger(__name__)
 # decida el modelo.
 MIN_QUESTIONS = 5
 MAX_QUESTIONS = 10
+# Proyectos complejos (varias fuentes de datos o sistemas a integrar, varias
+# sedes, tiempo real, modelos predictivos, muchas preocupaciones del dominio):
+# con 10 preguntas el agente cerraba sin preguntar por fuentes adicionales,
+# frescura de los datos, menores de edad o retención (prueba del observatorio
+# de analítica). Ver ``max_questions``.
+MAX_QUESTIONS_COMPLEX = int(os.getenv("ELICITATION_MAX_QUESTIONS_COMPLEX", "14") or 14)
 
 # Estos tres datos no son una restricción genérica más: determinan si una
 # propuesta es viable. Se buscan en las RESPUESTAS del usuario, en la
@@ -50,6 +59,12 @@ MAX_QUESTIONS = 10
 _NUMBER = r"(?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doce)"
 _MONEY_AMOUNT = r"\d[\d.,]*(?:\s*(?:k|mil|millones?))?"
 _DEV_ROLE = r"(?:desarrollador(?:es)?|programador(?:es)?|developers?|devs?|ingenier[oa]s?\s+de\s+software)"
+# Roles que también cuentan como integrantes del equipo cuando vienen con un
+# número ("2 ingenieros de datos, 1 analista de Power BI").
+_TEAM_ROLE = (
+    r"(?:ingenier[oa]s?|analistas?|disenador(?:a|es|as)?|cientific[oa]s?\s+de\s+datos|"
+    r"testers?|qa|pm|lider(?:es)?\s+tecnic[oa]s?|arquitect[oa]s?|personas\s+en\s+el\s+equipo)"
+)
 _VIABILITY_FACTORS = (
     (
         "presupuesto",
@@ -67,7 +82,17 @@ _VIABILITY_FACTORS = (
     (
         "equipo",
         (
-            r"equipo",
+            # Antes bastaba la palabra "equipo": "Bienestar y el equipo de
+            # planeación" (una lista de USUARIOS) daba el equipo por respondido
+            # y nunca se preguntaba el tamaño. Ahora tiene que hablar del equipo
+            # que construye el sistema.
+            r"equipo\s+(?:de\s+)?(?:desarrollo|desarrolladores|ingenieria|software|sistemas|ti|"
+            r"tecnico|tecnologia|trabajo|datos|proyecto)",
+            r"equipo\s+(?:de|con)\s+" + _NUMBER,
+            r"equipo\s+(?:pequeno|grande|reducido|chico|mediano|propio|interno)",
+            r"(?:el|nuestro|mi)\s+equipo\s+(?:es|son|somos|tiene|esta|cuenta|lo\s+forman|"
+            r"lo\s+integran|domina|sabe|conoce|maneja|trabaja)",
+            _NUMBER + r"\s+(?:\w+\s+)?" + _TEAM_ROLE,
             r"somos\s+" + _NUMBER,
             _NUMBER + r"\s+(?:\w+\s+)?" + _DEV_ROLE,
             _DEV_ROLE + r"\s+(?:senior|junior|semi\s*senior)",
@@ -140,6 +165,13 @@ a lo largo de la conversación (no todo en una sola pregunta):
 4. Calidad: rendimiento, seguridad, disponibilidad, y cualquier otro \
    requerimiento no funcional relevante.
 
+Además, antes de cerrar confirma lo que más decide la arquitectura \
+(una pregunta por tema):
+- Plataforma: si se usa desde el navegador, desde una app móvil o ambos.
+- Habilidades del equipo: qué lenguajes o tecnologías domina.
+- Fuente de los datos: si los ingresan los usuarios o vienen de otro \
+  sistema, de sensores o de una fuente externa en tiempo real.
+
 Reglas de granularidad para cada pregunta (Issue #100):
 - Una pregunta cubre UNA sola dimensión (usuarios, funcionalidades, \
 restricciones o calidad). Nunca dos en la misma pregunta. Dentro de una \
@@ -181,6 +213,32 @@ un documento, verifica que sea relevante para el problema y alcance del \
 proyecto; ignora contenido ajeno. Si un documento relevante contradice una \
 respuesta anterior, prioriza el documento (es más reciente).
 
+En "calidad" distingue el origen de cada atributo: "dicho" si el usuario lo \
+pidió o lo describió en sus respuestas o documentos, "propuesto" si lo \
+infieres tú como recomendable sin que el usuario lo haya dicho. No conviertas \
+un atributo propuesto en dicho.
+
+En "restricciones" conserva las cifras y la composición del equipo tal como \
+las dijo el usuario (por ejemplo "4 personas: 3 front y 1 PM"); no las \
+reinterpretes ni las resumas a un solo número.
+
+En "contexto_tecnico" usa las palabras del usuario; si no lo dijo, escribe \
+"no definido".
+
+En "escala" copia las cifras de volumen que dio el usuario (cuántos usuarios \
+de cada tipo, cuántos datos o registros, con qué frecuencia se usa, picos); \
+si no dio ninguna, escribe "no definido". En contexto_tecnico.\
+"tecnologias_no_dominadas" anota las tecnologías que el usuario dijo que el \
+equipo NO conoce o no ha usado; si no lo dijo, "no definido".
+
+Las respuestas a "(ajuste solicitado por el usuario)" son correcciones que el \
+usuario hizo al revisar el resumen: mandan sobre lo que dijo antes.
+
+En "datos_viabilidad" copia lo que dijo el usuario sobre presupuesto, equipo y \
+plazo (si lo corrigió después, la versión corregida). Solo corrige errores de escritura evidentes (letras que faltan o están \
+cambiadas, como "edio" por "medio"); no cambies cifras, no agregues datos y \
+no reinterpretes el sentido. Si no lo dijo, deja el campo vacío.
+
 Responde SIEMPRE en JSON, sin texto adicional antes o después, con esta \
 forma exacta:
 {
@@ -188,9 +246,16 @@ forma exacta:
   "usuarios": str,
   "funcionalidades": [str, ...],
   "restricciones": [str, ...],
-  "calidad": [str, ...]
+  "calidad": [{"atributo": str, "origen": "dicho" | "propuesto"}, ...],
+  "escala": str,
+  "contexto_tecnico": {"plataforma": str, "habilidades_equipo": str, "fuentes_de_datos": str, "tecnologias_no_dominadas": str},
+  "datos_viabilidad": {"presupuesto": str, "equipo": str, "plazo": str}
 }
 """
+
+# Origen de un atributo de calidad en el resumen.
+QUALITY_ORIGIN_SAID = "dicho"
+QUALITY_ORIGIN_PROPOSED = "propuesto"
 
 
 class ElicitationAgentError(Exception):
@@ -512,6 +577,380 @@ def _missing_viability_factors(
     ]
 
 
+# Checklist determinista de cobertura (HU5: "Se cubren: usuarios,
+# funcionalidades, restricciones, calidad"). El prompt ya lo pide, pero el
+# ``done`` lo decidía el LLM solo: en un caso real cerró con 10 preguntas sin
+# ninguna sobre calidad. Ahora, cuando el modelo quiere cerrar, el código
+# revisa la conversación y, si falta una categoría, hace la pregunta en vez de
+# cerrar. Las restricciones obligatorias (presupuesto, equipo, plazo) ya las
+# cubre ``_missing_viability_factors``.
+#
+# Igual que la viabilidad: cuentan las respuestas, la descripción y los
+# documentos, no el texto de las preguntas. Pero si el agente ya preguntó por
+# la categoría y el usuario respondió (aunque sea "no sé"), queda cubierta.
+_COVERAGE_CATEGORIES = (
+    (
+        "usuarios",
+        (
+            r"usuari\w*", r"clientes?", r"pacientes?", r"estudiantes?", r"alumnos?",
+            r"administrador\w*", r"operador\w*", r"empleados?", r"vendedor\w*",
+            r"docentes?", r"profesores?", r"personal\s+de\s+\w+", r"duenos?",
+            r"propietari\w+", r"ciudadanos?", r"visitantes?",
+        ),
+        (r"usuari", r"quien", r"quienes"),
+        "¿Quiénes van a usar el sistema?",
+    ),
+    (
+        "funcionalidades",
+        (
+            r"funcionalidad\w*", r"funciones?", r"debe\s+(?:poder|permitir)\w*",
+            r"permit\w+", r"registrar\w*", r"gestionar\w*", r"consultar\w*",
+            r"reservar\w*", r"publicar\w*", r"buscar\w*", r"reportes?",
+            r"administrar\w*", r"crear\w*", r"agendar\w*", r"vender\w*",
+        ),
+        (r"funcionalidad", r"funcion", r"que debe hacer", r"que debe poder"),
+        "¿Qué es lo más importante que el sistema debe permitir hacer?",
+    ),
+    (
+        "calidad",
+        (
+            r"rendimiento", r"seguridad", r"segur[oa]s?", r"disponib\w+", r"escalab\w+",
+            r"tiempo\s+de\s+respuesta", r"latencia", r"privacidad", r"respaldos?",
+            r"backups?", r"cifrad\w+", r"usabilidad", r"accesib\w+", r"concurren\w+",
+            r"uptime", r"confiab\w+", r"mantenib\w+", r"auditor\w+", r"rapid\w+",
+            r"lent\w+", r"caidas?", r"24/7",
+        ),
+        (
+            r"rendimiento", r"seguridad", r"calidad", r"no funcional", r"disponib",
+            r"escalab",
+        ),
+        "¿Qué requerimiento de calidad es el más importante para este sistema (rendimiento, seguridad o disponibilidad)?",
+    ),
+)
+
+# Lo que más decide la arquitectura y la elicitación no preguntaba: sin estos
+# datos las lagunas reaparecían como "preguntas abiertas" al final del ADR,
+# cuando la decisión ya estaba tomada (plataforma, habilidades del equipo y de
+# dónde salen los datos). Se exigen solo en el chequeo de cierre de la
+# conversación, no sobre el resumen (no son campos de HU5).
+_DRIVER_CATEGORIES = (
+    (
+        "plataforma",
+        (
+            r"web", r"movil\w*", r"android", r"ios", r"escritorio", r"navegador\w*",
+            r"celular\w*", r"tablet\w*", r"pwa", r"smartphones?",
+        ),
+        (r"web", r"movil", r"plataforma", r"dispositivo", r"navegador"),
+        "¿Los usuarios van a usar el sistema desde el navegador web, desde una app móvil o desde ambos?",
+    ),
+    (
+        "habilidades",
+        (
+            # Una tecnología nombrada ya es señal de que se habló del stack.
+            r"python", r"java", r"javascript", r"typescript", r"react", r"angular",
+            r"vue", r"node(?:\.?js)?", r"django", r"flask", r"fastapi", r"spring",
+            r"laravel", r"php", r"kotlin", r"swift", r"flutter", r"\.net", r"c#",
+            r"golang", r"ruby", r"rails",
+            # La habilidad tiene que estar ATRIBUIDA AL EQUIPO. Antes bastaban
+            # "experiencia" o "manej\w+" sueltos, y los traía cualquier
+            # respuesta normal ("mejorar la experiencia de usuario", "el
+            # sistema debe manejar pedidos", "los administradores manejan el
+            # inventario"): la categoría se daba por cubierta y la pregunta
+            # por las habilidades del equipo no se hacía nunca.
+            r"(?:equipo|desarrollador\w*|programador\w*|ingenier\w+|nosotros)"
+            r"[^.]{0,40}(?:sab\w+|conoc\w+|domin\w+|manej\w+|experiencia)",
+            r"(?:sab\w+|conoc\w+|domin\w+|manej\w+|experiencia)"
+            r"[^.]{0,40}(?:equipo|desarrollador\w*|programador\w*|ingenier\w+)",
+            # Primera persona: el que responde habla por el equipo.
+            r"sabemos", r"dominamos", r"conocemos", r"manejamos",
+            r"experiencia\s+(?:en|con)\s+\w+",
+        ),
+        (r"experiencia", r"tecnolog", r"lenguaje", r"habilidad", r"conoce", r"domina"),
+        "¿Qué lenguajes o tecnologías domina el equipo?",
+    ),
+    (
+        "fuente_datos",
+        # Solo frases que dicen DE DÓNDE salen los datos. "a mano" o
+        # "manual" sueltos describen el proceso actual ("concilian a mano")
+        # y daban la categoría por cubierta sin haberla preguntado.
+        (
+            r"fuentes?\s+de\s+(?:los\s+)?datos", r"tiempo\s+real", r"sensor\w*",
+            r"apis?\s+(?:de|del|externa\w*)", r"se\s+integra\w*\s+con",
+            r"importa\w*\s+(?:desde|de)", r"excel", r"hojas?\s+de\s+calculo",
+            r"(?:los\s+)?datos\s+(?:vienen|provienen|salen|llegan)\s+de",
+            r"(?:los\s+)?(?:ingresan|registran|digitan|cargan|suben)\s+(?:los\s+|las\s+)?"
+            r"(?:usuarios|operadores|tiendas|clientes|administradores|empleados)",
+            r"base\s+de\s+datos\s+(?:existente|actual)", r"sistema\s+(?:actual|existente)\s+de",
+        ),
+        (r"de\s+donde", r"fuente", r"origen\s+de\s+los\s+datos", r"tiempo\s+real"),
+        "¿De dónde salen los datos que el sistema muestra: los ingresan los usuarios o vienen de otro sistema o fuente externa?",
+    ),
+    (
+        # El resumen declara ``tecnologias_no_dominadas`` (ver el esquema de
+        # ``contexto_tecnico``), pero no había ninguna pregunta que lo
+        # cubriera: el campo salía siempre "no definido". Lo que el equipo NO
+        # maneja descarta patrones tanto como lo que sí maneja.
+        "tecnologias_no_dominadas",
+        (
+            r"no\s+(?:sab\w+|conoc\w+|domin\w+|manej\w+)",
+            r"nadie\s+(?:sab\w+|conoc\w+|domin\w+|manej\w+)",
+            r"sin\s+experiencia",
+            r"no\s+(?:tenemos|tienen|hay|tiene)\s+experiencia",
+            r"(?:evitar|descartar|preferimos\s+no\s+usar|no\s+queremos\s+usar)\s+\w+",
+            r"nunca\s+(?:hemos|han)\s+\w+",
+        ),
+        (r"no\s+domin", r"no\s+manej", r"no\s+conoc", r"evitar", r"sin\s+experiencia"),
+        "¿Hay alguna tecnología que el equipo no maneje o que prefieran evitar en este proyecto?",
+    ),
+)
+
+_COVERAGE_REGEXES = {
+    name: _factor_regex(patterns)
+    for name, patterns, _asked, _question in (*_COVERAGE_CATEGORIES, *_DRIVER_CATEGORIES)
+}
+
+# Como mucho este número de preguntas de dominio forzadas por el código en una
+# elicitación (ubicación, archivos, pagos...). Las demás preocupaciones sin
+# respuesta llegan al ADR como preguntas abiertas obligatorias (sección 7.8).
+MAX_DOMAIN_QUESTIONS = 2
+MAX_DOMAIN_QUESTIONS_COMPLEX = 4
+
+# Señales de un proyecto complejo en lo que dijo el usuario (sin acentos).
+_COMPLEXITY_MARKERS = re.compile(
+    r"\b(?:integra\w*|varios\s+sistemas|fuentes\s+de\s+datos|varias\s+fuentes|sedes|"
+    r"tiempo\s+real|en\s+vivo|cada\s+minuto|modelo\s+predictivo|predicci\w+|machine\s+learning|"
+    r"puntaje\s+de\s+riesgo|replica|eventos|streaming|multisede|regiones)\b"
+)
+
+
+def is_complex_project(
+    history: list[dict], project_description: str = "", documents_context: Optional[str] = None
+) -> bool:
+    """¿El proyecto necesita más preguntas que el tope normal?
+
+    Complejo = al menos 3 señales distintas (``_COMPLEXITY_MARKERS``) o al
+    menos 4 preocupaciones del dominio relevantes (sin contar las que aplican
+    a todo sistema).
+    """
+    text = _normalize_text(_user_context(history, project_description, documents_context))
+    markers = {m.group(0) for m in _COMPLEXITY_MARKERS.finditer(text)}
+    if len(markers) >= 3:
+        return True
+    concerns = [c for c in relevant_concerns(text) if not c.always]
+    return len(concerns) >= 4
+
+
+def max_questions(
+    history: list[dict], project_description: str = "", documents_context: Optional[str] = None
+) -> int:
+    """Tope de preguntas para este proyecto (``MAX_QUESTIONS`` o ``MAX_QUESTIONS_COMPLEX``)."""
+    if is_complex_project(history, project_description, documents_context):
+        return max(MAX_QUESTIONS, MAX_QUESTIONS_COMPLEX)
+    return MAX_QUESTIONS
+
+
+def _user_context(
+    history: list[dict], project_description: str, documents_context: Optional[str]
+) -> str:
+    answers_text = "\n".join(str(item.get("respuesta") or "") for item in history)
+    return " ".join(
+        part for part in (project_description, documents_context or "", answers_text) if part
+    )
+
+
+def _answered_questions(history: list[dict]) -> list[str]:
+    return [
+        _normalize_text(str(item.get("pregunta") or ""))
+        for item in history
+        if str(item.get("respuesta") or "").strip()
+    ]
+
+
+def missing_coverage(
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Categorías que faltan: las de HU5 (usuarios, funcionalidades, calidad)
+    y las que deciden la arquitectura (plataforma, habilidades del equipo,
+    fuente de los datos).
+
+    Devuelve ``[(categoria, pregunta)]`` en el orden de la checklist.
+    """
+    context = _normalize_text(_user_context(history, project_description, documents_context))
+    asked = _answered_questions(history)
+    missing = []
+    for name, _patterns, asked_markers, question in (*_COVERAGE_CATEGORIES, *_DRIVER_CATEGORIES):
+        if _COVERAGE_REGEXES[name].search(context):
+            continue
+        if any(re.search(marker, text) for marker in asked_markers for text in asked):
+            continue
+        missing.append((name, question))
+    return missing
+
+
+def pending_domain_questions(
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Preguntas de dominio (``app/core/domain_concerns.py``) que conviene hacer.
+
+    Solo las que el proyecto sugiere y el usuario no mencionó; las que aplican
+    a todo sistema (respaldos) no se preguntan aquí, van al ADR. Respeta
+    ``MAX_DOMAIN_QUESTIONS``: si el agente ya hizo ese número, no hay más.
+    """
+    asked_keys = {
+        concern.key
+        for item in history
+        if str(item.get("respuesta") or "").strip()
+        for concern in [concern_by_question(str(item.get("pregunta") or ""))]
+        if concern is not None
+    }
+    limit = (
+        MAX_DOMAIN_QUESTIONS_COMPLEX
+        if is_complex_project(history, project_description, documents_context)
+        else MAX_DOMAIN_QUESTIONS
+    )
+    if len(asked_keys) >= limit:
+        return []
+    text = _user_context(history, project_description, documents_context)
+    return [
+        (concern.key, concern.question)
+        for concern in uncovered_concerns(text, text, include_always=False)
+        if concern.key not in asked_keys
+    ]
+
+
+def summary_gaps(
+    resumen: Optional[dict],
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Checklist determinista sobre el RESUMEN estructurado.
+
+    Último control antes de cerrar: si el resumen que armó el LLM quedó sin
+    usuarios, sin funcionalidades, sin atributos de calidad dichos por el
+    usuario o sin presupuesto/equipo/plazo, se devuelve la pregunta que falta.
+    Una categoría cuya pregunta ya se hizo y se respondió no se vuelve a pedir
+    (el usuario puede haber dicho "no sé"): así no hay bucles.
+    """
+    resumen = resumen if isinstance(resumen, dict) else {}
+    asked = _answered_questions(history)
+    gaps: list[tuple[str, str]] = []
+    for name, _patterns, asked_markers, question in _COVERAGE_CATEGORIES:
+        value = resumen.get(name)
+        if name == "calidad":
+            filled = any(
+                QUALITY_ORIGIN_SAID == (resumen.get("calidad_origen") or {}).get(item, QUALITY_ORIGIN_SAID)
+                for item in _as_str_list(value)
+            )
+        elif isinstance(value, list):
+            filled = bool(_as_str_list(value))
+        else:
+            filled = bool(str(value or "").strip())
+        if filled:
+            continue
+        if any(re.search(marker, text) for marker in asked_markers for text in asked):
+            continue
+        gaps.append((name, question))
+    # Lo que decide la arquitectura, según el resumen: si el LLM dejó
+    # "no definido" y la pregunta no se hizo, se hace antes de cerrar (la
+    # detección por palabras puede dar falsos positivos; el resumen no).
+    tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
+    # Un campo por categoría de _DRIVER_CATEGORIES y en su mismo orden: si se
+    # agrega una categoría y no su campo, ``zip`` la descarta en silencio.
+    _DRIVER_SUMMARY_FIELDS = (
+        "plataforma",
+        "habilidades_equipo",
+        "fuentes_de_datos",
+        "tecnologias_no_dominadas",
+    )
+    assert len(_DRIVER_SUMMARY_FIELDS) == len(_DRIVER_CATEGORIES)
+    for (name, _patterns, asked_markers, question), field in zip(
+        _DRIVER_CATEGORIES, _DRIVER_SUMMARY_FIELDS
+    ):
+        value = _normalize_text(str(tecnico.get(field) or "")).strip(" .")
+        if value and value not in _UNDEFINED_VALUES:
+            continue
+        if any(re.search(marker, text) for marker in asked_markers for text in asked):
+            continue
+        gaps.append((name, question))
+    # "escala": el prompt del resumen la pide, pero nada la exigía, así que
+    # salía "no definido" salvo que el usuario diera las cifras por su cuenta.
+    # El volumen decide la arquitectura tanto como la plataforma: no es lo
+    # mismo una app para una persona que para diez mil.
+    escala = _normalize_text(str(resumen.get("escala") or "")).strip(" .")
+    if not escala or escala in _UNDEFINED_VALUES:
+        if not any(re.search(marker, text) for marker in _ESCALA_ASKED_MARKERS for text in asked):
+            gaps.append(("escala", ESCALA_QUESTION))
+    restrictions = " ".join(_as_str_list(resumen.get("restricciones")))
+    for factor, question in _missing_viability_factors(
+        history,
+        f"{project_description} {restrictions}",
+        documents_context,
+    ):
+        gaps.append((factor, question))
+    return gaps
+
+
+_UNDEFINED_VALUES = {"no definido", "no definida", "no especificado", "no especificada", "n/a", "ninguno", "-"}
+
+# Volumen del sistema (campo "escala" del resumen). Un solo aspecto: la
+# pregunta compuesta ("¿cuántos usuarios Y cuántos registros?") la rechaza
+# el guardarraíl _es_pregunta_compuesta.
+ESCALA_QUESTION = "¿Cuántas personas usarían el sistema aproximadamente?"
+_ESCALA_ASKED_MARKERS = (
+    r"cuantas\s+personas\s+usarian",
+    r"cuantos\s+usuarios",
+    r"volumen",
+    r"cuantos\s+registros",
+)
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def normalize_summary(data: Any) -> dict:
+    """Deja el resumen con la forma que usa el resto del sistema.
+
+    ``calidad`` sigue siendo una lista de textos (la leen la propuesta, el ADR y
+    el frontend), y el origen de cada atributo va aparte en
+    ``calidad_origen`` (``{atributo: "dicho" | "propuesto"}``). Acepta también
+    la forma vieja (lista de textos): sin origen se asume "dicho".
+    """
+    if not isinstance(data, dict):
+        return {}
+    summary = dict(data)
+    raw_quality = summary.get("calidad")
+    if not isinstance(raw_quality, list):
+        return summary
+    quality: list[str] = []
+    origins: dict[str, str] = {}
+    for item in raw_quality:
+        if isinstance(item, dict):
+            name = str(item.get("atributo") or item.get("nombre") or "").strip()
+            origin = str(item.get("origen") or "").strip().lower()
+        else:
+            name, origin = str(item or "").strip(), QUALITY_ORIGIN_SAID
+        if not name:
+            continue
+        quality.append(name)
+        origins[name] = (
+            QUALITY_ORIGIN_PROPOSED if origin.startswith("propu") else QUALITY_ORIGIN_SAID
+        )
+    summary["calidad"] = quality
+    if any(isinstance(item, dict) for item in raw_quality):
+        summary["calidad_origen"] = origins
+    return summary
+
+
 def next_step(
     model: BaseChatModel,
     history: list[dict],
@@ -568,6 +1007,8 @@ def next_step(
         raise ElicitationAgentError(f"Falta la clave 'done' en la respuesta del modelo: {data}")
 
     decision = _decision_from_data(data)
+    # Tope de preguntas de ESTE proyecto (más alto si es complejo).
+    max_q = max_questions(history, project_description, documents_context)
 
     # Regla dura complementaria al prompt: el LLM no puede cerrar ni saltarse
     # los límites que condicionan coste, complejidad y entrega. Solo se aplica
@@ -576,7 +1017,7 @@ def next_step(
     # LLM (ya pagada) con las de presupuesto, equipo y plazo, rompiendo la
     # progresión de HU5. Y respeta MAX_QUESTIONS: a partir del máximo no se
     # hace una pregunta más, se cierra (ver abajo).
-    if len(history) < MAX_QUESTIONS and (
+    if len(history) < max_q and (
         decision.done or len(history) >= MIN_QUESTIONS
     ):
         missing_viability = _missing_viability_factors(
@@ -590,6 +1031,45 @@ def next_step(
                 reason=f"Falta el factor de viabilidad obligatorio: {factor}.",
             )
 
+    if not decision.done and MIN_QUESTIONS <= len(history) < max_q:
+        # Reserva de turnos: si las preguntas que quedan apenas alcanzan para
+        # lo obligatorio que falta (categorías de HU5 y lo que decide la
+        # arquitectura: plataforma, habilidades, fuente de datos), se pregunta
+        # eso en vez de lo que propuso el modelo. Antes el modelo podía seguir
+        # con otros temas hasta la pregunta 10 y la elicitación se cerraba por
+        # el máximo sin haber preguntado, por ejemplo, la plataforma.
+        missing = missing_coverage(history, project_description, documents_context)
+        if missing and max_q - len(history) <= len(missing):
+            category, question = missing[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Quedan pocas preguntas y falta lo obligatorio: {category}.",
+            )
+
+    if decision.done and MIN_QUESTIONS <= len(history) < max_q:
+        # Checklist de cobertura: el LLM quiere cerrar, pero el código no lo
+        # deja si falta una categoría de HU5 o una preocupación del dominio
+        # (ubicación, archivos, pagos...) que el proyecto sugiere. Antes del
+        # mínimo no hace falta: esa regla ya impide cerrar y conserva la
+        # pregunta que propuso el modelo.
+        missing = missing_coverage(history, project_description, documents_context)
+        if missing:
+            category, question = missing[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Falta cubrir la categoría obligatoria: {category}.",
+            )
+        domain = pending_domain_questions(history, project_description, documents_context)
+        if domain and len(history) < max_q - 1:
+            concern, question = domain[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=f"Falta una preocupación del dominio: {concern}.",
+            )
+
     if len(history) < MIN_QUESTIONS and decision.done:
         # Regla dura: no se puede terminar antes del mínimo, sin importar
         # lo que diga el modelo.
@@ -599,12 +1079,12 @@ def next_step(
             reason="Forzado: aún no se alcanza el mínimo de preguntas "
             f"({len(history)}/{MIN_QUESTIONS}).",
         )
-    elif len(history) >= MAX_QUESTIONS and not decision.done:
+    elif len(history) >= max_q and not decision.done:
         # Regla dura opuesta: no dejar que se alargue indefinidamente.
         decision = ElicitationDecision(
             done=True,
             question=None,
-            reason=f"Forzado: se alcanzó el máximo de preguntas ({MAX_QUESTIONS}).",
+            reason=f"Forzado: se alcanzó el máximo de preguntas ({max_q}).",
         )
 
     if (
@@ -618,6 +1098,141 @@ def next_step(
         decision = _reintentar_pregunta_granular(model, decision, context, callbacks)
 
     return decision
+
+
+# Pregunta con la que app/api/elicitation.py guarda un ajuste del usuario a los
+# requerimientos (decisión "modify"), normalizada.
+_ADJUSTMENT_QUESTION = "(ajuste solicitado por el usuario)"
+
+
+def _first_matching_sentence(name: str, text: str) -> str:
+    """Primera oración de ``text`` que menciona el factor ``name``."""
+    for sentence in re.split(r"(?<=[.;\n])\s+", text):
+        if _VIABILITY_REGEXES[name].search(_normalize_text(sentence)):
+            return sentence.strip()
+    return ""
+
+
+def viability_facts(
+    history: list[dict],
+    project_description: str = "",
+    documents_context: Optional[str] = None,
+) -> dict[str, str]:
+    """Presupuesto, equipo y plazo con las PALABRAS del usuario.
+
+    El resumen del LLM a veces los pierde o los reinterpreta: un "4 devs, 3
+    front y 1 PM" terminaba como "Equipo: no definido" en el ADR o como "4
+    desarrolladores backend" en la propuesta. Aquí se guarda el texto tal
+    cual.
+
+    Orden de prioridad:
+      1. el ajuste MÁS RECIENTE que el usuario pidió al revisar los
+         requerimientos ("(ajuste solicitado por el usuario)") y que menciona
+         el factor. Antes ganaba la primera coincidencia y una corrección del
+         plazo ("piloto a los 3 meses y versión completa a los 6") no llegaba
+         a los datos de viabilidad ni al resumen ejecutivo del ADR;
+      2. la respuesta más reciente a la pregunta del factor;
+      3. la primera respuesta que lo menciona;
+      4. la descripción o los documentos.
+    """
+    facts: dict[str, str] = {}
+    adjustments = [
+        str(item.get("respuesta") or "").strip()
+        for item in history
+        if _normalize_text(str(item.get("pregunta") or "")).strip() == _ADJUSTMENT_QUESTION
+    ]
+    for name, _patterns, question in _VIABILITY_FACTORS:
+        questions = {
+            _normalize_text(text).strip()
+            for text in (question, *_LEGACY_VIABILITY_QUESTIONS.get(name, ()))
+        }
+        answer = next(
+            (hit for text in reversed(adjustments) for hit in [_first_matching_sentence(name, text)] if hit),
+            "",
+        )
+        if not answer:
+            answer = next(
+                (
+                    str(item.get("respuesta") or "").strip()
+                    for item in reversed(history)
+                    if _normalize_text(str(item.get("pregunta") or "")).strip() in questions
+                    and str(item.get("respuesta") or "").strip()
+                ),
+                "",
+            )
+        if not answer:
+            answer = next(
+                (
+                    hit
+                    for item in history
+                    for hit in [_first_matching_sentence(name, str(item.get("respuesta") or ""))]
+                    if hit
+                ),
+                "",
+            )
+        if not answer:
+            candidates = [project_description or "", documents_context or ""]
+            for text in candidates:
+                sentences = re.split(r"(?<=[.;\n])\s+", text)
+                hit = next(
+                    (
+                        sentence.strip()
+                        for sentence in sentences
+                        if _VIABILITY_REGEXES[name].search(_normalize_text(sentence))
+                    ),
+                    "",
+                )
+                if hit:
+                    answer = hit
+                    break
+        if answer:
+            facts[name] = answer[:300]
+    return facts
+
+
+_DIGITS_RE = re.compile(r"\d+(?:[.,]\d+)?")
+# Parecido mínimo entre el texto del usuario y la versión corregida por el LLM
+# para aceptar la corrección (0-1, sobre texto sin acentos ni mayúsculas).
+TYPO_FIX_MIN_SIMILARITY = 0.85
+
+
+def accept_typo_fix(literal: str, corrected: Optional[str]) -> bool:
+    """¿La versión del LLM solo corrige la escritura del texto del usuario?
+
+    Se acepta si es casi el mismo texto (``TYPO_FIX_MIN_SIMILARITY``) y tiene
+    exactamente las mismas cifras. Así "edio: base gestionada" -> "Medio: base
+    gestionada" pasa, y "4 devs, 3 front y 1 PM" -> "4 desarrolladores
+    backend" no (cambian las cifras y el texto).
+    """
+    if not corrected or not str(corrected).strip():
+        return False
+    original = _normalize_text(literal).strip()
+    candidate = _normalize_text(str(corrected)).strip()
+    if candidate == original:
+        return False
+    if sorted(_DIGITS_RE.findall(original)) != sorted(_DIGITS_RE.findall(candidate)):
+        return False
+    return SequenceMatcher(None, original, candidate).ratio() >= TYPO_FIX_MIN_SIMILARITY
+
+
+def _merge_viability_facts(literal: dict[str, str], from_llm: Any) -> dict[str, Any]:
+    """Datos de viabilidad finales: el texto del usuario, con la corrección de
+    escritura del LLM solo si ``accept_typo_fix`` la aprueba. Lo que el LLM
+    ponga para un factor que el usuario no mencionó se descarta."""
+    proposed = from_llm if isinstance(from_llm, dict) else {}
+    final: dict[str, Any] = {}
+    originals: dict[str, str] = {}
+    for name, text in literal.items():
+        fix = proposed.get(name)
+        if accept_typo_fix(text, fix):
+            final[name] = str(fix).strip()
+            originals[name] = text
+        else:
+            final[name] = text
+    if originals:
+        # Lo que escribió el usuario, para poder auditar la corrección.
+        final["_texto_original"] = originals
+    return final
 
 
 def generate_summary(
@@ -637,10 +1252,20 @@ def generate_summary(
         f"Preguntas y respuestas:\n{_history_to_text(history)}"
         f"{_documents_section(documents_context)}"
     )
-    return _invoke_json(
-        model,
-        SUMMARY_SYSTEM_PROMPT,
-        context,
-        callbacks=callbacks,
-        run_name="elicitation-summary",
+    summary = normalize_summary(
+        _invoke_json(
+            model,
+            SUMMARY_SYSTEM_PROMPT,
+            context,
+            callbacks=callbacks,
+            run_name="elicitation-summary",
+        )
     )
+    facts = viability_facts(history, project_description, documents_context)
+    from_llm = summary.pop("datos_viabilidad", None)
+    if facts:
+        # Las palabras del usuario viajan aparte hasta la propuesta y el ADR
+        # (ver format_requirements_summary). Del LLM solo se toma la
+        # corrección de errores de escritura evidentes, si no cambia cifras.
+        summary["datos_viabilidad"] = _merge_viability_facts(facts, from_llm)
+    return summary

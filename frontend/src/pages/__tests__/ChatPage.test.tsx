@@ -67,12 +67,21 @@ describe('ChatPage — barra de fase (HU10)', () => {
     expect(await screen.findByText('Proyecto completado.')).toBeInTheDocument()
   })
 
-  it('en una fase intermedia no muestra "Marcar fase como lista" ni "Avanzar fase" en la barra', async () => {
+  it('en una fase intermedia sin aprobar no muestra "Marcar fase como lista" ni "Avanzar fase"', async () => {
     renderWithPhase({ current_phase: 'refinamiento', phase_ready: false, available_phases: PHASES })
 
     expect(await screen.findByText('Fase en progreso.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Marcar fase como lista' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Avanzar fase/ })).not.toBeInTheDocument()
+  })
+
+  it('con la fase ya aprobada "Avanzar fase" sale en la barra, no al final del chat', async () => {
+    // Antes solo vivía dentro de <PhaseActions>, debajo de todo el chat: en
+    // Propuesta quedaba fuera de la vista y había que bajar a buscarlo.
+    renderWithPhase({ current_phase: 'propuesta', phase_ready: true, available_phases: PHASES })
+
+    expect(await screen.findByText('Fase lista para avanzar.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Avanzar fase/ })).toBeEnabled()
   })
 
   it('en requerimientos "Avanzar fase" queda deshabilitado hasta que la fase esté lista', async () => {

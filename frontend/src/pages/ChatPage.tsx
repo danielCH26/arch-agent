@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { ApiConflictError, decidePhase } from '../api/approvals'
 import { ApiError } from '../api/client'
 import { advancePhase, getProject, getProjectPhase, PhaseInfo, Project } from '../api/projects'
 import { ChatWindow } from '../components/ChatWindow'
@@ -7,8 +8,10 @@ import { DiagramHistoryPanel } from '../components/DiagramHistoryPanel'
 import { ElicitationPanel } from '../components/ElicitationPanel'
 import { PhaseStepper } from '../components/PhaseStepper'
 import { projectsStore } from '../stores/projectsStore'
+import { projectUnavailableMessage } from '../stores/authStore'
 
 const ELICITATION_PHASE = 'requerimientos'
+const REFINEMENT_PHASE = 'refinamiento'
 
 /**
  * Se vuelve a montar al cambiar de proyecto (`key`), para que ningún render
@@ -61,7 +64,7 @@ function ChatPageContent() {
           projectsStore.getState().setCurrentProject(null)
           navigate('/projects', {
             replace: true,
-            state: { message: 'Ese proyecto ya no está disponible para tu usuario.' },
+            state: { message: projectUnavailableMessage() },
           })
           return
         }
@@ -83,6 +86,35 @@ function ChatPageContent() {
     setPhase(phaseData)
     projectsStore.getState().setCurrentProject(projectData)
   }, [projectId])
+
+  // Refinamiento: aprobar el diagrama en el chat cierra la fase y lleva a
+  // Revisión. Son DOS registros distintos: `/api/diagrams/decision` (que ya
+  // hizo <MessageBubble>) solo guarda la decisión sobre el diagrama y no
+  // toca la fase. Sin la decisión de fase, `phase_ready` sigue en false y
+  // "Avanzar" responde "La fase actual todavía no está aprobada".
+  const handleDiagramApproved = async () => {
+    setPhaseActionError('')
+    setPhaseActionLoading(true)
+    try {
+      try {
+        await decidePhase(projectId, REFINEMENT_PHASE, { action: 'approve' })
+      } catch (err) {
+        // Ya aprobada (p. ej. desde otra pestaña): no es un error, se avanza.
+        if (!(err instanceof ApiConflictError)) throw err
+      }
+      await advancePhase(projectId)
+      await refreshAfterPhaseChange()
+    } catch (err) {
+      // El diagrama YA quedó aprobado: lo que falló es pasar de fase. Antes el
+      // mensaje técnico del error reemplazaba la indicación de qué hacer.
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : ''
+      setPhaseActionError(
+        `El diagrama quedó aprobado, pero no se pudo avanzar de fase${detail}. Usa "Avanzar fase".`,
+      )
+    } finally {
+      setPhaseActionLoading(false)
+    }
+  }
 
   const handleAdvance = async () => {
     setPhaseActionError('')
@@ -157,10 +189,13 @@ function ChatPageContent() {
               </button>
             )}
             {/* HU10 (REQ-SA-23): "Marcar fase como lista" se retiró (mark-ready
-                responde 404). En las fases HU10 la aprobación y "Avanzar" viven
-                en <PhaseActions> dentro del chat; esta barra solo avanza la
-                elicitación (F05 es dueño de `requerimientos`). */}
-            {isElicitationPhase && (
+                responde 404). La APROBACIÓN vive en el panel de cada fase
+                (<ProposalCard>, los botones del diagrama, <PhaseActions>),
+                pero "Avanzar" vive ACÁ: abajo del todo, al final del chat,
+                quedaba fuera de la vista y había que buscarlo. Un único botón,
+                siempre en el mismo sitio y junto al "Fase lista para avanzar".
+                `phaseReady={false}` en <PhaseActions> evita el duplicado. */}
+            {(isElicitationPhase || (!isLastPhase && phase.phase_ready)) && (
               <button
                 type="button"
                 onClick={handleAdvance}
@@ -192,6 +227,8 @@ function ChatPageContent() {
               projectId={projectId}
               phase={phase?.current_phase}
               onProposalPhaseChanged={refreshAfterPhaseChange}
+              onDiagramApproved={handleDiagramApproved}
+              onProjectCompleted={refreshAfterPhaseChange}
             />
           </div>
         )}

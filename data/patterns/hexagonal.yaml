@@ -1,6 +1,8 @@
 pattern_name: "Arquitectura hexagonal (Puertos y Adaptadores)"
 category: "Monolítica"
 complexity: "media"
+family: "monolitico"
+level: "codigo"
 description: >
   Aísla la lógica de negocio del núcleo mediante puertos (interfaces) y
   adaptadores, de forma que la tecnología externa (DB, UI, APIs) se pueda
@@ -34,6 +36,8 @@ fuentes:
     url: "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/hexagonal-architecture.html"
   - titulo: "Hexagonal architecture (Alistair Cockburn)"
     url: "https://alistair.cockburn.us/hexagonal-architecture/"
+  - titulo: "How do architecture patterns and tactics interact? (Journal of Systems and Software)"
+    url: "https://www.sciencedirect.com/science/article/pii/S016412121000141X"
 quality_attributes: [testabilidad, portabilidad, modificabilidad, independencia tecnológica]
 team_fit: "equipo de 3 a 10 personas con dominio de negocio complejo que debe probarse sin infraestructura"
 example_scenarios:

@@ -22,6 +22,11 @@ vi.mock('../../api/proposals', async (importOriginal) => {
   }
 })
 
+vi.mock('../../api/documents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/documents')>()
+  return { ...actual, listDocuments: vi.fn().mockResolvedValue([]) }
+})
+
 import { ChatWindow } from '../ChatWindow'
 import { chatStore } from '../../stores/chatStore'
 import { projectsStore } from '../../stores/projectsStore'
@@ -110,5 +115,63 @@ describe('ChatWindow — SCN-8 ProposalCard mount condition', () => {
     await waitFor(() => {
       expect(createProposalStream).toHaveBeenCalledWith('generate', { projectId: 42 }, expect.anything())
     })
+  })
+})
+
+describe('ChatWindow — chat libre y documentos por fase', () => {
+  beforeEach(() => resetStores())
+  afterEach(() => {
+    vi.clearAllMocks()
+    resetStores()
+  })
+
+  // Bug real: Propuesta ya se maneja 100% con los botones de ProposalCard
+  // (Aprobar / Solicitar cambios / Rechazar), pero el ChatInput libre seguía
+  // disponible debajo -- un mensaje suelto ahí podía desviar al agente sin
+  // que ningún flujo lo esperara.
+  it('no muestra el chat libre en Propuesta', () => {
+    setPhase(1, 'propuesta')
+    render(<ChatWindow projectId={1} />)
+
+    expect(screen.queryByLabelText('Mensaje para ArchAgent')).not.toBeInTheDocument()
+  })
+
+  it('sí muestra el chat libre fuera de Propuesta (p. ej. Refinamiento)', () => {
+    setPhase(1, 'refinamiento')
+    render(<ChatWindow projectId={1} />)
+
+    expect(screen.getByLabelText('Mensaje para ArchAgent')).toBeInTheDocument()
+  })
+
+  // Los documentos ya no son solo de Elicitación: el agente busca en ellos
+  // por similitud sin importar la fase, así que la caja de subida debe estar
+  // disponible en todo el flujo -- completa en Propuesta (no hay ChatInput
+  // ahí para adjuntar con el clip) y compacta en el resto.
+  it('en Propuesta usa la caja completa de documentos, con su propio botón de subir', async () => {
+    setPhase(1, 'propuesta')
+    render(<ChatWindow projectId={1} />)
+
+    expect(await screen.findByText('¿Tienes documentos del proyecto? (opcional)')).toBeInTheDocument()
+  })
+
+  it('fuera de Propuesta, con documentos ya subidos, usa la caja compacta', async () => {
+    const { listDocuments } = await import('../../api/documents')
+    vi.mocked(listDocuments).mockResolvedValueOnce([
+      {
+        id: 1,
+        filename: 'acta.pdf',
+        file_type: 'pdf',
+        file_size_bytes: 10,
+        chunk_count: 1,
+        version: 1,
+        processed: true,
+        created_at: '2026-10-21T00:00:00Z',
+      },
+    ])
+    setPhase(1, 'refinamiento')
+    render(<ChatWindow projectId={1} />)
+
+    expect(await screen.findByText('Documentos que el agente tiene en cuenta:')).toBeInTheDocument()
+    expect(screen.queryByText('¿Tienes documentos del proyecto? (opcional)')).not.toBeInTheDocument()
   })
 })

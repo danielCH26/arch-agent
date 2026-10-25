@@ -1,0 +1,122 @@
+id: analitica-ventas
+name: Tablero comercial
+kind: datos
+description: Plataforma de analítica que junta los datos del ERP y del CRM para tableros semanales.
+profile:
+  resumen: Integra datos del ERP y del CRM en tableros de indicadores.
+  dominio: analitica comercial
+  tipo_sistema: plataforma de analitica
+  tipo_proyecto: empresarial
+  equipo_personas: 5
+  plazo_meses: 6
+  presupuesto_usd: 60000
+resumen:
+  problema: Los informes se arman a mano cada semana copiando datos del ERP.
+  usuarios: Gerentes comerciales y analistas.
+  funcionalidades:
+    - Cargar datos del ERP y del CRM cada noche
+    - Tableros de indicadores
+  restricciones:
+    - Presupuesto de 60000 USD
+    - Equipo de 5 personas
+    - Plazo de 6 meses
+  calidad:
+    - Datos actualizados cada mañana
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Los informes se arman a mano cada semana copiando datos del ERP.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Gerentes comerciales y analistas.
+  - pregunta: ¿El sistema debe conectarse con otros sistemas o servicios externos?
+    respuesta: Con el ERP Siigo y el CRM, ambos tienen API.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 60000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 5 personas, dos son analistas de datos.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 6 meses.
+candidates:
+  - {name: "Pipeline de datos ETL / ELT por lotes", similarity: 0.90}
+  - {name: "Data Lakehouse con capas Medallion (bronce, plata, oro)", similarity: 0.85}
+  - {name: "Arquitectura Lambda / Kappa (procesamiento batch y streaming)", similarity: 0.84}
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.80}
+  - {name: "Microservicios", similarity: 0.78}
+recorded:
+  proposal: |
+    ## Componentes
+    - Extractores del ERP y del CRM
+    - Orquestador de cargas nocturnas
+    - Almacén analítico
+    - Tableros
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Python | Extracción y transformación | Cargar datos cada noche |
+    | Airflow | Orquestación de cargas | Cargas nocturnas |
+    | PostgreSQL | Almacén analítico | Tableros |
+    | Metabase | Tableros sin desarrollo | Tableros de indicadores |
+
+    ## Patrones
+    - Patrón principal: Pipeline de datos ETL / ELT por lotes
+
+    ## Justificación del patrón principal
+    - Motivo de elección: cargas nocturnas por lotes.
+    - Reflejo en la arquitectura: extractores, orquestador y almacén.
+    - Beneficio esperado: datos listos cada mañana.
+    - Riesgo o costo: no hay datos en tiempo real.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | ETL por lotes | Simple de operar | Sin tiempo real | Media | Alto | [1] |
+    | Capas | Conocido | No resuelve cargas | Baja | Bajo | [2] |
+    | Microservicios | Escala por servicio | Operación | Alta | Bajo | [3] |
+    - Recomendación: Pipeline ETL por lotes
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Extractores | Leer el ERP y el CRM | Orquestador |
+    | Orquestador | Cargas nocturnas | Almacén analítico |
+    | Almacén analítico | Datos limpios | Tableros |
+    | Tableros | Indicadores | Almacén analítico |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Transformación | Python | Analistas lo conocen |
+    | Orquestación | Airflow | Cargas programadas |
+    | Almacén | PostgreSQL | Volumen moderado |
+    | Visualización | Metabase | Tableros sin código |
+
+    ### 7.3 Consecuencias
+    **Positivas:** simple. **Negativas / costos asumidos:** sin tiempo real.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | Falla una carga | medio | Reintento y alerta al equipo |
+
+    ### 7.5 Plan de implementación
+    1. ERP. 2. CRM. 3. Tableros.
+
+    ### 7.6 Primer sprint
+    - Extractor del ERP
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    dags/
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Quién valida los indicadores?
+expect:
+  concerns: [integraciones, respaldos]
+  checks:
+    respeta_restricciones: true
+    cifras_con_origen: true
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

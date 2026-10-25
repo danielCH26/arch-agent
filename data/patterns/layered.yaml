@@ -1,6 +1,8 @@
 pattern_name: "Arquitectura en capas (Layered)"
 category: "Monolítica"
 complexity: "baja"
+family: "monolitico"
+level: "codigo"
 description: >
   Organiza el sistema en capas horizontales (presentación, lógica de negocio,
   acceso a datos), cada una dependiendo solo de la capa inmediatamente inferior.
@@ -31,6 +33,10 @@ decision_signals:
 fuentes:
   - titulo: "N-tier architecture style (Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/n-tier"
+  - titulo: "Systematically reviewing the layered architectural pattern principles (arXiv)"
+    url: "https://arxiv.org/abs/2112.01644"
+  - titulo: "The Three-Layer architectural pattern applied to plug-in-based architectures (Software: Practice and Experience)"
+    url: "https://onlinelibrary.wiley.com/doi/abs/10.1002/spe.2142"
 quality_attributes: [simplicidad, time-to-market, mantenibilidad, bajo costo de operación]
 team_fit: "equipo de 1 a 5 personas, MVP, proyecto académico o CRUD con presupuesto bajo y un solo despliegue"
 example_scenarios:

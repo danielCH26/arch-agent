@@ -131,6 +131,7 @@ def _pattern_chunk_to_document(
         "category": pattern.category,
         "tradeoffs": pattern.tradeoffs,
         "complexity": getattr(pattern, "complexity", None),
+        "fuentes": getattr(pattern, "fuentes", None) or [],
         "chunk_type": chunk.chunk_type,
         # HU8: los chunks subidos con ingest_pattern_source.py guardan el
         # archivo original; se expone para que la cita muestre su fuente.

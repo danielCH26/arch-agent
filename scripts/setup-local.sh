@@ -137,6 +137,11 @@ if docker compose exec -T backend true >/dev/null 2>&1; then
 
     docker compose exec -T -e DATABASE_URL="$DATABASE_URL" backend \
         python3 -m migrations.run_migrations
+
+    # Las migraciones 0018/0019 añaden campos alimentados por el catálogo
+    # YAML; reindexar después de migrar mantiene la base RAG en sincronía.
+    docker compose exec -T -e DATABASE_URL="$DATABASE_URL" backend \
+        python3 scripts/seed_patterns.py
 fi
 
 # --- 6. Esperar backend ---------------------------------------------------

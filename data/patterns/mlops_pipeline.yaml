@@ -1,6 +1,8 @@
 pattern_name: "Pipeline de MLOps (entrenamiento, registro y serving de modelos)"
 category: "Flujo de datos"
 complexity: "media"
+family: "datos"
+level: "despliegue"
 description: >
   Automatiza el ciclo de vida de un modelo de aprendizaje automático en etapas
   reproducibles: preparación de datos, entrenamiento, evaluación, registro

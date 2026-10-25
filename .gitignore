@@ -71,6 +71,7 @@ evals/results/
 
 .patch
 
+eval_out/
 # Cobertura de pytest-cov
 .coverage
 .coverage.*

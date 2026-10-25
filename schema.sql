@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS architect_patterns (
     when_not_to_use TEXT,
     decision_signals JSONB,
     complexity VARCHAR(10),         -- baja | media | alta (complejidad operativa)
+    fuentes JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{titulo, url}] curadas
     embedding vector(384),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

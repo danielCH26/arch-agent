@@ -35,6 +35,9 @@ from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
 
+# El umbral de similitud, su justificacion y RAG_NEAR_MISS_MARGIN viven en
+# app/core/rag_config.py (importado arriba). Este archivo solo los usa.
+
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 # Eventos de run_agent que el usuario ya vio como respuesta: despues de uno de

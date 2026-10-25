@@ -175,9 +175,156 @@ def sanitize_subgraph_statements(code: str) -> str:
     return _SUBGRAPH_PATTERN.sub(_fix, code)
 
 
+# Flecha con etiqueta al estilo de stateDiagram (``A --> B : "texto"``), que
+# los modelos escriben a menudo dentro de un flowchart. En flowchart es un error
+# de sintaxis y el diagrama no se puede renderizar; la forma válida es
+# ``A -->|texto| B``.
+#
+# El nodo puede llevar una clase (``B:::svc``). Antes ``dst`` cortaba en el
+# primer ``:`` y ``A --> B:::svc`` se convertía en ``A -->|::svc| B``. Ahora la
+# clase es parte del nodo y el ``:`` de la etiqueta no puede ir seguido de otro.
+_NODE_WITH_CLASS = r"[^\s:|]+(?::::[\w-]+)?"
+_EDGE_WITH_COLON_LABEL = re.compile(
+    r"^(?P<indent>\s*)(?P<src>" + _NODE_WITH_CLASS + r")\s*"
+    r"(?P<arrow>-->|---|-\.->|==>|--x|--o)\s*"
+    r"(?P<dst>" + _NODE_WITH_CLASS + r")\s*:(?!:)\s*(?P<label>.+?)\s*;?\s*$"
+)
+
+
+def sanitize_flowchart_edge_labels(code: str) -> str:
+    """Convierte ``A --> B : "texto"`` en ``A -->|texto| B`` en flowcharts.
+
+    Solo toca líneas que son exactamente una flecha con etiqueta tras ``:``;
+    el resto del diagrama queda igual. No aplica a otros tipos de diagrama,
+    donde ``:`` sí es sintaxis válida (``sequenceDiagram``, ``classDiagram``).
+    """
+    if not _is_flowchart(code):
+        return code
+
+    def _fix(line: str) -> str:
+        match = _EDGE_WITH_COLON_LABEL.match(line)
+        if match is None:
+            return line
+        label = match.group("label").strip().strip('"').strip("'").strip()
+        # `|` cerraría la etiqueta antes de tiempo; las comillas sueltas rompen el parser.
+        label = label.replace("|", "/").replace('"', "#quot;")
+        if not label:
+            return f"{match.group('indent')}{match.group('src')} {match.group('arrow')} {match.group('dst')}"
+        return (
+            f"{match.group('indent')}{match.group('src')} {match.group('arrow')}"
+            f"|{label}| {match.group('dst')}"
+        )
+
+    return "\n".join(_fix(line) for line in code.split("\n"))
+
+
+# Etiqueta de flecha al estilo pipe: A -->|texto| B. Mermaid acepta texto
+# plano aca, pero un "(" dentro -- igual que en una etiqueta de nodo [...]
+# -- lo interpreta como el inicio de una forma redonda y rompe el parser.
+# Bug real visto en produccion (caso del observatorio): el LLM escribio
+# `FlaskApp -->|API REST (intervenciones)| PowerBI` -- `sanitize_mermaid_labels`
+# solo mira `[...]` (nodos), nunca `|...|` (flechas), asi que esta etiqueta
+# pasaba sin tocar y el render fallaba con "Parse error ... Expecting ...
+# got 'PS'". Se cita la misma forma que ya usamos para nodos: `|"texto"|`.
+_PIPE_EDGE_LABEL_PATTERN = re.compile(r"\|([^|\n]*)\|")
+
+
+def _pipe_label_has_unquoted_specials(label: str) -> bool:
+    if label.startswith('"') and label.endswith('"'):
+        return False
+    return any(ch in label for ch in "()\"")
+
+
+def sanitize_pipe_edge_labels(code: str) -> str:
+    """Envuelve en comillas las etiquetas `-->|texto|` que tengan
+    parentesis o comillas sin citar, para que Mermaid no las confunda
+    con el inicio de una forma de nodo. Solo aplica a flowchart/graph,
+    igual que el resto de sanitizadores de este modulo.
+    """
+    if not _is_flowchart(code):
+        return code
+
+    def _fix(match: re.Match) -> str:
+        label = match.group(1)
+        if _pipe_label_has_unquoted_specials(label):
+            escaped = label.replace('"', "#quot;")
+            return f'|"{escaped}"|'
+        return match.group(0)
+
+    return _PIPE_EDGE_LABEL_PATTERN.sub(_fix, code)
+
+
+_SUBGRAPH_ID_PATTERN = re.compile(r"^(\s*subgraph\s+)([A-Za-z_][A-Za-z0-9_]*)(.*)$")
+# Línea que declara un nodo: solo el id, con o sin forma (``X``, ``X["texto"]``,
+# ``X(...)``, ``X{...}``, ``X[(...)]``, ``X((...))``), sin flechas.
+_NODE_DECLARATION_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[\[({>].*)?;?\s*$"
+)
+
+
+def sanitize_subgraph_id_collisions(code: str) -> str:
+    """Renombra el id de un subgraph cuando hay un nodo declarado con el mismo id.
+
+    Los modelos escriben ``subgraph Vacunas["Módulo de Vacunas"]`` y dentro el
+    nodo ``Vacunas``: Mermaid lo rechaza ("Setting Vacunas as parent of
+    Vacunas would create a cycle") y el diagrama no se renderiza. Se renombra
+    solo el subgraph (``Vacunas_grupo``) y se conserva su etiqueta, así las
+    flechas siguen apuntando al nodo. Si el id no se declara como nodo (solo
+    aparece en flechas), se deja: esas flechas apuntan al subgraph a propósito.
+    """
+    if not _is_flowchart(code):
+        return code
+
+    lines = code.split("\n")
+    subgraph_ids = {
+        m.group(2) for line in lines if (m := _SUBGRAPH_ID_PATTERN.match(line))
+    }
+    if not subgraph_ids:
+        return code
+
+    keywords = {"end", "direction", "subgraph", "flowchart", "graph", "class", "classDef", "style", "click", "linkStyle"}
+    declared_nodes = set()
+    for line in lines:
+        if _SUBGRAPH_ID_PATTERN.match(line) or "--" in line or "==" in line:
+            continue
+        m = _NODE_DECLARATION_PATTERN.match(line)
+        if m and m.group(1) not in keywords:
+            declared_nodes.add(m.group(1))
+
+    collisions = subgraph_ids & declared_nodes
+    if not collisions:
+        return code
+
+    taken = subgraph_ids | declared_nodes
+
+    def _new_id(old: str) -> str:
+        candidate, n = f"{old}_grupo", 2
+        while candidate in taken:
+            candidate, n = f"{old}_grupo{n}", n + 1
+        taken.add(candidate)
+        return candidate
+
+    renames = {old: _new_id(old) for old in sorted(collisions)}
+
+    def _fix(line: str) -> str:
+        m = _SUBGRAPH_ID_PATTERN.match(line)
+        if not m or m.group(2) not in renames:
+            return line
+        rest = m.group(3)
+        # Sin etiqueta propia, el título visible seguiría siendo el id original.
+        if not rest.strip().startswith("["):
+            rest = f'["{m.group(2)}"]{rest}'
+        return f"{m.group(1)}{renames[m.group(2)]}{rest}"
+
+    return "\n".join(_fix(line) for line in lines)
+
+
 def sanitize_mermaid(code: str) -> str:
     """Aplica todos los sanitizadores conocidos, en orden."""
+    code = sanitize_flowchart_edge_labels(code)
+    code = sanitize_subgraph_id_collisions(code)
     code = sanitize_mermaid_labels(code)
+    code = sanitize_pipe_edge_labels(code)
     code = sanitize_subgraph_statements(code)
     code = sanitize_class_statements(code)
     return code
@@ -209,6 +356,14 @@ def validate_mermaid(code: str) -> tuple[bool, str | None]:
                 return False, (
                     f"Etiqueta de nodo sin comillas contiene caracteres especiales: "
                     f'[{label}]. Envolvé el texto entre comillas: ["{label}"]'
+                )
+
+        for match in _PIPE_EDGE_LABEL_PATTERN.finditer(stripped):
+            label = match.group(1)
+            if _pipe_label_has_unquoted_specials(label):
+                return False, (
+                    f"Etiqueta de flecha sin comillas contiene caracteres especiales: "
+                    f'|{label}|. Envolvé el texto entre comillas: |"{label}"|'
                 )
 
     return True, None

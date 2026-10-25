@@ -22,6 +22,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.core.pattern_catalog import (  # noqa: E402
     PATTERNS_DIR,
     build_pattern_chunks,
+    VALID_FAMILIES,
+    VALID_LEVELS,
     load_patterns as _load_catalog,
 )
 from seed_common import connect_db, log  # noqa: E402
@@ -36,6 +38,13 @@ def load_patterns() -> list[dict]:
         log(f"No se encontraron archivos .yaml en {PATTERNS_DIR}", "ERROR")
         sys.exit(1)
     for pattern in patterns:
+        if pattern.get("family") not in VALID_FAMILIES or pattern.get("level") not in VALID_LEVELS:
+            log(
+                f"{pattern['pattern_name']}: family={pattern.get('family')!r} / "
+                f"level={pattern.get('level')!r} no son validos ({VALID_FAMILIES} / "
+                f"{VALID_LEVELS}); la tabla de trade-offs no podra diversificar con el",
+                "WARN",
+            )
         if pattern.get("complexity") not in VALID_COMPLEXITY:
             log(
                 f"{pattern['pattern_name']}: complexity={pattern.get('complexity')!r} "
@@ -97,14 +106,15 @@ def upsert_pattern(cur, pattern: dict) -> int:
     embedding_text = f"{pattern['description']} {pattern['use_cases']}"
     embedding = to_pgvector_literal(embed_passage(embedding_text))
     decision_signals = json.dumps(pattern.get("decision_signals", []))
+    fuentes = json.dumps(pattern.get("fuentes", []))
 
     if row is None:
         cur.execute(
             """
             INSERT INTO architect_patterns
                 (pattern_name, category, description, use_cases, tradeoffs,
-                 when_not_to_use, decision_signals, complexity, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                 when_not_to_use, decision_signals, complexity, fuentes, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
             RETURNING id
             """,
             (
@@ -116,6 +126,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
                 pattern.get("when_not_to_use"),
                 decision_signals,
                 pattern.get("complexity"),
+                fuentes,
                 embedding,
             ),
         )
@@ -126,7 +137,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
         UPDATE architect_patterns
         SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
             when_not_to_use = %s, decision_signals = %s, complexity = %s,
-            embedding = %s::vector
+            fuentes = %s, embedding = %s::vector
         WHERE id = %s
         """,
         (
@@ -137,6 +148,7 @@ def upsert_pattern(cur, pattern: dict) -> int:
             pattern.get("when_not_to_use"),
             decision_signals,
             pattern.get("complexity"),
+            fuentes,
             embedding,
             row[0],
         ),

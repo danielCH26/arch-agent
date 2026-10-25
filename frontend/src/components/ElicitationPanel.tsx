@@ -6,6 +6,7 @@ import {
 } from '../api/elicitation'
 import { ApprovalPanel } from './ApprovalPanel'
 import { ChatInput } from './ChatInput'
+import { ElicitationDocuments } from './ElicitationDocuments'
 import { InfoIcon } from './NavIcons'
 import { ChatHistorySkeleton } from './Skeleton'
 import robotAvatar from '../assets/robot-avatar.webp'
@@ -53,6 +54,10 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
+  // Documentos del proyecto: mientras alguno se procesa, no se empieza (no
+  // llegaría al agente). refreshKey vuelve a leer la lista tras adjuntar.
+  const [docsProcessing, setDocsProcessing] = useState(false)
+  const [docsRefreshKey, setDocsRefreshKey] = useState(0)
 
   // Pide al agente el siguiente paso (nueva pregunta o resumen). Se usa al
   // comenzar y cuando el estado quedó sin pregunta pendiente, p. ej. tras
@@ -180,6 +185,13 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
             <span>Voy a hacerte preguntas para entender tu proyecto</span>
           </div>
 
+          <ElicitationDocuments
+            projectId={projectId}
+            compact={hasStarted}
+            onProcessingChange={setDocsProcessing}
+            refreshKey={docsRefreshKey}
+          />
+
           {state.history.map((item, index) =>
             item.pregunta === ADJUSTMENT_MARKER ? (
               <UserBubble key={index} label="Ajuste solicitado">{item.respuesta}</UserBubble>
@@ -222,10 +234,10 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
               <button
                 type="button"
                 onClick={() => void advance()}
-                disabled={sending}
+                disabled={sending || docsProcessing}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
-                Comenzar elicitación
+                {docsProcessing ? 'Esperando los documentos…' : 'Comenzar elicitación'}
               </button>
             </div>
           )}
@@ -239,7 +251,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
           projectId={projectId}
           onSend={handleAnswer}
           disabled={sending || state.question === null}
-          allowAttachments={false}
+          onUploaded={() => setDocsRefreshKey((key) => key + 1)}
           placeholder="Escribe tu respuesta..."
           ariaLabel="Tu respuesta"
         />

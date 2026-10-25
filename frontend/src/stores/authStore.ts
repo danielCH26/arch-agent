@@ -1,19 +1,58 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware'
 import { apiUrl, errorMessageFromResponse, safeFetch } from '../api/client'
 
 // Datos por usuario guardados en el navegador (p. ej. la última propuesta de
 // cada proyecto, ver proposalsStore): se borran al cerrar sesión.
 const USER_SCOPED_STORAGE_PREFIX = 'archagent:user:'
 
-function clearUserScopedStorage() {
+function clearUserScopedStorage(userId?: number) {
+  // Solo las del usuario que cierra sesión: otra pestaña puede seguir con
+  // otra cuenta (ver tabSessionStorage).
+  const prefix = userId === undefined ? USER_SCOPED_STORAGE_PREFIX : `${USER_SCOPED_STORAGE_PREFIX}${userId}:`
   try {
     Object.keys(localStorage)
-      .filter((key) => key.startsWith(USER_SCOPED_STORAGE_PREFIX))
+      .filter((key) => key.startsWith(prefix))
       .forEach((key) => localStorage.removeItem(key))
   } catch {
     // Sin acceso a localStorage: no hay nada que limpiar.
   }
+}
+
+// Sesión POR PESTAÑA. Antes la sesión vivía solo en localStorage, que
+// comparten todas las pestañas: con una pestaña abierta como el usuario A,
+// iniciar sesión como B en otra pestaña cambiaba también la cuenta de la
+// primera, y su proyecto aparecía como "no disponible para tu usuario".
+//
+// Ahora cada pestaña guarda su sesión en sessionStorage (no se comparte) y
+// localStorage solo recuerda la ÚLTIMA sesión iniciada, para que una pestaña
+// nueva no tenga que volver a iniciar sesión.
+export const tabSessionStorage: StateStorage = {
+  getItem: (name) => {
+    try {
+      return sessionStorage.getItem(name) ?? localStorage.getItem(name)
+    } catch {
+      return null
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      sessionStorage.setItem(name, value)
+      localStorage.setItem(name, value)
+    } catch {
+      // Sin almacenamiento (modo privado estricto): la sesión vive en memoria.
+    }
+  },
+  removeItem: (name) => {
+    try {
+      const own = sessionStorage.getItem(name)
+      sessionStorage.removeItem(name)
+      // La "última sesión" solo se borra si es la de esta pestaña.
+      if (own === null || localStorage.getItem(name) === own) localStorage.removeItem(name)
+    } catch {
+      // Sin almacenamiento: nada que borrar.
+    }
+  },
 }
 
 interface User {
@@ -114,7 +153,7 @@ export const authStore = create<AuthState>()(
             // Ignore logout errors
           }
         }
-        clearUserScopedStorage()
+        clearUserScopedStorage(get().user?.id)
         set({ token: null, user: null, status: 'idle', error: null })
       },
 
@@ -152,7 +191,16 @@ export const authStore = create<AuthState>()(
     }),
     {
       name: 'auth-storage',
+      storage: createJSONStorage(() => tabSessionStorage),
       partialize: (state) => ({ token: state.token, user: state.user }),
     }
   )
 )
+
+/** Aviso cuando el proyecto no es de la cuenta con la que está esta pestaña. */
+export function projectUnavailableMessage(): string {
+  const username = authStore.getState().user?.username
+  return username
+    ? `Ese proyecto no está disponible para la cuenta «${username}». Si es de otra cuenta, ábrelo en la pestaña donde iniciaste sesión con ella.`
+    : 'Ese proyecto ya no está disponible para tu usuario.'
+}

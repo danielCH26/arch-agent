@@ -1,6 +1,11 @@
 import { authStore } from '../stores/authStore'
 import { ApiError, apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, safeFetch, streamErrorMessage } from './client'
 
+export interface PatternSource {
+  titulo: string
+  url: string
+}
+
 export interface ProposalCitation {
   pattern_id: number | null
   pattern_name: string | null
@@ -12,6 +17,7 @@ export interface ProposalCitation {
     ventajas?: string[]
     desventajas?: string[]
   }
+  fuentes?: PatternSource[]
   // HU8: número [n] con el que la propuesta cita la fuente y datos para verificarla.
   index?: number
   category?: string | null
@@ -84,6 +90,10 @@ export type ProposalProgressStage =
   | 'context'
   | 'retrieval'
   | 'generating'
+  /** La tabla de trade-offs (u otra sección) quedó incompleta y se está completando. */
+  | 'repairing'
+  /** El proveedor pidió esperar por su límite de uso por minuto; se reintenta solo. */
+  | 'waiting'
   | 'saving'
 
 export interface ProposalProgress {
