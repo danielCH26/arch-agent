@@ -130,6 +130,12 @@ function ChatPageContent() {
   const isElicitationPhase = phase?.current_phase === ELICITATION_PHASE
   // En la fase propuesta la fase queda lista al aprobar la propuesta.
   const isProposalPhase = phase?.current_phase === PROPOSAL_PHASE
+  // En la última fase (Revisión) no hay a dónde avanzar: marcarla como lista
+  // completa el proyecto.
+  const isLastPhase =
+    !!phase &&
+    phase.available_phases.length > 0 &&
+    phase.available_phases.indexOf(phase.current_phase ?? '') === phase.available_phases.length - 1
 
   return (
     <div className="h-full flex flex-col">
@@ -145,15 +151,24 @@ function ChatPageContent() {
       {phase && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
           <span className="text-sm text-gray-600">
-            {phase.phase_ready ? 'Fase lista para avanzar.' : 'Fase en progreso.'}
+            {isLastPhase
+              ? phase.phase_ready
+                ? 'Proyecto completado.'
+                : 'Última fase: usa «Completar proyecto» cuando termines.'
+              : phase.phase_ready
+                ? 'Fase lista para avanzar.'
+                : 'Fase en progreso.'}
           </span>
           <div className="flex flex-wrap gap-2">
             {!isElicitationPhase && (
               <button
                 type="button"
                 onClick={() => setDiagramHistoryOpen(true)}
-                className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-sm text-sky-700 hover:bg-sky-50"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
               >
+                <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+                </svg>
                 Diagramas
               </button>
             )}
@@ -162,19 +177,25 @@ function ChatPageContent() {
                 type="button"
                 onClick={handleMarkReady}
                 disabled={phaseActionLoading}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                className={
+                  isLastPhase
+                    ? 'rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300'
+                    : 'rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50'
+                }
               >
-                Marcar fase como lista
+                {isLastPhase ? 'Completar proyecto' : 'Marcar fase como lista'}
               </button>
             )}
+            {!isLastPhase && (
             <button
               type="button"
               onClick={handleAdvance}
               disabled={phaseActionLoading || !phase.phase_ready}
-              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
+              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
               Avanzar fase →
             </button>
+            )}
           </div>
         </div>
       )}

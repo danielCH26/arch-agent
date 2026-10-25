@@ -6,6 +6,7 @@ import { DocumentUploader } from '../components/DocumentUploader'
 import { DocumentList } from '../components/DocumentList'
 import { DocumentsPageSkeleton } from '../components/Skeleton'
 import { projectsStore } from '../stores/projectsStore'
+import { PageHeader } from '../components/PageHeader'
 
 export function DocumentsPage() {
   const { id } = useParams<{ id: string }>()
@@ -74,9 +75,10 @@ export function DocumentsPage() {
 
   return (
     <div>
-      <h1 className="font-display mb-6 text-2xl text-gray-900 md:text-3xl">
-        Subida de archivos {project && <span className="text-gray-500">— {project.name}</span>}
-      </h1>
+      <PageHeader
+        title="Documentos"
+        subtitle={project ? `Archivos de contexto del proyecto ${project.name}` : undefined}
+      />
 
       {error && (
         <div role="alert" className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">

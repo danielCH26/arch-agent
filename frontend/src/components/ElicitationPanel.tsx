@@ -6,6 +6,7 @@ import {
 } from '../api/elicitation'
 import { ApprovalPanel } from './ApprovalPanel'
 import { ChatInput } from './ChatInput'
+import { InfoIcon } from './NavIcons'
 import { ChatHistorySkeleton } from './Skeleton'
 import robotAvatar from '../assets/robot-avatar.webp'
 
@@ -175,7 +176,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
           </div>
 
           <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            <span aria-hidden="true">ℹ️</span>
+            <InfoIcon className="h-4 w-4 text-amber-700" />
             <span>Voy a hacerte preguntas para entender tu proyecto</span>
           </div>
 
@@ -222,7 +223,7 @@ export function ElicitationPanel({ projectId, phaseReady, onPhaseReady }: Elicit
                 type="button"
                 onClick={() => void advance()}
                 disabled={sending}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 Comenzar elicitación
               </button>

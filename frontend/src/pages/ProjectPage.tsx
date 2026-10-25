@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { getProject, Project } from '../api/projects'
 import { projectsStore } from '../stores/projectsStore'
+import { PageHeader } from '../components/PageHeader'
 
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -61,11 +62,6 @@ export function ProjectPage() {
 
   // This shouldn't normally be shown since we redirect, but as a fallback
   return (
-    <div>
-      <h1 className="font-display text-2xl font-bold text-gray-900">{project?.name}</h1>
-      {project?.description && (
-        <p className="mt-2 text-gray-600">{project.description}</p>
-      )}
-    </div>
+    <PageHeader title={project?.name} subtitle={project?.description || undefined} />
   )
 }

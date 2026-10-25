@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { PatternListSkeleton } from '../components/Skeleton'
 import { listPatterns, listPatternSourceChunks, Pattern, PatternSourceChunk } from '../api/patterns'
+import { PageHeader } from '../components/PageHeader'
 
 const PAGE_SIZE = 200 // máximo permitido por GET /api/patterns
 
@@ -68,12 +69,10 @@ export function PatternsPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <div className="mb-6">
-        <h1 className="font-display text-2xl font-semibold text-gray-900">Base de patrones</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          Catálogo curado de patrones arquitectónicos. El asistente los consulta automáticamente (RAG) al elaborar propuestas.
-        </p>
-      </div>
+      <PageHeader
+        title="Base de patrones"
+        subtitle="Catálogo curado de patrones arquitectónicos. El asistente los consulta automáticamente (RAG) al elaborar propuestas."
+      />
 
       <div className="mb-4 flex flex-wrap gap-3">
         <input
@@ -159,7 +158,7 @@ function PatternDetail({ pattern }: { pattern: Pattern }) {
   return (
     <article className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <header>
-        <h2 tabIndex={-1} className="text-lg font-semibold text-gray-900 focus:outline-none">{pattern.pattern_name}</h2>
+        <h2 tabIndex={-1} className="text-xl font-bold text-gray-900 focus:outline-none">{pattern.pattern_name}</h2>
         {pattern.category && <p className="text-sm text-gray-500">{pattern.category}</p>}
       </header>
       <Section title="Descripción" text={pattern.description} />
@@ -171,11 +170,14 @@ function PatternDetail({ pattern }: { pattern: Pattern }) {
   )
 }
 
+// Títulos de sección más grandes que los de Ventajas/Desventajas (text-xs).
+const SECTION_TITLE = 'text-base font-semibold text-gray-900'
+
 function Section({ title, text }: { title: string; text: string | null }) {
   if (!text) return null
   return (
     <section>
-      <h3 className="text-sm font-semibold text-gray-700">{title}</h3>
+      <h3 className={SECTION_TITLE}>{title}</h3>
       <p className="mt-1 whitespace-pre-line text-sm text-gray-700">{text}</p>
     </section>
   )
@@ -191,11 +193,11 @@ function Tradeoffs({ tradeoffs }: { tradeoffs: Pattern['tradeoffs'] }) {
   if (entries.length === 0) return null
   return (
     <section>
-      <h3 className="text-sm font-semibold text-gray-700">Trade-offs</h3>
-      <div className="mt-1 grid gap-3 sm:grid-cols-2">
+      <h3 className={SECTION_TITLE}>Trade-offs</h3>
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
         {entries.map(([key, value]) => (
           <div key={key}>
-            <p className={`text-xs font-semibold uppercase ${tradeoffStyle[key.toLowerCase()] ?? 'text-gray-600'}`}>{key}</p>
+            <p className={`text-center text-xs font-semibold uppercase tracking-wide ${tradeoffStyle[key.toLowerCase()] ?? 'text-gray-600'}`}>{key}</p>
             {Array.isArray(value) ? (
               <ul className="mt-1 list-disc space-y-1 pl-4 text-sm text-gray-700">
                 {value.map((item, i) => <li key={i}>{String(item)}</li>)}

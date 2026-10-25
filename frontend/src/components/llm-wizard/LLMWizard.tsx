@@ -217,9 +217,7 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
         )
       })}
     </ol>
-  ) : (
-    <div className="mb-6 text-sm text-gray-500">Tu config actual</div>
-  )
+  ) : null
 
   const backToSummaryLink = hasSavedConfig && (mode === 'step2' || mode === 'step3') && (
     <button
@@ -234,10 +232,13 @@ export function LLMWizard({ initialConfig, onSaved }: LLMWizardProps) {
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 className="font-display text-lg font-semibold text-gray-900 mb-1">Configuración de LLM</h2>
-      <p className="text-sm text-gray-500 mb-6">
-        Conectá el agente a un proveedor compatible con OpenAI en 3 pasos.
-      </p>
+      <h2 className="font-display text-lg font-semibold text-gray-900 mb-1">Proveedor y modelo</h2>
+      {/* En el resumen ya no hay pasos que explicar: SummaryView trae su propio título. */}
+      {mode !== 'summary' && (
+        <p className="text-sm text-gray-500 mb-6">
+          Conecta el agente a un proveedor compatible con OpenAI en 3 pasos.
+        </p>
+      )}
 
       {stepIndicator}
 

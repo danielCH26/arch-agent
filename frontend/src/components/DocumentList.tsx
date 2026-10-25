@@ -145,7 +145,10 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
                 <td className="px-3 py-2 text-sm">
                   {doc.processed ? (
                     <span className="inline-flex items-center gap-1 text-green-700">
-                      <span aria-hidden="true">✅</span> Subido
+                      <svg aria-hidden="true" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Subido
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 text-amber-700">
@@ -181,7 +184,7 @@ export function DocumentList({ documents, onRefresh }: DocumentListProps) {
           <button
             onClick={handleDeleteSelected}
             disabled={bulkDeleting}
-            className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            className="rounded-lg border border-red-200 bg-white px-4 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {bulkDeleting ? 'Eliminando...' : `Eliminar seleccionados (${selected.size})`}
           </button>

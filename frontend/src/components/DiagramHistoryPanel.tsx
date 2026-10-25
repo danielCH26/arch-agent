@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { fetchDiagramHistory, type DiagramDecision, type DiagramVersion } from '../api/diagrams'
 import { useDialog } from '../hooks/useDialog'
 import { formatDateTime } from '../lib/format'
+import { DecisionIcon } from './NavIcons'
 
 interface DiagramHistoryPanelProps {
   projectId: number
@@ -13,9 +14,9 @@ interface DiagramHistoryPanelProps {
 // rechazar / pedir cambios) se toman únicamente en el chat, cuando se le
 // muestra el diagrama al usuario.
 const labels: Record<DiagramDecision, string> = {
-  approve: '✅ Aprobado',
-  reject: '❌ Rechazado',
-  modify: '✏️ Cambios solicitados',
+  approve: 'Aprobado',
+  reject: 'Rechazado',
+  modify: 'Cambios solicitados',
 }
 
 const styles: Record<DiagramDecision, string> = {
@@ -84,10 +85,17 @@ export function DiagramHistoryPanel({ projectId, open, onClose }: DiagramHistory
         <div className="space-y-4">
           {diagrams.map((diagram) => (
             <article key={diagram.id} className="rounded-xl border border-gray-200 p-3">
-              <img src={diagram.url} alt={diagram.filename ?? `Diagrama ${diagram.message_id}`} className="w-full rounded-lg bg-gray-50" loading="lazy" />
+              {/* Los diagramas son imágenes claras: van sobre una "hoja" clara
+                  fija y, en modo oscuro, con el brillo atenuado. */}
+              <div className="rounded-lg border border-gray-200 bg-[#f8fafc] p-2">
+                <img src={diagram.url} alt={diagram.filename ?? `Diagrama ${diagram.message_id}`} className="w-full rounded dark:brightness-90" loading="lazy" />
+              </div>
               <div className="mt-3 flex items-center justify-between gap-2">
                 <span className="text-xs text-gray-500">{formatDateTime(diagram.created_at)}</span>
-                <span className={`rounded-full px-2 py-1 text-xs font-medium ${diagram.decision ? styles[diagram.decision] : 'bg-gray-100 text-gray-600'}`}>
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${diagram.decision ? styles[diagram.decision] : 'bg-gray-100 text-gray-600'}`}>
+                  {diagram.decision && (
+                    <DecisionIcon decision={diagram.decision} />
+                  )}
                   {diagram.decision ? labels[diagram.decision] : 'Sin decisión'}
                 </span>
               </div>
