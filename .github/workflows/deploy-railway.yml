@@ -1,0 +1,88 @@
+# =============================================================================
+# Deploy to Railway — backend de arch-agent a producción
+#
+# Trigger: SOLO un tag semver estable vX.Y.Z (sin -rc, -beta, etc.) o un
+# re-deploy manual (workflow_dispatch) de un tag/commit ya existente, que es
+# el camino de rollback. Merge a main NO despliega.
+#
+# Gates antes de desplegar:
+#   - el commit tiene que ser ancestro de origin/main (un tag sobre una rama
+#     de feature no llega a producción);
+#   - environment "production" (configurar required reviewers en
+#     Settings → Environments → production);
+#   - concurrency: dos tags seguidos se encolan, no despliegan en paralelo.
+#
+# Configuración (detalle en docs/CI-CD.md):
+#   secrets.RAILWAY_TOKEN   token de PROYECTO (Project → Settings → Tokens,
+#                           environment production). Los tokens de cuenta van
+#                           en RAILWAY_API_TOKEN y no sirven acá.
+#   vars.RAILWAY_SERVICE    nombre del servicio backend en Railway.
+#   El servicio necesita RAILWAY_DOCKERFILE_PATH=backend/Dockerfile en sus
+#   variables y el auto-deploy desde GitHub desconectado: `railway up` sube
+#   el checkout, no hace falta enlazar el repo.
+# =============================================================================
+name: Deploy to Railway
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag o SHA a desplegar (rollback: el tag anterior, ej. v0.1.2)'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  # Versión fija del CLI: el paquete publica casi a diario. Hay reportes de
+  # que la CLI >= 5.3 falla con "Not signed in" usando token de proyecto;
+  # validar con un workflow_dispatch antes del primer release (docs/CI-CD.md).
+  RAILWAY_CLI_VERSION: 5.63.1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Check the commit is on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$(git rev-parse --short HEAD) no está en main; no se despliega."
+            exit 1
+          fi
+
+      - name: Check Railway configuration
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+        run: |
+          [ -n "$RAILWAY_TOKEN" ]   || { echo "::error::Falta el secret RAILWAY_TOKEN"; exit 1; }
+          [ -n "$RAILWAY_SERVICE" ] || { echo "::error::Falta la variable RAILWAY_SERVICE"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Railway CLI
+        run: npm install -g "@railway/cli@${RAILWAY_CLI_VERSION}"
+
+      # --ci muestra los logs de build y termina con error si el build falla
+      # (--detach dejaba el job verde aunque el deploy se rompiera).
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+        run: railway up --ci --service "$RAILWAY_SERVICE"

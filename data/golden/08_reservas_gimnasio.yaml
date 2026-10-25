@@ -1,0 +1,119 @@
+# Caso negativo: la propuesta grabada recomienda microservicios con un equipo
+# de 2 personas y 2 meses. La rúbrica tiene que marcarlo.
+id: reservas-gimnasio
+name: Box Reservas
+kind: MVP con reservas
+description: MVP para reservar clases en un gimnasio de barrio y cobrar la mensualidad.
+profile:
+  resumen: Reserva de clases y cobro de la mensualidad.
+  dominio: deporte
+  tipo_sistema: aplicación web
+  tipo_proyecto: mvp_prototipo
+  equipo_personas: 2
+  plazo_meses: 2
+  presupuesto_usd: 3000
+resumen:
+  problema: Las reservas de clases se hacen por WhatsApp y se sobrevenden cupos.
+  usuarios: Socios del gimnasio y entrenadores.
+  funcionalidades:
+    - Reservar y cancelar clases
+    - Cobrar la mensualidad
+  restricciones:
+    - Presupuesto de 3000 USD
+    - Equipo de 2 desarrolladores
+    - Plazo de 2 meses
+  calidad:
+    - Fácil de usar desde el celular
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Las reservas de clases se hacen por WhatsApp y se sobrevenden cupos.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Socios del gimnasio y entrenadores.
+  - pregunta: ¿El sistema debe avisar a los usuarios por correo, notificación push o SMS?
+    respuesta: Un recordatorio por WhatsApp una hora antes de la clase.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 3000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 2 desarrolladores.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 2 meses.
+candidates:
+  - {name: "Serverless (Function-as-a-Service)", similarity: 0.86}
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.85}
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.85}
+  - {name: "Microservicios", similarity: 0.87}
+  - {name: "Arquitectura orientada a eventos (Event-Driven)", similarity: 0.84}
+recorded:
+  proposal: |
+    ## Componentes
+    - Servicio de reservas
+    - Servicio de pagos
+    - Servicio de notificaciones
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Node.js | Lenguaje del equipo | Equipo de 2 desarrolladores |
+    | Express | Servicios ligeros | Reservar clases |
+    | MongoDB | Documentos flexibles | Reservas |
+
+    ## Patrones
+    - Patrón principal: Microservicios
+
+    ## Justificación del patrón principal
+    - Motivo de elección: reservas, pagos y notificaciones separados.
+    - Reflejo en la arquitectura: un servicio por área.
+    - Beneficio esperado: escalar reservas por separado.
+    - Riesgo o costo: más despliegues para un equipo de 2.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | Microservicios | Escala por servicio | Operación | Alta | Medio | [1] |
+    | Monolito modular | Un despliegue | Escala conjunta | Baja | Alto | [2] |
+    | Serverless | Pago por uso | Arranques en frío | Media | Alto | [3] |
+    - Recomendación: Microservicios
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Servicio de reservas | Cupos | Servicio de notificaciones |
+    | Servicio de pagos | Mensualidad | Servicio de reservas |
+    | Servicio de notificaciones | Recordatorios | Servicio de reservas |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Servicios | Node.js / Express | Equipo |
+    | Datos | MongoDB | Documentos |
+
+    ### 7.3 Consecuencias
+    **Positivas:** escala por servicio. **Negativas / costos asumidos:** tres despliegues.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | Sobreventa de cupos | alto | Bloqueo al reservar |
+
+    ### 7.5 Plan de implementación
+    1. Reservas. 2. Pagos.
+
+    ### 7.6 Primer sprint
+    - Modelo de clases
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    reservas/
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Qué pasarela de pagos?
+expect:
+  concerns: [notificaciones, pagos]
+  checks:
+    respeta_restricciones: false   # recomienda microservicios con 2 personas y 2 meses
+    cifras_con_origen: true
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

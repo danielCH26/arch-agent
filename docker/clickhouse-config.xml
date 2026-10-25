@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  Configuracion de ClickHouse para usar ReplicatedMergeTree (requerido por Langfuse)
+  Define un cluster "default" de un solo nodo y conecta con clickhouse-keeper.
+-->
+<clickhouse>
+    <path>/var/lib/clickhouse/</path>
+    <default_profile>default</default_profile>
+    <default_database>default</default_database>
+
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- Cluster single-node para Langfuse (ReplicatedMergeTree ON CLUSTER) -->
+    <remote_servers>
+        <default>
+            <shard>
+                <internal_replication>false</internal_replication>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </default>
+    </remote_servers>
+
+    <!-- Keeper (coordinacion distribuida para ReplicatedMergeTree) -->
+    <zookeeper>
+        <node>
+            <host>clickhouse-keeper</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <!-- Macros para identificar shard/replica (usado por Langfuse) -->
+    <macros>
+        <shard>01</shard>
+        <replica>01</replica>
+    </macros>
+</clickhouse>

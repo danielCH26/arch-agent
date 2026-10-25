@@ -1,0 +1,286 @@
+--- =============================================================================
+-- Schema inicial de arch-agent (aplicado por scripts/init_db.py).
+--
+-- Las migraciones incrementales viven en migrations/NNNN_*.sql (ver
+-- migrations/run_migrations.py). Este archivo representa el estado "base"
+-- de la DB; las migrations agregan columnas que los modelos SQLAlchemy
+-- esperan pero que el schema inicial no contemplaba.
+--
+-- Para desarrollo nuevo: correr init_db.py + run_migrations.py.
+-- Las columnas definidas acá con ADD COLUMN IF NOT EXISTS cubren lo mismo
+-- que las migrations, para que init_db solo produzca una DB consistente.
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    llm_base_url VARCHAR(500),
+    llm_model VARCHAR(100),
+    encrypted_api_key TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    status VARCHAR(50) DEFAULT 'active',
+    current_phase VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- HU2: recordar sesión del usuario
+CREATE TABLE IF NOT EXISTS sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    active_phase VARCHAR(50),
+    engram_state JSONB,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+-- Solo una sesión activa por usuario. Si re-ejecuta init_db.py despues de
+-- migrations 0003, el UNIQUE INDEX ya existe y este CREATE es idempotente.
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_user_id_unique ON sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS uploaded_documents (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    filename VARCHAR(500) NOT NULL,
+    file_type VARCHAR(20),
+    file_size_bytes INTEGER,
+    chunk_count INTEGER,
+    processed BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER REFERENCES uploaded_documents(id) ON DELETE CASCADE,
+    chunk_text TEXT,
+    chunk_index INTEGER,
+    embedding vector(384),
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
+    ON document_chunks USING ivfflat (embedding vector_cosine_ops);
+
+-- architect_patterns (issue "Caso de ejemplo (seed)" / comentario C2 de PR):
+-- agregada acá también, no solo en migration 0005, para que una DB
+-- greenfield (init_db.py sin correr migrations aún) ya la tenga.
+CREATE TABLE IF NOT EXISTS architect_patterns (
+    id SERIAL PRIMARY KEY,
+    pattern_name VARCHAR(255) NOT NULL,
+    category VARCHAR(100),
+    description TEXT,
+    use_cases TEXT,
+    tradeoffs JSONB,
+    when_not_to_use TEXT,
+    decision_signals JSONB,
+    complexity VARCHAR(10),         -- baja | media | alta (complejidad operativa)
+    fuentes JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{titulo, url}] curadas
+    embedding vector(384),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_architect_patterns_embedding
+    ON architect_patterns USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_architect_patterns_category
+    ON architect_patterns (category);
+
+CREATE TABLE IF NOT EXISTS architect_pattern_chunks (
+    id SERIAL PRIMARY KEY,
+    pattern_id INTEGER NOT NULL REFERENCES architect_patterns(id) ON DELETE CASCADE,
+    chunk_type VARCHAR(50) NOT NULL,
+    chunk_text TEXT NOT NULL,
+    embedding vector(384),
+    chunk_metadata JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_chunks_embedding
+    ON architect_pattern_chunks USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_chunks_pattern_id
+    ON architect_pattern_chunks (pattern_id);
+
+-- approvals (issue "[F05] Elicitación guiada + aprobación"): decisiones de
+-- aprobar/modificar/rechazar por etapa. Agregada acá también, no solo en
+-- migration 0007, mismo criterio que architect_patterns arriba (C2).
+-- decision usa CHECK en vez de solo confiar en la validación de Pydantic
+-- (migration 0008, revisión de PR #63) -- valores en pasado (participio),
+-- que son los que realmente inserta app/api/elicitation.py, no los verbos
+-- del body del request (approve/modify/reject).
+CREATE TABLE IF NOT EXISTS approvals (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    -- HU10 v2 (migration 0016 / 0020): project_id identifica a qué proyecto
+    -- pertenece la decisión. Nullable a propósito (las filas anteriores a
+    -- 0016 nacieron sin este dato; 0020 hace el backfill desde sessions).
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    -- HU10 v2 (migration 0017): UUID del adjunto (fase "diagram"). Las
+    -- decisiones de otras fases quedan NULL.
+    attachment_id VARCHAR(64),
+    phase VARCHAR(50) NOT NULL,
+    decision VARCHAR(20) NOT NULL CHECK (decision IN ('approved', 'modified', 'rejected')),
+    feedback TEXT,
+    -- HU10 v2 (migration 0020): snapshot del output previo en modify; '{}' en
+    -- el resto (REQ-SA-16).
+    previous_output JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- HU10 v2 (migration 0020): payload arbitrario del request de decisión
+    -- (REQ-SA-30 idempotency derivation).
+    payload JSONB,
+    -- HU10 v2 (migration 0020): SHA256 hex truncado de (action, payload) —
+    -- idempotency key per (project_id, phase, action, payload_hash)
+    -- (REQ-SA-30).
+    payload_hash VARCHAR(32),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_session_phase
+    ON approvals (session_id, phase);
+
+-- HU10 v2 (migration 0020): read path principal por (project_id, phase,
+-- created_at DESC). F05 retiene el path por session para `requerimientos`;
+-- HU10 v2 necesita el path por project para los 4 phases que controla.
+CREATE INDEX IF NOT EXISTS ix_approvals_project_phase_created
+    ON approvals (project_id, phase, created_at DESC);
+
+-- =============================================================================
+-- Columnas agregadas en migrations pero incluidas aca para DBs nuevas.
+-- init_db.py aplica todo en orden; migrations/run_migrations.py es idempotente.
+-- =============================================================================
+
+-- projects.phase_ready (migration 0001)
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS phase_ready BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- uploaded_documents.version (migration 0002)
+ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+
+-- uploaded_documents.project_id (migration 0004)
+ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+-- users.is_demo_user / projects.is_demo (migration 0006, comentarios A1 y A3
+-- de la revisión del PR de "Caso de ejemplo (seed)"): permiten que el login
+-- (#57) y los endpoints de listado filtren explícitamente al usuario/proyecto
+-- del seed. El demo_user NO debe poder autenticarse nunca.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo_user BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- =============================================================================
+-- F12 — capability engram-conversation-memory (issue #14, migration 0008)
+-- Tabla messages: source-of-truth para el historial de chat.
+-- Postgres guarda cada turn (user + assistant) en una sola transacción
+-- antes del yield 'event: done'; Engram recibe un mirror fire-and-forget.
+-- Ver docs/adr/011-engram-conversation-mirror.md y openspec/specs/engram-conversation-memory.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGSERIAL PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(16) NOT NULL,
+    content TEXT NOT NULL,
+    citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+    attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    engram_observation_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT messages_role_check CHECK (role IN ('user','assistant','system'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_id_created_at
+    ON messages (session_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_user_id_project_id
+    ON messages (user_id, project_id, created_at DESC);
+
+-- =============================================================================
+-- F13 — capability chat-attachments (issue #17, migration 0011, REQ-EM-DELTA-1)
+-- Filename renumbered from 0009 in PR #76 review fix #3 to avoid collision
+-- with PR #63's 0008_add_approvals_decision_check.sql.
+-- Idempotent ALTER for DBs created by init_db.py BEFORE migration 0011 ran.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- approvals.project_id (migration 0016) -- fix de aislamiento entre
+-- proyectos: session_id solo no alcanza porque sessions es 1 fila por
+-- usuario, no por proyecto (ver hallazgo #1, revisión feature/hu6-diagrama).
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_approvals_project_phase
+    ON approvals (project_id, phase);
+
+-- approvals.attachment_id (migration 0017) -- decisión POR diagrama: UUID del
+-- adjunto (messages.attachments[].id) sobre el que se decidió. Permite que el
+-- chat y el historial recuerden qué diagramas ya tienen una decisión.
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS attachment_id VARCHAR(64);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_attachment_id
+    ON approvals (attachment_id);
+
+-- =============================================================================
+-- HU10 v2 — capability staged-approvals (change hu10-staged-approvals-v2,
+-- Engram topic sdd/hu10-staged-approvals-v2/spec, proposal #109,
+-- ADR-015 successsor to ADR-014).
+--
+-- Migration 0020 (antes 0018):
+--   * backfill `approvals.project_id` desde `sessions.project_id` (migration
+--     0016 agregó la columna NULL; HU10 v2 la rellena para no perder
+--     aprobaciones históricas al filtrar por proyecto, REQ-SA-27);
+--   * extender el índice a `(project_id, phase, created_at DESC)` para el
+--     read path caliente `latest decision for (project, phase)`
+--     (REQ-SA-12, REQ-SA-18, REQ-SA-26);
+--   * agregar `approvals.previous_output JSONB NOT NULL DEFAULT '{}'`
+--     (REQ-SA-16: snapshot del output LLM previo en decisiones modify);
+--   * agregar `approvals.payload JSONB` y `approvals.payload_hash VARCHAR(32)`
+--     (REQ-SA-30: idempotency key por (action, payload)).
+-- =============================================================================
+-- Mismo criterio que migrations/0020: solo usuarios con un único proyecto
+-- (sessions.project_id es el último proyecto abierto; para usuarios con
+-- varios proyectos mezclaba aprobaciones entre proyectos). Ver también 0021.
+UPDATE approvals
+SET project_id = sessions.project_id
+FROM sessions
+WHERE approvals.session_id = sessions.id
+  AND approvals.project_id IS NULL
+  AND sessions.project_id IS NOT NULL
+  AND (SELECT count(*) FROM projects p WHERE p.user_id = sessions.user_id) = 1;
+
+CREATE INDEX IF NOT EXISTS ix_approvals_project_phase_created
+    ON approvals (project_id, phase, created_at DESC);
+
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS previous_output JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS payload JSONB;
+
+ALTER TABLE approvals
+    ADD COLUMN IF NOT EXISTS payload_hash VARCHAR(32);
+
+-- =============================================================================
+-- F14 — display_content (migracion 0015). Idempotente para DBs creadas por
+-- init_db.py antes de que corriera la migracion 0015.
+-- =============================================================================
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS display_content TEXT NULL;
+
+-- architect_pattern_chunks.chunk_metadata (migration 0009)
+ALTER TABLE architect_pattern_chunks ADD COLUMN IF NOT EXISTS chunk_metadata JSONB;

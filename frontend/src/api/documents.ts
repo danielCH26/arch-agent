@@ -1,0 +1,122 @@
+import { apiFetch, apiUrl, errorMessageFromResponse, handleUnauthorized, NETWORK_ERROR_MESSAGE } from './client'
+import { authStore } from '../stores/authStore'
+
+export interface Document {
+  id: number
+  filename: string
+  file_type: string
+  file_size_bytes: number
+  chunk_count: number
+  version: number
+  processed: boolean
+  created_at: string
+}
+
+export async function listDocuments(projectId: number): Promise<Document[]> {
+  return apiFetch<Document[]>(`/api/documents/${projectId}`)
+}
+
+export interface DuplicateInfo {
+  is_duplicate: boolean
+  existing_version: number
+  filename: string
+  detail: string
+}
+
+/**
+ * Detectado cuando el backend retorna 409 al subir un archivo duplicado.
+ * El frontend debe mostrar un modal de confirmacion y reintentar con
+ * `overwrite=true` si el usuario acepta.
+ */
+export class DuplicateFileError extends Error {
+  readonly info: DuplicateInfo
+  constructor(info: DuplicateInfo) {
+    super(info.detail)
+    this.name = 'DuplicateFileError'
+    this.info = info
+  }
+}
+
+export async function uploadDocument(
+  projectId: number,
+  file: File,
+  options?: {
+    overwrite?: boolean
+    suffix?: boolean
+    onProgress?: (progress: number) => void
+  }
+): Promise<Document> {
+  const token = authStore.getState().token
+  const overwrite = options?.overwrite ?? false
+  const suffix = options?.suffix ?? false
+  const onProgress = options?.onProgress
+  const formData = new FormData()
+  formData.append('file', file)
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    let url = `/api/documents/upload?project_id=${projectId}`
+    if (overwrite) {
+      url += '&overwrite=true'
+    }
+    if (suffix) {
+      url += '&suffix=true'
+    }
+
+    xhr.open('POST', apiUrl(url))
+
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    }
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress((event.loaded / event.total) * 100)
+      }
+    })
+
+    xhr.addEventListener('load', () => {
+      // 2xx: OK
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText))
+        return
+      }
+
+      if (xhr.status === 401) {
+        reject(handleUnauthorized())
+        return
+      }
+
+      // 409: duplicado. Devolvemos DuplicateFileError para que el caller
+      // muestre un modal de confirmacion y reintente con overwrite=true.
+      if (xhr.status === 409) {
+        try {
+          const body = JSON.parse(xhr.responseText) as DuplicateInfo
+          reject(new DuplicateFileError(body))
+        } catch {
+          reject(new Error('Ya existe un documento con ese nombre.'))
+        }
+        return
+      }
+
+      // Otros errores
+      try {
+        reject(new Error(errorMessageFromResponse(xhr.status, JSON.parse(xhr.responseText))))
+      } catch {
+        reject(new Error(errorMessageFromResponse(xhr.status, null)))
+      }
+    })
+
+    xhr.addEventListener('error', () => {
+      reject(new Error(NETWORK_ERROR_MESSAGE))
+    })
+
+    xhr.send(formData)
+  })
+}
+
+export async function deleteDocument(docId: number): Promise<void> {
+  await apiFetch<void>(`/api/documents/${docId}`, {
+    method: 'DELETE',
+  })
+}

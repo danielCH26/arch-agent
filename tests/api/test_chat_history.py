@@ -1,0 +1,431 @@
+"""Contract tests for GET /api/chat/history (F12.2, REQ-7, REQ-11, SCN-3, SCN-5).
+
+The endpoint is exercised through FastAPI's TestClient. To stay DB-agnostic
+we monkey-patch ``SessionLocal`` to return a session bound to an in-memory
+SQLite engine, the same way the production code uses ``SessionLocal`` from
+``app.core.database``. We also monkey-patch ``app.core.database.engine`` /
+``SessionLocal`` so the chat route picks up our fake.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.types import JSON
+
+from app.core import database
+from app.core.database import Base
+
+
+# JSONB → JSON so SQLite can compile the messages table.
+from sqlalchemy.dialects import sqlite as _sqlite_dialect  # noqa: E402
+
+if not hasattr(_sqlite_dialect.dialect, "_f12_jsonb_patched"):
+    _sqlite_dialect.dialect.ischema_names = {
+        **_sqlite_dialect.dialect.ischema_names,
+        "JSONB": JSON,
+    }
+    _sqlite_dialect.dialect._f12_jsonb_patched = True
+
+
+_TEST_TABLES = ["users", "sessions", "projects", "messages", "approvals"]
+
+
+@pytest.fixture()
+def fake_db():
+    """Spin up an in-memory SQLite + patch the production SessionLocal.
+
+    We use ``StaticPool`` so every session shares the SAME connection —
+    otherwise each new connection to ``sqlite:///:memory:`` would open
+    a separate database and the test would not see the seeded rows.
+
+    Yields a ``(SessionLocal, engine)`` tuple so the test can seed rows.
+    The patch is undone automatically at teardown.
+    """
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    import app.models  # noqa: F401
+
+    for table_name in _TEST_TABLES:
+        Base.metadata.tables[table_name].create(bind=engine, checkfirst=True)
+
+    Session = sessionmaker(bind=engine)
+    real_session_local = database.SessionLocal
+
+    # Patch the symbols imported by app.api.chat.
+    with patch("app.api.chat.SessionLocal", Session):
+        yield Session, engine
+
+    # Restore so subsequent modules see the real engine again.
+    database.SessionLocal = real_session_local
+    engine.dispose()
+
+
+def _seed(fake_db, *, user_id: int = 1, project_id: int = 1, session_id: int = 10):
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.user import User
+        from app.models.session import UserSession
+        from app.models.project import Project
+
+        db.add(User(id=user_id, username=f"u{user_id}", email=f"u{user_id}@x", password_hash="x"))
+        db.add(Project(id=project_id, user_id=user_id, name="P"))
+        db.add(UserSession(id=session_id, user_id=user_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _insert_messages(fake_db, session_id: int, user_id: int, project_id: int, items):
+    """Insert N Message rows with deterministic created_at (oldest first)."""
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.message import Message
+
+        for idx, content in enumerate(items):
+            db.add(
+                Message(
+                    session_id=session_id,
+                    project_id=project_id,
+                    user_id=user_id,
+                    role="user" if idx % 2 == 0 else "assistant",
+                    content=content,
+                    citations=[],
+                    created_at=datetime(2024, 1, 1, 12, 0, idx, tzinfo=timezone.utc),
+                    updated_at=datetime(2024, 1, 1, 12, 0, idx, tzinfo=timezone.utc),
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _client_for_user(user_id: int = 1, username: str = "alice"):
+    """Build a FastAPI TestClient with get_current_user stubbed."""
+    from fastapi import FastAPI
+    from app.api.chat import router as chat_router
+
+    app = FastAPI()
+    app.include_router(chat_router)
+
+    async def fake_current_user():
+        return {"user_id": user_id, "username": username}
+
+    app.dependency_overrides = {
+        # import lazily to avoid pulling FastAPI machinery at module import
+        __import__("app.api.dependencies", fromlist=["get_current_user"]).get_current_user: fake_current_user
+    }
+    return TestClient(app)
+
+
+class TestChatHistoryEndpoint:
+    def test_returns_last_n_messages_newest_first(self, fake_db):
+        _seed(fake_db)
+        _insert_messages(fake_db, session_id=10, user_id=1, project_id=1, items=[
+            "u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4",
+        ])
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        body = response.json()
+        messages = body["messages"]
+        assert len(messages) == 5
+        # Newest first → last 5 inserted (a4, u4, a3, u3, a2)
+        assert [m["content"] for m in messages] == ["a4", "u4", "a3", "u3", "a2"]
+        assert all(m["role"] in {"user", "assistant", "system"} for m in messages)
+        assert all("created_at" in m for m in messages)
+        assert all(m["citations"] == [] for m in messages)
+
+    def test_default_limit_is_5(self, fake_db):
+        _seed(fake_db)
+        _insert_messages(fake_db, 10, 1, 1, [f"m{i}" for i in range(20)])
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1")
+
+        assert response.status_code == 200
+        assert len(response.json()["messages"]) == 5
+
+    def test_limit_clamped_to_max_50(self, fake_db):
+        _seed(fake_db)
+        client = _client_for_user(user_id=1)
+
+        # FastAPI Query(le=50) → 422 on out-of-range.
+        response = client.get("/api/chat/history?project_id=1&limit=100")
+        assert response.status_code == 422
+
+    def test_limit_clamped_to_min_1(self, fake_db):
+        _seed(fake_db)
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=0")
+        assert response.status_code == 422
+
+    def test_404_for_unknown_project(self, fake_db):
+        _seed(fake_db)
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=999")
+        assert response.status_code == 404
+
+    def test_404_for_cross_user_project(self, fake_db):
+        """Cross-user access must NOT leak existence — REQ-7."""
+        _seed(fake_db, user_id=1, project_id=1)
+        client = _client_for_user(user_id=1)
+
+        # user 2 has a separate project — ask for it as user 1
+        response = client.get("/api/chat/history?project_id=2")
+        assert response.status_code == 404
+
+    def test_returns_empty_list_when_user_has_no_session(self, fake_db):
+        """Fresh user (with a project) but no UserSession row still gets []."""
+        Session, _engine = fake_db
+        db = Session()
+        try:
+            from app.models.user import User
+            from app.models.project import Project
+
+            db.add(User(id=2, username="u2", email="u2@x", password_hash="x"))
+            db.add(Project(id=1, user_id=2, name="P2"))
+            db.commit()
+        finally:
+            db.close()
+
+        client = _client_for_user(user_id=2)
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+        assert response.status_code == 200
+        assert response.json() == {"messages": []}
+
+    def test_postgres_down_returns_200_empty(self, fake_db):
+        """REQ-11 / SCN-5: when the message SELECT raises, endpoint returns 200 []."""
+        from fastapi import FastAPI
+        from app.api.chat import router as chat_router
+        from app.models.project import Project
+
+        _seed(fake_db)
+        client = _client_for_user(user_id=1)
+
+        # Wrap SessionLocal so the project query succeeds but the message
+        # SELECT raises OperationalError. This mirrors a connection that
+        # drops between the ownership check and the message fetch.
+        from sqlalchemy.exc import OperationalError
+        from unittest.mock import patch
+
+        Session, _engine = fake_db
+
+        class BrokenMessagesSession:
+            def __init__(self):
+                self._delegate = Session()
+
+            def query(self, model):
+                # Project query works; any other query (UserSession or
+                # Message via list_recent) raises.
+                if model is Project:
+                    return self._delegate.query(model)
+                raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+            def close(self):
+                self._delegate.close()
+
+        app = FastAPI()
+        app.include_router(chat_router)
+
+        async def fake_current_user():
+            return {"user_id": 1, "username": "alice"}
+
+        deps = __import__("app.api.dependencies", fromlist=["get_current_user"])
+        app.dependency_overrides[deps.get_current_user] = fake_current_user
+
+        with patch("app.api.chat.SessionLocal", BrokenMessagesSession):
+            response = client.get("/api/chat/history?project_id=1&limit=5")
+        assert response.status_code == 200
+        assert response.json() == {"messages": []}
+
+    def test_message_shape_includes_required_fields(self, fake_db):
+        _seed(fake_db)
+        _insert_messages(fake_db, 10, 1, 1, ["hola"])
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+        assert response.status_code == 200
+        msg = response.json()["messages"][0]
+        assert set(msg.keys()) == {
+            "id", "role", "content", "citations", "attachments", "created_at",
+        }
+
+
+# ---------------------------------------------------------------------------
+# F14 (migracion 0015) — GET /api/chat/history devuelve display_content or
+# content. Regression coverage for QA_feature-hu6-diagrama seccion 0 punto 7.
+# ---------------------------------------------------------------------------
+
+
+def _insert_message_with_display_content(
+    fake_db, *, session_id: int, user_id: int, project_id: int,
+    content: str, display_content: str | None,
+):
+    """Como ``_insert_messages`` pero para un solo row con display_content."""
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.message import Message
+
+        db.add(
+            Message(
+                session_id=session_id,
+                project_id=project_id,
+                user_id=user_id,
+                role="user",
+                content=content,
+                display_content=display_content,
+                citations=[],
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestChatHistoryDisplayContent:
+    def test_returns_display_content_when_set(self, fake_db):
+        _seed(fake_db)
+        _insert_message_with_display_content(
+            fake_db, session_id=10, user_id=1, project_id=1,
+            content="Instrucciones tecnicas completas + Mermaid anterior...",
+            display_content="Cambiá el color del nodo A",
+        )
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        msg = response.json()["messages"][0]
+        # El frontend nunca debe ver el prompt tecnico cuando hay un
+        # display_content guardado -- eso es lo que soluciona la migracion
+        # 0015 (antes: la burbuja volvia a mostrar el prompt completo tras
+        # un refresh).
+        assert msg["content"] == "Cambiá el color del nodo A"
+
+    def test_falls_back_to_content_when_display_content_is_none(self, fake_db):
+        _seed(fake_db)
+        _insert_message_with_display_content(
+            fake_db, session_id=10, user_id=1, project_id=1,
+            content="mensaje normal, sin diferencia", display_content=None,
+        )
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        msg = response.json()["messages"][0]
+        assert msg["content"] == "mensaje normal, sin diferencia"
+
+    def test_pre_migration_rows_without_display_content_are_unaffected(self, fake_db):
+        """Filas insertadas antes de la migracion 0015 (sin pasar
+        display_content en absoluto, no solo None) siguen devolviendo
+        ``content`` tal cual -- la columna nueva no rompe nada existente."""
+        _seed(fake_db)
+        _insert_messages(fake_db, session_id=10, user_id=1, project_id=1, items=["u1"])
+        client = _client_for_user(user_id=1)
+
+        response = client.get("/api/chat/history?project_id=1&limit=5")
+
+        assert response.status_code == 200
+        assert response.json()["messages"][0]["content"] == "u1"
+
+
+# ---------------------------------------------------------------------------
+# Estado de decisión de cada diagrama en GET /api/chat/history (migración 0017)
+#
+# Bug QA HU6: tras un F5, la burbuja del chat perdía el estado "ya decidido"
+# (aprobado / rechazado / cambios pedidos) y volvían a aparecer los botones.
+# ---------------------------------------------------------------------------
+
+
+def _insert_assistant_with_diagram(fake_db, *, session_id, user_id, project_id, attachment_id):
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.message import Message
+
+        db.add(
+            Message(
+                session_id=session_id, project_id=project_id, user_id=user_id,
+                role="assistant", content="aca va el diagrama", citations=[],
+                attachments=[{
+                    "id": attachment_id, "kind": "screenshot", "mime": "image/png",
+                    "filename": f"{attachment_id}.png", "storage_path": "/tmp/x.png",
+                }],
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _insert_diagram_approval(fake_db, *, session_id, project_id, attachment_id, decision_db):
+    Session, _engine = fake_db
+    db = Session()
+    try:
+        from app.models.approval import Approval
+
+        db.add(Approval(session_id=session_id, project_id=project_id, phase="diagram",
+                        decision=decision_db, attachment_id=attachment_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestChatHistoryDiagramDecision:
+    def test_attachment_exposes_id_and_null_decision_when_undecided(self, fake_db):
+        _seed(fake_db)
+        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
+        client = _client_for_user(user_id=1)
+
+        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
+
+        assert att["id"] == "att-1"
+        assert att["decision"] is None
+        assert "storage_path" not in att  # no se filtra el path del servidor
+
+    @pytest.mark.parametrize(
+        "decision_db, decision_api",
+        [("approved", "approve"), ("rejected", "reject"), ("modified", "modify")],
+    )
+    def test_attachment_returns_persisted_decision(self, fake_db, decision_db, decision_api):
+        _seed(fake_db)
+        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
+        _insert_diagram_approval(fake_db, session_id=10, project_id=1, attachment_id="att-1", decision_db=decision_db)
+        client = _client_for_user(user_id=1)
+
+        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
+
+        assert att["decision"] == decision_api
+
+    def test_decision_of_another_project_is_not_returned(self, fake_db):
+        _seed(fake_db)
+        _insert_assistant_with_diagram(fake_db, session_id=10, user_id=1, project_id=1, attachment_id="att-1")
+        _insert_diagram_approval(fake_db, session_id=10, project_id=2, attachment_id="att-1", decision_db="rejected")
+        client = _client_for_user(user_id=1)
+
+        att = client.get("/api/chat/history?project_id=1").json()["messages"][0]["attachments"][0]
+
+        assert att["decision"] is None

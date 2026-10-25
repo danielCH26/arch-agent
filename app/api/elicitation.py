@@ -1,0 +1,422 @@
+import logging
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy.orm.attributes import flag_modified
+
+from app.api.dependencies import get_current_user
+from app.api.projects import AVAILABLE_PHASES, _require_project
+from app.core import elicitation_agent
+from app.core.database import SessionLocal
+from app.core.langfuse_tracer import get_langfuse_handler, flush as flush_langfuse
+from app.core.llm_loader import (
+    build_langchain_model,
+    explain_llm_error,
+    http_status_for,
+    is_temperature_rejection,
+    LLMConfigError,
+    user_facing_message,
+)
+from app.core.project_context import load_documents_text
+from app.core.session_store import load_session_state, record_approval_decision, save_session_state
+from app.models.project import Project
+from app.models.session import UserSession
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/projects", tags=["elicitation"])
+
+# La elicitación es siempre la primera fase del flujo (ver AVAILABLE_PHASES
+# en app/api/projects.py) -- se referencia por índice, no como string suelto,
+# para no desalinearse si el orden de fases cambia.
+PHASE = AVAILABLE_PHASES[0]  # "requerimientos"
+
+# Hallazgo #8 (revisión feature/hu6-diagrama): este módulo tenía su propio
+# `DECISION_TO_DB` + `db.add(Approval(...))`, duplicando exactamente lo que
+# ya centraliza `record_approval_decision` en session_store.py (usado por
+# proposals.py y diagrams.py). Se elimina la duplicación -- ver más abajo.
+
+
+# --- Pydantic models --------------------------------------------------------
+
+class ElicitationMessageIn(BaseModel):
+    # None (u omitido) en la primera llamada, o para volver a pedir la
+    # pregunta pendiente sin gastar otra llamada al LLM.
+    answer: Optional[str] = None
+
+
+class ElicitationMessageOut(BaseModel):
+    done: bool
+    question: Optional[str]
+    resumen: Optional[dict]
+    history: list[dict]
+
+
+class ElicitationDecisionIn(BaseModel):
+    decision: Literal["approve", "modify", "reject"]
+    feedback: Optional[str] = None
+
+
+class ElicitationDecisionOut(BaseModel):
+    decision: str
+    phase_ready: bool
+    message: str
+
+
+# --- Helpers -----------------------------------------------------------------
+#
+# BUG (encontrado en revisión de PR): `sessions` tiene una sola fila por
+# usuario (UNIQUE en user_id, ver migration 0003), no una por proyecto. Si
+# engram_state se indexa solo por fase ({"requerimientos": {...}}), dos
+# proyectos distintos del mismo usuario comparten el mismo espacio y se
+# pisan entre sí -- eso rompía reject/modify en la práctica (el estado que
+# "reject" limpiaba, o "modify" reabría, no era el del proyecto correcto).
+#
+# Fix: anidar también por project_id dentro del mismo engram_state
+# ({"3": {"requerimientos": {...}}, "5": {"requerimientos": {...}}}), sin
+# tocar el esquema de `sessions` ni su semántica de "una sesión por
+# usuario" -- ese cambio más profundo (una sesión por proyecto) queda como
+# follow-up si hace falta, pero tiene mucho más blast radius (afecta
+# session_store.py, chat.py, y las migraciones de `sessions`).
+
+def _project_key(project_id: int) -> str:
+    # Claves de dict en JSON siempre son string -- explícito para que quede
+    # claro que no es un descuido, no porque project_id deje de ser int.
+    return str(project_id)
+
+
+def _phase_data_from_engram(engram_state: Optional[dict], project_id: int) -> dict:
+    return (engram_state or {}).get(_project_key(project_id), {}).get(PHASE, {})
+
+
+def _set_phase_data(engram_state: dict, project_id: int, phase_data: dict) -> dict:
+    project_state = engram_state.setdefault(_project_key(project_id), {})
+    project_state[PHASE] = phase_data
+    return engram_state
+
+
+# --- Routes --------------------------------------------------------------------
+
+@router.get("/{project_id}/elicitation", response_model=ElicitationMessageOut)
+async def get_elicitation_state(
+    project_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Estado actual de la elicitación para este proyecto: historial de
+    preguntas/respuestas, la pregunta pendiente (si hay una) y el resumen
+    (si el agente ya decidió que el contexto es suficiente).
+    """
+    _require_project(current_user["user_id"], project_id)
+
+    state = load_session_state(current_user["user_id"]) or {}
+    phase_data = _phase_data_from_engram(state.get("engram_state"), project_id)
+    resumen = phase_data.get("resumen")
+
+    return ElicitationMessageOut(
+        done=resumen is not None,
+        question=phase_data.get("pending_question"),
+        resumen=resumen,
+        history=phase_data.get("preguntas_respuestas", []),
+    )
+
+
+@router.post("/{project_id}/elicitation/message", response_model=ElicitationMessageOut)
+async def send_elicitation_message(
+    project_id: int,
+    body: ElicitationMessageIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Responde la pregunta pendiente (si `answer` viene con contenido) y
+    devuelve la siguiente pregunta progresiva, o el resumen si el agente
+    decide que el contexto ya es suficiente (punto de decisión del issue).
+
+    400 — no hay pregunta pendiente para responder, o ya existe un resumen
+          (hay que pasar por /elicitation/decision antes de seguir)
+    409 — LLM no configurado para este usuario
+    500 — la config LLM está completa pero el modelo no se pudo iniciar
+          (mismo status y mensaje que el chat: ``http_status_for``)
+    502 — el modelo respondió pero con contenido no parseable
+    503 — la llamada al modelo falló (rate limit, timeout, proveedor caído)
+    """
+    user_id = current_user["user_id"]
+    project = _require_project(user_id, project_id)
+
+    state = load_session_state(user_id) or {}
+    engram_state = state.get("engram_state") or {}
+    phase_data = _phase_data_from_engram(engram_state, project_id)
+
+    if phase_data.get("resumen") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ya se generó el resumen de esta fase. Usa /elicitation/decision "
+            "para aprobar, modificar o rechazar antes de seguir.",
+        )
+
+    history: list[dict] = phase_data.get("preguntas_respuestas", [])
+    pending_question = phase_data.get("pending_question")
+
+    if body.answer and body.answer.strip():
+        if pending_question is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No hay una pregunta pendiente por responder todavía.",
+            )
+        history = history + [{"pregunta": pending_question, "respuesta": body.answer.strip()}]
+        pending_question = None
+        # Se persiste la respuesta YA, antes de llamar al LLM para la
+        # siguiente pregunta. Antes, si esa llamada fallaba (ver los
+        # "except" de más abajo), la función salía sin guardar nada: la
+        # respuesta se perdía y, al recargar, "/elicitation" devolvía otra
+        # vez la pregunta vieja como si no se hubiera contestado. Guardarla
+        # aquí hace que, ante un fallo del LLM, quede sin pregunta pendiente
+        # ni resumen -- el reintento automático del frontend (ChatWindow:
+        # "if (!state.done && !state.question)") hace que la próxima carga
+        # pida la siguiente pregunta usando este historial ya completo, sin
+        # que el usuario tenga que volver a escribir su respuesta.
+        engram_state = _set_phase_data(
+            engram_state,
+            project_id,
+            {
+                "preguntas_respuestas": history,
+                "pending_question": None,
+                "resumen": None,
+            },
+        )
+        save_session_state(
+            user_id, project_id=project.id, active_phase=PHASE, engram_state=engram_state
+        )
+    elif pending_question is not None:
+        # Ya se había hecho esta pregunta y no llegó una respuesta nueva:
+        # se re-devuelve tal cual, sin gastar otra llamada al LLM.
+        return ElicitationMessageOut(
+            done=False, question=pending_question, resumen=None, history=history
+        )
+
+    try:
+        model = build_langchain_model(user_id)
+    except LLMConfigError as e:
+        logger.warning("LLM no disponible para user_id=%s: %s (%s)", user_id, e, e.reason)
+        raise HTTPException(
+            status_code=http_status_for(e),
+            detail=user_facing_message(e),
+        )
+
+    # F14: trazas en Langfuse (None si no hay keys -> la elicitación funciona igual).
+    langfuse_handler = get_langfuse_handler()
+    callbacks = [langfuse_handler] if langfuse_handler is not None else None
+
+    # PDF/MD que el usuario subió al proyecto: se le pasan al agente para que
+    # no repregunte lo que ya está en los documentos y el resumen los refleje.
+    documents_text, _names = load_documents_text(user_id, project_id)
+    doc_kwargs = {"documents_context": documents_text} if documents_text else {}
+
+    try:
+        decision = elicitation_agent.next_step(
+            model, history, project.description or "", callbacks=callbacks, **doc_kwargs
+        )
+        if decision.done:
+            resumen = elicitation_agent.generate_summary(
+                model, history, project.description or "", callbacks=callbacks, **doc_kwargs
+            )
+            # Checklist determinista sobre el resumen: si al resumen le falta
+            # una categoría obligatoria (usuarios, funcionalidades, calidad
+            # dicha por el usuario, presupuesto/equipo/plazo), no se cierra:
+            # se hace esa pregunta. No aplica al llegar al máximo de preguntas.
+            gaps = (
+                elicitation_agent.summary_gaps(
+                    resumen, history, project.description or "", documents_text or None
+                )
+                if len(history)
+                < elicitation_agent.max_questions(
+                    history, project.description or "", documents_text or None
+                )
+                else []
+            )
+            if gaps:
+                category, question = gaps[0]
+                logger.info(
+                    "Elicitación project_id=%s: el resumen no cubre %s; se pregunta antes de cerrar",
+                    project_id,
+                    category,
+                )
+                decision = elicitation_agent.ElicitationDecision(
+                    done=False,
+                    question=question,
+                    reason=f"El resumen no cubre la categoría obligatoria: {category}.",
+                )
+                resumen = None
+        else:
+            resumen = None
+    except elicitation_agent.ElicitationLLMError as e:
+        if is_temperature_rejection(e):
+            # El modelo rechaza `temperature` aun despues del reintento sin el
+            # parametro: reintentar no lo arregla nunca, asi que NO se usa el
+            # mensaje de "limite de tasa" de abajo. 502 + causa accionable.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=explain_llm_error(e),
+            )
+        # Falla real de la llamada (rate limit, timeout, proveedor caído) --
+        # el usuario puede reintentar, no es un problema con lo que respondió.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"El modelo de IA no está disponible en este momento "
+            f"(posible límite de tasa del proveedor). Intenta de nuevo en "
+            f"unos segundos. Detalle: {e}",
+        )
+    except elicitation_agent.ElicitationAgentError as e:
+        # El detalle técnico (JSON crudo, a veces con un <think> truncado de
+        # modelos de razonamiento que se quedan sin tokens de salida antes
+        # de llegar al JSON) es ruido para el usuario y no le dice qué
+        # hacer -- se registra para debug y se responde con un mensaje
+        # accionable en su lugar.
+        logger.error(
+            "ElicitationAgentError en project_id=%s: %s", project_id, e
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="El modelo de IA no devolvió una respuesta válida esta vez "
+            "(puede pasar con algunos modelos de razonamiento que se quedan "
+            "sin espacio de salida). Prueba con otro modelo en la "
+            "configuración de LLM: con el mismo modelo, reintentar suele "
+            "devolver la misma respuesta.",
+        )
+    finally:
+        # F14: exportar la traza de inmediato -- no depender solo del ciclo
+        # en segundo plano del SDK, que puede no alcanzar a correr si el
+        # proceso se reinicia justo después de esta respuesta.
+        if callbacks:
+            flush_langfuse()
+
+    phase_data = {
+        "preguntas_respuestas": history,
+        "pending_question": None if decision.done else decision.question,
+        "resumen": resumen,
+    }
+    engram_state = _set_phase_data(engram_state, project_id, phase_data)
+    save_session_state(
+        user_id, project_id=project.id, active_phase=PHASE, engram_state=engram_state
+    )
+
+    return ElicitationMessageOut(
+        done=decision.done,
+        question=phase_data["pending_question"],
+        resumen=resumen,
+        history=history,
+    )
+
+
+@router.post("/{project_id}/elicitation/decision", response_model=ElicitationDecisionOut)
+async def decide_elicitation(
+    project_id: int,
+    body: ElicitationDecisionIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Aprueba, pide modificar o rechaza el resumen de elicitación generado.
+    Escribe el historial de la decisión en `approvals` (criterio de
+    aceptación del issue).
+
+    - approve: marca phase_ready=True (ya puedes usar POST /advance)
+    - modify:  agrega el feedback como contexto y reabre la elicitación
+               (requiere `feedback`)
+    - reject:  descarta todo el progreso de esta fase y reinicia desde cero
+    """
+    if body.decision == "modify" and not (body.feedback and body.feedback.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El feedback es obligatorio para 'modify'.",
+        )
+
+    user_id = current_user["user_id"]
+    _require_project(user_id, project_id)  # valida ownership antes de tocar la DB
+
+    db = SessionLocal()
+    try:
+        # Hallazgo #8 (revisión feature/hu6-diagrama, corrección post-revisión):
+        # antes se cortaba acá con 400 si todavía no existía una `UserSession`,
+        # a diferencia de proposals.py/diagrams.py que la crean de forma
+        # perezosa vía `record_approval_decision`. En la práctica es casi
+        # inalcanzable (no se llega a tener un `resumen` sin haber pasado
+        # antes por /elicitation/message, que ya crea la sesión), pero el
+        # criterio quedaba desalineado entre endpoints. Ahora: la ausencia de
+        # sesión se trata igual que la ausencia de `resumen` -- mismo mensaje
+        # y código que ya existía para ese caso -- en vez de un 400 aparte.
+        session_row = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+
+        # Copia nueva del dict, no una referencia al mismo objeto que
+        # session_row.engram_state -- ver nota de flag_modified() más abajo.
+        engram_state = dict((session_row.engram_state if session_row else None) or {})
+        phase_data = _phase_data_from_engram(engram_state, project_id)
+        if phase_data.get("resumen") is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Todavía no hay un resumen que aprobar, modificar o rechazar. "
+                "Termina la elicitación con /elicitation/message primero.",
+            )
+
+        project = db.query(Project).filter(Project.id == project_id).first()
+
+        # Antes: `db.add(Approval(...))` construido a mano con un
+        # `DECISION_TO_DB` propio de este módulo (hallazgo #8). Ahora usa el
+        # mismo helper que proposals.py/diagrams.py, y le pasa `project_id`
+        # (migration 0016) para que esta decisión no se filtre como
+        # "aprobada" en otro proyecto del mismo usuario (hallazgo #1).
+        # También crea la `UserSession` si todavía no existiera (no debería
+        # pasar llegados a este punto, dado el chequeo de `resumen` arriba,
+        # pero mantiene el mismo criterio unificado que el resto de los
+        # endpoints en vez de asumirlo).
+        approval = record_approval_decision(
+            db,
+            user_id=user_id,
+            phase=PHASE,
+            decision=body.decision,
+            feedback=body.feedback,
+            project_id=project_id,
+        )
+        if session_row is None:
+            session_row = (
+                db.query(UserSession).filter(UserSession.id == approval.session_id).first()
+            )
+
+        if body.decision == "approve":
+            project.phase_ready = True
+            message = "Elicitación aprobada. Ya puedes avanzar a la fase de propuesta."
+
+        elif body.decision == "modify":
+            history = phase_data.get("preguntas_respuestas", [])
+            history = history + [
+                {"pregunta": "(ajuste solicitado por el usuario)", "respuesta": body.feedback.strip()}
+            ]
+            engram_state = _set_phase_data(
+                engram_state,
+                project_id,
+                {"preguntas_respuestas": history, "pending_question": None, "resumen": None},
+            )
+            session_row.engram_state = engram_state
+            flag_modified(session_row, "engram_state")
+            project.phase_ready = False
+            message = "Se registró tu ajuste. Llama a /elicitation/message para continuar."
+
+        else:  # reject
+            engram_state = _set_phase_data(engram_state, project_id, {})
+            session_row.engram_state = engram_state
+            flag_modified(session_row, "engram_state")
+            project.phase_ready = False
+            message = "Elicitación rechazada. Se reinició esta fase, puedes empezar de nuevo."
+
+        db.commit()
+        return ElicitationDecisionOut(
+            decision=body.decision, phase_ready=project.phase_ready, message=message
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    finally:
+        db.close()

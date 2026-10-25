@@ -1,0 +1,78 @@
+# Entorno virtual de Python
+venv/
+.venv/
+env/
+ENV/
+
+# Variables de entorno y secretos (¡NUNCA SUBIR AL REPO!)
+.env
+.env.local
+.env.*.local
+
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Archivos locales de Chainlit
+.chainlit/
+.files/
+chainlit.md
+
+# Archivos de configuración y bases de datos locales
+*.sqlite3
+*.log
+
+# Archivos del sistema operativo y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Datos temporales o subidas de prueba
+uploads/
+temp/
+*.pdf
+*.md
+!README.md
+!README_hu2.md
+!QA_criterios_aceptacion_RAG_final.md
+!QA_feature-hu6-diagrama.md
+!.atl/
+!.atl/**/*.md
+!openspec/
+!openspec/**/*.md
+!docs/**/*.md
+!docs/adr/
+!docs/adr/**/*.md
+
+# Frontend (Vite + React)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# OpenSpec artifacts: versioned via !openspec/ exception above (legacy
+# `openspec/` ignore removed in F12 to enable SDD artifacts in PRs).
+# .atl/ and docs/ Markdown artifacts are versioned via exceptions above.
+
+# CodeGraph local index (per-worktree, never shared)
+.codegraph/
+.freebuff/
+
+# Evals: resultados de corridas y cobertura. Los resumenes de baselines SI se
+# versionan: son la referencia auditable de cada medicion (ver
+# evals/baselines/README.md), y sin esta excepcion los atrapa `*.md`.
+evals/results/
+!evals/baselines/
+!evals/baselines/*.md
+
+.patch
+
+eval_out/
+# Cobertura de pytest-cov
+.coverage
+.coverage.*
+htmlcov/

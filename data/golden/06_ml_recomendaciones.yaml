@@ -1,0 +1,117 @@
+id: ml-recomendaciones
+name: Rutas de aprendizaje
+kind: datos / ML
+description: Recomendador de cursos para una plataforma de cursos en línea, con un modelo que se reentrena cada semana.
+profile:
+  resumen: Recomendaciones de cursos con un modelo reentrenado semanalmente.
+  dominio: formacion en linea
+  tipo_sistema: sistema de modelos de ML
+  tipo_proyecto: producto_en_produccion
+  equipo_personas: 3
+  plazo_meses: 5
+  presupuesto_usd: 15000
+resumen:
+  problema: Los estudiantes no encuentran el siguiente curso que les sirve.
+  usuarios: Estudiantes de la plataforma.
+  funcionalidades:
+    - Recomendar cursos en la página de inicio
+    - Reentrenar el modelo cada semana
+  restricciones:
+    - Presupuesto de 15000 USD
+    - Equipo de 3 personas
+    - Plazo de 5 meses
+  calidad:
+    - Respuesta rápida en la página de inicio
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Los estudiantes no encuentran el siguiente curso que les sirve.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Estudiantes de la plataforma.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 15000 USD.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 3 personas.
+  - pregunta: ¿Cuál es el plazo objetivo para el MVP o la primera entrega utilizable?
+    respuesta: 5 meses.
+candidates:
+  - {name: "Pipeline de MLOps (entrenamiento, registro y serving de modelos)", similarity: 0.88}
+  - {name: "Pipeline de datos ETL / ELT por lotes", similarity: 0.84}
+  - {name: "Serverless (Function-as-a-Service)", similarity: 0.82}
+  - {name: "Microservicios", similarity: 0.83}
+  - {name: "Arquitectura en capas (Layered)", similarity: 0.78}
+recorded:
+  proposal: |
+    ## Componentes
+    - Pipeline de entrenamiento
+    - Registro de modelos
+    - Servicio de recomendaciones
+
+    ## Tecnologias
+    | Tecnología | Justificación | Requisito que lo motiva |
+    | --- | --- | --- |
+    | Python | Ecosistema de ML | Reentrenar el modelo |
+    | scikit-learn | Modelo de recomendación | Recomendar cursos |
+    | MLflow | Registro de modelos | Reentrenar cada semana |
+    | FastAPI | Servir recomendaciones | Página de inicio |
+
+    ## Patrones
+    - Patrón principal: Pipeline de MLOps (entrenamiento, registro y serving de modelos)
+
+    ## Justificación del patrón principal
+    - Motivo de elección: el modelo se reentrena cada semana.
+    - Reflejo en la arquitectura: pipeline, registro y servicio.
+    - Beneficio esperado: versiones de modelo trazables.
+    - Riesgo o costo: más piezas que un modelo fijo.
+
+    ## Trade-offs y decisión
+    | Opción | Ventajas | Desventajas | Complejidad/costo | Ajuste a requisitos | Fuente RAG |
+    | --- | --- | --- | --- | --- | --- |
+    | MLOps | Reentrenos trazables | Más piezas | Media | Alto | [1] |
+    | Serverless | Pago por uso | Modelos grandes en frío | Media | Medio | [2] |
+    | Microservicios | Escala por servicio | Operación | Alta | Bajo | [3] |
+    - Recomendación: Pipeline de MLOps
+    - Punto de decisión: ¿Aprueba los trade-offs?
+  guide: |
+    ### 7.1 Componentes y responsabilidades
+    | Componente | Responsabilidad | Se comunica con |
+    |---|---|---|
+    | Pipeline de entrenamiento | Reentrenar cada semana | Registro de modelos |
+    | Registro de modelos | Versiones | Servicio de recomendaciones |
+    | Servicio de recomendaciones | Responder a la página de inicio | Registro de modelos |
+
+    ### 7.2 Stack tecnológico recomendado
+    | Capa | Tecnología | Por qué |
+    |---|---|---|
+    | Modelo | Python / scikit-learn | Suficiente para el volumen |
+    | Registro | MLflow | Versiones |
+    | Servicio | FastAPI | API ligera |
+
+    ### 7.3 Consecuencias
+    **Positivas:** trazabilidad. **Negativas / costos asumidos:** más piezas.
+
+    ### 7.4 Riesgos y mitigaciones
+    | Riesgo | Impacto | Mitigación |
+    |---|---|---|
+    | Respuesta lenta | medio | Latencia objetivo de 200 ms (supuesto) con caché en memoria |
+
+    ### 7.5 Plan de implementación
+    1. Modelo base. 2. Registro. 3. Reentreno.
+
+    ### 7.6 Primer sprint
+    - Dataset de interacciones
+
+    ### 7.7 Estructura inicial del repositorio
+    ```
+    training/
+    ```
+
+    ### 7.8 Preguntas abiertas
+    - ¿Cómo se mide si una recomendación sirvió?
+expect:
+  concerns: [respaldos]
+  checks:
+    respeta_restricciones: true
+    cifras_con_origen: true      # la latencia va marcada (supuesto)
+    coherencia: true
+    alternativas_diversas: true
+    preocupaciones_dominio: true

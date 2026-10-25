@@ -1,0 +1,396 @@
+# =============================================================================
+# Docker Compose — arch-agent stack completo
+#
+# Servicios (post-migración Chainlit → FastAPI):
+#   - backend     FastAPI + LangChain RAG + PGVector (Python)
+#   - spa         React + Vite built + nginx
+#   - postgres-app DB principal con extensión vector
+#   - engram      Memoria persistente (HTTP API)
+#   - engram-proxy Publica engram para el host
+#   - langfuse-*  Observabilidad LLM (web + db + clickhouse + minio + redis)
+#
+# Levantar todo:        docker compose up -d
+# Ver logs:             docker compose logs -f backend
+# Bajar todo:           docker compose down
+# Bajar + data:         docker compose down -v
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # BACKEND — FastAPI + LangChain RAG
+  # ===========================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: arch-agent-backend:latest
+    container_name: backend
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+      engram:
+        condition: service_started
+      langfuse-web:
+        condition: service_started
+      puppeteer-mcp:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      # Database (host = nombre del servicio en la red de compose)
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-app:5432/${POSTGRES_DB}
+
+      # Langfuse
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+
+      # Engram (accedido por hostname engram dentro de la red Docker)
+      ENGRAM_PROJECT: ${ENGRAM_PROJECT}
+      ENGRAM_URL: http://engram:7437
+
+      # Referencia para scripts locales; el backend no las usa como default
+      # (cada usuario configura su LLM en el wizard).
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_MODEL: ${LLM_MODEL}
+
+      # LLM por defecto del backend (issue #98): se pasa al servicio backend,
+      # que es quien la lee (app/core/llm_loader.py). Si un usuario no
+      # configuro el suyo, la app usa la key de Groq del operador. Vacia = sin
+      # default. No definirla con registro abierto (ver .env.example).
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+
+      # F13 — Puppeteer MCP sidecar (issue #17).
+      PUPPETEER_MCP_URL: ${PUPPETEER_MCP_URL:-http://puppeteer-mcp:8931/mcp}
+      PUPPETEER_RENDER_TIMEOUT_SECONDS: ${PUPPETEER_RENDER_TIMEOUT_SECONDS:-15}
+      PUPPETEER_MAX_RENDER_BYTES: ${PUPPETEER_MAX_RENDER_BYTES:-2097152}
+      PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE: ${PUPPETEER_RENDER_RATE_LIMIT_PER_MINUTE:-5}
+
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - backend_uploads:/app/uploads
+      - backend_logs:/app/logs
+      - backend_models:/app/.cache
+      - ./fuentes:/app/fuentes:ro
+    ports:
+      - "8000:8000"
+    # Aplica el schema (idempotente) y las migraciones pendientes ANTES de
+    # levantar uvicorn. Si alguno falla, el contenedor sale con error (queda
+    # visible en `docker compose logs backend`) en vez de arrancar contra una
+    # DB desactualizada. Sobrescribir `command` reemplaza el CMD del
+    # Dockerfile, por eso se repiten los flags de uvicorn.
+    command: >
+      sh -c "python scripts/init_db.py &&
+             python -m migrations.run_migrations &&
+             exec uvicorn server:app --host 0.0.0.0 --port 8000 --proxy-headers"
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SPA — React frontend built with Vite, served by nginx
+  # ===========================================================================
+  spa:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: arch-agent-spa:latest
+    container_name: spa
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    volumes:
+      - spa_build:/var/www/html
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ENGRAM — Memoria persistente
+  # ===========================================================================
+  engram:
+    container_name: engram
+    image: ghcr.io/gentleman-programming/engram:latest
+    command: serve 7438
+    ports:
+      # NOTA: el puerto default 7437 puede estar ocupado por tu engram local (Gentle AI).
+      # Mapeamos 7439 -> 7437 interno. Cambiá a "7437:7437" si no tenes engram local.
+      - "7439:7437"
+    volumes:
+      - engram_data:/root/.engram
+    environment:
+      ENGRAM_PROJECT: ${ENGRAM_PROJECT}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 --spider http://127.0.0.1:7438/health || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  engram-proxy:
+    container_name: engram-proxy
+    image: alpine/socat:1.8.1.3
+    network_mode: service:engram
+    command: TCP-LISTEN:7437,fork,reuseaddr TCP:127.0.0.1:7438
+    depends_on:
+      engram:
+        condition: service_started
+    restart: unless-stopped
+
+  # ===========================================================================
+  # PUPPETEER MCP — Sidecar para render de diagramas Mermaid (F13, issue #17)
+  # ===========================================================================
+  # Sirve @modelcontextprotocol/server-puppeteer sobre streamable_http en
+  # :8931. Un unico Chromium por sidecar (warm-on-start en entrypoint.sh).
+  # Sin replica multi: el rate-limit in-memory vive en backend (R-SPEC-4).
+  puppeteer-mcp:
+    container_name: puppeteer-mcp
+    build:
+      context: ./infrastructure/puppeteer-mcp
+    image: arch-agent-puppeteer-mcp:latest
+    environment:
+      NODE_ENV: production
+      ALLOW_DANGEROUS: "true"
+      DOCKER_CONTAINER: "true"
+      PUPPETEER_LAUNCH_OPTIONS: '{"args":["--no-sandbox","--disable-setuid-sandbox"]}'
+    mem_limit: 1g
+    healthcheck:
+      # El server oficial responde 404 a /health pero el connection-refused
+      # ya dispara unhealthy, asi que spider + exit-0 es suficiente.
+      test: ["CMD-SHELL", "wget -q --tries=1 --spider http://127.0.0.1:8931/health || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # POSTGRES + PGVECTOR (DB de la app)
+  # ===========================================================================
+  postgres-app:
+    container_name: postgres-app
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg_app_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+   # ===========================================================================
+  # LANGFUSE — Web UI
+  # ===========================================================================
+  langfuse-web:
+    container_name: langfuse-web
+    image: langfuse/langfuse:3
+    ports:
+      - "3000:3000"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${LANGFUSE_DB_USER}:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/${LANGFUSE_DB_NAME}
+      SALT: ${LANGFUSE_SALT}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: http://localhost:3000
+      HOSTNAME: "0.0.0.0"
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD}@redis:6379
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================================================
+  # LANGFUSE — Worker (procesa la cola de ingestion: Redis/S3 -> ClickHouse)
+  # Sin este servicio, langfuse-web recibe y acepta las trazas pero nunca
+  # las persiste de forma consultable — la UI queda en "Waiting for first
+  # trace" para siempre, sin ningun error visible.
+  # ===========================================================================
+  langfuse-worker:
+    container_name: langfuse-worker
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://${LANGFUSE_DB_USER}:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/${LANGFUSE_DB_NAME}
+      SALT: ${LANGFUSE_SALT}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${S3_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD}@redis:6379
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3030/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  langfuse-db:
+    container_name: langfuse-db
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${LANGFUSE_DB_USER}
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD}
+      POSTGRES_DB: ${LANGFUSE_DB_NAME}
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_DB_USER} -d ${LANGFUSE_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  clickhouse:
+    container_name: clickhouse
+    image: clickhouse/clickhouse-server:24
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./docker/clickhouse-config.xml:/etc/clickhouse-server/config.d/99-langfuse.xml:ro
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    depends_on:
+      clickhouse-keeper:
+        condition: service_started
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  clickhouse-keeper:
+    container_name: clickhouse-keeper
+    image: clickhouse/clickhouse-keeper:24
+    volumes:
+      - ./docker/clickhouse-keeper-config.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - langfuse_clickhouse_keeper_data:/var/lib/clickhouse-keeper
+    restart: unless-stopped
+
+  minio:
+    container_name: minio
+    image: minio/minio:latest
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" /data'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    container_name: redis
+    image: redis:7
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+# =============================================================================
+# VOLÚMENES PERSISTENTES
+# =============================================================================
+volumes:
+  # Backend
+  backend_uploads:
+  backend_logs:
+  backend_models:
+
+  # Engram
+  engram_data:
+
+  # Postgres App
+  pg_app_data:
+
+  # Langfuse
+  langfuse_db_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
+  langfuse_clickhouse_keeper_data:
+  redis_data:
+
+  # SPA
+  spa_build:

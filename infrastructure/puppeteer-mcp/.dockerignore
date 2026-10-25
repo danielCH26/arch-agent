@@ -1,0 +1,11 @@
+# Standard Node ignores for the Puppeteer MCP sidecar image.
+node_modules
+npm-debug.log
+.npmrc
+.env
+.env.*
+.git
+.gitignore
+.dockerignore
+Dockerfile
+README.md

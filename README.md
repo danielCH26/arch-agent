@@ -1,2 +1,313 @@
 # arch-agent
-Asistente IA que gu�a a equipos de desarrollo en la definici�n de arquitecturas de software
+
+Asistente IA que guía a equipos de desarrollo en la definición de arquitecturas de software, desde una idea de producto hasta propuestas justificadas con diagramas y trade-offs.
+
+![Página principal de Arch Agent](docs/usuario/screenshots/pagina-principal.png)
+
+---
+
+## 📘 Documentación de usuario
+
+¿Vas a **usar** Arch Agent? Empieza por acá:
+
+| Guía | Descripción |
+|------|-------------|
+| [Guía de inicio rápido](docs/usuario/01-inicio-rapido.md) | De cero a tu primera propuesta en 5 pasos. |
+| [Tutorial paso a paso](docs/usuario/02-tutorial.md) | Recorrido completo por cada pantalla y fase, con un proyecto de ejemplo. |
+| [Preguntas frecuentes](docs/usuario/03-faq.md) | Problemas habituales y cómo resolverlos. |
+| [Glosario](docs/usuario/04-glosario.md) | Conceptos de la app, de arquitectura y de LLMs. |
+
+Índice completo: [`docs/usuario/`](docs/usuario/README.md).
+
+---
+
+## Quickstart
+
+```bash
+# 1. Clonar y configurar
+git clone https://github.com/danielCH26/arch-agent.git
+cd arch-agent
+cp .env.example .env
+
+# 2. Levantar el stack Docker completo (Postgres, backend FastAPI, SPA, Engram, Langfuse)
+docker compose up -d
+
+# El backend aplica schema.sql y las migraciones pendientes al arrancar
+# (ver `command` en docker-compose.yml); si cambias migrations/, reconstruye:
+#   docker compose up -d --build backend
+# Si la migración cambia datos curados de patrones (por ejemplo 0018/0019),
+# vuelve a indexarlos inmediatamente después de migrar:
+#   docker compose exec -T backend python scripts/seed_patterns.py
+
+# 3. (Opcional) Setup automatizado: genera JWT y ENCRYPTION_KEY, espera al backend
+bash scripts/setup-local.sh
+```
+
+Cuando el stack esté arriba:
+
+| Servicio | URL |
+|----------|-----|
+| **Frontend SPA** | http://localhost:5173 |
+| **Backend API** (Swagger) | http://127.0.0.1:8000/docs |
+| Langfuse (observabilidad) | http://localhost:3000 |
+| Postgres | localhost:5432 |
+| Engram (memoria) | http://localhost:7439 |
+
+1. Abrir **http://localhost:5173** y registrarse con nombre de usuario, correo electrónico y contraseña (al menos 8 caracteres, con una mayúscula, un número y un carácter especial)
+2. Al registrarte entras automáticamente a **Mis proyectos**
+3. Para usar el agente, primero configura tu LLM: ícono de engranaje en el pie de la barra lateral → **Configuración Global del LLM** (ver sección abajo)
+4. Seguir la [guía de inicio rápido](docs/usuario/01-inicio-rapido.md) para crear tu primer proyecto
+
+---
+
+## Features
+
+- **Wizard de configuración LLM** — Elige tu proveedor (OpenAI, Ollama, LM Studio, etc.) con filtro de calidad MMLU
+- **Elicitación guiada** — Preguntas progresivas para levantar requerimientos
+- **Generación de propuesta** — Arquitectura justificada con patrones reconocidos
+- **Diagramas Mermaid.js** — Renderizados automáticamente
+- **Trade-offs** — Tabla comparativa con criterios
+- **Control del usuario** — Aprueba, modifica o rechaza cada propuesta
+
+![Chat de elicitación](docs/usuario/screenshots/elicitacion.png)
+
+![Propuesta de arquitectura con trade-offs](docs/usuario/screenshots/propuesta.png)
+
+![Diagrama generado](docs/usuario/screenshots/diagrama.png)
+
+---
+
+## Arquitectura
+
+**Stack:** Python 3.11 + FastAPI, React 18 + Vite 6 + TypeScript, PostgreSQL + PGVector, LangChain, Docker Compose.
+
+**11 servicios Docker:**
+
+| Servicio | Función | Puerto host |
+|----------|---------|-------------|
+| `backend` | FastAPI + LangChain RAG + auth JWT | 8000 |
+| `spa` | React build + nginx | 5173 |
+| `postgres-app` | DB con extensión `vector` | 5432 |
+| `engram` + `engram-proxy` | Memoria persistente (HTTP API) | 7439 |
+| `langfuse-web` + `langfuse-db` | Observabilidad LLM | 3000 |
+| `clickhouse` + `clickhouse-keeper` | Analytics de Langfuse | — |
+| `minio` | Storage S3-compatible para Langfuse | — |
+| `redis` | Cache de Langfuse | — |
+
+> **Nota sobre Engram:** El puerto externo es **7439** (no 7437). Esto evita chocar con tu engram local de Gentle AI si lo tienes corriendo en :7437.
+
+---
+
+## Configuración de LLM
+
+Cada usuario configura su propio LLM a través de un **wizard obligatorio de 3 pasos** en **Configuración Global del LLM** (ícono de engranaje en el pie de la barra lateral, ruta `/settings/llm`). El sistema soporta cualquier API OpenAI-compatible.
+
+### Wizard de 3 pasos
+
+1. **URL base** — Pegas la URL del provider (ej: `https://api.openai.com/v1`). El wizard verifica que el endpoint `/models` existe.
+2. **API Key** — Pegas tu key. El wizard testea conexión real con Bearer contra `/models`.
+3. **Modelo** — Dropdown filtrado por tier MMLU:
+   - **Tier 1 (MMLU ≥ 85)**: grupo "Recomendados (Tier 1)", se aprueba automáticamente.
+   - **Tier 2 / sin score (MMLU 60–85 o desconocido)**: grupo "Sin score conocido", se guarda con `allow_unknown_model=true`.
+   - **Tier bloqueado (MMLU < 60)**: NO aparece en el dropdown (gpt-3.5-turbo, llama-8b).
+   - **Free-text fallback**: botón "No encuentro mi modelo — escribir manualmente" en paso 3 revela un input de texto para tipear modelos custom no listados (fine-tunes, etc).
+
+Si ya tienes config guardada, el wizard muestra una vista **Tu configuración actual** con dos botones: "Cambiar modelo" (salta al paso 3 directo) o "Cambiar todo" (vuelve al paso 1).
+
+### Proveedores soportados
+
+Cualquier API que implemente el formato OpenAI Chat Completions:
+
+| Proveedor | URL base |
+|-----------|----------|
+| OpenAI | `https://api.openai.com/v1` |
+| Ollama (local) | `http://host.docker.internal:11434/v1` |
+| LM Studio (local) | `http://host.docker.internal:1234/v1` |
+| vLLM (self-hosted) | `http://host.docker.internal:8000/v1` |
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Groq | `https://api.groq.com/openai/v1` |
+| DeepSeek | `https://api.deepseek.com/v1` |
+| Together AI | `https://api.together.xyz/v1` |
+
+> **Ollama / LM Studio desde Docker:** usa `host.docker.internal` en vez de `localhost` para que el contenedor `backend` alcance al provider corriendo en el host.
+
+### Modelos recomendados (Tier 1)
+
+Whitelist mantenida en `app/core/llm_model_benchmarks.yaml`:
+
+- **OpenAI:** `gpt-4o`, `gpt-4-turbo`, `o1`, `o3-mini`, `o4-mini`
+- **Anthropic:** `claude-3-5-sonnet-latest`, `claude-3-7-sonnet`, `claude-sonnet-4`, `claude-opus-4`
+- **Google:** `gemini-2.5-pro`, `gemini-2.0-pro`
+- **Meta:** `llama-3.1-405b-instruct`, `llama-3.3-70b-instruct`
+
+Para agregar más modelos, editá el YAML (citación de fuente requerida) y abre un PR.
+
+---
+
+## Variables de entorno
+
+Copia `.env.example` a `.env`. Las variables marcadas con `*` son obligatorias.
+
+| Variable | Descripción | Ejemplo |
+|----------|-------------|---------|
+| `* ENCRYPTION_KEY` | Clave Fernet para encriptar API keys de usuarios | (generar con `bash scripts/setup-local.sh` o `python scripts/generate_encryption_key.py`) |
+| `* JWT_SECRET_KEY` | Secreto para firmar JWTs | (autogenerado por setup-local.sh) |
+| `JWT_ALGORITHM` | Algoritmo JWT | `HS256` (default) |
+| `JWT_EXPIRES_MINUTES` | TTL del token | `60` (default) |
+| `* DATABASE_URL` | Conexión a PostgreSQL | `postgresql://asistente:asistente@localhost:5432/asistente_db` |
+| `GROQ_API_KEY` | LLM por defecto del backend (Groq, `openai/gpt-oss-120b`) para usuarios que no configuraron el suyo en el wizard. Vacía = sin default. **No definirla con registro abierto** hasta que haya rate limiting | `gsk_...` (opcional) |
+| `LLM_BASE_URL` | Referencia para scripts locales; el backend **no** la usa como default (cada usuario configura su LLM en el wizard) | `http://host.docker.internal:11434/v1` |
+| `LLM_MODEL` | Ídem: referencia para scripts locales, no es el default de los usuarios | `llama3` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key | `pk-lf-...` |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key | `sk-lf-...` |
+| `LANGFUSE_BASE_URL` | URL de Langfuse (interno Docker) | `http://langfuse-web:3000` |
+| `ENGRAM_PROJECT` | Prefijo del namespace en Engram | `arch-agent` |
+| `ENGRAM_URL` | URL de Engram (desde el host) | `http://localhost:7439` |
+| `CONTEXT7_API_KEY` | API key para Context7 MCP | (opcional) |
+| `WEB_SEARCH_API_KEY` | API key para Web Search MCP | (opcional) |
+
+> **Nota:** El setup script `bash scripts/setup-local.sh` autocompleta `JWT_SECRET_KEY` y `ENCRYPTION_KEY` si están vacías. No hace falta generarlas a mano.
+
+---
+
+## Testing
+
+```bash
+# Levantar venv local (opcional — los tests también corren dentro de Docker)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pytest pytest-mock pytest-asyncio
+
+# Correr todos los tests Python
+pytest
+
+# Con cobertura
+pytest --cov=app --cov=app/core
+
+# Solo un archivo
+pytest tests/api/test_llm_wizard.py -v
+
+# Solo el classifier (core, sin DB)
+pytest tests/core/test_model_classifier.py -v
+
+# Tests del frontend (Vitest)
+cd frontend
+npm run test:run
+```
+
+**Estructura de tests:**
+
+- `tests/core/` — Tests unitarios puros (no DB, no red)
+- `tests/api/` — Tests de endpoints REST con httpx mockeado
+- `tests/test_*.py` — Tests legacy de componentes varios
+
+---
+
+## Estructura del proyecto
+
+```
+arch-agent/
+├── backend/                    # Dockerfile del backend (Python 3.11 slim)
+├── frontend/                   # React + Vite SPA
+│   ├── src/
+│   │   ├── api/                # Cliente HTTP (wizard.ts, llm.ts, auth.ts, etc)
+│   │   ├── components/         # Componentes UI
+│   │   │   └── llm-wizard/    # Step1, Step2, Step3, SummaryView, LLMWizard
+│   │   ├── pages/              # LoginPage, ProjectsPage, SettingsPage, etc
+│   │   └── stores/             # Zustand (authStore, projectsStore)
+│   ├── Dockerfile              # Multi-stage: node build → nginx serve
+│   └── nginx.conf              # Proxy /api → backend:8000
+├── app/                        # Backend FastAPI
+│   ├── api/                    # Endpoints REST (auth, projects, documents, llm_config, chat)
+│   ├── core/                   # DB, encryption, JWT, LLM loader/validator/classifier
+│   ├── models/                 # SQLAlchemy models (User, Project, UploadedDocument, etc)
+│   └── auth/                   # Register, login, validators
+├── docs/                       # Documentación técnica (ARCHITECTURE, ADRs, QA)
+│   └── usuario/                # Documentación de usuario final (guías, FAQ, glosario, screenshots)
+├── migrations/                 # SQL migrations numeradas (0001-0004)
+├── scripts/                    # init_db.py, generate_encryption_key.py, setup-local.sh
+├── tests/                      # Tests pytest
+│   ├── core/                   # Unit tests (model_classifier, etc)
+│   └── api/                    # Endpoint tests
+├── schema.sql                  # Schema inicial (aplicado por init_db.py)
+├── server.py                   # FastAPI entrypoint (uvicorn server:app)
+├── docker-compose.yml          # Stack completo (11 servicios)
+└── .env.example                # Plantilla de variables de entorno
+```
+
+---
+
+## Endpoints REST principales
+
+| Método | Path | Auth | Descripción |
+|--------|------|------|-------------|
+| `POST` | `/api/auth/register` | No | Crear cuenta |
+| `POST` | `/api/auth/login` | No | Login → JWT |
+| `POST` | `/api/auth/logout` | Sí | Revoca el JWT actual |
+| `GET` | `/api/auth/me` | Sí | Info del usuario actual |
+| `GET` | `/api/projects` | Sí | Lista proyectos del usuario |
+| `POST` | `/api/projects` | Sí | Crear proyecto |
+| `GET` | `/api/projects/{id}` | Sí | Detalle de proyecto |
+| `GET` | `/api/projects/{id}/phase` | Sí | Fase actual |
+| `POST` | `/api/projects/{id}/advance` | Sí | Avanzar de fase |
+| `GET` | `/api/documents` | Sí | Lista documentos del proyecto |
+| `POST` | `/api/documents` | Sí | Upload PDF/MD |
+| `POST` | `/api/chat` (SSE) | Sí | Chat con el agente (streaming) |
+| `POST` | `/api/proposals/generate` (SSE) | Sí | Genera la propuesta de arquitectura. Eventos: `progress`, `sources`, `token`, `done`, `error` (`{message, code, retryable}`: el front decide el reintento por `retryable`, no por el texto). Tope de tiempo `PROPOSAL_MAX_SECONDS`; heartbeat `: ping` cada `SSE_HEARTBEAT_SECONDS` (15 s) sin eventos; cerrar la conexión cancela la generación (si ya estaba guardando, la propuesta puede quedar guardada) |
+| `POST` | `/api/proposals/{id}/modify` (SSE) | Sí | Nueva iteración con feedback (mismos eventos y tope que `generate`) |
+| `POST` | `/api/proposals/{id}/decide` | Sí | Aprobar / rechazar una propuesta |
+| `GET` | `/api/proposals/{id}` | Sí | Una propuesta |
+| `GET` | `/api/projects/{id}/proposals` | Sí | Historial de propuestas del proyecto |
+| `GET` | `/api/projects/{id}/proposals/latest` | Sí | Propuesta vigente (o `null`) |
+| `GET` | `/api/llm/config` | Sí | Config LLM actual (api_key oculta) |
+| `POST` | `/api/llm/wizard/step1` | Sí | Wizard paso 1: valida URL |
+| `POST` | `/api/llm/wizard/step2` | Sí | Wizard paso 2: valida API key |
+| `POST` | `/api/llm/wizard/step3` | Sí | Wizard paso 3: guarda config con tier enforcement |
+| `GET` | `/api/llm/wizard/available-models` | Sí | Lista modelos del provider guardado |
+
+`POST /api/llm/config/validate` está **deprecated** (retorna 410 Gone). Usa el wizard.
+
+---
+
+## ⚠️ Tool Calling y modelos para F13 (Puppeteer MCP)
+
+**F11 (Context7) y F13 (Puppeteer MCP) dependen de Tool Calling nativo del modelo.** El ejemplo de `LLM_MODEL` en `.env.example` es `llama3` (Ollama, 8k ctx; el default real del backend, si se define `GROQ_API_KEY`, es `openai/gpt-oss-120b`), que **NO tiene soporte sólido de tool calling** — emite texto libre en lugar de un `tool_calls` válido cuando se le pide invocar una herramienta, lo que rompe el end-to-end test de F13 (el sidecar Puppeteer nunca recibe la llamada `puppeteer_screenshot` y no se renderiza el diagrama Mermaid).
+
+Para verificar F11 / F13 end-to-end **usa uno de estos modelos** (cualquiera con buen soporte de function/tool calling):
+
+| Familia | Modelos recomendados | Notas |
+|---------|----------------------|-------|
+| **Qwen** | `qwen2.5-coder:7b`, `qwen2.5-coder:14b`, `qwen2.5:14b`, `qwen2.5:32b` | Excelente tool calling, corre local en Ollama |
+| **Llama 3.1+** | `llama-3.1-8b-instruct`, `llama-3.1-70b-instruct`, `llama-3.3-70b-instruct` | A partir de 3.1 hay tool calling usable (3.0 / `llama3` NO) |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o3-mini` | Tool calling robusto out-of-the-box |
+| **Anthropic** | `claude-3-5-sonnet-latest`, `claude-3-7-sonnet`, `claude-sonnet-4` | Tool calling robusto |
+
+Configura el modelo desde el **wizard de LLM** (`Settings → LLM Config`, paso 3) o directamente en el `.env` cambiando `LLM_MODEL=...`. Si el modelo no soporta tool calling, vas a ver este patrón en el log del backend:
+
+```
+WARNING LangChain agent produced no tool_calls despite tool_intent=puppeteer_screenshot
+event: degraded | data: {"source":"agent","reason":"tool_calls_missing",...}
+```
+
+(modelos sin tool calling → el frontend recibe `event: degraded` con `reason: "tool_calls_missing"` en lugar del `event: attachment` esperado — fix #2b del round de revisión PR #76).
+
+`llama3` sigue siendo un buen default para **pruebas de texto puro** (elicitación, RAG) — solo no lo uses para validar tool calling.
+
+---
+
+## Contribuir
+
+Cada issue tiene su branch dedicado (`feature/<ID>-<nombre>`) y PR contra `development`. Ver issues en GitHub para tareas abiertas.
+
+**Convenciones:**
+
+- Backend: 1 PR por issue. Squash-merge aceptado para features chicas.
+- Frontend: componentes en `frontend/src/components/<dominio>/`. Hooks custom con prefijo `use`.
+- Tests obligatorios para cambios de lógica. Smoke test manual antes de pedir review.
+- Si tocás Docker o el stack: rebuild y verificar login + wizard end-to-end.
+
+---
+
+## Licencia
+
+Privado. Todos los derechos reservados.

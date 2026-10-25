@@ -1,0 +1,73 @@
+# Caso complejo (solo --live): varias sedes, web + móvil, integraciones con
+# EPS y laboratorio, datos de salud y pagos. Mide si la propuesta sale
+# completa con un prompt largo y si respeta un equipo mediano.
+id: red-clinicas
+name: Red Salud Integral
+kind: salud multisede
+description: >
+  Plataforma para una red de 6 clínicas en Antioquia: agenda de citas por web y
+  app móvil, historia clínica electrónica compartida entre sedes, autorización
+  de servicios con las EPS, resultados de laboratorio y cobro de copagos.
+profile:
+  resumen: Agenda, historia clínica compartida, autorizaciones con EPS y copagos.
+  dominio: salud
+  tipo_sistema: plataforma web, app móvil y API
+  tipo_proyecto: producto_en_produccion
+  equipo_personas: 8
+  plazo_meses: 9
+  presupuesto_usd: 120000
+resumen:
+  problema: Cada sede tiene su propio software y la historia clínica no se comparte; las autorizaciones con las EPS se hacen por correo y tardan días.
+  usuarios: Pacientes (unos 60000), 120 médicos, recepcionistas, auditores de las EPS y administración.
+  funcionalidades:
+    - Agendar, reprogramar y cancelar citas en cualquier sede
+    - Historia clínica electrónica compartida entre sedes
+    - Solicitar y consultar autorizaciones de servicios con 4 EPS
+    - Recibir resultados del laboratorio externo
+    - Cobrar copagos en línea (PSE y tarjeta)
+    - Recordatorios de citas por SMS y WhatsApp
+  restricciones:
+    - Presupuesto de 120000 USD para el primer año
+    - Equipo de 8 personas (5 backend Java, 2 frontend React, 1 QA)
+    - Plazo de 9 meses
+    - Cumplir Ley 1581 de protección de datos y la Resolución 866 de historia clínica
+  calidad:
+    - Seguridad y confidencialidad de la historia clínica
+    - Disponibilidad en horario de atención (6 a.m. a 10 p.m.)
+    - Trazabilidad de quién consultó cada historia
+  contexto_tecnico:
+    plataforma: Web para el personal y app móvil para pacientes
+    habilidades_equipo: Java con Spring Boot, React, PostgreSQL
+    fuentes_de_datos: Tres bases de datos distintas de las sedes que hay que migrar
+  datos_viabilidad:
+    presupuesto: "120000 USD el primer año."
+    equipo: "8 personas, 5 backend Java, 2 frontend React y 1 QA."
+    plazo: "9 meses, con una sede piloto a los 4 meses."
+preguntas_respuestas:
+  - pregunta: ¿Qué problema quieres resolver con este sistema?
+    respuesta: Cada sede tiene su propio software y la historia clínica no se comparte; las autorizaciones con las EPS se hacen por correo y tardan días.
+  - pregunta: ¿Quiénes van a usar el sistema?
+    respuesta: Unos 60000 pacientes, 120 médicos, recepcionistas, auditores de las EPS y administración.
+  - pregunta: ¿Con qué sistemas externos hay que integrarse?
+    respuesta: Con 4 EPS (dos tienen API REST, dos solo SFTP con archivos planos) y con el laboratorio, que manda resultados en HL7.
+  - pregunta: ¿El sistema va a recibir pagos en línea?
+    respuesta: Sí, copagos por PSE y tarjeta.
+  - pregunta: ¿Qué datos personales o sensibles va a guardar el sistema?
+    respuesta: Historia clínica, diagnósticos, cédula, teléfono y dirección de los pacientes.
+  - pregunta: ¿Con qué presupuesto cuentan para construir y operar el sistema?
+    respuesta: 120000 USD el primer año.
+  - pregunta: ¿Cuántas personas integran el equipo de desarrollo?
+    respuesta: 8 personas, 5 backend Java, 2 frontend React y 1 QA.
+  - pregunta: ¿Cuál es el plazo objetivo para la primera entrega utilizable?
+    respuesta: 9 meses, con una sede piloto a los 4 meses.
+  - pregunta: ¿En qué plataforma se va a usar?
+    respuesta: Web para el personal y app móvil para los pacientes.
+candidates:
+  - {name: "Monolito modular (Modular Monolith)", similarity: 0.86}
+  - {name: "Microservicios", similarity: 0.87}
+  - {name: "Arquitectura hexagonal (Puertos y Adaptadores)", similarity: 0.85}
+  - {name: "Arquitectura orientada a eventos (Event-Driven)", similarity: 0.85}
+  - {name: "API Gateway + Backend for Frontend (BFF)", similarity: 0.84}
+  - {name: "Arquitectura orientada a servicios (SOA)", similarity: 0.83}
+expect:
+  concerns: [datos_personales, notificaciones, pagos, integraciones, respaldos]

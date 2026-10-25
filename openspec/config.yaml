@@ -1,0 +1,67 @@
+schema: spec-driven
+
+context: |
+  Repo: arch-agent (Python 3.11 + FastAPI backend + React 18 + Vite 6 + TypeScript 5.6 SPA + PostgreSQL 16 + PGVector + LangChain).
+  Architecture: monorepo with `app/` (FastAPI), `frontend/` (SPA), `migrations/` (SQL), `tests/` (pytest), `scripts/`, `docs/adr/` (7 ADRs).
+  Workflow: PR stacked against `development`; branch per issue `feature/<ID>-<name>`; Conventional Commits; squash-merge OK for small features.
+  Persistence: hybrid (OpenSpec file artifacts + Engram topic `sdd-init/arch-agent`).
+  Memory: project already uses Engram (port 7439) as a product dependency via `app/core/engram_client.py`.
+
+strict_tdd: false  # Standard mode per team convention (tests obligatorios + smoke test manual, NO RED-GREEN-REFACTOR)
+
+testing:
+  test_command: "pytest"
+  coverage_command: "pytest --cov=app --cov=app/core"
+  frontend_test_command: "cd frontend && npm run test:run"
+  frontend_build_command: "cd frontend && npm run build"
+  coverage_threshold: 0
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes (DB migrations, LLM schema, RAG pipeline)
+    - Reference affected ADR if the change touches an existing decision
+    - Note base branch/PR for stacked PRs (F08 stacks on PR #64 Pipeline_RAG_PGVector)
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - F08 MUST add an approval lifecycle (proposed -> approved | modified | rejected)
+  design:
+    - Include sequence diagrams for complex flows (especially chat/SSE + RAG retrieval)
+    - New architecture decisions become ADR-NNN under docs/adr/
+    - Coordinate with PR #64 base - design MUST be stackable on top of Pipeline_RAG_PGVector
+  tasks:
+    - Group by area: backend (models, api, core), frontend (components, pages, stores, tests), migrations, docs
+    - Use hierarchical numbering (1, 1.1, 1.2, ...)
+    - Each task completable in one session
+  apply:
+    guidelines:
+      - Follow existing code patterns in `app/` and `frontend/src/`
+      - Backend endpoints follow existing FastAPI router pattern (`app/api/<domain>.py`)
+      - Frontend components live in `frontend/src/components/<domain>/`
+      - React hooks use `use` prefix; state via Zustand stores under `frontend/src/stores/`
+      - DB schema changes require a new numbered SQL file under `migrations/`
+      - LLM-related changes touch `app/core/llm_*` modules
+    tdd: false
+    test_command: "pytest"
+    coverage_command: "pytest --cov=app --cov=app/core"
+    frontend_test_command: "cd frontend && npm run test:run"
+  verify:
+    test_command: "pytest"
+    coverage_command: "pytest --cov=app --cov=app/core"
+    frontend_test_command: "cd frontend && npm run test:run"
+    build_command: "cd frontend && npm run build"
+    coverage_threshold: 0
+    require_docker_stack: false
+  archive:
+    - Warn before merging destructive deltas (DB drops, schema changes, API removals)
+    - Preserve RAG pipeline compatibility with PR #64
+    - Move change folder to `openspec/changes/archive/YYYY-MM-DD-<change>/` on archive
+
+context_paths:
+  - docs/ARCHITECTURE.md
+  - docs/adr/
+  - docs/database/
+  - README.md
+  - migrations/
+  - scripts/setup-local.sh
+  - .env.example

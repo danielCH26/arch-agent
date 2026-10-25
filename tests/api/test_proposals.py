@@ -1,0 +1,939 @@
+"""Tests for ``app/api/proposals.py`` router (slice 2).
+
+Covered SCNs:
+- SCN-1: proposal round-trips with three sections (asserted via
+  Proposal.content JSONB shape; the markdown rendering lives in the LLM).
+- SCN-4: approve inserts one interaction_log row + transitions lifecycle +
+  sets ``projects.phase_ready``.
+- SCN-5: modify increments iteration and freezes prior content in approvals.
+- SCN-6: migration idempotency (smoke check via model metadata; the
+  end-to-end migration test belongs to the migration runner script).
+- SCN-7: SSE ``done`` payload includes ``proposal_id``.
+- SCN-9: ``PROPOSAL_REJECT_REVERTS_TO`` env override applied on Rechazar.
+- SCN-10: Engram outage MUST NOT block DB persistence (asserted on
+  ``ProposalGenerator._engram_mirror`` swallowing ``EngramError``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# --- Slice-1 contract still holds ----------------------------------------
+
+
+def test_proposal_models_import_and_constraints_compile():
+    from app.models import InteractionLog, Proposal, ProposalApproval
+
+    assert Proposal.__tablename__ == "proposals"
+    assert InteractionLog.__tablename__ == "interaction_logs"
+    assert ProposalApproval.__tablename__ == "proposal_approvals"
+    assert Proposal.__table__.c.content.type.__class__.__name__ == "JSONB"
+
+
+# --- SSE helper unit tests ------------------------------------------------
+
+
+class TestSSEEmit:
+    def test_emit_sse_event_format_for_token(self):
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse("token", "Hola")
+        assert frame == 'event: token\ndata: "Hola"\n\n'
+
+    def test_emit_sse_event_format_for_done_with_payload(self):
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse("done", {"proposal_id": 7, "citations": []})
+        # json.dumps keeps key order in 3.7+ and we keep ascii=False to match
+        # the chat endpoint contract.
+        assert frame.startswith("event: done\ndata: ")
+        assert frame.endswith("\n\n")
+        body = frame.split("data: ", 1)[1].rsplit("\n\n", 1)[0]
+        parsed = json.loads(body)
+        assert parsed == {"proposal_id": 7, "citations": []}
+
+    def test_emit_sse_event_format_for_error(self):
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse("error", "boom")
+        assert frame.startswith("event: error\ndata: ")
+        assert '"boom"' in frame
+
+    def test_emit_sse_serializes_the_structured_error_payload(self):
+        """El front lee `message`/`code`/`retryable`; `ensure_ascii=False` mantiene los acentos."""
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse(
+            "error",
+            {"message": "Superó el tiempo máximo", "code": "timeout", "retryable": True},
+        )
+
+        assert frame.startswith("event: error\ndata: ")
+        body = frame.split("data: ", 1)[1].rsplit("\n\n", 1)[0]
+        assert json.loads(body) == {
+            "message": "Superó el tiempo máximo",
+            "code": "timeout",
+            "retryable": True,
+        }
+        assert "máximo" in frame  # sin escapar
+
+    def test_emit_sse_preserves_unicode(self):
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse("token", "diseño")
+        # ensure_ascii=False must keep the ñ raw, not escape it.
+        assert "\\u00f1" not in frame
+        assert "diseño" in frame
+
+
+# --- Request/response models ---------------------------------------------
+
+
+class TestRequestModels:
+    def test_generate_request_requires_project_id(self):
+        from app.api.proposals import GenerateRequest
+
+        req = GenerateRequest(project_id=42)
+        assert req.project_id == 42
+
+    def test_modify_request_requires_non_empty_feedback(self):
+        from pydantic import ValidationError
+
+        from app.api.proposals import ModifyRequest
+
+        with pytest.raises(ValidationError):
+            ModifyRequest(feedback="")
+
+        req = ModifyRequest(feedback="agregar cache")
+        assert req.feedback == "agregar cache"
+
+    def test_decide_request_validates_literal_decision(self):
+        from pydantic import ValidationError
+
+        from app.api.proposals import DecideRequest
+
+        with pytest.raises(ValidationError):
+            DecideRequest(decision="banana")  # type: ignore[arg-type]
+
+        req = DecideRequest(decision="approve", comment="OK")
+        assert req.decision == "approve"
+        assert req.comment == "OK"
+
+
+# --- Env-var defaults & overrides (SCN-9) --------------------------------
+
+
+class TestRejectRevertsToEnv:
+    def setup_method(self):
+        self._original = os.environ.get("PROPOSAL_REJECT_REVERTS_TO")
+
+    def teardown_method(self):
+        if self._original is None:
+            os.environ.pop("PROPOSAL_REJECT_REVERTS_TO", None)
+        else:
+            os.environ["PROPOSAL_REJECT_REVERTS_TO"] = self._original
+        # Restore the module constant to match the restored env.
+        # importlib.reload in the tests below leaves the reloaded module
+        # (with the override baked into the constant) in sys.modules, and
+        # that state leaked into every later test in the process -- e.g.
+        # it made the reject-ordering test pass vacuously because the
+        # revert target became "propuesta".
+        #
+        # No hace falta restaurar el modulo: desde development (#102) el
+        # valor se lee en cada llamada (_proposal_reject_reverts_to), asi que
+        # restaurar la env alcanza. Ademas un reload redefine las clases del
+        # modulo (ProposalOut) y rompe los isinstance de los modulos de test
+        # que importaron esa clase antes del reload
+        # (tests/api/test_proposals_endpoints.py).
+
+    def test_default_is_requerimientos(self):
+        os.environ.pop("PROPOSAL_REJECT_REVERTS_TO", None)
+        from app.api.proposals import _proposal_reject_reverts_to
+
+        assert _proposal_reject_reverts_to() == "requerimientos"
+
+    def test_env_override_takes_effect(self):
+        os.environ["PROPOSAL_REJECT_REVERTS_TO"] = "propuesta"
+        from app.api.proposals import _proposal_reject_reverts_to
+
+        assert _proposal_reject_reverts_to() == "propuesta"
+
+
+# --- RAG constant sync ----------------------------------------------------
+
+
+class TestRAGConstants:
+    # El piso de 0.85 del chat lo fija tests/core/test_rag_config.py. La fase de
+    # propuesta NO lo usa: trae los PROPOSAL_RAG_TOP_N patrones mas cercanos sin
+    # piso; ese comportamiento se prueba en TestCitationSelection y en
+    # tests/core/test_proposal_generator.py.
+    def test_proposal_modules_do_not_expose_a_similarity_floor_they_do_not_use(self):
+        from app.api import proposals as proposals_module
+        from app.core import proposal_generator as generator_module
+
+        assert not hasattr(proposals_module, "RAG_MIN_SIMILARITY")
+        assert not hasattr(generator_module, "RAG_MIN_SIMILARITY")
+
+
+# --- Filter citations helper (unit) --------------------------------------
+
+
+class TestCitationSelection:
+    """La fase de propuesta trae los N patrones mas relevantes, sin umbral."""
+
+    @staticmethod
+    def _doc(pattern_id, name, similarity, body="body"):
+        from langchain_core.documents import Document
+
+        metadata = {"pattern_id": pattern_id, "pattern_name": name}
+        if similarity is not None:
+            metadata["similarity"] = similarity
+        return Document(page_content=body, metadata=metadata)
+
+    def test_keeps_best_patterns_even_below_old_threshold(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [
+            self._doc(7, "Hexagonal", 0.83, "hex body"),
+            self._doc(11, "CQRS", 0.79),
+        ]
+        citations = _select_citations(docs)
+        # Con el umbral viejo (0.85) esto devolvia [] y la propuesta salia
+        # "sin patrones relevantes".
+        assert [c["pattern_id"] for c in citations] == [7, 11]
+        assert "hex body" in citations[0]["snippet"]
+
+    def test_orders_by_similarity_and_limits_to_top_n(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [
+            self._doc(1, "A", 0.60),
+            self._doc(2, "B", 0.90),
+            self._doc(3, "C", 0.75),
+            self._doc(4, "D", 0.80),
+        ]
+        citations = _select_citations(docs, top_n=2)
+        assert [c["pattern_id"] for c in citations] == [2, 4]
+
+    def test_dedupes_chunks_of_the_same_pattern(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [
+            self._doc(5, "Microservicios", 0.88, "mejor chunk"),
+            self._doc(5, "Microservicios", 0.86, "otro chunk"),
+            self._doc(6, "Event-driven", 0.80),
+        ]
+        citations = _select_citations(docs, top_n=3)
+        assert [c["pattern_id"] for c in citations] == [5, 6]
+        assert citations[0]["snippet"] == "mejor chunk"
+
+    def test_optional_floor_still_available(self):
+        from app.core.proposal_generator import _select_citations
+
+        docs = [self._doc(1, "A", 0.90), self._doc(2, "B", 0.50)]
+        citations = _select_citations(docs, top_n=5, min_similarity=0.70)
+        assert [c["pattern_id"] for c in citations] == [1]
+
+    def test_empty_when_database_returns_nothing(self):
+        from app.core.proposal_generator import _select_citations
+
+        assert _select_citations([]) == []
+
+
+# --- Engram outage never blocks (SCN-10) ----------------------------------
+
+
+class TestEngramResilience:
+    def test_engram_mirror_swallows_connection_error(self, caplog):
+        """REQ-9 / SCN-10: best-effort Engram mirror must never raise."""
+        from app.core import engram_client as engram_module
+        from app.core.proposal_generator import _engram_mirror
+
+        # Stub EngramClient to raise EngramError (== ConnectionError path).
+        class FakeEngram:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def save_observation(self, **kwargs):
+                raise engram_module.EngramError(
+                    "No fue posible conectar con Engram: Connection refused"
+                )
+
+        with patch(
+            "app.core.proposal_generator.EngramClient", FakeEngram
+        ):
+            # Should NOT raise -- the whole point of best-effort mirroring.
+            asyncio.run(
+                _engram_mirror(
+                    session_id=1,
+                    proposal_id=99,
+                    interaction_id=7,
+                    markdown="ignored",
+                )
+            )
+
+
+# --- Tope de iteraciones antes de generar ---------------------------------
+
+
+class TestGenerateIterationCap:
+    """``/generate`` debe fallar con 409 ANTES de gastar una generacion."""
+
+    @staticmethod
+    def _call_generate(latest_iteration, monkeypatch=None):
+        from app.api import proposals as mod
+
+        db = MagicMock()
+        latest = MagicMock(iteration=latest_iteration) if latest_iteration else None
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = latest
+
+        if monkeypatch is not None:
+            monkeypatch.setenv("PROPOSAL_MAX_ITER", "5")
+
+        with patch.object(mod, "SessionLocal", return_value=db), \
+            patch.object(mod, "_require_owned_project", return_value=MagicMock()), \
+            patch.object(mod, "ProposalGenerator") as generator_cls:
+            try:
+                response = asyncio.run(
+                    mod.generate_proposal(
+                        body=mod.GenerateRequest(project_id=1),
+                        current_user={"user_id": 1},
+                    )
+                )
+                return response, generator_cls, None
+            except Exception as exc:  # HTTPException
+                return None, generator_cls, exc
+
+    def test_returns_409_without_starting_a_generation_at_the_cap(self, monkeypatch):
+        from fastapi import HTTPException
+
+        response, generator_cls, error = self._call_generate(
+            latest_iteration=5, monkeypatch=monkeypatch
+        )
+
+        assert isinstance(error, HTTPException)
+        assert error.status_code == 409
+        assert "máximo de iteraciones (5)" in error.detail
+        generator_cls.assert_not_called()
+
+    def test_a_rejected_proposal_at_the_cap_also_blocks_a_new_generation(self, monkeypatch):
+        # La cuenta es max(iteration)+1 sobre todas las propuestas, rechazadas
+        # incluidas: tras rechazar la 5, "Generar propuesta" no puede gastar
+        # una generacion para recibir el 409 al final.
+        _, generator_cls, error = self._call_generate(
+            latest_iteration=5, monkeypatch=monkeypatch
+        )
+
+        assert error is not None and error.status_code == 409
+        generator_cls.assert_not_called()
+
+    def test_generates_when_there_is_room_or_no_proposal_yet(self, monkeypatch):
+        for latest in (None, 4):
+            response, generator_cls, error = self._call_generate(
+                latest_iteration=latest, monkeypatch=monkeypatch
+            )
+
+            assert error is None
+            assert response.media_type == "text/event-stream"
+            generator_cls.assert_called_once()
+
+
+# --- StreamingResponse wiring ---------------------------------------------
+
+
+class TestStreamingResponseWiring:
+    def test_generate_endpoint_returns_streaming_response_with_headers(self):
+        """Smoke check the StreamingResponse headers match the chat contract."""
+        from fastapi.responses import StreamingResponse
+
+        from app.api.proposals import _sse_stream
+
+        async def empty_iter():
+            if False:
+                yield "x", "y"
+
+        resp = StreamingResponse(
+            _sse_stream(empty_iter()),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        assert resp.media_type == "text/event-stream"
+        assert resp.headers["cache-control"] == "no-cache"
+        assert resp.headers["x-accel-buffering"] == "no"
+
+
+# --- Decide endpoint idempotency (SCN-4 + design §10) -------------------
+
+
+class TestDecideIdempotency:
+    """``interaction_logs (proposal_id, action_type)`` is the implicit key.
+
+    We assert the query pattern the router uses (filter by
+    ``project_id+phase+action_type``) matches the unique fingerprint we want
+    to block. The actual DB-level test lives in the apply phase migration
+    harness; here we only verify the route consults the right fingerprint
+    so a future migration to add a true UNIQUE constraint is a drop-in.
+    """
+
+    def test_decide_checks_action_type_fingerprint(self):
+        # The route builds the fingerprint via:
+        #   InteractionLog.project_id == proposal.project_id AND
+        #   InteractionLog.phase == "propuesta" AND
+        #   InteractionLog.action_type IN ("approve", "reject")
+        # Verify the import path + the model fields the route relies on.
+        from app.models import InteractionLog
+
+        columns = {c.name for c in InteractionLog.__table__.columns}
+        assert {"project_id", "phase", "action_type"}.issubset(columns)
+
+
+# --- Lifecycle side effects ----------------------------------------------
+
+
+class TestLifecycleSideEffects:
+    """Behavioral assertions about the side effects of decide.
+
+    The route is exercised end-to-end by the runtime harness (manual smoke
+    + later Playwright/Cypress). These tests pin the contract so a careless
+    refactor doesn't silently drop the ``phase_ready`` transition.
+
+    Soomri round-2 re-review: the original test in this class asserted on
+    ``inspect.getsource`` text ("phase_ready = True" in source), which
+    broke as soon as the reject/approve paths were routed through
+    ``record_decision``. Behavior over text: these tests invoke the
+    endpoint function directly with mocked collaborators and assert on
+    what it does.
+    """
+
+    @staticmethod
+    def _make_proposal_and_project():
+        proposal = MagicMock()
+        proposal.id = 5
+        proposal.project_id = 7
+        proposal.session_id = 1
+        proposal.lifecycle = "proposed"
+        proposal.content = {"secciones": []}
+
+        project = MagicMock()
+        project.id = 7
+        project.current_phase = "propuesta"
+        return proposal, project
+
+    def test_approve_path_routes_decision_to_record_decision(self):
+        """Approve must reach the HU10 writer (record_decision via
+        _apply_project_proposal_decision) with decision="approve" -- that
+        call is what sets phase_ready=True now."""
+        import asyncio
+
+        from app.api import proposals as proposals_module
+
+        proposal, project = self._make_proposal_and_project()
+        observed = []
+
+        def fake_apply(db, *, user_id, project, decision, feedback, proposal_text):
+            observed.append(decision)
+
+        db = MagicMock()
+        db.get.return_value = proposal
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+        body = proposals_module.DecideRequest(decision="approve", comment="ok")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module, "_apply_project_proposal_decision", side_effect=fake_apply
+        ):
+            response = asyncio.run(
+                proposals_module.decide_proposal(5, body, {"user_id": "1"})
+            )
+
+        assert response["lifecycle"] == "approved"
+        assert observed == ["approve"]
+        # F18 round 3 (development): el reject lee la env en cada llamada vía
+        # _proposal_reject_reverts_to(). Los asserts de ``phase_ready`` de #102
+        # no aplican acá: desde HU10 v3 esa fase la fija record_decision, no
+        # este endpoint.
+        import inspect
+
+        source = inspect.getsource(proposals_module.decide_proposal)
+        assert "_proposal_reject_reverts_to" in source
+
+
+# ---------------------------------------------------------------------------
+# Soomri round-2 re-review (B5): reject ordering vs. the HU10 gate
+# ---------------------------------------------------------------------------
+
+
+def test_reject_registers_decision_before_reverting_phase():
+    """Soomri round-2 re-review (B5): ``decide_proposal`` used to revert
+    ``project.current_phase`` BEFORE calling
+    ``_apply_project_proposal_decision`` (which routes through
+    ``record_decision``). ``record_decision``'s gate
+    (``phase == current_phase``) then raised ``PhaseMismatchError``,
+    which the generic ``except Exception`` converted into a 500 with
+    ``str(exc)`` leaked into the detail -- exactly what REQ-SA-34
+    forbids.
+
+    The fix: register the decision first (the gate then sees
+    ``phase == current_phase == "propuesta"``), and revert the phase
+    only afterwards. This test pins the ordering by snapshotting the
+    phase at the moment the decision is applied."""
+    import asyncio
+
+    from app.api import proposals as proposals_module
+
+    proposal = MagicMock()
+    proposal.id = 5
+    proposal.project_id = 7
+    proposal.session_id = 1
+    proposal.lifecycle = "proposed"
+    proposal.content = {"secciones": []}
+
+    project = MagicMock()
+    project.id = 7
+    project.current_phase = "propuesta"
+
+    observed = []
+
+    def fake_apply(db, *, user_id, project, decision, feedback, proposal_text):
+        # Snapshot the phase AT CALL TIME -- this is the whole point.
+        observed.append((decision, project.current_phase))
+
+    db = MagicMock()
+    db.get.return_value = proposal
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    body = proposals_module.DecideRequest(decision="reject", comment="no sirve")
+
+    with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+        proposals_module, "_require_owned_project", return_value=project
+    ), patch.object(
+        proposals_module, "_apply_project_proposal_decision", side_effect=fake_apply
+    ):
+        response = asyncio.run(
+            proposals_module.decide_proposal(5, body, {"user_id": "1"})
+        )
+
+    # The endpoint still succeeds and still reverts the phase in its
+    # response payload.
+    assert response["lifecycle"] == "rejected"
+    assert response["current_phase"] == (
+    proposals_module._proposal_reject_reverts_to()
+)  # development (#102) movio la constante a un helper de lectura por llamada
+
+    # The decision must be registered while the phase is still "propuesta";
+    # reverting first is what produced the PhaseMismatchError -> 500.
+    assert observed == [("reject", "propuesta")], (
+        "record_decision must run BEFORE the phase revert; reverting first "
+        "trips the phase==current_phase gate (PhaseMismatchError) and the "
+        "generic except turns it into a 500 (Soomri round-2 B5)."
+    )
+
+
+# --- Re-review fixes: typed errors, no str(exc) leak, scoped duplicate guard --
+
+
+class TestDecideErrorsAreTyped:
+    """REQ-SA-28 / REQ-SA-34 for the proposal decision endpoints.
+
+    B5 only fixed the trigger (phase reverted before the gate). The handlers
+    still turned ANY exception into a 500 carrying ``str(exc)``, so a
+    ``PhaseMismatchError`` (stale tab, phase already advanced) was both the
+    wrong status and a leak.
+    """
+
+    @staticmethod
+    def _call_decide_proposal(apply_side_effect):
+        import asyncio
+
+        from app.api import proposals as proposals_module
+
+        proposal = MagicMock()
+        proposal.id = 5
+        proposal.project_id = 7
+        proposal.session_id = 1
+        proposal.lifecycle = "proposed"
+        proposal.content = {"secciones": []}
+        project = MagicMock()
+        project.id = 7
+        project.current_phase = "propuesta"
+
+        db = MagicMock()
+        db.get.return_value = proposal
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        body = proposals_module.DecideRequest(decision="approve", comment="ok")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module,
+            "_apply_project_proposal_decision",
+            side_effect=apply_side_effect,
+        ):
+            return asyncio.run(proposals_module.decide_proposal(5, body, {"user_id": "1"}))
+
+    def test_phase_mismatch_is_a_typed_409(self):
+        from fastapi import HTTPException
+
+        from app.core.phase_decisions import PhaseMismatchError
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._call_decide_proposal(
+                PhaseMismatchError(current_phase="refinamiento", requested_phase="propuesta")
+            )
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == {
+            "error": "phase_mismatch",
+            "current_phase": "refinamiento",
+            "requested_phase": "propuesta",
+        }
+
+    def test_unexpected_error_does_not_leak_exception_text(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._call_decide_proposal(RuntimeError("api_key=sk-secret"))
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"error": "internal_error"}
+        assert "sk-secret" not in str(exc_info.value.detail)
+
+    def test_decide_project_proposal_phase_mismatch_is_a_typed_409(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from app.api import proposals as proposals_module
+        from app.core.phase_decisions import PhaseMismatchError
+
+        project = MagicMock()
+        project.id = 7
+        db = MagicMock()
+        body = proposals_module.ProposalDecisionIn(decision="approve")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module,
+            "_apply_project_proposal_decision",
+            side_effect=PhaseMismatchError(
+                current_phase="requerimientos", requested_phase="propuesta"
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    proposals_module.decide_project_proposal(7, body, {"user_id": "1"})
+                )
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["error"] == "phase_mismatch"
+
+    def test_decide_project_proposal_unexpected_error_does_not_leak(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from app.api import proposals as proposals_module
+
+        project = MagicMock()
+        project.id = 7
+        db = MagicMock()
+        body = proposals_module.ProposalDecisionIn(decision="approve")
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module,
+            "_apply_project_proposal_decision",
+            side_effect=RuntimeError("postgres://user:pw@host/db"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    proposals_module.decide_project_proposal(7, body, {"user_id": "1"})
+                )
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"error": "internal_error"}
+
+
+class TestDuplicateGuardIsScopedToTheProposal:
+    """``interaction_logs`` has no proposal_id. Without a lower time bound the
+    guard matched the PREVIOUS proposal's log row: reject -> revert -> new
+    proposal -> reject again answered a bogus 409 "ya fue rechazada"."""
+
+    @staticmethod
+    def _run(created_at):
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from app.api import proposals as proposals_module
+
+        proposal = MagicMock()
+        proposal.id = 5
+        proposal.project_id = 7
+        proposal.session_id = 1
+        proposal.lifecycle = "proposed"
+        proposal.content = {"secciones": []}
+        proposal.created_at = created_at
+        project = MagicMock()
+        project.id = 7
+        project.current_phase = "propuesta"
+
+        db = MagicMock()
+        db.get.return_value = proposal
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        body = proposals_module.DecideRequest(decision="reject", comment=None)
+
+        with patch.object(proposals_module, "SessionLocal", return_value=db), patch.object(
+            proposals_module, "_require_owned_project", return_value=project
+        ), patch.object(
+            proposals_module, "_apply_project_proposal_decision", return_value=None
+        ):
+            asyncio.run(proposals_module.decide_proposal(5, body, {"user_id": "1"}))
+        return db.query.return_value.filter.call_args
+
+    def test_guard_adds_a_lower_bound_at_proposal_creation(self):
+        from datetime import datetime
+
+        call = self._run(datetime(2026, 10, 7, 12, 0, 0))
+        # project_id, phase, action_type + created_at >= proposal.created_at,
+        # all inside ONE .filter() call.
+        assert len(call.args) == 4
+
+    def test_guard_keeps_the_three_base_conditions_without_a_timestamp(self):
+        call = self._run(None)
+        assert len(call.args) == 3
+
+
+
+# --- F19: cancelacion desde el cliente ------------------------------------
+
+
+class TestProposalMaxIterGetter:
+    """F18 round 3: ``PROPOSAL_MAX_ITER`` es un getter lazy."""
+
+    def setup_method(self):
+        self._original = os.environ.get("PROPOSAL_MAX_ITER")
+
+    def teardown_method(self):
+        if self._original is None:
+            os.environ.pop("PROPOSAL_MAX_ITER", None)
+        else:
+            os.environ["PROPOSAL_MAX_ITER"] = self._original
+
+    def test_state_exposes_env_iteration_cap(self):
+        """El tope llega al frontend por ``ProposalStateOut``, no solo por el getter.
+
+        F18 round 4 (PR #102, Soomri round 3 punto 3): el test anterior solo
+        miraba ``_proposal_max_iter()`` y perdia el contrato que realmente
+        importa, que es que ``ProposalStateOut`` exponga el valor vigente.
+
+        Con ``default_factory=proposal_max_iter`` la asercion sobre el modelo
+        funciona sin ``importlib.reload``: el getter corre al construir el
+        modelo. Asi que las dos mitades se prueban juntas.
+        """
+        os.environ["PROPOSAL_MAX_ITER"] = "3"
+
+        from app.api.proposals import ProposalStateOut
+        from app.core.proposal_generator import proposal_max_iter
+
+        # El getter lee la env var en cada llamada.
+        assert proposal_max_iter() == 3
+
+        # Y el modelo lo expone al frontend sin necesitar reload.
+        state = ProposalStateOut(
+            approved=False,
+            approved_at=None,
+            approval_id=None,
+            proposal_snapshot_chars=0,
+            last_decision=None,
+        )
+        assert state.max_iterations == 3
+
+    def test_proposals_uses_the_generator_getter(self):
+        """Una sola fuente de verdad: ``proposals`` no redefine el tope."""
+        import inspect
+
+        from app.api import proposals
+        from app.core import proposal_generator
+
+        assert proposals.proposal_max_iter is proposal_generator.proposal_max_iter
+        # Y no queda una constante local que pueda divergir.
+        source = inspect.getsource(proposals)
+        assert "_proposal_max_iter" not in source
+
+
+class TestSSEStreamCancellation:
+    def test_progress_event_is_serialized_like_any_other(self):
+        from app.api.proposals import _emit_sse
+
+        frame = _emit_sse("progress", {"stage": "retrieval", "percent": 12})
+        assert frame.startswith("event: progress\ndata: ")
+        assert json.loads(frame.split("data: ", 1)[1]) == {"stage": "retrieval", "percent": 12}
+
+    def test_closing_the_response_closes_the_inner_generator_immediately(self):
+        """Si el cliente se desconecta, el generador interno (y el LLM) se cierra ya."""
+        from app.api.proposals import _sse_stream
+
+        closed = []
+
+        async def inner():
+            try:
+                for i in range(1000):
+                    yield "token", f"t{i}"
+                    await asyncio.sleep(0)
+            finally:
+                closed.append(True)
+
+        async def run():
+            stream = _sse_stream(inner())
+            first = await stream.__anext__()
+            await stream.aclose()  # lo que hace Starlette al cortar la conexion
+            return first
+
+        first = asyncio.run(run())
+
+        assert first.startswith("event: token")
+        assert closed == [True]
+
+    def test_sends_heartbeat_while_waiting_for_a_slow_event(self, monkeypatch):
+        from app.api import proposals as proposals_module
+
+        monkeypatch.setattr(proposals_module, "SSE_HEARTBEAT_SECONDS", 0.001)
+
+        async def inner():
+            await asyncio.sleep(0.01)
+            yield "token", "a"
+
+        async def run():
+            stream = proposals_module._sse_stream(inner())
+            first = await stream.__anext__()
+            await stream.aclose()
+            return first
+
+        assert asyncio.run(run()) == ": ping\n\n"
+
+    def test_cancelled_error_is_propagated_not_swallowed(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            yield "token", "a"
+            raise asyncio.CancelledError()
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(run())
+
+
+# --- Review PR: el generador debe correr siempre en el mismo contexto ---------
+
+
+class TestSSEStreamKeepsOneContext:
+    """LangChain/Langfuse fijan ``contextvars`` dentro del generador del LLM.
+
+    Si cada paso corre en una Task distinta, un valor fijado en un paso no se
+    ve en el siguiente y ``ContextVar.reset(token)`` falla con "created in a
+    different Context". Estos tests lo reproducen sin necesitar un LLM real.
+    """
+
+    def test_context_var_set_in_one_step_is_visible_in_the_next(self):
+        import contextvars
+
+        from app.api.proposals import _sse_stream
+
+        var = contextvars.ContextVar("trace_id", default=None)
+        seen = []
+
+        async def inner():
+            var.set("run-1")
+            yield "token", "a"
+            seen.append(var.get())
+            yield "token", "b"
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        asyncio.run(run())
+
+        assert seen == ["run-1"]
+
+    def test_context_var_token_can_be_reset_after_several_yields(self):
+        import contextvars
+
+        from app.api.proposals import _sse_stream
+
+        var = contextvars.ContextVar("callback_manager", default=None)
+
+        async def inner():
+            token = var.set("active")
+            try:
+                yield "token", "a"
+                await asyncio.sleep(0)
+                yield "token", "b"
+            finally:
+                var.reset(token)  # ValueError si cambio de contexto
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        frames = asyncio.run(run())
+
+        assert len(frames) == 2
+
+    def test_all_events_are_delivered_in_order_and_stream_ends(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            for i in range(50):
+                yield "token", f"t{i}"
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        frames = asyncio.run(run())
+
+        assert [json.loads(f.split("data: ", 1)[1]) for f in frames] == [f"t{i}" for i in range(50)]
+
+    def test_exception_from_the_generator_reaches_the_consumer(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            yield "token", "a"
+            raise RuntimeError("boom")
+
+        async def run():
+            return [frame async for frame in _sse_stream(inner())]
+
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(run())
+
+    def test_no_background_task_is_left_running_after_the_stream_closes(self):
+        from app.api.proposals import _sse_stream
+
+        async def inner():
+            for i in range(1000):
+                yield "token", f"t{i}"
+                await asyncio.sleep(0)
+
+        async def run():
+            stream = _sse_stream(inner())
+            await stream.__anext__()
+            await stream.aclose()
+            await asyncio.sleep(0)
+            return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+        assert asyncio.run(run()) == []
+

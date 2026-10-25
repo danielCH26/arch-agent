@@ -1,0 +1,102 @@
+import { useEffect, useState, useRef } from 'react'
+import { useParams } from 'react-router-dom'
+import { getProject, Project } from '../api/projects'
+import { Document, listDocuments } from '../api/documents'
+import { DocumentUploader } from '../components/DocumentUploader'
+import { DocumentList } from '../components/DocumentList'
+import { DocumentsPageSkeleton } from '../components/Skeleton'
+import { projectsStore } from '../stores/projectsStore'
+import { PageHeader } from '../components/PageHeader'
+
+export function DocumentsPage() {
+  const { id } = useParams<{ id: string }>()
+  const [project, setProject] = useState<Project | null>(null)
+  const [documents, setDocuments] = useState<Document[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const projectId = Number(id)
+
+  const fetchDocuments = async () => {
+    if (!projectId || isNaN(projectId)) return
+
+    try {
+      const docs = await listDocuments(projectId)
+      setDocuments(docs)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al cargar documentos')
+    }
+  }
+
+  // Polling: si hay documentos sin procesar, refrescar cada 3s
+  useEffect(() => {
+    const hasUnprocessed = documents.some((d) => !d.processed)
+
+    if (hasUnprocessed && !pollRef.current) {
+      pollRef.current = setInterval(fetchDocuments, 3000)
+    } else if (!hasUnprocessed && pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [documents])
+
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true)
+      setError('')
+
+      try {
+        const projectData = await getProject(projectId)
+        setProject(projectData)
+        // Setear proyecto activo para que el sidebar lo refleje
+        projectsStore.getState().setCurrentProject(projectData)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Error al cargar proyecto')
+      }
+
+      await fetchDocuments()
+      setLoading(false)
+    }
+
+    loadData()
+  }, [id])
+
+  if (loading) {
+    return <DocumentsPageSkeleton />
+  }
+
+  return (
+    <div>
+      <PageHeader
+        title="Documentos"
+        subtitle={project ? `Archivos de contexto del proyecto ${project.name}` : undefined}
+      />
+
+      {error && (
+        <div role="alert" className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">
+          {error}
+        </div>
+      )}
+
+      <div className="rounded-[10px] border border-gray-200 bg-gray-50 p-6 space-y-6">
+        <DocumentUploader
+          projectId={projectId}
+          onUploadComplete={fetchDocuments}
+        />
+
+        <div>
+          <h2 className="text-xl text-gray-900 mb-3">Documentos subidos</h2>
+          <DocumentList documents={documents} onRefresh={fetchDocuments} />
+        </div>
+      </div>
+    </div>
+  )
+}

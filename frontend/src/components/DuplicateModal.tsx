@@ -1,0 +1,74 @@
+import { useDialog } from '../hooks/useDialog'
+
+interface DuplicateModalProps {
+  filename: string
+  existingVersion: number
+  onReplace: () => void
+  onSuffix: () => void
+  onCancel: () => void
+  loading?: boolean
+}
+
+export function DuplicateModal({
+  filename,
+  existingVersion,
+  onReplace,
+  onSuffix,
+  onCancel,
+  loading = false,
+}: DuplicateModalProps) {
+  const dialogRef = useDialog({ open: true, onClose: onCancel, preventClose: loading })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 bg-black bg-opacity-50"
+        onClick={() => {
+          if (!loading) onCancel()
+        }}
+      ></div>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="duplicate-title"
+        aria-describedby="duplicate-desc"
+        className="relative bg-white rounded-lg shadow-xl p-6 max-w-md w-full"
+      >
+        <h3 id="duplicate-title" className="text-lg font-semibold text-gray-900">
+          Archivo duplicado
+        </h3>
+        <p id="duplicate-desc" className="mt-2 text-sm text-gray-600">
+          El archivo <strong>{filename}</strong> ya existe en este proyecto como{' '}
+          <strong>v{existingVersion}</strong>. Elige cómo continuar.
+        </p>
+        <div className="mt-5 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={onReplace}
+            disabled={loading}
+            className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 transition-colors"
+          >
+            Reemplazar
+          </button>
+          <button
+            type="button"
+            onClick={onSuffix}
+            disabled={loading}
+            className="w-full px-4 py-2 bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Subir con sufijo
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={loading}
+            className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

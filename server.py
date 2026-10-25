@@ -1,0 +1,149 @@
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import logging
+import os
+import threading
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# load_dotenv() va ANTES de importar app.*: app.core.database lee DB_POOL_* al
+# importarse, asi que fuera de Docker (sin env_file) el .env debe estar cargado.
+load_dotenv()
+
+# Nivel de los logs de la app (app.*). Sin esto solo salían WARNING o más (el
+# "lastResort" de Python): los INFO de la reparación de propuestas, del ADR o
+# del RAG no se veían en ningún lado. LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
+# Si uvicorn u otro ya configuró el logging raíz, basicConfig no lo pisa.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").strip().upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+from app.auth.register import register_user  # noqa: E402
+from app.auth.validators import ValidationError  # noqa: E402
+
+logger = logging.getLogger(__name__)
+templates = Jinja2Templates(directory="templates")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Warm embeddings once at startup without coupling production to pytest.
+
+    OJO: con ``lifespan`` Starlette IGNORA los handlers registrados con
+    ``@app.on_event("startup"/"shutdown")``. Todo arranque/cierre nuevo debe ir
+    aqui; el chequeo de abajo avisa si alguien registra uno por la via vieja.
+    """
+    from app.core.embeddings import warmup_embeddings, warmup_enabled
+
+    ignored = list(getattr(app.router, "on_startup", [])) + list(
+        getattr(app.router, "on_shutdown", [])
+    )
+    if ignored:
+        logger.warning(
+            "Hay %d handler(s) on_event(startup/shutdown) que NO se ejecutaran porque "
+            "la app usa lifespan (server._lifespan): muevelos ahi.",
+            len(ignored),
+        )
+
+    if warmup_enabled():
+        threading.Thread(
+            target=warmup_embeddings, name="embeddings-warmup", daemon=True
+        ).start()
+    yield
+
+app = FastAPI(title="Arch Agent API", version="1.0.0", lifespan=_lifespan)
+
+# CORS — allow SPA frontend to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Jinja register form (kept for backward compat during migration) ----------
+
+@app.get("/register", response_class=HTMLResponse)
+async def register_form(request: Request):
+    return templates.TemplateResponse(
+        request, "register.html", {"error": None, "success": False, "username": "", "email": ""}
+    )
+
+
+@app.post("/register", response_class=HTMLResponse)
+async def register_submit(request: Request):
+    form = await request.form()
+    try:
+        register_user(form["username"], form["email"], form["password"])
+        return templates.TemplateResponse(
+            request, "register.html", {"error": None, "success": True}
+        )
+    except ValidationError as e:
+        return templates.TemplateResponse(
+            request,
+            "register.html",
+            {
+                "error": str(e), "success": False,
+                "username": form.get("username", ""), "email": form.get("email", ""),
+            },
+        )
+
+
+# --- API routes --------------------------------------------------------------
+
+from app.api.auth import router as auth_router
+from app.api.projects import router as projects_router
+from app.api.llm_config import router as llm_config_router
+from app.api.documents import router as documents_router
+from app.api.chat import router as chat_router
+from app.api.users import router as users_router
+from app.api.rag import router as rag_router
+from app.api.patterns import router as patterns_router
+from app.api.elicitation import router as elicitation_router
+from app.api.attachments import router as attachments_router  # F13, issue #17
+from app.api.diagrams import router as diagrams_router  # HU6: historial de diagramas
+from app.api.proposals import router as proposals_router
+from app.api.adr import router as adr_router  # Revisión: ADR del proyecto
+
+app.include_router(auth_router)
+app.include_router(projects_router)
+app.include_router(llm_config_router)
+app.include_router(documents_router)
+app.include_router(chat_router)
+app.include_router(users_router)
+app.include_router(rag_router)
+app.include_router(patterns_router)
+app.include_router(elicitation_router)
+app.include_router(attachments_router)
+app.include_router(diagrams_router)
+app.include_router(proposals_router)
+app.include_router(adr_router)
+
+# HU6: bundle de mermaid.js para el render server-side (sidecar de Puppeteer).
+# Ruta puntual (no un StaticFiles de la raiz, que expondria server.py, .env...).
+# Es una libreria publica; no requiere auth porque Chromium la pide sin token.
+MERMAID_JS_FILE = Path(__file__).parent / "mermaid.min.js"
+
+
+@app.get("/vendor/mermaid.min.js", include_in_schema=False)
+async def vendor_mermaid_js():
+    if not MERMAID_JS_FILE.is_file():
+        raise HTTPException(status_code=404, detail="mermaid.min.js no disponible")
+    return FileResponse(
+        MERMAID_JS_FILE,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+# Serve SPA static files (built by Vite)
+# Mount AFTER specific routes so /api/* and /register work first
+SPA_DIST = Path(__file__).parent / "frontend" / "dist"
+if SPA_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(SPA_DIST), html=True), name="spa")
+
