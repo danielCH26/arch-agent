@@ -68,7 +68,7 @@ python -m evals.runner --case hex-001 --case iter-001 --sleep 0
 |------|---------|----------------|
 | `--models a,b` | `LLM_MODEL` | Compara varios modelos. Ids exactos del proveedor: en Groq es `openai/gpt-oss-120b`, no `gpt-oss-120b` |
 | `--repeats N` | `3` | Repeticiones por caso. Mínimo 2: con 1 no hay pares que comparar |
-| `--temperature T` | `0.0` | Temperatura solicitada. La serie `o*` la ignora (ver metadata) |
+| `--temperature T` | `LLM_TEMPERATURE` (o `0.0` si no está definida o es inválida) | Temperatura solicitada. La serie `o*` la ignora (ver metadata) |
 | `--sleep S` | `2.2` | Segundos entre llamadas. El free tier de Groq son 30 RPM |
 | `--retries N` | `2` | Reintentos ante 429, con backoff exponencial |
 | `--min-ok-rate F` | `0.9` | Fracción mínima de invocaciones exitosas para salir con 0 |
