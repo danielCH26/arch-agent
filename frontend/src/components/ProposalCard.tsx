@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { proposalsStore } from '../stores/proposalsStore'
-import type { ProposalCitation } from '../api/proposals'
+import type { ProposalCitation, ProposalJustification } from '../api/proposals'
+import { getPatternDetail, type PatternDetail } from '../api/patterns'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { ProposalProgress } from './ProposalProgress'
 import { formatDateTime } from '../lib/format'
@@ -64,7 +65,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   const handleDecision = async (decision: 'approve' | 'reject') => {
     if (!proposal?.id) return
     try {
-      await decide(proposal.id, decision, comment.trim() || undefined)
+      await decide(proposal.id, decision, comment.trim() || undefined, projectId)
       setComment('')
       setShowFeedback(false)
       setConfirmingReject(false)
@@ -141,7 +142,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
         </div>
       )}
 
-      {proposal && (proposal.citations.length > 0 || !streaming) && <Citations citations={proposal.citations} />}
+      {proposal && (proposal.citations.length > 0 || !streaming) && <Citations citations={proposal.citations} justification={streaming ? null : proposal.justification} />}
 
       {proposal?.id && proposal.lifecycle === 'proposed' && !streaming && (
         <div className="mt-4 border-t border-gray-100 pt-4">
@@ -179,7 +180,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
             <div className="mt-3 space-y-2">
               <label className="block text-sm font-medium text-gray-700" htmlFor="proposal-feedback">¿Qué debería cambiar?</label>
               <textarea id="proposal-feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2000} className="w-full rounded-lg border border-sky-200 p-3 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/40" placeholder="Ej.: incluir caché, cambiar tecnología o ajustar una decisión..." />
-              <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:opacity-50">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
+              <div className="flex gap-2"><button type="button" onClick={submitModification} disabled={!feedback.trim() || busy} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:hover:bg-solid-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300">Generar nueva iteración</button><button type="button" onClick={() => setShowFeedback(false)} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancelar</button></div>
             </div>
           )}
           {iterationLimitReached && <p className="mt-2 text-xs text-amber-700">Se alcanzó el máximo de {maxIterations} iteraciones: aprueba o rechaza la propuesta.</p>}
@@ -200,7 +201,87 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   )
 }
 
-function Citations({ citations }: { citations: ProposalCitation[] }) {
+function Citations({ citations, justification }: { citations: ProposalCitation[]; justification?: ProposalJustification | null }) {
   if (!citations.length) return <p className="mt-3 text-xs italic text-gray-500">Sin patrones recuperados de la base vectorial: propuesta basada en el conocimiento general del modelo.</p>
-  return <div className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-600"><p className="font-semibold">Fuentes RAG para los trade-offs:</p>{/* Sin numeración propia: el [n] ya es el número que cita la tabla. */}<ul className="mt-1 list-none space-y-1 pl-0">{citations.map((citation, index) => <li key={`${citation.pattern_id ?? 'pattern'}-${index}`} title={citation.snippet ?? undefined}>[{index + 1}] {citation.pattern_name ?? `Patrón #${citation.pattern_id ?? index + 1}`}{citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}</li>)}</ul></div>
+  return (
+    <div className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-600">
+      <p className="font-semibold">Fuentes RAG para los trade-offs:</p>
+      {justification && <JustificationStatus justification={justification} />}
+      {/* Sin numeración propia: el [n] ya es el número que cita la tabla. */}
+      <ul className="mt-1 list-none space-y-1 pl-0">
+        {citations.map((citation, index) => <CitationRow key={`${citation.pattern_id ?? 'pattern'}-${index}`} citation={citation} position={index + 1} />)}
+      </ul>
+    </div>
+  )
+}
+
+// HU8: la propuesta cita patrones si declara el patrón principal recuperado y lo justifica.
+function JustificationStatus({ justification }: { justification: ProposalJustification }) {
+  if (justification.cites_patterns) {
+    return <p className="mt-1 text-emerald-700" data-testid="justification-status">La propuesta justifica su patrón principal ({justification.primary_pattern_name}) con una fuente del catálogo.</p>
+  }
+  const reason = !justification.declared_primary
+    ? 'no declara la línea “Patrón principal”'
+    : !justification.primary_in_sources
+      ? `su patrón principal (${justification.declared_primary}) no es la fuente principal recuperada`
+      : 'falta la justificación del patrón principal'
+  return <p className="mt-1 text-amber-700" data-testid="justification-status">La propuesta no cita patrones: {reason}.</p>
+}
+
+function CitationRow({ citation, position }: { citation: ProposalCitation; position: number }) {
+  const [open, setOpen] = useState(false)
+  const [detail, setDetail] = useState<PatternDetail | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const number = citation.index ?? position
+  const patternId = citation.pattern_id
+
+  const toggle = async () => {
+    const next = !open
+    setOpen(next)
+    if (!next || detail || patternId == null) return
+    try {
+      setLoadError(null)
+      setDetail(await getPatternDetail(patternId))
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'No se pudo cargar la fuente')
+    }
+  }
+
+  return (
+    <li title={citation.snippet ?? undefined} data-testid={`citation-${number}`}>
+      [{number}] {citation.pattern_name ?? `Patrón #${patternId ?? number}`}
+      {citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}
+      {citation.source_role === 'primary' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700">patrón principal</span>}
+      {citation.source && <span className="block pl-6 text-gray-500">Fuente: {citation.source.label}</span>}
+      {patternId != null && (
+        <button type="button" onClick={() => void toggle()} aria-expanded={open} className="ml-6 text-blue-600 hover:underline">
+          {open ? 'Ocultar fuente' : 'Verificar fuente'}
+        </button>
+      )}
+      {open && (
+        <div className="ml-6 mt-1 rounded bg-gray-50 p-2 text-gray-600">
+          {citation.snippet && <blockquote className="border-l-2 border-gray-300 pl-2 italic">{citation.snippet}</blockquote>}
+          {loadError && <p className="text-red-600">{loadError}</p>}
+          {!detail && !loadError && <p className="italic">Cargando patrón...</p>}
+          {detail && <PatternDetailView detail={detail} />}
+        </div>
+      )}
+    </li>
+  )
+}
+
+function PatternDetailView({ detail }: { detail: PatternDetail }) {
+  const tradeoffs = (detail.tradeoffs ?? {}) as { ventajas?: string[]; desventajas?: string[] }
+  const sources = Array.from(new Set(detail.chunks.map((chunk) => chunk.source)))
+  return (
+    <div className="mt-1 space-y-1" data-testid="pattern-detail">
+      <p><span className="font-semibold">{detail.pattern_name}</span>{detail.category ? ` · ${detail.category}` : ''}</p>
+      {detail.description && <p>{detail.description}</p>}
+      {detail.use_cases && <p><span className="font-semibold">Cuándo usar:</span> {detail.use_cases}</p>}
+      {detail.when_not_to_use && <p><span className="font-semibold">Cuándo no usar:</span> {detail.when_not_to_use}</p>}
+      {tradeoffs.ventajas && tradeoffs.ventajas.length > 0 && <p><span className="font-semibold">Ventajas:</span> {tradeoffs.ventajas.join('; ')}</p>}
+      {tradeoffs.desventajas && tradeoffs.desventajas.length > 0 && <p><span className="font-semibold">Desventajas:</span> {tradeoffs.desventajas.join('; ')}</p>}
+      {sources.length > 0 && <p className="text-gray-500">Fuentes indexadas: {sources.join(', ')}</p>}
+    </div>
+  )
 }

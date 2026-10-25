@@ -490,6 +490,60 @@ async def chat(
                 finally:
                     db.close()
 
+            def _load_history() -> list[dict]:
+                """Load prior turns for this (session, project) BEFORE the
+                agent runs and BEFORE the current turn is persisted.
+
+                Conversation memory fix: the persisted ``messages`` rows are
+                the only source of truth, so the agent must receive them as
+                part of the prompt. Reading BEFORE ``_persist_turn`` (which
+                only fires on ``done``) guarantees the current turn is never
+                duplicated in the payload. Short-lived SessionLocal read,
+                mirroring the project-validation pattern above; any DB
+                failure degrades to an empty history (the chat still works,
+                it just loses memory) instead of breaking the stream.
+                """
+                history: list[dict] = []
+                try:
+                    db = SessionLocal()
+                    try:
+                        session = (
+                            db.query(UserSession)
+                            .filter(UserSession.user_id == user_id)
+                            .first()
+                        )
+                        if session is None:
+                            return []
+                        rows = list_recent(
+                            db, session.id, project_id=body.project_id, limit=6
+                        )
+                    finally:
+                        db.close()
+                    # ``list_recent`` returns newest-first; the agent needs
+                    # chronological order. Empty contents are skipped. Even
+                    # limit (6 = 3 whole turns) so the oldest entry is a
+                    # question, not an orphan answer.
+                    for row in reversed(rows):
+                        if not row.content:
+                            continue
+                        entry = {"role": row.role, "content": row.content}
+                        # REQ-EM-DELTA-2: do NOT include `display_content`
+                        # in the dict passed to the agent. The LLM must
+                        # only see the actual prompt+diagram (`content`).
+                        # `display_content` is for the user's bubble on
+                        # reload (handled in /api/chat/history at line ~741).
+                        history.append(entry)
+                except SQLAlchemyError as exc:
+                    logger.warning(
+                        "history read skipped user_id=%s project_id=%s: %s",
+                        user_id,
+                        body.project_id,
+                        exc,
+                    )
+                    return []
+                return history
+
+            history = _load_history()
             # Si el provider rechaza `temperature`, se reintenta el turno una
             # vez sin el parametro, siempre que el usuario no haya visto
             # todavia ninguna salida (ver llm_loader).
@@ -502,6 +556,7 @@ async def chat(
                     rag_documents=docs,
                     user_id=user_id,
                     project_id=body.project_id,
+                    history=history,
                 ),
                 counts_as_output=lambda ev: ev.get("event") in _AGENT_OUTPUT_EVENTS,
             )

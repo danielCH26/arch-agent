@@ -299,13 +299,28 @@ def step_neg_decision_mismatch(w: Walk) -> None:
 
 def step_neg_advance_blocked(w: Walk, expect_statuses: tuple = (400, 409)) -> None:
     """Advance con la fase sin aprobar -> 409 phase_not_approved (HU10)
-    o 400 (phase_ready false en F05)."""
+    o 400 (phase_ready false en F05).
+
+    Igual que ``step_neg_decision_mismatch``: un 409 solo cuenta si el
+    ``detail.error`` es ``phase_not_approved``. Comparar solo el status
+    dejaba pasar cualquier otro 409 (p. ej. ``phase_mismatch``).
+    """
     r = w.client.post(
         f"{w.base_url}/api/projects/{w.project_id}/advance",
         headers=w._headers(),
     )
-    w.step(r.status_code in expect_statuses,
-           f"gate: advance sin aprovacion -> {r.status_code} (esperaba {expect_statuses})")
+    ok = r.status_code in expect_statuses
+    err = ""
+    if r.status_code == 409:
+        try:
+            detail = r.json().get("detail", {})
+            err = detail.get("error", "") if isinstance(detail, dict) else ""
+        except Exception:
+            pass
+        ok = ok and err == "phase_not_approved"
+    w.step(ok,
+           f"gate: advance sin aprovacion -> {r.status_code}/{err or '-'} "
+           f"(esperaba {expect_statuses}, 409 = phase_not_approved)")
 
 
 def step_neg_modify_final(w: Walk) -> None:

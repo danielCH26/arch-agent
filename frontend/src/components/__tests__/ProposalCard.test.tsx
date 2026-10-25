@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProposalCard } from '../ProposalCard'
+import { getPatternDetail } from '../../api/patterns'
 import { proposalsStore } from '../../stores/proposalsStore'
 import {
   createProposalStream,
@@ -18,6 +19,10 @@ vi.mock('../../api/proposals', () => ({
   getLatestProposal: vi.fn(),
   getProjectProposalState: vi.fn(),
   getProposal: vi.fn(),
+}))
+
+vi.mock('../../api/patterns', () => ({
+  getPatternDetail: vi.fn(),
 }))
 
 type Callbacks = Parameters<typeof createProposalStream>[2]
@@ -94,7 +99,8 @@ describe('ProposalCard', () => {
     await user.click(screen.getByTestId('proposal-reject'))
     await user.click(screen.getByTestId('proposal-reject-confirm-button'))
 
-    expect(decideProposal).toHaveBeenCalledWith(41, 'reject', undefined)
+    // Se manda el proyecto abierto: el backend responde 409 si la propuesta es de otro.
+    expect(decideProposal).toHaveBeenCalledWith(41, 'reject', undefined, PROJECT_ID)
   })
 
   it('usa el tope de iteraciones que informa el backend', async () => {
@@ -323,5 +329,71 @@ describe('ProposalCard', () => {
     expect(table.textContent).not.toMatch(/<br/i)
     expect(table.querySelectorAll('br')).toHaveLength(2)
     expect(table.querySelectorAll('tbody tr')).toHaveLength(3)
+  })
+})
+
+describe('ProposalCard HU8: justificación con patrones', () => {
+  const citations = [
+    {
+      index: 1,
+      pattern_id: 3,
+      pattern_name: 'Monolito modular',
+      similarity: 0.88,
+      source_role: 'primary' as const,
+      snippet: 'Un despliegue, módulos aislados',
+      source: { type: 'curated_catalog' as const, label: 'Catálogo curado de patrones (arch-agent)', filename: null },
+    },
+    { index: 2, pattern_id: 8, pattern_name: 'Microservicios', similarity: 0.85, source_role: 'tradeoff_option' as const },
+  ]
+  const justification = {
+    cites_patterns: true,
+    declared_primary: 'monolito modular',
+    primary_pattern_id: 3,
+    primary_pattern_name: 'Monolito modular',
+    primary_in_sources: true,
+    justified: true,
+  }
+
+  it('marca el patrón principal, muestra la fuente y si la propuesta lo cita', async () => {
+    await renderWithProposal(proposalOut({ citations, justification }))
+
+    expect(screen.getByTestId('justification-status')).toHaveTextContent('justifica su patrón principal (Monolito modular)')
+    expect(screen.getByTestId('citation-1')).toHaveTextContent('patrón principal')
+    expect(screen.getByTestId('citation-1')).toHaveTextContent('Fuente: Catálogo curado de patrones (arch-agent)')
+    expect(screen.getByTestId('citation-2')).not.toHaveTextContent('patrón principal')
+  })
+
+  it('explica por qué la propuesta no cita patrones', async () => {
+    await renderWithProposal(proposalOut({
+      citations,
+      justification: { ...justification, cites_patterns: false, declared_primary: null, primary_in_sources: false },
+    }))
+
+    expect(screen.getByTestId('justification-status')).toHaveTextContent('no declara la línea “Patrón principal”')
+  })
+
+  it('"Verificar fuente" carga el patrón completo', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getPatternDetail).mockResolvedValue({
+      id: 3,
+      pattern_name: 'Monolito modular',
+      category: 'Monolítica',
+      description: 'Un solo despliegue con módulos de dominio aislados',
+      use_cases: null,
+      tradeoffs: { ventajas: ['simple de operar'], desventajas: ['escala en bloque'] },
+      when_not_to_use: null,
+      decision_signals: null,
+      chunks: [{ id: 1, chunk_type: 'summary', chunk_text: 'resumen', source: 'Catálogo curado de patrones (arch-agent)' }],
+    })
+    await renderWithProposal(proposalOut({ citations, justification }))
+
+    const [verify] = screen.getAllByRole('button', { name: 'Verificar fuente' })
+    await user.click(verify)
+
+    expect(getPatternDetail).toHaveBeenCalledWith(3)
+    const detail = await screen.findByTestId('pattern-detail')
+    expect(detail).toHaveTextContent('Ventajas: simple de operar')
+    expect(detail).toHaveTextContent('Fuentes indexadas: Catálogo curado de patrones (arch-agent)')
+    expect(screen.getByRole('button', { name: 'Ocultar fuente' })).toHaveAttribute('aria-expanded', 'true')
   })
 })

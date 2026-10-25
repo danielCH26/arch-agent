@@ -251,12 +251,16 @@ CREATE INDEX IF NOT EXISTS idx_approvals_attachment_id
 --   * agregar `approvals.payload JSONB` y `approvals.payload_hash VARCHAR(32)`
 --     (REQ-SA-30: idempotency key por (action, payload)).
 -- =============================================================================
+-- Mismo criterio que migrations/0020: solo usuarios con un único proyecto
+-- (sessions.project_id es el último proyecto abierto; para usuarios con
+-- varios proyectos mezclaba aprobaciones entre proyectos). Ver también 0021.
 UPDATE approvals
 SET project_id = sessions.project_id
 FROM sessions
 WHERE approvals.session_id = sessions.id
   AND approvals.project_id IS NULL
-  AND sessions.project_id IS NOT NULL;
+  AND sessions.project_id IS NOT NULL
+  AND (SELECT count(*) FROM projects p WHERE p.user_id = sessions.user_id) = 1;
 
 CREATE INDEX IF NOT EXISTS ix_approvals_project_phase_created
     ON approvals (project_id, phase, created_at DESC);

@@ -14,6 +14,7 @@ import {
   type ProposalDecision,
   type ProposalDecisionResponse,
   type ProposalErrorInfo,
+  type ProposalJustification,
   type ProposalLifecycle,
   type ProposalOut,
   type ProposalProgress,
@@ -27,6 +28,8 @@ export interface Proposal {
   citations: ProposalCitation[]
   feedback: string | null
   lifecycle: ProposalLifecycle
+  /** HU8: lo calcula el backend al leer la propuesta guardada. */
+  justification?: ProposalJustification | null
 }
 
 type ProposalActivity = 'idle' | 'loading' | 'generating' | 'modifying' | 'deciding'
@@ -62,7 +65,7 @@ interface ProposalsState {
   cancel: () => void
   /** Reintenta la última modificación que no terminó, con el mismo feedback. */
   retry: () => void
-  decide: (proposalId: number, decision: ProposalDecision, comment?: string) => Promise<ProposalDecisionResponse>
+  decide: (proposalId: number, decision: ProposalDecision, comment?: string, projectId?: number) => Promise<ProposalDecisionResponse>
   refresh: (proposalId: number) => Promise<void>
   reset: () => void
 }
@@ -119,6 +122,7 @@ const fromOut = (out: ProposalOut): Proposal => ({
   citations: out.citations ?? [],
   feedback: out.feedback,
   lifecycle: out.lifecycle,
+  ...(out.justification ? { justification: out.justification } : {}),
 })
 
 let activeStream = 0
@@ -192,7 +196,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         if (streamId !== activeStream) return
         set((state) => state.current ? { current: { ...state.current, content: state.current.content + token } } : {})
       },
-      onDone: (id: number, citations: ProposalCitation[]) => {
+      onDone: (id: number, citations: ProposalCitation[], iteration?: number) => {
         // Se recuerda aunque el usuario haya salido: la propuesta ya existe en
         // el servidor y regenerarla gastaría otra iteración.
         rememberProposal(projectId, id)
@@ -200,7 +204,7 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
         if (streamId !== activeStream) return
         set((state) => {
           if (!state.current) return { activity: 'idle', lastModify: null, ...IDLE_PROGRESS }
-          const proposal = { ...state.current, id, citations }
+          const proposal = { ...state.current, id, citations, iteration: iteration ?? state.current.iteration }
           return { current: proposal, iterations: [proposal, ...state.iterations], activity: 'idle', lastModify: null, ...IDLE_PROGRESS }
         })
         // El backend guarda la iteración definitiva; sincronizamos número y contenido.
@@ -410,10 +414,10 @@ export const proposalsStore = create<ProposalsState>((set, get) => {
       get().modify(lastModify.proposalId, lastModify.feedback)
     },
 
-    decide: async (proposalId, decision, comment) => {
+    decide: async (proposalId, decision, comment, openProjectId) => {
       set({ activity: 'deciding', error: null, errorRetryable: false, cancelled: false, lastModify: null })
       try {
-        const result = await decideProposal(proposalId, decision, comment)
+        const result = await decideProposal(proposalId, decision, comment, openProjectId)
         set((state) => ({
           current: state.current?.id === proposalId ? { ...state.current, lifecycle: result.lifecycle } : state.current,
           iterations: state.iterations.map((proposal) => proposal.id === proposalId ? { ...proposal, lifecycle: result.lifecycle } : proposal),
