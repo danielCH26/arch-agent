@@ -2165,12 +2165,34 @@ def test_invalid_llm_config_is_not_retryable():
     from app.core.llm_loader import LLMConfigError
 
     stack, generator, persisted = _patched_generator(_CompleteModel())
-    with stack, patch.object(gen, "build_langchain_model", side_effect=LLMConfigError("sin API key")):
+    with stack, patch.object(
+        gen,
+        "build_langchain_model",
+        side_effect=LLMConfigError("configura GROQ_API_KEY en el backend", reason="not_configured"),
+    ):
         events = _drain(generator.generate_stream())
 
     assert _error_meta(events) == ("llm_config", False)
-    assert events[-1][1]["message"] == "sin API key"
+    # Por SSE llega el mensaje para el usuario, no el detalle del backend.
+    message = events[-1][1]["message"]
+    assert "GROQ_API_KEY" not in message
+    assert "configuración del LLM" in message
     assert persisted == []
+
+
+def test_llm_without_model_tells_the_user_to_finish_step_3():
+    from unittest.mock import patch
+
+    from app.core import proposal_generator as gen
+    from app.core.llm_loader import LLMConfigError
+
+    stack, generator, _persisted = _patched_generator(_CompleteModel())
+    with stack, patch.object(
+        gen, "build_langchain_model", side_effect=LLMConfigError("sin modelo", reason="missing")
+    ):
+        events = _drain(generator.generate_stream())
+
+    assert "paso 3" in events[-1][1]["message"]
 
 
 def test_empty_llm_output_is_a_distinct_non_retryable_code():
@@ -2363,3 +2385,65 @@ def test_saving_timeout_also_marks_the_cancel_event(monkeypatch):
     assert events[-1][0] == "error"
     assert seen["event"].is_set()
 
+
+_TEMPERATURE_400 = (
+    "Error code: 400 - Unsupported value: 'temperature' does not support "
+    "0.0 with this model. Only the default (1) value is supported."
+)
+
+
+class _RejectsTemperatureModel:
+    """Doble de ChatOpenAI que rechaza `temperature` mientras la tenga."""
+
+    def __init__(self, temperature=0.0, markdown=None):
+        self.model_name = "my-o1-deployment"
+        self.temperature = temperature
+        self.markdown = markdown
+        self.streams = 0
+
+    def model_copy(self, update):
+        copia = _RejectsTemperatureModel(update.get("temperature"), self.markdown)
+        copia.streams = self.streams
+        return copia
+
+    async def astream(self, _prompt):
+        if self.temperature is not None or self.markdown is None:
+            raise Exception(_TEMPERATURE_400)
+        yield _Chunk(self.markdown)
+        yield _Chunk("", {"finish_reason": "stop"})
+
+
+@pytest.fixture()
+def _forget_rejected_models():
+    from app.core import llm_loader
+
+    llm_loader._modelos_sin_temperature_runtime.clear()
+    yield
+    llm_loader._modelos_sin_temperature_runtime.clear()
+
+
+def test_temperature_rejection_is_not_retryable(_forget_rejected_models):
+    """Si el modelo rechaza `temperature` aun sin el parametro, la UI no debe
+    ofrecer "Reintentar": el error se reporta como configuracion del LLM."""
+    from app.core.llm_loader import TEMPERATURE_REJECTED_MESSAGE
+
+    stack, generator, persisted = _patched_generator(_RejectsTemperatureModel())
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert persisted == []
+    assert _error_meta(events) == ("llm_config", False)
+    assert events[-1][1]["message"] == TEMPERATURE_REJECTED_MESSAGE
+
+
+def test_temperature_rejection_retries_once_without_the_parameter(_forget_rejected_models):
+    from app.core.llm_loader import _acepta_temperature
+
+    model = _RejectsTemperatureModel(markdown=_FULL_PROPOSAL)
+    stack, generator, persisted = _patched_generator(model)
+    with stack:
+        events = _drain(generator.generate_stream())
+
+    assert not any(name == "error" for name, _ in events)
+    assert len(persisted) == 1
+    assert _acepta_temperature("my-o1-deployment") is False

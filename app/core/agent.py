@@ -285,6 +285,51 @@ def format_rag_context(rag_documents: list[Any]) -> str:
     return "\n\n".join(blocks)
 
 
+# Conversation memory (REQ-EM-DELTA-3): how much prior context reaches the agent.
+# The history travels as real ``user``/``assistant`` messages, NEVER inside the
+# system prompt: prepending it there would turn a previous user turn into a
+# system instruction (reviews de #116, Soomri + lau2413). The cap is even so the
+# window holds whole user/assistant pairs, and every entry is truncated because
+# diagrams and long answers blow up the token bill otherwise.
+_HISTORY_MAX_MESSAGES = 6
+_HISTORY_MAX_CHARS_PER_MESSAGE = 2_000
+
+
+def _build_history_messages(history: list[dict] | None) -> list[dict]:
+    """Normalize prior turns into chat messages for the agent input.
+
+    - keeps only ``user``/``assistant`` roles;
+    - drops a leading orphan ``assistant`` reply (its question fell outside the
+      window) so every assistant message follows its own question;
+    - keeps at most ``_HISTORY_MAX_MESSAGES`` entries, oldest first;
+    - truncates each entry to ``_HISTORY_MAX_CHARS_PER_MESSAGE`` characters.
+
+    ``display_content`` is never carried (REQ-EM-DELTA-2): it is the user-facing
+    bubble, while the LLM must see the real ``content`` (prompt + diagram).
+    """
+    if not history:
+        return []
+
+    entries: list[dict] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > _HISTORY_MAX_CHARS_PER_MESSAGE:
+            content = content[:_HISTORY_MAX_CHARS_PER_MESSAGE] + "…[truncado]"
+        entries.append({"role": role, "content": content})
+
+    entries = entries[-_HISTORY_MAX_MESSAGES:]
+    while entries and entries[0]["role"] == "assistant":
+        entries.pop(0)
+    return entries
+
+
 def _build_system_prompt(rag_documents: list[Any]) -> str:
     """SIMPLIFICADO: ya no recibe ``puppeteer_available`` -- el DIAGRAM_HINT
     siempre se incluye, porque ya no depende de que exista una tool."""
@@ -503,7 +548,7 @@ async def _render_mermaid_server_side(
     ``navigate`` + esperar + ``screenshot`` DENTRO de la misma sesión,
     garantizando que comparten el mismo browser/página.
     """
-    from app.core.puppeteer_mcp import _resolve_url
+    from app.core.puppeteer_mcp import _max_render_bytes, _resolve_url
 
     try:
         from mcp import ClientSession
@@ -618,11 +663,41 @@ async def _render_mermaid_server_side(
         )
         return None
 
+    # REQ-PMCP-3: byte cap on the real render path. A screenshot over the
+    # cap is treated as a failed render — same contract as every other
+    # failure here (log + return None) — so an oversized PNG can never
+    # reach the attachments row, the disk, or the FE payload.
+    #
+    # The cheap length check runs BEFORE the decode: base64 emits 4 chars
+    # per 3 bytes, so an oversized payload is already visible in the encoded
+    # string and never gets allocated (reviews de #116).
+    max_bytes = _max_render_bytes()
+    encoded_png = getattr(image_block, "data", None) or ""
+    max_encoded_chars = ((max_bytes + 2) // 3) * 4
+    if len(encoded_png) > max_encoded_chars:
+        _LOGGER.warning(
+            "Render server-side: screenshot codificado de %d chars excede el "
+            "tope de %d bytes (PUPPETEER_MAX_RENDER_BYTES); se descarta el "
+            "render sin decodificar.",
+            len(encoded_png),
+            max_bytes,
+        )
+        return None
+
+    raw_bytes = base64.b64decode(encoded_png)
+    if len(raw_bytes) > max_bytes:
+        _LOGGER.warning(
+            "Render server-side: screenshot de %d bytes excede el tope de "
+            "%d (PUPPETEER_MAX_RENDER_BYTES); se descarta el render.",
+            len(raw_bytes),
+            max_bytes,
+        )
+        return None
+
     attachment_id = str(uuid.uuid4())
     mime = getattr(image_block, "mimeType", None) or "image/png"
     ext = "png" if "png" in mime else "jpg"
     filename = f"{attachment_id}.{ext}"
-    raw_bytes = base64.b64decode(image_block.data)
 
     uploads_dir = _ensure_uploads_dir()
     storage_path = os.path.join(uploads_dir, filename)
@@ -642,6 +717,7 @@ async def _astream_agent(
     message: str,
     callbacks: list[Any],
     *,
+    history: list[dict] | None = None,
     user_id: int | None = None,
     project_id: int | None = None,
     model_name: str | None = None,
@@ -670,9 +746,14 @@ async def _astream_agent(
             f"chat/user-{user_id if user_id is not None else 'anon'}/project-{metadata['project_id']}",
         )
 
+    # Prior turns travel as real messages before the current one, so the system
+    # prompt stays free of user content (see ``_build_history_messages``).
+    messages = _build_history_messages(history)
+    messages.append({"role": "user", "content": message})
+
     try:
         event_iter = agent.astream_events(
-            {"messages": [{"role": "user", "content": message}]},
+            {"messages": messages},
             config=config,
             version="v2",
         )
@@ -732,12 +813,19 @@ async def run_agent(
     rag_documents: list[Any] | None = None,
     user_id: int | None = None,
     project_id: int | None = None,
+    history: list[dict] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive the agent and yield SSE-ready dicts.
 
     SIMPLIFICADO: ``puppeteer_screenshot`` NUNCA se agrega a ``tools``
     (el LLM no la ve). Se usa solo internamente, al final del turno,
     para renderizar el mermaid que el modelo haya escrito.
+
+    Args:
+        history: Optional prior conversation turns as dicts with ``role`` and
+            ``content``. They are normalized (role filter, orphan drop,
+            per-message truncation, even cap) and forwarded to the agent as
+            real messages; the system prompt never carries user content.
     """
     docs = _coerce_documents(rag_documents)
 
@@ -794,6 +882,7 @@ async def run_agent(
         agent,
         message,
         callbacks,
+        history=history,
         user_id=user_id,
         project_id=project_id,
         model_name=model_name,
