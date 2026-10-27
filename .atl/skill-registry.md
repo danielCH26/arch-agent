@@ -50,9 +50,12 @@ delegacion.
 
 ## Project-specific
 
-No project-specific skills registered yet. Add under `.atl/skills/<name>/SKILL.md`
-and document the trigger here when the team adds new skills that live in
-this repo.
+| Skill | Trigger | Path |
+| --- | --- | --- |
+| adr-design | Diseño, contenido o verificación del ADR generado (paleta azul, PDF, diagramas, secciones) | `.atl/skills/adr-design/SKILL.md` |
+
+Add new ones under `.atl/skills/<name>/SKILL.md` and document the trigger
+here.
 
 ## Resolution notes for sub-agents
 

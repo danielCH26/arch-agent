@@ -28,6 +28,7 @@ import re
 import uuid
 from typing import Any, AsyncIterator
 
+from app.core.adr_theme import mermaid_theme_config
 from app.core.attachment_tokens import _ensure_uploads_dir, build_attachment_url
 from app.core.mermaid_validator import (
     extract_mermaid_block,
@@ -428,6 +429,10 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
 
     escaped = _html.escape(mermaid_code)
     script_url = _html.escape(_MERMAID_JS_URL, quote=True)
+    # Paleta azul del ADR (app/core/adr_theme.py): el diagrama del chat, el del
+    # panel y el del PDF salen con la misma identidad. Se escapa "<" para que
+    # el JSON no pueda cerrar el <script>.
+    theme = json.dumps(mermaid_theme_config()).replace("<", "\\u003c")
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<script src='" + script_url + "'></script>"
@@ -447,7 +452,7 @@ def _build_mermaid_preview_html(mermaid_code: str) -> str:
         "  document.getElementById('status').textContent = 'ERROR JS: ' + msg;"
         "};"
         "try {"
-        "  mermaid.initialize({startOnLoad:false});"
+        "  mermaid.initialize(Object.assign({startOnLoad:false}, " + theme + "));"
         "  mermaid.run({querySelector:'.mermaid'})"
         "    .then(function(){"
         "      var svg = document.querySelector('.mermaid svg');"

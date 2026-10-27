@@ -14,6 +14,10 @@ export interface AdrOut {
   guide_warnings?: string[]
   // Adjunto del diagrama que usa el ADR, para mostrar esa misma imagen.
   diagram_attachment_id?: string | null
+  // Verificación previa a la entrega: secciones vacías, genéricas o sin un
+  // dato que el lector necesita. Vacía = cada sección aporta. Opcional: los
+  // ADR guardados antes no la traen.
+  quality_issues?: string[]
 }
 
 const adrPath = (projectId: number) => `/api/projects/${encodeURIComponent(String(projectId))}/adr`

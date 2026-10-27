@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildAdrPrintDocument } from '../adrPrint'
+import { ADR_PALETTE } from '../adrTheme'
 
 // HTML como lo arma el panel (renderMarkdownBlocks): '#' -> h3, '##' -> h4, '###' -> h5.
 const BODY = `
@@ -83,6 +84,22 @@ describe('buildAdrPrintDocument', () => {
     expect(doc.querySelector('.exec')?.textContent).toContain('monolito modular')
     expect(doc.querySelector('.exec')?.textContent).not.toContain('Texto')
     expect(doc.querySelector('blockquote.warn')?.textContent).toContain('cifra sin origen')
+  })
+
+  it('usa la paleta azul y las tipografías de la identidad del ADR', () => {
+    const { html, doc } = render()
+    expect(html).toContain(ADR_PALETTE.navy)
+    expect(html).toContain(ADR_PALETTE.primary)
+    expect(html).toContain("'Plus Jakarta Sans'")
+    expect(doc.querySelector('link[rel="stylesheet"]')?.getAttribute('href')).toContain('fonts.googleapis.com')
+    // Sin los índigos de antes.
+    expect(html).not.toMatch(/#3730a3|#4f46e5|#eef2ff/i)
+    expect(doc.querySelector('.cover .cover-band .brand')?.textContent).toBe('ArchAgent')
+  })
+
+  it('sin introducción, la portada lleva la decisión en una línea', () => {
+    const { doc } = render(BODY.replace(/<blockquote><p>Este documento[\s\S]*?<\/blockquote>/, ''))
+    expect(doc.querySelector('.cover-note')?.textContent).toContain('monolito modular')
   })
 
   it('quita las clases del panel y pone número de página en el pie', () => {

@@ -9,7 +9,7 @@ vi.mock('../../api/diagrams', async (importOriginal) => {
   return { ...actual, fetchDiagramHistory: vi.fn() }
 })
 
-import { AdrPanel, adrFilename, pickAdrDiagram, splitAtMermaid } from '../AdrPanel'
+import { AdrPanel, adrFilename, pickAdrDiagram, splitMermaidBlocks } from '../AdrPanel'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
 
@@ -214,7 +214,9 @@ describe('AdrPanel', () => {
   it('Descargar PDF abre la vista de impresión con el diagrama como imagen', async () => {
     vi.mocked(getAdr).mockResolvedValue({
       ...ADR,
-      markdown: '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n## 5. Referencias\n\nFuentes',
+      markdown:
+        '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n' +
+        '_Figura 1. Componentes del sistema._\n\n## 5. Referencias\n\nFuentes',
       diagram_attachment_id: 'a',
     })
     vi.mocked(fetchDiagramHistory).mockResolvedValue([
@@ -239,6 +241,8 @@ describe('AdrPanel', () => {
     expect(html).toContain('src="/aprobado.png"')
     expect(html).toContain('Referencias')
     expect(html).not.toContain('flowchart TD')
+    // El pie del ADR queda dentro de la figura.
+    expect(html).toContain('<figcaption><strong>Figura 1.</strong> Componentes del sistema.</figcaption>')
     openSpy.mockRestore()
   })
 
@@ -253,10 +257,30 @@ describe('AdrPanel', () => {
     openSpy.mockRestore()
   })
 
-  it('splitAtMermaid separa el bloque del diagrama', () => {
-    const parts = splitAtMermaid('antes\n```mermaid\nflowchart TD\n```\ndespués')
-    expect(parts).toEqual({ before: 'antes\n', after: '\ndespués', hasMermaid: true })
-    expect(splitAtMermaid('sin diagrama')).toEqual({ before: 'sin diagrama', after: '', hasMermaid: false })
+  it('splitMermaidBlocks separa cada bloque de diagrama', () => {
+    expect(splitMermaidBlocks('antes\n```mermaid\nflowchart TD\n```\ndespués')).toEqual(['antes\n', '\ndespués'])
+    expect(
+      splitMermaidBlocks('a\n```mermaid\nflowchart TD\n```\nb\n```mermaid\n%%{init: {}}%%\nflowchart LR\n```\nc'),
+    ).toEqual(['a\n', '\nb\n', '\nc'])
+    expect(splitMermaidBlocks('sin diagrama')).toEqual(['sin diagrama'])
+  })
+
+  it('muestra la verificación previa a la entrega', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, quality_issues: ['«7.3 Consecuencias»: es genérica'] })
+    renderPanel()
+    expect(await screen.findByTestId('adr-quality')).toHaveTextContent('«7.3 Consecuencias»: es genérica')
+  })
+
+  it('la verificación sin problemas lo dice, y un ADR viejo no muestra nada', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, quality_issues: [] })
+    const { unmount } = renderPanel()
+    expect(await screen.findByTestId('adr-quality')).toHaveTextContent('todas las secciones tienen contenido específico')
+    unmount()
+
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    renderPanel()
+    await screen.findByTestId('adr-content')
+    expect(screen.queryByTestId('adr-quality')).not.toBeInTheDocument()
   })
 
   it('arma un nombre de archivo seguro', () => {
