@@ -5,6 +5,7 @@ import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
 import { useApprovalsStore } from '../stores/approvalsStore'
 import { AdrPanel } from './AdrPanel'
+import { DeploymentPanel } from './DeploymentPanel'
 import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ChatInput } from './ChatInput'
 import { ElicitationDocuments } from './ElicitationDocuments'
@@ -130,6 +131,16 @@ export function ChatWindow({
     (message) =>
       message.role === 'assistant' &&
       (message.attachments ?? []).some((attachment) => attachment.kind === 'screenshot'),
+  )
+  // El despliegue en la nube se calcula SOBRE la arquitectura aprobada, así
+  // que su panel solo ofrece generar cuando el diagrama ya tiene un
+  // "approve"; antes de eso explica qué falta en vez de fallar con un 409.
+  const architectureApproved = messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      (message.attachments ?? []).some(
+        (attachment) => attachment.kind === 'screenshot' && attachment.decision === 'approve',
+      ),
   )
   const generatingDiagram = isRefinementPhase(currentPhase) && (checkingDiagrams || isStreaming)
   const decisionLivesInTheContent =
@@ -324,6 +335,14 @@ export function ChatWindow({
           <p className="text-center text-xs text-gray-500" data-testid="auto-diagram-checking">
             Preparando el diagrama de la propuesta aprobada…
           </p>
+        )}
+
+        {/* Refinamiento, segundo paso: el despliegue en la nube. Va DESPUÉS
+            del diagrama de arquitectura (es su continuación natural) y solo
+            una vez que hay un diagrama generado, para no competir con él
+            mientras se está dibujando. */}
+        {isRefinementPhase(currentPhase) && hasDiagram && !generatingDiagram && (
+          <DeploymentPanel projectId={projectId} architectureApproved={architectureApproved} />
         )}
 
         {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the
