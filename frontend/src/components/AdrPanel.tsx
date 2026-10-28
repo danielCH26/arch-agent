@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
+import { fetchDeploymentHistory, type DeploymentVersion } from '../api/deployments'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { ProjectCompletedDialog } from './ProjectCompletedDialog'
 import { buildAdrPrintDocument } from './adrPrint'
@@ -43,6 +44,24 @@ function downloadMarkdown(markdown: string, filename: string) {
 
 // Parte el ADR en el bloque ```mermaid: en el PDF el diagrama va como imagen
 // (la captura aprobada), no como código, que una persona no técnica no puede leer.
+// Parte el texto en el encabezado del despliegue para poder meter la imagen
+// JUSTO debajo de él (y no suelta al final de la sección anterior). El ADR
+// escribe ese encabezado como "### Despliegue en <nube>".
+export function splitAtDeploymentHeading(
+  markdown: string,
+): { before: string; heading: string; after: string; hasHeading: boolean } {
+  const match = (markdown || '').match(/^###\s+Despliegue en .*$/m)
+  if (!match || match.index === undefined) {
+    return { before: markdown, heading: '', after: '', hasHeading: false }
+  }
+  return {
+    before: markdown.slice(0, match.index),
+    heading: match[0],
+    after: markdown.slice(match.index + match[0].length),
+    hasHeading: true,
+  }
+}
+
 export function splitAtMermaid(markdown: string): { before: string; after: string; hasMermaid: boolean } {
   const match = markdown.match(/```mermaid\s*\n[\s\S]*?```/i)
   if (!match || match.index === undefined) return { before: markdown, after: '', hasMermaid: false }
@@ -68,9 +87,12 @@ export function openPrintView(bodyHtml: string, title: string): boolean {
     win.focus()
     win.print()
   }
-  // Se espera a que cargue la imagen del diagrama; si tarda, se imprime igual.
+  // Se espera a que carguen las imágenes (arquitectura y despliegue); si
+  // tardan, se imprime igual. El respaldo se subió de 2.5 s a 4 s porque
+  // ahora puede haber DOS imágenes y con el tope anterior el PDF salía a
+  // veces sin la segunda.
   win.addEventListener('load', print)
-  setTimeout(print, 2500)
+  setTimeout(print, 4000)
   return true
 }
 
@@ -111,6 +133,10 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
   // Imágenes de los diagramas del proyecto: el ADR trae el diagrama como
   // código Mermaid, que en el panel se vería como texto.
   const [diagrams, setDiagrams] = useState<DiagramVersion[]>([])
+  // Diagrama de despliegue aprobado: el ADR trae la tabla de "dónde va cada
+  // pieza", pero quien solo recibe el PDF no vería nunca la imagen. Solo el
+  // aprobado, igual que el de arquitectura.
+  const [deployment, setDeployment] = useState<DeploymentVersion | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -129,6 +155,11 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
     fetchDiagramHistory(projectId)
       .then((list) => {
         if (!cancelled) setDiagrams(list)
+      })
+      .catch(() => undefined)
+    fetchDeploymentHistory(projectId)
+      .then((list) => {
+        if (!cancelled) setDeployment(list.find((item) => item.decision === 'approve') ?? null)
       })
       .catch(() => undefined)
     return () => {
@@ -404,6 +435,20 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
         </figure>
       )}
 
+      {markdown && deployment && (
+        <figure className="mt-3 rounded-lg border border-gray-100 p-3" data-testid="adr-deployment-diagram">
+          <figcaption className="mb-2 text-xs font-semibold text-gray-700">
+            Diagrama de despliegue aprobado
+            {deployment.provider ? ` (${deployment.provider.toUpperCase()})` : ''}
+          </figcaption>
+          <img
+            src={deployment.url}
+            alt="Diagrama de despliegue del proyecto en la nube"
+            className="h-auto max-h-[60vh] w-full max-w-3xl rounded object-contain"
+          />
+        </figure>
+      )}
+
       {markdown && (
         <article
           data-testid="adr-content"
@@ -427,7 +472,29 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
               <em>El diagrama está en la versión Markdown del documento.</em>
             </p>
           )}
-          {renderMarkdownBlocks(printParts.after)}
+          {/* El resto del documento, abriendo hueco para la imagen del
+              despliegue justo debajo de su encabezado. Sin este corte la
+              imagen quedaría suelta al final de la sección anterior. */}
+          {(() => {
+            const rest = splitAtDeploymentHeading(printParts.after)
+            if (!rest.hasHeading || !deployment) {
+              return renderMarkdownBlocks(printParts.after)
+            }
+            return (
+              <>
+                {renderMarkdownBlocks(rest.before)}
+                {renderMarkdownBlocks(rest.heading)}
+                <figure>
+                  <img src={deployment.url} alt="Diagrama de despliegue en la nube" />
+                  <figcaption>
+                    Diagrama de despliegue aprobado
+                    {deployment.provider ? ` (${deployment.provider.toUpperCase()})` : ''}
+                  </figcaption>
+                </figure>
+                {renderMarkdownBlocks(rest.after)}
+              </>
+            )
+          })()}
         </div>
       )}
 

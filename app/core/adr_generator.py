@@ -158,6 +158,10 @@ class AdrContext:
     # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
     # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
     guide_failure: Optional[str] = None
+    # Plan de despliegue APROBADO (mapeo componente -> servicio de nube), tal
+    # como quedó guardado junto a su diagrama. ``None`` si el proyecto no
+    # llegó a aprobar un despliegue: el ADR simplemente no trae esa parte.
+    deployment: Optional[dict] = None
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -231,6 +235,51 @@ def _approved_mermaid(
     return code, False, (ids[0] if ids else None)
 
 
+def _approved_deployment(db: Session, *, user_id: int, project_id: int) -> Optional[dict]:
+    """Plan del diagrama de despliegue APROBADO más reciente, o ``None``.
+
+    Mismo criterio que ``_approved_mermaid`` pero sobre los adjuntos
+    ``kind="deployment"`` y las decisiones de la fase "despliegue": un
+    despliegue que se aprobó y luego se rechazó ya no cuenta.
+
+    Solo entra al ADR lo aprobado. Un despliegue generado y no decidido es un
+    borrador, y el ADR documenta decisiones.
+    """
+    rows = (
+        db.query(Message)
+        .filter(
+            Message.project_id == project_id,
+            Message.user_id == user_id,
+            Message.role == "assistant",
+            Message.attachments != None,  # noqa: E711 (comparación JSONB)
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(200)
+        .all()
+    )
+    candidates: list[tuple[str, dict]] = []
+    for row in rows:
+        for att in row.attachments or []:
+            if not isinstance(att, dict) or att.get("kind") != "deployment":
+                continue
+            plan = att.get("plan")
+            if att.get("id") and isinstance(plan, dict):
+                candidates.append((str(att["id"]), plan))
+    if not candidates:
+        return None
+
+    decisions = latest_diagram_decisions(
+        db,
+        project_id=project_id,
+        attachment_ids=[att_id for att_id, _plan in candidates],
+        phase="despliegue",
+    )
+    for att_id, plan in candidates:
+        if decisions.get(att_id) == "approve":
+            return plan
+    return None
+
+
 def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrContext:
     """Junta todo lo decidido en el proyecto. Lanza ``AdrNotReadyError`` si
     todavía no hay una propuesta aprobada: sin decisión no hay ADR."""
@@ -295,6 +344,7 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         diagram_approved=diagram_approved,
         diagram_attachment_id=diagram_attachment_id,
         decisions=decisions,
+        deployment=_approved_deployment(db, user_id=user_id, project_id=project_id),
     )
 
 
@@ -401,6 +451,59 @@ def _elicitation_annex(preguntas_respuestas: list[dict]) -> str:
 
 
 _ADJUSTMENT = "(ajuste solicitado por el usuario)"
+
+
+def _deployment_block(ctx: AdrContext) -> str:
+    """Subsección del despliegue en la nube, o cadena vacía si no hay uno
+    aprobado.
+
+    Va como subsección de "4. Diagrama de arquitectura" y NO como sección
+    numerada propia: las secciones del ADR están numeradas y hay código que
+    las busca por número (``extract_guide_section`` con "## 7.", los saltos
+    de página del PDF, el lint de la guía). Insertar una sección 5 obligaría
+    a renumerar todo eso. Como subsección cuelga del diagrama, que es
+    justamente de lo que habla.
+    """
+    plan = ctx.deployment
+    if not isinstance(plan, dict):
+        return ""
+    provider = plan.get("provider") or {}
+    components = [c for c in (plan.get("components") or []) if isinstance(c, dict)]
+    if not provider.get("name") or not components:
+        return ""
+
+    rows = [
+        "| Componente | Servicio | Cómo se despliega |",
+        "| --- | --- | --- |",
+    ]
+    for item in components:
+        rows.append(
+            f"| {_cell(item.get('component'))} | {_cell(item.get('service_name'))} "
+            f"| {_cell(item.get('deploy_note'))} |"
+        )
+
+    extras = ""
+    bridges = [b for b in (plan.get("bridges") or []) if isinstance(b, dict)]
+    if bridges:
+        nombres = ", ".join(str(b.get("service_name") or "") for b in bridges if b.get("service_name"))
+        if nombres:
+            extras += (
+                f"\n\nServicios que agrega {provider.get('short_name') or provider['name']} "
+                f"para conectar las piezas (no salen de un componente de la "
+                f"arquitectura): {nombres}."
+            )
+    unmapped = [str(u) for u in (plan.get("unmapped") or []) if str(u).strip()]
+    if unmapped:
+        extras += (
+            "\n\nComponentes sin equivalente directo en esta nube, pendientes "
+            f"de decidir: {', '.join(unmapped)}."
+        )
+
+    return (
+        f"\n### Despliegue en {provider['name']}\n\n"
+        "Dónde queda cada pieza de la arquitectura al llevarla a la nube "
+        "elegida durante el refinamiento.\n\n" + "\n".join(rows) + extras + "\n"
+    )
 
 
 def _status(ctx: AdrContext) -> str:
@@ -1174,7 +1277,7 @@ incluida completa con su análisis de trade-offs y la opción elegida.
 ## 4. Diagrama de arquitectura
 
 {diagram}
-
+{_deployment_block(ctx)}
 ## 5. Referencias
 
 {_references(ctx.citations)}

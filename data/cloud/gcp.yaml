@@ -1,0 +1,319 @@
+# =============================================================================
+# Catálogo de servicios de Google Cloud para el diagrama de despliegue.
+#
+# Mismo esquema que data/cloud/aws.yaml (ahí está documentado campo por
+# campo). Los `id` de los servicios son propios de cada proveedor; lo que
+# los hace comparables entre nubes es `category`.
+# =============================================================================
+
+id: gcp
+name: Google Cloud Platform
+short_name: GCP
+color: "#4285F4"
+accent: "#1A73E8"
+docs_url: https://cloud.google.com/docs
+
+tiers:
+  - id: edge
+    label: Entrada
+  - id: compute
+    label: Cómputo
+  - id: data
+    label: Datos
+  - id: async
+    label: Asíncrono
+  - id: ops
+    label: Operación
+
+services:
+  # --------------------------------------------------------------- entrada --
+  - id: cloud-dns
+    name: Cloud DNS
+    category: dns
+    tier: edge
+    summary: DNS administrado para publicar el dominio del proyecto.
+    deploy_note: >-
+      Crea aquí la zona del dominio y apunta los registros al balanceador o
+      a la CDN.
+    matches: [dns, dominio, nombre de dominio]
+    weight: 60
+    connects_to: [cloud-cdn, load-balancing, api-gateway]
+
+  - id: cloud-cdn
+    name: Cloud CDN
+    category: cdn
+    tier: edge
+    summary: Caché en los bordes de Google para contenido estático.
+    deploy_note: >-
+      Publica el frontend compilado en un bucket de Cloud Storage y sírvelo
+      por Cloud CDN detrás del balanceador.
+    matches: [cdn, frontend, spa, cliente web, interfaz, ui, react, vue, angular, contenido estatico, sitio web, pagina web]
+    weight: 80
+    connects_to: [cloud-storage, load-balancing]
+
+  - id: api-gateway
+    name: API Gateway
+    category: apigateway
+    tier: edge
+    summary: Puerta de entrada para APIs, con autenticación y cuotas.
+    deploy_note: >-
+      Expón aquí la API pública y enruta cada ruta a Cloud Run o a una
+      función; aplica el control de cuotas en esta capa.
+    matches: [api gateway, gateway, puerta de enlace, bff, backend for frontend]
+    weight: 70
+    connects_to: [cloud-run, functions, identity-platform]
+
+  - id: load-balancing
+    name: Cloud Load Balancing
+    category: loadbalancer
+    tier: edge
+    summary: Balanceador global de HTTP(S) con terminación TLS.
+    deploy_note: >-
+      Pon el backend detrás del balanceador y termina aquí el certificado;
+      reparte entre las revisiones o instancias del servicio.
+    matches: [balanceador, load balancer, nginx, proxy inverso, reverse proxy, ingress]
+    weight: 70
+    connects_to: [cloud-run, gke, compute-engine]
+
+  # --------------------------------------------------------------- cómputo --
+  - id: cloud-run
+    name: Cloud Run
+    category: compute
+    tier: compute
+    summary: Contenedores que escalan solos, incluso a cero, sin administrar servidores.
+    deploy_note: >-
+      Sube la imagen Docker a Artifact Registry y despliégala como servicio
+      de Cloud Run; escala a cero cuando no hay tráfico.
+    matches: [backend, api, servicio, servidor, aplicacion, contenedor, docker, microservicio, monolito, fastapi, django, flask, express, spring, node, cloud run]
+    weight: 80
+    connects_to: [cloud-sql, firestore, memorystore, cloud-storage, pubsub, secret-manager, monitoring]
+
+  - id: functions
+    name: Cloud Functions
+    category: compute
+    tier: compute
+    summary: Funciones que se ejecutan por evento, facturadas por invocación.
+    deploy_note: >-
+      Empaqueta aquí la lógica que corre por evento; conéctala a Pub/Sub o
+      a API Gateway.
+    matches: [funcion, function, serverless, sin servidor, worker, tarea programada, cron, job]
+    weight: 60
+    connects_to: [firestore, cloud-sql, cloud-storage, pubsub, secret-manager]
+
+  - id: gke
+    name: Google Kubernetes Engine
+    category: compute
+    tier: compute
+    summary: Kubernetes administrado para cargas que necesitan orquestación completa.
+    deploy_note: >-
+      Elige esta opción solo si de verdad necesitas Kubernetes; para un
+      puñado de servicios, Cloud Run cuesta mucho menos de operar.
+    matches: [kubernetes, k8s, gke, orquestacion, cluster]
+    weight: 40
+    connects_to: [cloud-sql, memorystore, cloud-storage, pubsub]
+
+  - id: compute-engine
+    name: Compute Engine
+    category: compute
+    tier: compute
+    summary: Máquinas virtuales con control total del sistema operativo.
+    deploy_note: >-
+      Úsalo solo si la pieza necesita control del sistema operativo o no
+      está contenerizada.
+    matches: [maquina virtual, vm, instancia, servidor dedicado, compute engine]
+    weight: 30
+    connects_to: [cloud-sql, cloud-storage, memorystore, filestore]
+
+  - id: app-engine
+    name: App Engine
+    category: compute
+    tier: compute
+    summary: Plataforma administrada para aplicaciones web, con escalado incluido.
+    deploy_note: >-
+      Sirve para subir una aplicación web sin montar infraestructura;
+      Google se encarga del escalado.
+    matches: [app engine, plataforma administrada, paas]
+    weight: 20
+    connects_to: [cloud-sql, cloud-storage]
+
+  # ----------------------------------------------------------------- datos --
+  - id: cloud-sql
+    name: Cloud SQL (PostgreSQL)
+    category: database
+    tier: data
+    summary: Base relacional administrada, con copias de seguridad automáticas.
+    deploy_note: >-
+      Crea la instancia con IP privada, activa las copias automáticas y
+      guarda la cadena de conexión en Secret Manager.
+    matches: [postgres, postgresql, mysql, mariadb, base de datos, bd, sql, relacional, base de datos relacional]
+    weight: 80
+    connects_to: [secret-manager, monitoring]
+
+  - id: spanner
+    name: Cloud Spanner
+    category: database
+    tier: data
+    summary: Base relacional distribuida con consistencia fuerte a escala global.
+    deploy_note: >-
+      Solo tiene sentido si necesitas varias regiones con consistencia
+      fuerte; para un proyecto normal, Cloud SQL es la opción sensata.
+    matches: [spanner, base de datos global, multirregion]
+    weight: 20
+    connects_to: [secret-manager, monitoring]
+
+  - id: firestore
+    name: Firestore
+    category: database
+    tier: data
+    summary: Base NoSQL de documentos con sincronización en tiempo real.
+    deploy_note: >-
+      Modela las colecciones según el patrón de lectura; no requiere
+      dimensionado previo.
+    matches: [nosql, documentos, firestore, mongodb, mongo, tiempo real base de datos]
+    weight: 60
+    connects_to: [monitoring]
+
+  - id: bigtable
+    name: Cloud Bigtable
+    category: database
+    tier: data
+    summary: Base NoSQL de columnas anchas para volúmenes muy grandes.
+    deploy_note: >-
+      Reservado para series temporales o telemetría de alto volumen.
+    matches: [bigtable, columnas anchas, series temporales, cassandra, hbase]
+    weight: 20
+    connects_to: [monitoring]
+
+  - id: memorystore
+    name: Memorystore (Redis)
+    category: cache
+    tier: data
+    summary: Redis administrado para caché y sesiones.
+    deploy_note: >-
+      Pon aquí la caché de sesiones o de consultas frecuentes, en la misma
+      red que el cómputo.
+    matches: [cache, cache, redis, memcached, memoria, sesiones]
+    weight: 70
+    connects_to: [monitoring]
+
+  - id: cloud-storage
+    name: Cloud Storage
+    category: storage
+    tier: data
+    summary: Almacenamiento de objetos para archivos, respaldos y estáticos.
+    deploy_note: >-
+      Guarda aquí los archivos que suban los usuarios y los estáticos del
+      frontend; el contenido público se sirve por Cloud CDN.
+    matches: [almacenamiento, archivos, objetos, documentos, ficheros, imagenes, blob, bucket, pdf, adjuntos]
+    weight: 80
+    connects_to: [cloud-cdn, functions]
+
+  - id: filestore
+    name: Filestore
+    category: storage
+    tier: data
+    summary: Sistema de archivos compartido (NFS) entre varias instancias.
+    deploy_note: >-
+      Úsalo solo si varias instancias necesitan el MISMO sistema de
+      archivos montado.
+    matches: [sistema de archivos, nfs, volumen compartido, filestore]
+    weight: 20
+    connects_to: [compute-engine, gke]
+
+  # ------------------------------------------------------------- asíncrono --
+  - id: pubsub
+    name: Pub/Sub
+    category: queue
+    tier: async
+    summary: Mensajería de publicación y suscripción, y cola de trabajos.
+    deploy_note: >-
+      Publica aquí el trabajo que no tiene que resolverse dentro de la
+      petición HTTP y consúmelo desde Cloud Run o una función.
+    matches: [cola, queue, mensajes, rabbitmq, celery, trabajos, procesamiento asincrono, asincrono, eventos, bus de eventos, event driven, pub sub, publicacion suscripcion, kafka, notificaciones, notificacion, correo, email, push, alertas]
+    weight: 80
+    connects_to: [cloud-run, functions, dataflow]
+
+  - id: cloud-tasks
+    name: Cloud Tasks
+    category: queue
+    tier: async
+    summary: Cola de tareas HTTP con reintentos y control de ritmo.
+    deploy_note: >-
+      Úsala cuando necesites encolar llamadas HTTP con reintentos y un
+      ritmo controlado, en vez de un bus de eventos.
+    matches: [cloud tasks, tareas, reintentos, cola de tareas]
+    weight: 40
+    connects_to: [cloud-run, functions]
+
+  - id: dataflow
+    name: Dataflow
+    category: queue
+    tier: async
+    summary: Procesamiento de flujos y lotes de datos administrado.
+    deploy_note: >-
+      Para transformaciones continuas de alto volumen; para trabajos
+      sueltos basta con Pub/Sub y una función.
+    matches: [streaming, flujo de datos, tiempo real, etl, procesamiento por lotes, telemetria, clickstream]
+    weight: 40
+    connects_to: [cloud-storage, firestore]
+
+  # ------------------------------------------------------------- operación --
+  - id: identity-platform
+    name: Identity Platform
+    category: auth
+    tier: ops
+    summary: Registro, inicio de sesión y emisión de tokens para los usuarios.
+    deploy_note: >-
+      Delega aquí el registro y el login en vez de guardar contraseñas
+      propias; la API valida el token emitido.
+    matches: [autenticacion, auth, login, usuarios, identidad, jwt, oauth, registro, sesion de usuario, identity]
+    weight: 70
+    connects_to: [api-gateway, cloud-run]
+
+  - id: secret-manager
+    name: Secret Manager
+    category: secrets
+    tier: ops
+    summary: Custodia de credenciales y claves, con versionado.
+    deploy_note: >-
+      Guarda aquí la cadena de conexión y las claves de API en vez de
+      ponerlas en el `.env` de la máquina.
+    matches: [secretos, credenciales, claves, api key, variables de entorno]
+    weight: 60
+    connects_to: []
+
+  - id: monitoring
+    name: Cloud Monitoring
+    category: monitoring
+    tier: ops
+    summary: Métricas, registros y alertas de todos los servicios.
+    deploy_note: >-
+      Manda aquí los registros del backend y crea alertas sobre latencia y
+      errores.
+    matches: [monitoreo, observabilidad, logs, registros, metricas, alertas operativas, trazas]
+    weight: 70
+    connects_to: []
+
+  - id: vpc
+    name: Virtual Private Cloud
+    category: network
+    tier: ops
+    summary: Red privada donde viven el cómputo y las bases de datos.
+    deploy_note: >-
+      Deja las bases de datos con IP privada y expón solo el balanceador
+      a internet.
+    matches: [red, vpc, subred, red privada, firewall, grupo de seguridad]
+    weight: 40
+    connects_to: []
+
+  - id: cloud-build
+    name: Cloud Build
+    category: cicd
+    tier: ops
+    summary: Construcción de imágenes y despliegue continuo.
+    deploy_note: >-
+      Conecta el repositorio para que cada push construya la imagen y
+      despliegue la nueva revisión.
+    matches: [ci, cd, integracion continua, despliegue continuo, pipeline, cloud build]
+    weight: 40
+    connects_to: [cloud-run, gke]

@@ -54,8 +54,11 @@ interface ChatWindowProps {
   projectId: number
   phase?: string | null
   onProposalPhaseChanged?: () => void | Promise<void>
-  // Refinamiento: aprobar el diagrama cierra la fase y avanza a Revisión.
+  // Refinamiento, paso 1: aprobar el diagrama de arquitectura. Solo refresca;
+  // la fase la cierra el paso 2.
   onDiagramApproved?: () => void | Promise<void>
+  // Refinamiento, paso 2: aprobar el despliegue en la nube cierra la fase.
+  onDeploymentApproved?: () => void | Promise<void>
   // Revisión: al aprobar el ADR el proyecto queda terminado.
   onProjectCompleted?: () => void | Promise<void>
 }
@@ -65,6 +68,7 @@ export function ChatWindow({
   phase,
   onProposalPhaseChanged,
   onDiagramApproved,
+  onDeploymentApproved,
   onProjectCompleted,
 }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
@@ -342,7 +346,11 @@ export function ChatWindow({
             una vez que hay un diagrama generado, para no competir con él
             mientras se está dibujando. */}
         {isRefinementPhase(currentPhase) && hasDiagram && !generatingDiagram && (
-          <DeploymentPanel projectId={projectId} architectureApproved={architectureApproved} />
+          <DeploymentPanel
+            projectId={projectId}
+            architectureApproved={architectureApproved}
+            onApproved={onDeploymentApproved}
+          />
         )}
 
         {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the

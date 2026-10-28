@@ -1,0 +1,330 @@
+# =============================================================================
+# Catálogo de servicios de AWS para el diagrama de despliegue.
+#
+# No sale de la base de patrones: es un catálogo aparte, con su propia
+# categoría en el RAG (ver scripts/seed_cloud_catalog.py).
+#
+# Cada servicio declara:
+#   id           identificador estable; también es el nombre del PNG en
+#                data/cloud/icons/aws/<id>.png
+#   name         nombre oficial, el que se escribe en el diagrama
+#   category     familia del servicio (compute, database, cache, storage,
+#                queue, cdn, loadbalancer, dns, apigateway, auth, secrets,
+#                monitoring, network, cicd)
+#   tier         columna del diagrama, de izquierda a derecha (ver `tiers`)
+#   summary      una línea de qué es, para el RAG y para la ficha del servicio
+#   deploy_note  DÓNDE se despliega la pieza de la arquitectura que cae aquí.
+#                Es lo que pide el criterio "indicar dónde se puede desplegar
+#                cada pieza", así que se escribe en imperativo y concreto.
+#   matches      términos del componente que disparan este servicio. Se
+#                comparan contra el texto normalizado (sin tildes, minúsculas)
+#                del componente de la arquitectura aprobada.
+#   weight       desempate cuando dos servicios matchean lo mismo. Más alto
+#                gana. Los servicios "por defecto" de cada categoría llevan
+#                weight alto; los especializados, bajo, para que solo ganen
+#                cuando el componente los nombre explícitamente.
+#   connects_to  servicios a los que este puede conectarse. El diagrama solo
+#                dibuja una flecha si el par está permitido acá: evita
+#                inventar conexiones que en la nube real no existen.
+# =============================================================================
+
+id: aws
+name: Amazon Web Services
+short_name: AWS
+color: "#FF9900"
+accent: "#232F3E"
+docs_url: https://docs.aws.amazon.com/
+
+tiers:
+  - id: edge
+    label: Entrada
+  - id: compute
+    label: Cómputo
+  - id: data
+    label: Datos
+  - id: async
+    label: Asíncrono
+  - id: ops
+    label: Operación
+
+services:
+  # --------------------------------------------------------------- entrada --
+  - id: route53
+    name: Amazon Route 53
+    category: dns
+    tier: edge
+    summary: DNS administrado y enrutamiento de tráfico hacia los recursos de AWS.
+    deploy_note: >-
+      Apunta aquí el dominio del proyecto y delega los subdominios a
+      CloudFront o al balanceador.
+    matches: [dns, dominio, route 53, nombre de dominio]
+    weight: 60
+    connects_to: [cloudfront, alb, apigateway]
+
+  - id: cloudfront
+    name: Amazon CloudFront
+    category: cdn
+    tier: edge
+    summary: Red de distribución de contenido (CDN) con caché en los bordes.
+    deploy_note: >-
+      Publica aquí el frontend ya compilado (la carpeta `dist`) tomándolo de
+      un bucket de S3; CloudFront lo sirve con HTTPS y caché.
+    matches: [cdn, frontend, spa, cliente web, interfaz, ui, react, vue, angular, contenido estatico, sitio web, pagina web]
+    weight: 80
+    connects_to: [s3, alb, apigateway]
+
+  - id: apigateway
+    name: Amazon API Gateway
+    category: apigateway
+    tier: edge
+    summary: Puerta de entrada HTTP/REST con autenticación, cuotas y enrutamiento.
+    deploy_note: >-
+      Expón aquí la API pública y enruta cada ruta a Lambda o al servicio de
+      contenedores; aplica el rate limiting en esta capa, no en el backend.
+    matches: [api gateway, gateway, puerta de enlace, bff, backend for frontend]
+    weight: 70
+    connects_to: [lambda, ecs, fargate, ec2, cognito]
+
+  - id: alb
+    name: Elastic Load Balancing (ALB)
+    category: loadbalancer
+    tier: edge
+    summary: Balanceador de carga de aplicación que reparte el tráfico HTTP.
+    deploy_note: >-
+      Pon el backend detrás de este balanceador y termina aquí el certificado
+      TLS; reparte entre las instancias o tareas del servicio.
+    matches: [balanceador, load balancer, nginx, proxy inverso, reverse proxy, ingress]
+    weight: 70
+    connects_to: [ecs, fargate, ec2]
+
+  # --------------------------------------------------------------- cómputo --
+  - id: ecs
+    name: Amazon ECS
+    category: compute
+    tier: compute
+    summary: Orquestador de contenedores administrado por AWS.
+    deploy_note: >-
+      Sube la imagen Docker del servicio a ECR y despliégala como un servicio
+      de ECS con el número de tareas que pida la escala.
+    matches: [backend, api, servicio, servidor, aplicacion, contenedor, docker, microservicio, monolito, fastapi, django, flask, express, spring, node]
+    weight: 80
+    connects_to: [rds, aurora, dynamodb, elasticache, s3, sqs, sns, eventbridge, cognito, secrets, cloudwatch]
+
+  - id: fargate
+    name: AWS Fargate
+    category: compute
+    tier: compute
+    summary: Ejecución de contenedores sin administrar servidores.
+    deploy_note: >-
+      Usa este modo de cómputo para las tareas de ECS y olvídate de
+      dimensionar instancias: pagas por vCPU y memoria usadas.
+    matches: [fargate, contenedores sin servidor, serverless container]
+    weight: 40
+    connects_to: [rds, aurora, dynamodb, elasticache, s3, sqs, sns, cognito, secrets]
+
+  - id: lambda
+    name: AWS Lambda
+    category: compute
+    tier: compute
+    summary: Funciones que se ejecutan por evento, sin servidores que administrar.
+    deploy_note: >-
+      Empaqueta aquí la lógica que corre por evento o por petición corta;
+      conéctala a API Gateway, a EventBridge o a la cola.
+    matches: [lambda, funcion, function, serverless, sin servidor, worker, tarea programada, cron, job]
+    weight: 60
+    connects_to: [dynamodb, rds, s3, sqs, sns, eventbridge, cognito, secrets, cloudwatch]
+
+  - id: ec2
+    name: Amazon EC2
+    category: compute
+    tier: compute
+    summary: Máquinas virtuales con control total del sistema operativo.
+    deploy_note: >-
+      Elige esta opción solo si la pieza necesita control del sistema
+      operativo o no está contenerizada; si no, ECS sale más barato de operar.
+    matches: [maquina virtual, vm, instancia, servidor dedicado, ec2]
+    weight: 30
+    connects_to: [rds, aurora, s3, elasticache, efs]
+
+  - id: beanstalk
+    name: AWS Elastic Beanstalk
+    category: compute
+    tier: compute
+    summary: Despliegue administrado de aplicaciones web con escalado incluido.
+    deploy_note: >-
+      Sirve para subir una aplicación web clásica sin montar la
+      infraestructura a mano; AWS crea el balanceador y el autoescalado.
+    matches: [beanstalk, plataforma administrada, paas]
+    weight: 20
+    connects_to: [rds, s3]
+
+  # ----------------------------------------------------------------- datos --
+  - id: rds
+    name: Amazon RDS (PostgreSQL)
+    category: database
+    tier: data
+    summary: Base de datos relacional administrada, con copias de seguridad automáticas.
+    deploy_note: >-
+      Crea la instancia en subredes privadas, activa copias automáticas y
+      guarda la cadena de conexión en Secrets Manager.
+    matches: [postgres, postgresql, mysql, mariadb, base de datos, bd, sql, relacional, rds, base de datos relacional]
+    weight: 80
+    connects_to: [secrets, cloudwatch]
+
+  - id: aurora
+    name: Amazon Aurora
+    category: database
+    tier: data
+    summary: Base relacional compatible con PostgreSQL y MySQL, con réplicas rápidas.
+    deploy_note: >-
+      Úsala en lugar de RDS cuando necesites réplicas de lectura o
+      conmutación por error más rápida; la aplicación no cambia.
+    matches: [aurora, alta disponibilidad base de datos, replica de lectura]
+    weight: 30
+    connects_to: [secrets, cloudwatch]
+
+  - id: dynamodb
+    name: Amazon DynamoDB
+    category: database
+    tier: data
+    summary: Base NoSQL de clave-valor y documentos, sin servidores que administrar.
+    deploy_note: >-
+      Define la tabla y su clave de partición según el patrón de acceso;
+      no necesita dimensionado si la dejas en modo bajo demanda.
+    matches: [nosql, dynamo, dynamodb, clave valor, key value, documentos, mongodb, mongo]
+    weight: 60
+    connects_to: [cloudwatch]
+
+  - id: elasticache
+    name: Amazon ElastiCache (Redis)
+    category: cache
+    tier: data
+    summary: Caché en memoria compatible con Redis y Memcached.
+    deploy_note: >-
+      Pon aquí la caché de sesiones o de consultas frecuentes, en la misma
+      VPC que el cómputo para que la latencia sea mínima.
+    matches: [cache, cache, redis, memcached, memoria, sesiones]
+    weight: 70
+    connects_to: [cloudwatch]
+
+  - id: s3
+    name: Amazon S3
+    category: storage
+    tier: data
+    summary: Almacenamiento de objetos para archivos, respaldos y sitios estáticos.
+    deploy_note: >-
+      Guarda aquí los archivos que suban los usuarios y los estáticos del
+      frontend; sirve el contenido público a través de CloudFront.
+    matches: [almacenamiento, archivos, objetos, documentos, ficheros, imagenes, blob, bucket, s3, pdf, adjuntos]
+    weight: 80
+    connects_to: [cloudfront, lambda]
+
+  - id: efs
+    name: Amazon EFS
+    category: storage
+    tier: data
+    summary: Sistema de archivos compartido entre varias instancias o tareas.
+    deploy_note: >-
+      Úsalo solo si varias tareas necesitan el MISMO sistema de archivos
+      montado; para archivos sueltos, S3 es más barato y simple.
+    matches: [sistema de archivos, nfs, volumen compartido, efs]
+    weight: 20
+    connects_to: [ec2, ecs]
+
+  # ------------------------------------------------------------- asíncrono --
+  - id: sqs
+    name: Amazon SQS
+    category: queue
+    tier: async
+    summary: Cola de mensajes que desacopla productores de consumidores.
+    deploy_note: >-
+      Mete aquí el trabajo que no tiene que resolverse dentro de la petición
+      HTTP y consúmelo desde Lambda o desde una tarea de ECS.
+    matches: [cola, queue, mensajes, sqs, rabbitmq, celery, trabajos, procesamiento asincrono, asincrono]
+    weight: 80
+    connects_to: [lambda, ecs, fargate]
+
+  - id: sns
+    name: Amazon SNS
+    category: queue
+    tier: async
+    summary: Publicación y suscripción de notificaciones a varios destinos.
+    deploy_note: >-
+      Publica aquí los avisos que deben llegar a varios destinos a la vez
+      (correo, SMS, otra cola).
+    matches: [notificaciones, notificacion, sns, correo, email, push, alertas]
+    weight: 60
+    connects_to: [sqs, lambda]
+
+  - id: eventbridge
+    name: Amazon EventBridge
+    category: queue
+    tier: async
+    summary: Bus de eventos para comunicar servicios sin acoplarlos.
+    deploy_note: >-
+      Publica los eventos de dominio en este bus y deja que cada consumidor
+      se suscriba a los que le interesan.
+    matches: [eventos, bus de eventos, event driven, event bus, eventbridge, pub sub, publicacion suscripcion]
+    weight: 60
+    connects_to: [lambda, sqs, sns]
+
+  - id: kinesis
+    name: Amazon Kinesis
+    category: queue
+    tier: async
+    summary: Ingesta y procesamiento de flujos de datos en tiempo real.
+    deploy_note: >-
+      Úsalo para flujos continuos de alto volumen (telemetría, clickstream);
+      para trabajos sueltos, SQS basta.
+    matches: [streaming, flujo de datos, tiempo real, kinesis, kafka, telemetria, clickstream]
+    weight: 40
+    connects_to: [lambda, s3]
+
+  # ------------------------------------------------------------- operación --
+  - id: cognito
+    name: Amazon Cognito
+    category: auth
+    tier: ops
+    summary: Registro, inicio de sesión y emisión de tokens para los usuarios.
+    deploy_note: >-
+      Delega aquí el registro y el login en lugar de guardar contraseñas en
+      tu propia base; la API valida el token que emite Cognito.
+    matches: [autenticacion, auth, login, usuarios, identidad, jwt, oauth, registro, sesion de usuario, cognito]
+    weight: 70
+    connects_to: [apigateway, lambda]
+
+  - id: secrets
+    name: AWS Secrets Manager
+    category: secrets
+    tier: ops
+    summary: Custodia de credenciales y claves, con rotación automática.
+    deploy_note: >-
+      Guarda aquí la cadena de conexión y las claves de API en vez de
+      ponerlas en el archivo `.env` de la instancia.
+    matches: [secretos, credenciales, claves, api key, secrets, variables de entorno]
+    weight: 60
+    connects_to: []
+
+  - id: cloudwatch
+    name: Amazon CloudWatch
+    category: monitoring
+    tier: ops
+    summary: Métricas, registros y alarmas de todos los servicios.
+    deploy_note: >-
+      Manda aquí los registros del backend y crea alarmas sobre latencia y
+      errores; es el primer sitio donde mirar cuando algo falla.
+    matches: [monitoreo, observabilidad, logs, registros, metricas, alertas operativas, trazas, cloudwatch]
+    weight: 70
+    connects_to: []
+
+  - id: vpc
+    name: Amazon VPC
+    category: network
+    tier: ops
+    summary: Red privada donde viven el cómputo y las bases de datos.
+    deploy_note: >-
+      Deja las bases de datos en subredes privadas y expón solo el
+      balanceador a internet.
+    matches: [red, vpc, subred, red privada, firewall, grupo de seguridad]
+    weight: 40
+    connects_to: []

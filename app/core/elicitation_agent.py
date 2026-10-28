@@ -40,6 +40,22 @@ MAX_QUESTIONS = 10
 # frescura de los datos, menores de edad o retención (prueba del observatorio
 # de analítica). Ver ``max_questions``.
 MAX_QUESTIONS_COMPLEX = int(os.getenv("ELICITATION_MAX_QUESTIONS_COMPLEX", "14") or 14)
+# Tope DURO, por encima de ``max_questions``: hasta aquí se puede estirar la
+# elicitación cuando todavía falta un tema obligatorio.
+#
+# Por qué hace falta: los temas que el código exige antes de cerrar son once
+# -- usuarios, funcionalidades y calidad (HU5); plataforma, habilidades,
+# fuente de datos y tecnologías no dominadas (drivers de arquitectura);
+# presupuesto, equipo y plazo (viabilidad); y la escala. Con MAX_QUESTIONS=10
+# no caben, así que la elicitación cerraba por tope con campos en "no
+# definido" aunque nunca se hubieran preguntado. Con documentos subidos sí
+# salía completa, porque el texto de los documentos cubre varios temas sin
+# gastar preguntas -- de ahí la sensación de que "funciona mejor con
+# documentos".
+#
+# Las 10 pasan a ser el tope NORMAL: pasado ese punto solo se sigue
+# preguntando si falta algo obligatorio, y nunca más allá de este número.
+ABSOLUTE_MAX_QUESTIONS = int(os.getenv("ELICITATION_ABSOLUTE_MAX_QUESTIONS", "14") or 14)
 
 # Estos tres datos no son una restricción genérica más: determinan si una
 # propuesta es viable. Se buscan en las RESPUESTAS del usuario, en la
@@ -760,6 +776,20 @@ def max_questions(
     return MAX_QUESTIONS
 
 
+def absolute_max_questions(
+    history: list[dict], project_description: str = "", documents_context: Optional[str] = None
+) -> int:
+    """Tope duro: ni con temas obligatorios pendientes se pasa de aquí.
+
+    Nunca por debajo del tope normal del proyecto, para que un proyecto
+    complejo no quede con menos margen que uno simple.
+    """
+    return max(
+        ABSOLUTE_MAX_QUESTIONS,
+        max_questions(history, project_description, documents_context),
+    )
+
+
 def _user_context(
     history: list[dict], project_description: str, documents_context: Optional[str]
 ) -> str:
@@ -1009,8 +1039,10 @@ def next_step(
         raise ElicitationAgentError(f"Falta la clave 'done' en la respuesta del modelo: {data}")
 
     decision = _decision_from_data(data)
-    # Tope de preguntas de ESTE proyecto (más alto si es complejo).
+    # Tope de preguntas de ESTE proyecto (más alto si es complejo) y tope
+    # duro, hasta el que se puede estirar si falta algo obligatorio.
     max_q = max_questions(history, project_description, documents_context)
+    hard_max = absolute_max_questions(history, project_description, documents_context)
 
     # Regla dura complementaria al prompt: el LLM no puede cerrar ni saltarse
     # los límites que condicionan coste, complejidad y entrega. Solo se aplica
@@ -1019,7 +1051,7 @@ def next_step(
     # LLM (ya pagada) con las de presupuesto, equipo y plazo, rompiendo la
     # progresión de HU5. Y respeta MAX_QUESTIONS: a partir del máximo no se
     # hace una pregunta más, se cierra (ver abajo).
-    if len(history) < max_q and (
+    if len(history) < hard_max and (
         decision.done or len(history) >= MIN_QUESTIONS
     ):
         missing_viability = _missing_viability_factors(
@@ -1049,7 +1081,7 @@ def next_step(
                 reason=f"Quedan pocas preguntas y falta lo obligatorio: {category}.",
             )
 
-    if decision.done and MIN_QUESTIONS <= len(history) < max_q:
+    if decision.done and MIN_QUESTIONS <= len(history) < hard_max:
         # Checklist de cobertura: el LLM quiere cerrar, pero el código no lo
         # deja si falta una categoría de HU5 o una preocupación del dominio
         # (ubicación, archivos, pagos...) que el proyecto sugiere. Antes del
@@ -1082,11 +1114,28 @@ def next_step(
             f"({len(history)}/{MIN_QUESTIONS}).",
         )
     elif len(history) >= max_q and not decision.done:
+        # Pasado el tope normal: antes se cerraba aquí sin más, y con ello se
+        # perdían los temas obligatorios que no hubieran cabido en esas
+        # preguntas (el resumen salía con "no definido"). Ahora se estira
+        # hasta `hard_max` SOLO mientras quede algo obligatorio pendiente.
+        pending = _missing_viability_factors(
+            history, project_description, documents_context
+        ) or missing_coverage(history, project_description, documents_context)
+        if pending and len(history) < hard_max:
+            name, question = pending[0]
+            return ElicitationDecision(
+                done=False,
+                question=question,
+                reason=(
+                    f"Pasado el tope normal ({max_q}) pero falta lo obligatorio: "
+                    f"{name} ({len(history)}/{hard_max})."
+                ),
+            )
         # Regla dura opuesta: no dejar que se alargue indefinidamente.
         decision = ElicitationDecision(
             done=True,
             question=None,
-            reason=f"Forzado: se alcanzó el máximo de preguntas ({max_q}).",
+            reason=f"Forzado: se alcanzó el máximo de preguntas ({max(max_q, len(history))}).",
         )
 
     if (
