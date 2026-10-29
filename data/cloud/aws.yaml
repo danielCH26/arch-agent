@@ -57,7 +57,10 @@ services:
     deploy_note: >-
       Apunta aquí el dominio del proyecto y delega los subdominios a
       CloudFront o al balanceador.
-    matches: [dns, dominio, route 53, nombre de dominio]
+    # OJO: "dominio" a secas NO va aquí. En estas arquitecturas casi siempre
+    # significa la capa de dominio (modelos y reglas de negocio), no un
+    # nombre DNS, y "Dominio (Modelos y reglas)" terminaba mapeado a Route 53.
+    matches: [dns, route 53, nombre de dominio, dominio web, zona dns]
     weight: 60
     connects_to: [cloudfront, alb, apigateway]
 

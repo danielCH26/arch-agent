@@ -151,6 +151,14 @@ export function DeploymentPanel({
         cada pieza.
       </p>
 
+      {!plan && (
+        <p className="mt-3 text-sm font-medium text-sky-900" data-testid="deployment-call-to-action">
+          {selected
+            ? 'Listo: genera el diagrama de despliegue.'
+            : '1. Elige la nube. 2. Genera el diagrama.'}
+        </p>
+      )}
+
       {/* Paso 1: elegir la nube */}
       <div className="mt-3 flex flex-wrap gap-2" role="radiogroup" aria-label="Proveedor de nube">
         {providers.map((provider) => {
@@ -242,7 +250,7 @@ export function DeploymentPanel({
                 </tr>
               </thead>
               <tbody>
-                {plan.components.map((item) => (
+                {(plan.components ?? []).map((item) => (
                   <tr key={`${item.component}-${item.service_id}`} className="odd:bg-white even:bg-gray-50">
                     <td className="border border-gray-300 px-3 py-2 align-top">{item.component}</td>
                     <td className="border border-gray-300 px-3 py-2 align-top">
@@ -258,21 +266,30 @@ export function DeploymentPanel({
             </table>
           </div>
 
-          {plan.bridges.length > 0 && (
+          {(plan.bridges ?? []).length > 0 && (
             <p className="text-xs text-gray-600" data-testid="deployment-bridges">
               <span className="font-medium">Agregado por {plan.provider.short_name}:</span>{' '}
-              {plan.bridges.map((b) => b.service_name).join(', ')}. No sale de un componente de
+              {(plan.bridges ?? []).map((b) => b.service_name).join(', ')}. No sale de un componente de
               la arquitectura; hace falta para conectar las piezas en esta nube.
             </p>
           )}
 
-          {plan.unmapped.length > 0 && (
+          {(plan.externals ?? []).length > 0 && (
+            <p className="text-xs text-gray-600" data-testid="deployment-externals">
+              <span className="font-medium">Servicios de terceros:</span>{' '}
+              {(plan.externals ?? []).map((e) => e.name).join(', ')}. Se consumen por API; no se
+              despliegan en {plan.provider.short_name}, pero el diagrama los muestra porque
+              el sistema depende de ellos.
+            </p>
+          )}
+
+          {(plan.unmapped ?? []).length > 0 && (
             <p
               className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900"
               data-testid="deployment-unmapped"
             >
               Sin equivalente directo en {plan.provider.short_name}:{' '}
-              {plan.unmapped.join(', ')}. Revisa si hace falta un servicio específico o si esa
+              {(plan.unmapped ?? []).join(', ')}. Revisa si hace falta un servicio específico o si esa
               pieza va dentro de otra.
             </p>
           )}

@@ -22,6 +22,7 @@ import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_current_user
@@ -29,7 +30,7 @@ from app.core.attachment_tokens import build_attachment_url
 from app.core.adr_generator import AdrNotReadyError, collect_adr_context
 from app.core.cloud_catalog import CloudCatalogError, list_providers
 from app.core.database import SessionLocal
-from app.core.deployment_diagram import render_deployment_diagram
+from app.core.deployment_diagram import render_deployment_diagram, take_page
 from app.core.deployment_mapper import build_plan, plan_to_dict
 from app.core.message_store import ensure_user_session, save_message
 from app.core.session_store import latest_diagram_decisions, record_approval_decision
@@ -159,6 +160,27 @@ def _deployment_rows(db, *, user_id: int, project_id: int):
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
+
+
+@router.get("/render/{token}", include_in_schema=False)
+def render_page(token: str) -> HTMLResponse:
+    """Sirve la página del diagrama para que la cargue Puppeteer.
+
+    SIN autenticación a propósito: quien la pide es el navegador del sidecar,
+    que no tiene sesión de usuario. Lo que la protege es que el token es un
+    UUID que solo existe durante los dos minutos que dura el render, y que la
+    página se borra en cuanto termina. No lleva datos del usuario: es el mismo
+    diagrama que ya está viendo en pantalla.
+
+    Va antes de ``/{...}`` con más segmentos por claridad; no choca con
+    ``/history`` ni ``/providers`` porque tiene dos segmentos.
+    """
+    page = take_page(token)
+    if page is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Página de render no disponible"
+        )
+    return HTMLResponse(content=page)
 
 
 @router.get("/providers", response_model=ProvidersOut)

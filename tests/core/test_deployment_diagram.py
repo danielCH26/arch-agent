@@ -9,7 +9,8 @@ las flechas, y las conexiones del plan.
 
 import re
 
-from app.core.deployment_diagram import build_deployment_html
+from app.core import deployment_diagram
+from app.core.deployment_diagram import build_deployment_html, stash_page, take_page
 from app.core.deployment_mapper import build_plan
 
 MERMAID = """graph TD
@@ -92,6 +93,40 @@ def test_pone_el_titulo_de_listo_al_terminar():
     html = _html()
     assert "deployment-rendered" in html
     assert "document.title" in html
+
+
+class TestEntregaDeLaPagina:
+    """La página se sirve por HTTP, no se manda como `data:` URL.
+
+    Lleva los logos embebidos y pesa más de 100 KB; el transporte del sidecar
+    de Puppeteer rechaza una petición de ese tamaño (413), que es lo que hacía
+    fallar el render con "unhandled errors in a TaskGroup".
+    """
+
+    def test_guarda_y_devuelve_la_pagina(self):
+        token = stash_page("<html>hola</html>")
+        assert take_page(token) == "<html>hola</html>"
+
+    def test_un_token_desconocido_no_devuelve_nada(self):
+        assert take_page("no-existe") is None
+
+    def test_la_pagina_caduca(self, monkeypatch):
+        """No se quedan páginas en memoria si un render se cuelga."""
+        monkeypatch.setattr(deployment_diagram, "_PAGE_TTL_SECONDS", 0.0)
+        token = stash_page("<html>x</html>")
+        assert take_page(token) is None
+
+    def test_dos_renders_no_se_pisan(self):
+        uno, dos = stash_page("<html>1</html>"), stash_page("<html>2</html>")
+        assert uno != dos
+        assert take_page(uno) == "<html>1</html>"
+        assert take_page(dos) == "<html>2</html>"
+
+    def test_el_backend_se_nombra_por_su_servicio_de_docker(self):
+        """Quien pide la página es el navegador del sidecar, no el usuario:
+        `localhost` ahí sería el propio sidecar."""
+        assert "localhost" not in deployment_diagram.RENDER_BASE_URL
+        assert deployment_diagram.RENDER_BASE_URL.startswith("http")
 
 
 def test_el_svg_de_las_flechas_queda_debajo_de_las_tarjetas():

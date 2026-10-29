@@ -171,6 +171,116 @@ def test_el_usuario_no_es_un_componente_desplegable():
     assert "Usuario" not in plan.unmapped
 
 
+class TestServiciosDeTerceros:
+    """Stripe no se despliega, se consume. Listarlos como "sin equivalente"
+    daba a entender un problema donde solo hay una dependencia externa."""
+
+    @pytest.mark.parametrize(
+        "componente",
+        [
+            "Pasarela de pagos (Stripe)",
+            "Pasarela de pago",
+            "Integración con sistema externo",
+            "API externa de catálogo",
+            "Servicio de un tercero",
+        ],
+    )
+    def test_se_reconocen_como_externos(self, componente):
+        plan = build_plan(
+            provider_id="aws", mermaid=f"graph TD\n  A[{componente}] --> B[Backend FastAPI]\n"
+        )
+        assert [e.name for e in plan.externals] == [componente]
+        assert plan.unmapped == ()
+
+    def test_no_se_confunde_un_componente_propio_con_uno_externo(self):
+        plan = build_plan(
+            provider_id="aws", mermaid="graph TD\n  A[Base de datos PostgreSQL]\n"
+        )
+        assert plan.externals == ()
+
+    def test_la_flecha_sale_de_lo_nuestro_hacia_el_tercero(self):
+        """El catálogo describe la nube, no a Stripe: la dirección se decide
+        por quién llama a quién, no por `connects_to`."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos Stripe]\n",
+        )
+        externo = plan.externals[0]
+        assert ("ecs", externo.id) in plan.connections
+
+    def test_una_caja_por_servicio_aunque_se_nombre_de_dos_formas(self):
+        """El diagrama lo nombra "Pasarela de pagos" y la propuesta
+        "Pasarela de pagos (Stripe)": es el mismo tercero, no dos."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        assert [e.name for e in plan.externals] == ["Pasarela de pagos (Stripe)"]
+
+    def test_la_flecha_llega_a_la_caja_que_quedo(self):
+        """Al juntar variantes, el nodo del diagrama tiene que apuntar al
+        servicio que sobrevivió, no a uno que ya no existe."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        destino = plan.externals[0].id
+        assert ("ecs", destino) in plan.connections
+
+    def test_un_tercero_sin_nodo_en_el_diagrama_igual_se_conecta(self):
+        """Si la pieza solo aparece en la sección Componentes, no hay arista
+        que traducir y la caja quedaba flotando. Quien llama a un servicio
+        externo es siempre el cómputo."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  FE[Frontend Web] --> API[API REST Django]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        externo = plan.externals[0]
+        assert ("ecs", externo.id) in plan.connections
+
+    def test_no_duplica_la_flecha_si_el_diagrama_ya_la_tenia(self):
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        hacia_externos = [c for c in plan.connections if c[1].startswith("ext-")]
+        assert len(hacia_externos) == 1
+
+    def test_viajan_en_el_plan_serializado(self):
+        plan = build_plan(
+            provider_id="gcp",
+            mermaid="graph TD\n  A[Backend FastAPI] --> B[Pasarela de pagos Stripe]\n",
+        )
+        data = plan_to_dict(plan)
+        assert data["externals"] and data["externals"][0]["name"]
+
+
+def test_no_repite_el_mismo_componente_con_distinto_detalle():
+    """El mismo componente llega del diagrama ("Motor de reglas") y de la
+    propuesta ("Motor de reglas (Drools)"). Listar los dos hacía parecer
+    que había el doble de problemas; se conserva el más informativo.
+
+    El ejemplo NO es una pasarela de pagos a propósito: eso ahora se
+    reconoce como servicio de un tercero y no llega a `unmapped`.
+    """
+    mermaid = "graph TD\n  A[Motor de reglas] --> B[Backend FastAPI]\n"
+    propuesta = "## Componentes\n- **Motor de reglas (Drools)**: decisiones.\n"
+    plan = build_plan(
+        provider_id="aws", mermaid=mermaid, proposal_markdown=propuesta
+    )
+    assert plan.unmapped == ("Motor de reglas (Drools)",)
+
+
+def test_no_junta_componentes_que_solo_se_parecen():
+    mermaid = "graph TD\n  A[Motor de reglas] --> B[Firma digital]\n"
+    plan = build_plan(provider_id="aws", mermaid=mermaid)
+    assert len(plan.unmapped) == 2
+
+
 def test_un_componente_desconocido_se_reporta_en_vez_de_inventarse():
     """Preferimos decir "esto no lo sé mapear" a poner un servicio al azar."""
     plan = build_plan(
@@ -178,6 +288,28 @@ def test_un_componente_desconocido_se_reporta_en_vez_de_inventarse():
     )
     assert plan.components == ()
     assert plan.unmapped == ("Cosa rarisima inclasificable",)
+
+
+@pytest.mark.parametrize("provider_id", ["aws", "gcp"])
+@pytest.mark.parametrize(
+    "componente",
+    ["Dominio", "Dominio (Modelos y reglas)", "Capa de Dominio"],
+)
+def test_la_capa_de_dominio_no_es_un_servicio_de_dns(provider_id, componente):
+    """En estas arquitecturas "dominio" es la capa de negocio, no un nombre
+    DNS. Con "dominio" como término del catálogo, "Dominio (Modelos y
+    reglas)" salía mapeado a Route 53, que es un error visible en la tabla.
+    Preferimos dejarlo sin mapear antes que mapearlo mal."""
+    plan = build_plan(provider_id=provider_id, mermaid=f"graph TD\n  A[{componente}]\n")
+    categorias = {m.service.category for m in plan.components}
+    assert "dns" not in categorias
+
+
+@pytest.mark.parametrize("provider_id", ["aws", "gcp"])
+@pytest.mark.parametrize("componente", ["Nombre de dominio", "DNS", "Dominio web"])
+def test_el_dns_de_verdad_si_se_mapea(provider_id, componente):
+    plan = build_plan(provider_id=provider_id, mermaid=f"graph TD\n  A[{componente}]\n")
+    assert [m.service.category for m in plan.components] == ["dns"]
 
 
 def test_el_termino_mas_especifico_gana():

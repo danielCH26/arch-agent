@@ -33,13 +33,27 @@ export interface BridgeService {
   deploy_note: string
 }
 
+/** Pieza de un tercero: se consume por API, no se despliega. */
+export interface ExternalService {
+  id: string
+  name: string
+}
+
+/**
+ * Las listas van opcionales a propósito. El backend siempre las manda, pero
+ * una respuesta de una versión anterior (backend sin reconstruir, o un plan
+ * guardado antes de que existiera un campo) llegaría sin ellas, y leer
+ * `.length` de undefined tumbaba el panel entero con "Algo salió mal".
+ * Marcarlas opcionales obliga a defenderse en cada uso.
+ */
 export interface DeploymentPlan {
   provider: { id: string; name: string; short_name: string; color: string; docs_url: string }
-  components: MappedComponent[]
-  connections: { from: string; to: string }[]
-  bridges: BridgeService[]
-  unmapped: string[]
-  dropped_connections: { from: string; to: string }[]
+  components?: MappedComponent[]
+  connections?: { from: string; to: string }[]
+  bridges?: BridgeService[]
+  externals?: ExternalService[]
+  unmapped?: string[]
+  dropped_connections?: { from: string; to: string }[]
   attachment_id: string | null
   url: string | null
   // Presente cuando el mapeo salió pero la imagen no se pudo renderizar.

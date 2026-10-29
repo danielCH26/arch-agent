@@ -139,13 +139,33 @@ export function ChatWindow({
   // El despliegue en la nube se calcula SOBRE la arquitectura aprobada, así
   // que su panel solo ofrece generar cuando el diagrama ya tiene un
   // "approve"; antes de eso explica qué falta en vez de fallar con un 409.
-  const architectureApproved = messages.some(
-    (message) =>
-      message.role === 'assistant' &&
-      (message.attachments ?? []).some(
-        (attachment) => attachment.kind === 'screenshot' && attachment.decision === 'approve',
-      ),
-  )
+  //
+  // Hay DOS fuentes para saberlo, y hacen falta las dos:
+  //
+  //  * `attachment.decision`, que llega del servidor al cargar el historial.
+  //    Cubre volver al proyecto más tarde.
+  //  * una marca local, porque aprobar en el chat NO actualiza ese campo en
+  //    el store: <MessageBubble> pinta "Diagrama aprobado." con estado
+  //    propio. Sin la marca, el panel seguía pidiendo aprobar el diagrama
+  //    que acababas de aprobar, hasta recargar la página.
+  const [diagramApprovedNow, setDiagramApprovedNow] = useState(false)
+  useEffect(() => {
+    setDiagramApprovedNow(false)
+  }, [projectId])
+  const architectureApproved =
+    diagramApprovedNow ||
+    messages.some(
+      (message) =>
+        message.role === 'assistant' &&
+        (message.attachments ?? []).some(
+          (attachment) => attachment.kind === 'screenshot' && attachment.decision === 'approve',
+        ),
+    )
+
+  const handleDiagramApproved = async () => {
+    setDiagramApprovedNow(true)
+    await onDiagramApproved?.()
+  }
   const generatingDiagram = isRefinementPhase(currentPhase) && (checkingDiagrams || isStreaming)
   const decisionLivesInTheContent =
     currentPhase === 'propuesta' || (isRefinementPhase(currentPhase) && hasDiagram)
@@ -331,7 +351,7 @@ export function ChatWindow({
             projectId={projectId}
             onSendMessage={handleSend}
             busy={isStreaming}
-            onDiagramApproved={isRefinementPhase(currentPhase) ? onDiagramApproved : undefined}
+            onDiagramApproved={isRefinementPhase(currentPhase) ? handleDiagramApproved : undefined}
           />
         ))}
 

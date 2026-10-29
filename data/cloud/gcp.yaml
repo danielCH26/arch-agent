@@ -35,7 +35,8 @@ services:
     deploy_note: >-
       Crea aquí la zona del dominio y apunta los registros al balanceador o
       a la CDN.
-    matches: [dns, dominio, nombre de dominio]
+    # Ver la nota en aws.yaml: "dominio" a secas es la capa de dominio.
+    matches: [dns, nombre de dominio, dominio web, zona dns]
     weight: 60
     connects_to: [cloud-cdn, load-balancing, api-gateway]
 

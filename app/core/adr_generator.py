@@ -492,6 +492,16 @@ def _deployment_block(ctx: AdrContext) -> str:
                 f"para conectar las piezas (no salen de un componente de la "
                 f"arquitectura): {nombres}."
             )
+    externals = [
+        str(e.get("name") or "")
+        for e in (plan.get("externals") or [])
+        if isinstance(e, dict) and e.get("name")
+    ]
+    if externals:
+        extras += (
+            "\n\nServicios de terceros de los que depende el sistema y que no se "
+            f"despliegan en esta nube (se consumen por API): {', '.join(externals)}."
+        )
     unmapped = [str(u) for u in (plan.get("unmapped") or []) if str(u).strip()]
     if unmapped:
         extras += (

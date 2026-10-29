@@ -62,6 +62,39 @@ _NOT_A_COMPONENT = {
 # diagrama, no una caja.
 _MAX_LABEL_WORDS = 10
 
+# Piezas que NO se despliegan en la nube elegida porque son de un tercero:
+# se consumen por API. No hay ningún servicio de AWS que "sea" Stripe, así
+# que listarlas como "sin equivalente" daba a entender un problema donde
+# solo hay una dependencia externa. Se dibujan en su propia columna.
+#
+# Se comparan sobre el texto normalizado del componente.
+_EXTERNAL_PATTERNS: tuple[str, ...] = (
+    r"\bexterno?s?\b",
+    r"\bexterna?s?\b",
+    r"\bterceros?\b",
+    r"\bpasarela de pagos?\b",
+    r"\bpasarela\b",
+    r"\bstripe\b",
+    r"\bpaypal\b",
+    r"\bpayu\b",
+    r"\bmercado ?pago\b",
+    r"\bwompi\b",
+    r"\btwilio\b",
+    r"\bsendgrid\b",
+    r"\bmailchimp\b",
+    r"\bfirebase\b",
+    r"\bgoogle maps\b",
+    r"\bapi de un tercero\b",
+    r"\bpasarela de pago\b",
+    r"\bproveedor externo\b",
+)
+_EXTERNAL_RE = re.compile("|".join(_EXTERNAL_PATTERNS))
+
+
+def is_external_service(label: str) -> bool:
+    """¿La etiqueta nombra un servicio de un tercero, no desplegable?"""
+    return bool(_EXTERNAL_RE.search(normalize(label)))
+
 
 # --------------------------------------------------------------------------
 # Lectura del Mermaid
@@ -258,6 +291,18 @@ class MappedComponent:
 
 
 @dataclass(frozen=True)
+class ExternalService:
+    """Servicio de un tercero: se consume por API, no se despliega.
+
+    Tiene ``id`` propio para poder dibujarle flechas desde el cómputo, igual
+    que a un servicio de la nube.
+    """
+
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
 class DeploymentPlan:
     provider: CloudProvider
     components: tuple[MappedComponent, ...]
@@ -271,6 +316,9 @@ class DeploymentPlan:
     # poder unir dos piezas que en esa nube no se conectan directamente
     # (p. ej. el balanceador entre la CDN y los contenedores).
     bridges: tuple[CloudService, ...] = ()
+    # Piezas de terceros (pasarelas de pago, APIs externas): se consumen,
+    # no se despliegan. Van en su propia columna del diagrama.
+    externals: tuple[ExternalService, ...] = ()
 
     @property
     def services(self) -> list[CloudService]:
@@ -361,6 +409,34 @@ def _find_bridge(
     return max(candidates, key=lambda s: (s.id in preferred, s.weight))
 
 
+def _collapse_variants(labels: list[str]) -> list[str]:
+    """Quita las variantes de un mismo componente, dejando la más informativa.
+
+    El mismo componente llega dos veces con distinto detalle: del diagrama
+    ("Pasarela de pagos") y de la sección Componentes de la propuesta
+    ("Pasarela de pagos (Stripe)"). Como no son idénticos, la deduplicación
+    por nombre no los junta y el aviso de "sin equivalente" los listaba los
+    dos, pareciendo el doble de problemas de los que hay.
+
+    Se conserva la etiqueta más larga: la que trae el paréntesis explicativo.
+    """
+    normalized = {label: normalize(label) for label in labels}
+    out: list[str] = []
+    for label in labels:
+        mine = normalized[label]
+        if not mine:
+            continue
+        # Hay otra etiqueta que dice lo mismo y además algo más.
+        if any(
+            other != label and mine != normalized[other] and mine in normalized[other]
+            for other in labels
+        ):
+            continue
+        if label not in out:
+            out.append(label)
+    return out
+
+
 def _is_component(label: str) -> bool:
     normalized = normalize(label)
     if not normalized or normalized in _NOT_A_COMPONENT:
@@ -396,6 +472,13 @@ def build_plan(
     unmapped: list[str] = []
     seen_labels: set[str] = set()
 
+    # Los externos se recogen como etiquetas y solo al final se juntan las
+    # variantes del mismo servicio ("Pasarela de pagos" / "Pasarela de pagos
+    # (Stripe)") y se les da id. Asignarlo al vuelo creaba una caja por cada
+    # forma de nombrarlo.
+    external_labels: list[str] = []
+    node_external_label: dict[str, str] = {}
+
     def consider(label: str, node_id: Optional[str]) -> None:
         normalized = normalize(label)
         if not _is_component(label) or normalized in seen_labels:
@@ -408,8 +491,23 @@ def build_plan(
                 )
                 if existing is not None:
                     node_service[node_id] = existing
+                else:
+                    same = next(
+                        (e for e in external_labels if normalize(e) == normalized), None
+                    )
+                    if same is not None:
+                        node_external_label[node_id] = same
             return
         seen_labels.add(normalized)
+        # Lo de terceros se mira ANTES de buscar servicio: "Pasarela de pagos
+        # (Stripe)" contiene "pagos" y podría engancharse con algún término
+        # del catálogo, y lo correcto es que salga como externo.
+        if is_external_service(label):
+            if label not in external_labels:
+                external_labels.append(label)
+            if node_id:
+                node_external_label[node_id] = label
+            return
         match = _best_service(label, provider)
         if match is None:
             unmapped.append(label)
@@ -423,6 +521,29 @@ def build_plan(
         consider(label, node_id)
     for label in parse_proposal_components(proposal_markdown or ""):
         consider(label, None)
+
+    # Se juntan las variantes y se les asigna id. Cada etiqueta original
+    # apunta al servicio que la representa, para que las flechas de sus
+    # nodos lleguen a la caja correcta.
+    kept_labels = _collapse_variants(external_labels)
+    externals = [
+        ExternalService(id=f"ext-{index + 1}", name=label)
+        for index, label in enumerate(kept_labels)
+    ]
+    by_label: dict[str, ExternalService] = {}
+    for label in external_labels:
+        mine = normalize(label)
+        match_ext = next(
+            (e for e in externals if mine == normalize(e.name) or mine in normalize(e.name)),
+            None,
+        )
+        if match_ext is not None:
+            by_label[label] = match_ext
+    node_external = {
+        node_id: by_label[label]
+        for node_id, label in node_external_label.items()
+        if label in by_label
+    }
 
     # --- conexiones ---------------------------------------------------------
     allowed: set[tuple[str, str]] = set()
@@ -444,6 +565,18 @@ def build_plan(
     for src_id, dst_id in edges:
         src = node_service.get(src_id)
         dst = node_service.get(dst_id)
+
+        # Una punta en un servicio de un tercero: la llamada siempre sale de
+        # lo nuestro hacia él, así que la flecha va en esa dirección sin
+        # consultar `connects_to` (el catálogo describe la nube, no a Stripe).
+        src_ext, dst_ext = node_external.get(src_id), node_external.get(dst_id)
+        if src_ext is not None or dst_ext is not None:
+            nuestro = dst if src_ext is not None else src
+            tercero = src_ext if src_ext is not None else dst_ext
+            if nuestro is not None and tercero is not None:
+                add((nuestro.id, tercero.id))
+            continue
+
         if src is None or dst is None or src.id == dst.id:
             continue
         pair = (src.id, dst.id)
@@ -475,6 +608,26 @@ def build_plan(
             if src_id in chosen_ids and dst_id in chosen_ids:
                 connections.append((src_id, dst_id))
 
+    # Un tercero sin flecha queda flotando, como si no formara parte del
+    # sistema. Pasa cuando la pieza sale de la sección Componentes de la
+    # propuesta y no de un nodo del diagrama: no hay arista que traducir.
+    # Quien llama a un servicio externo es siempre el cómputo, así que se
+    # conecta desde el servicio de cómputo principal (el de mayor `weight`
+    # entre los elegidos, que es el que aloja el backend).
+    if externals:
+        compute = [
+            m.service
+            for m in components
+            if m.service.category == "compute"
+        ]
+        main_compute = max(compute, key=lambda s: s.weight) if compute else None
+        if main_compute is not None:
+            for external in externals:
+                if not any(dst == external.id for _src, dst in connections):
+                    add((main_compute.id, external.id))
+
+    unmapped = _collapse_variants(unmapped)
+
     if unmapped:
         _LOGGER.info(
             "Despliegue %s: %d componente(s) sin servicio equivalente: %s",
@@ -490,6 +643,7 @@ def build_plan(
         unmapped=tuple(unmapped),
         dropped_connections=tuple(dropped),
         bridges=tuple(bridges),
+        externals=tuple(externals),
     )
 
 
@@ -527,6 +681,7 @@ def plan_to_dict(plan: DeploymentPlan) -> dict:
             }
             for s in plan.bridges
         ],
+        "externals": [{"id": e.id, "name": e.name} for e in plan.externals],
         "unmapped": list(plan.unmapped),
         "dropped_connections": [{"from": a, "to": b} for a, b in plan.dropped_connections],
     }
