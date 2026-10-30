@@ -39,6 +39,23 @@ describe('PhaseActions render gates (B3)', () => {
     })
   })
 
+  it('muestra el nombre de la fase con tilde y Aprobar con borde, sin relleno', () => {
+    useApprovalsStore.setState({
+      pendingByPhase: {
+        ...useApprovalsStore.getState().pendingByPhase,
+        revision: { phase: 'revision', since: null, last_decision: null, last_decided_at: null },
+      },
+    })
+    render(<PhaseActions projectId={7} phase="revision" />)
+
+    expect(screen.getByText('Revisión')).toBeTruthy()
+    expect(screen.queryByText('revision')).toBeNull()
+    const approve = screen.getByTestId('phase-action-approve')
+    expect(approve.className).toContain('border-green-600')
+    expect(approve.className).toContain('text-green-700')
+    expect(approve.className).not.toMatch(/bg-green-600|text-white/)
+  })
+
   it('renders Avanzar when phaseReady=true even without a pending decision', () => {
     render(
       <PhaseActions projectId={7} phase="refinamiento" phaseReady={true} />,

@@ -32,6 +32,13 @@ def _jsonb_as_json_on_sqlite(_type, _compiler, **_kw):  # pragma: no cover - sol
 
 LLM_GUIDE = "\n\n".join(f"### 7.{i} {name}\nContenido de {name}." for i, name in enumerate(LLM_SECTIONS, 1))
 
+# Guía que sí habla del proyecto de _ctx() (citas, pacientes, recordatorios...).
+SPECIFIC_GUIDE = "\n\n".join(
+    f"### 7.{i} {name}\nPara la agenda de citas de la clínica: {name.lower()} pensado para "
+    "pacientes y recepcionistas, con recordatorios de cada cita."
+    for i, name in enumerate(LLM_SECTIONS, 1)
+)
+
 MERMAID = "flowchart TD\n  A[API] --> B[(DB)]"
 
 
@@ -93,7 +100,9 @@ class TestRenderAdr:
         assert "- Agendar citas" in md
         assert "- Presupuesto de 20000 USD" in md
         assert "| Fecha | 2026-10-16 |" in md
-        assert f"```mermaid\n{MERMAID}\n```" in md
+        # El diagrama va con la directiva del tema azul del ADR.
+        assert "```mermaid\n%%{init: " in md
+        assert f"\n{MERMAID}\n```" in md
         assert "Contenido de Primer sprint." in md
         assert "- Usar PostgreSQL" in md
 
@@ -106,7 +115,8 @@ class TestRenderAdr:
 
     def test_referencias_incluyen_las_fuentes_curadas_como_links(self):
         md = render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)
-        assert "1. **Monolito modular** (similitud 87%)" in md
+        assert "1. **Monolito modular**" in md
+        assert "similitud" not in md  # medida interna de la búsqueda
         assert "[Modular Monolith](https://example.com/mm)" in md
 
     def test_historial_escapa_pipes_y_traduce_decisiones(self):
@@ -618,10 +628,18 @@ class TestCorreccionDeLaGuia:
     def test_sin_avisos_no_hay_segunda_llamada(self):
         from app.core.adr_generator import generate_guide
 
-        model = self._Seq(LLM_GUIDE)
+        model = self._Seq(SPECIFIC_GUIDE)
         guide, repaired = asyncio.run(generate_guide(model, _ctx()))
-        assert (guide, repaired) == (LLM_GUIDE, False)
+        assert (guide, repaired) == (SPECIFIC_GUIDE, False)
         assert len(model.configs) == 1
+
+    def test_una_guia_generica_se_manda_a_corregir(self):
+        from app.core.adr_generator import generate_guide
+
+        model = self._Seq(LLM_GUIDE, SPECIFIC_GUIDE)
+        guide, repaired = asyncio.run(generate_guide(model, _ctx()))
+        assert (guide, repaired) == (SPECIFIC_GUIDE, True)
+        assert "es genérica" in model.prompts[1]
 
     def test_se_puede_desactivar(self, monkeypatch):
         from app.core import adr_generator
@@ -826,3 +844,118 @@ class TestRequerimientosCompletos:
         md = render_adr_markdown(_ctx(resumen=resumen), llm_sections=None)
         assert "Escala y volumen" not in md
         assert "no domina" not in md
+
+
+class TestDisenoDelAdr:
+    """F30: identidad visual, secciones sin relleno y diagramas con el mismo estilo."""
+
+    def test_sin_filas_ni_parrafos_que_se_repiten_en_todos_los_adr(self):
+        md = render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)
+        head = md.split("## Resumen ejecutivo", 1)[0]
+        assert "| Proyecto |" not in head  # ya es el titulo
+        assert "| Fase actual |" not in head  # siempre era Revision
+        assert "| Propuesta aprobada | Iteración 2 |" in head
+        assert "Este documento reúne" not in md
+        assert "Esta página resume" not in md
+
+    def test_la_decision_va_en_una_linea_antes_de_la_propuesta(self):
+        proposal = "# Propuesta\n\n- **Patrón principal:** Monolito modular [1]\n\nDetalle."
+        md = render_adr_markdown(_ctx(proposal_markdown=proposal), llm_sections=LLM_GUIDE)
+        decision = md.split("## 3. Decisión", 1)[1]
+        assert decision.lstrip().startswith("**Decisión:** Monolito modular _(iteración 2 de la propuesta)_.")
+        assert "La arquitectura aprobada es la de la propuesta siguiente" not in md
+
+    def test_diagrama_de_despliegue_en_la_seccion_4_con_el_mismo_tema(self):
+        deploy = "flowchart LR\n  W[Web] --> S[(Servidor)]"
+        md = render_adr_markdown(_ctx(deployment_mermaid=deploy), llm_sections=LLM_GUIDE)
+        section = md.split("## 4. Diagramas", 1)[1].split("## 5.", 1)[0]
+        assert "### 4.1 Arquitectura" in section and "### 4.2 Despliegue" in section
+        assert section.count("%%{init: ") == 2
+        assert "_Figura 1. Componentes del sistema" in section
+        assert "_Figura 2. Dónde corre cada componente._" in section
+
+    def test_sin_diagrama_de_despliegue_la_seccion_4_no_cambia(self):
+        md = render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)
+        assert "## 4. Diagrama de arquitectura" in md
+        assert "### 4.1" not in md
+
+
+class TestVerificacionPreviaALaEntrega:
+    def test_un_adr_completo_y_especifico_pasa(self):
+        from app.core.adr_generator import verify_adr
+
+        resumen = dict(_ctx().resumen, datos_viabilidad={"equipo": "3 personas", "plazo": "4 meses"})
+        ctx = _ctx(resumen=resumen)
+        md = render_adr_markdown(ctx, llm_sections=SPECIFIC_GUIDE)
+        assert verify_adr(ctx, md, SPECIFIC_GUIDE) == []
+
+    def test_una_guia_generica_no_pasa(self):
+        from app.core.adr_generator import verify_adr
+
+        md = render_adr_markdown(_ctx(), llm_sections=LLM_GUIDE)
+        issues = " ".join(verify_adr(_ctx(), md, LLM_GUIDE))
+        assert "«7.3 Consecuencias»: es genérica" in issues
+        assert "es muy corta" in issues
+
+    def test_secciones_vacias_y_datos_que_faltan(self):
+        from app.core.adr_generator import verify_adr
+
+        ctx = _ctx(resumen=dict(_ctx().resumen, restricciones=[]), mermaid=None)
+        md = render_adr_markdown(ctx, llm_sections=None)
+        issues = verify_adr(ctx, md, None)
+        assert "«Restricciones»: solo tiene un marcador, sin contenido" in issues
+        assert "«4. Diagrama de arquitectura»: no tiene diagrama" in issues
+        assert "«7. Guía para empezar»: no se pudo redactar; regenera el ADR" in issues
+        assert any("falta el dato de presupuesto, equipo, plazo" in i for i in issues)
+
+    def test_relleno_en_la_guia(self):
+        from app.core.adr_generator import guide_content_warnings
+
+        guide = SPECIFIC_GUIDE.replace(
+            "con recordatorios de cada cita.", "con recordatorios de cada cita; seguir buenas prácticas.", 1
+        )
+        warnings = guide_content_warnings(_ctx(), guide)
+        assert warnings == ["Sección «7.1 Componentes y responsabilidades»: tiene texto de relleno: «seguir buenas practicas»"]
+
+
+class TestRevisionDelDisenoF30:
+    """Review de F30: título, cifras sin unidad, texto de los diagramas y emojis."""
+
+    def test_el_titulo_lleva_mayuscula_inicial_y_siglas_en_mayusculas(self):
+        md = render_adr_markdown(_ctx(project_name="prueba adr"), llm_sections=LLM_GUIDE)
+        assert md.startswith("# ADR-001: Arquitectura de Prueba ADR\n")
+        md = render_adr_markdown(_ctx(project_name="adr"), llm_sections=LLM_GUIDE)
+        assert md.startswith("# ADR-001: Arquitectura de ADR\n")
+        # Solo palabras completas: "padre" no cambia.
+        md = render_adr_markdown(_ctx(project_name="padre"), llm_sections=LLM_GUIDE)
+        assert md.startswith("# ADR-001: Arquitectura de Padre\n")
+
+    def test_una_escala_sin_unidad_dice_de_que_es_la_cifra(self):
+        md = render_adr_markdown(_ctx(resumen=dict(_ctx().resumen, escala="1000")), llm_sections=None)
+        assert "Unas 1000 personas usarían el sistema" in md
+        assert "### Escala y volumen\n\n1000\n" not in md
+
+    def test_la_seccion_4_presenta_el_diagrama(self):
+        mermaid = 'flowchart TD\n  subgraph Nube["AWS"]\n  A[API] -->|consulta| B[(DB)]\n  end\n  W((Web)) --> A'
+        md = render_adr_markdown(_ctx(mermaid=mermaid), llm_sections=LLM_GUIDE)
+        section = md.split("## 4. Diagrama de arquitectura", 1)[1].split("```mermaid", 1)[0]
+        assert "El diagrama muestra 3 componentes (API, DB y Web) y 2 conexiones, agrupados en AWS" in section
+
+    def test_el_diagrama_de_despliegue_tambien_se_presenta(self):
+        deploy = "---\ntitle: Nube\n---\nflowchart LR\n  W[Web] --> S[(Servidor)]"
+        md = render_adr_markdown(_ctx(deployment_mermaid=deploy), llm_sections=LLM_GUIDE)
+        section = md.split("### 4.2 Despliegue", 1)[1]
+        assert "2 componentes (Web y Servidor) y 1 conexión; las flechas indican dónde corre" in section
+        # El tema va después del frontmatter, no antes.
+        assert "```mermaid\n---\ntitle: Nube\n---\n%%{init: " in section
+
+    def test_sin_emojis_decorativos_en_la_propuesta_ni_en_la_guia(self):
+        proposal = (
+            "## Trade-offs y decisión\n\n| Opción | Ventajas |\n|---|---|\n"
+            "| 1\ufe0f\u20e3 Monolito | \U0001F680 Simple ✓ |\n| 2\ufe0f\u20e3 Microservicios | Escala |"
+        )
+        guide = LLM_GUIDE.replace("Contenido de Primer sprint.", "\U0001F680 Montar la agenda de citas.")
+        md = render_adr_markdown(_ctx(proposal_markdown=proposal), llm_sections=guide)
+        assert "\u20e3" not in md and "\U0001F680" not in md
+        assert "| 1. Monolito | Simple ✓ |" in md
+        assert "Montar la agenda de citas." in md

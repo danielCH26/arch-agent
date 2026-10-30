@@ -13,7 +13,9 @@ fases anteriores, para que quien lo lea pueda empezar a construir el sistema:
   respuesta vacía), el ADR se genera igual, sin esas secciones y con un aviso.
 
 La recolección (``collect_adr_context``) toca la base de datos; el armado
-(``render_adr_markdown``) es puro para poder testearlo sin DB ni LLM.
+(``render_adr_markdown``) es puro para poder testearlo sin DB ni LLM. Antes de
+entregarlo, ``verify_adr`` revisa que cada sección aporte algo del proyecto.
+Identidad visual y contrato de cada sección: ``.atl/skills/adr-design/SKILL.md``.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
+from app.core.adr_quality import SectionIssue, project_terms, section_issues, split_sections
+from app.core.adr_theme import themed_mermaid
 from app.core.domain_concerns import (
     DomainConcern,
     concern_by_question,
@@ -155,6 +159,9 @@ class AdrContext:
     # Adjunto (captura) del diagrama que se usó: el panel muestra esa imagen,
     # así la imagen y el Mermaid del ADR son siempre el mismo diagrama.
     diagram_attachment_id: Optional[str] = None
+    # Diagrama de despliegue (Mermaid), cuando el proyecto lo tenga. Va en la
+    # sección 4 junto al de arquitectura y con el mismo estilo.
+    deployment_mermaid: Optional[str] = None
     # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
     # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
     guide_failure: Optional[str] = None
@@ -349,9 +356,9 @@ def _references(citations: list[dict]) -> str:
     lines = []
     for index, citation in enumerate(citations, start=1):
         name = citation.get("pattern_name") or f"Patrón #{citation.get('pattern_id') or index}"
-        similarity = citation.get("similarity")
-        sim = f" (similitud {float(similarity) * 100:.0f}%)" if similarity is not None else ""
-        lines.append(f"{index}. **{name}**{sim}")
+        # Sin el "(similitud 87%)" de antes: es una medida interna de la
+        # búsqueda y al lector no le dice nada.
+        lines.append(f"{index}. **{name}**")
         for source in citation.get("fuentes") or []:
             if isinstance(source, dict) and source.get("url"):
                 title = source.get("titulo") or source["url"]
@@ -442,6 +449,36 @@ def strip_ui_leftovers(markdown: str) -> str:
         if not _UI_LEFTOVER_RE.match(normalize_text(line))
     ]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+# Emojis que el modelo usa para numerar o adornar ("1️⃣ Monolito", "🚀 MVP"):
+# en un documento técnico restan seriedad. Los números de tecla pasan a "1.";
+# los pictogramas se quitan. ✓/✗ (Dingbats) se conservan.
+_KEYCAP_RE = re.compile(r"([0-9#*])\uFE0F?\u20E3\s*")
+_PICTOGRAPH_RE = re.compile(r"[\U0001F000-\U0001FAFF]\uFE0F?\s?|\uFE0F")
+
+
+def strip_decorative_emoji(markdown: str) -> str:
+    text = _KEYCAP_RE.sub(lambda m: f"{m.group(1)}. ", markdown or "")
+    return _PICTOGRAPH_RE.sub("", text)
+
+
+# Siglas que van siempre en mayúsculas en el título, aunque el usuario las
+# escribiera en minúsculas ("prueba adr" -> "Prueba ADR"). Mismas que
+# DISPLAY_ACRONYMS de frontend/src/lib/format.ts.
+DISPLAY_ACRONYMS = frozenset({"adr", "api", "ia", "ai", "erp", "crm", "mvp", "saas", "iot", "ui", "ux"})
+
+
+def _display_name(name: str) -> str:
+    """El nombre del proyecto como título: con mayúscula inicial y las siglas
+    (ADR, API...) en mayúsculas aunque el usuario lo escribiera en minúsculas
+    ("prueba adr" -> "Prueba ADR")."""
+    name = re.sub(
+        r"\b\w+\b",
+        lambda m: m.group(0).upper() if m.group(0).lower() in DISPLAY_ACRONYMS else m.group(0),
+        (name or "").strip(),
+    )
+    return name[:1].upper() + name[1:]
 
 
 def _quality_items(resumen: dict) -> list[str]:
@@ -790,6 +827,97 @@ def _coherence_warnings(ctx: AdrContext, guide: str) -> list[str]:
     return warnings
 
 
+# --- Verificación previa a la entrega -------------------------------------------
+
+_MERMAID_LABEL_RE = re.compile(r"[\[({]+\"?([^\]\)}\"]+)\"?[\])}]+")
+
+
+def _project_vocabulary(ctx: AdrContext) -> set[str]:
+    """Palabras propias del proyecto: lo que dijo el usuario, las tecnologías y
+    el patrón de la propuesta aprobada y los nombres del diagrama.
+
+    De la propuesta no se toma todo el texto: su prosa ("permite", "facilita")
+    haría pasar por específica cualquier sección.
+    """
+    resumen = ctx.resumen or {}
+    texts = [
+        ctx.project_name,
+        ctx.project_description,
+        str(resumen.get("problema") or ""),
+        str(resumen.get("usuarios") or ""),
+        str(resumen.get("escala") or ""),
+        *_as_list(resumen.get("funcionalidades")),
+        *_as_list(resumen.get("restricciones")),
+        *_as_list(resumen.get("calidad")),
+        *_dict_values(resumen.get("contexto_tecnico")),
+        *_dict_values(resumen.get("datos_viabilidad")),
+        *(str(i.get("respuesta") or "") for i in ctx.preguntas_respuestas if isinstance(i, dict)),
+        *ctx.proposal_feedback_history,
+        *ctx.revision_feedback,
+        *_proposal_technologies(ctx.proposal_markdown),
+        _decision_text(ctx),
+    ]
+    for code in (ctx.mermaid, ctx.deployment_mermaid):
+        texts.extend(m.group(1) for m in _MERMAID_LABEL_RE.finditer(code or ""))
+    return project_terms(texts)
+
+
+def guide_content_warnings(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    """Subsecciones de la guía (7.1 a 7.8) vacías, cortas, genéricas o con
+    relleno. Van junto con el lint a la pasada de corrección del LLM."""
+    if not guide:
+        return []
+    terms = _project_vocabulary(ctx)
+    issues: list[SectionIssue] = []
+    for title, body in split_sections(guide, 3):
+        issues.extend(section_issues(title, body, terms))
+    return [f"Sección {issue}" for issue in issues]
+
+
+def review_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    """Todo lo que la revisión automática le pide corregir a la guía."""
+    return lint_adr_guide(ctx, guide) + guide_content_warnings(ctx, guide)
+
+
+_UNDEFINED_RESOURCE_RE = re.compile(r"^\s*-\s*\*\*(\w+):\*\*\s*no definido\s*$", re.M)
+# Subsecciones de datos que, vacías, dejan al lector sin algo que necesita.
+_REQUIRED_DATA = ("Funcionalidades", "Restricciones", "Atributos de calidad")
+
+
+def verify_adr(ctx: AdrContext, markdown: str, guide: Optional[str]) -> list[str]:
+    """Verificación previa a la entrega del ADR completo.
+
+    Devuelve los problemas que impiden decir que cada sección aporta algo
+    específico del proyecto; lista vacía = listo para entregar. Revisa:
+      * que ninguna sección quede vacía o con solo un marcador;
+      * los datos que no pueden faltar (funcionalidades, restricciones,
+        atributos de calidad, presupuesto/equipo/plazo y el diagrama);
+      * que la guía (7.1 a 7.8) exista y sea de este proyecto, no genérica.
+    """
+    issues: list[str] = []
+    for title, body in split_sections(markdown, 2):
+        if title.startswith("7."):
+            continue  # la guía se revisa abajo, subsección por subsección
+        if title.startswith("4.") and "```mermaid" not in body:
+            issues.append(f"«{title}»: no tiene diagrama")
+            continue
+        issues.extend(str(i) for i in section_issues(title, body, set(), min_chars=1, check_specific=False))
+        if title.startswith("2."):
+            for sub, sub_body in split_sections(body, 3):
+                if sub in _REQUIRED_DATA:
+                    issues.extend(str(i) for i in section_issues(sub, sub_body, set(), min_chars=1, check_specific=False))
+        if title == "Resumen ejecutivo":
+            missing = [m.group(1).lower() for m in _UNDEFINED_RESOURCE_RE.finditer(body)]
+            if missing:
+                issues.append(f"«Resumen ejecutivo»: falta el dato de {', '.join(missing)} (pídelo en Requerimientos)")
+    if not guide:
+        issues.append("«7. Guía para empezar»: no se pudo redactar; regenera el ADR")
+    else:
+        issues.extend(guide_content_warnings(ctx, guide))
+    seen: set[str] = set()
+    return [i for i in issues if not (i in seen or seen.add(i))]
+
+
 def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
     """La guía (sección 7) tal como quedó en un ADR ya generado.
 
@@ -816,7 +944,7 @@ def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
 
 def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
     if llm_sections and llm_sections.strip():
-        guide = llm_sections.strip()
+        guide = strip_decorative_emoji(llm_sections.strip())
     else:
         # Antes el aviso mezclaba tres causas posibles y no decía cuál fue.
         cause = (
@@ -985,6 +1113,14 @@ def _summary_pending(ctx: AdrContext, guide: Optional[str]) -> list[str]:
     return [p for p in pending if not (p in seen or seen.add(p))][:6]
 
 
+def _decision_text(ctx: AdrContext) -> str:
+    """La decisión en una línea: la recomendación o el patrón principal de la
+    propuesta aprobada. Vacío si la propuesta no los trae."""
+    proposal = ctx.proposal_markdown or ""
+    decision = _RECOMMENDATION_RE.search(proposal) or _PRIMARY_RE.search(proposal)
+    return _plain(decision.group(1)) if decision else ""
+
+
 def executive_summary(ctx: AdrContext, guide: Optional[str]) -> str:
     """Resumen de media página para quien no es técnico.
 
@@ -997,19 +1133,14 @@ def executive_summary(ctx: AdrContext, guide: Optional[str]) -> str:
     resumen = ctx.resumen or {}
     problema = _plain(str(resumen.get("problema") or ctx.project_description or "")) or "No especificado"
     usuarios = _plain(str(resumen.get("usuarios") or "")) or "No especificado"
-    proposal = ctx.proposal_markdown or ""
-    decision = _RECOMMENDATION_RE.search(proposal) or _PRIMARY_RE.search(proposal)
-    decision_text = (
-        _plain(decision.group(1)) if decision else "ver la sección 3 (Decisión)"
-    )
+    decision_text = _decision_text(ctx) or "ver la sección 3 (Decisión)"
     risks = _summary_risks(ctx, guide)
     pending = _summary_pending(ctx, guide)
+    # Sin el párrafo que explicaba para quién es esta página: era el mismo en
+    # todos los ADR y no decía nada del proyecto.
     return "\n".join(
         [
             "## Resumen ejecutivo",
-            "",
-            "> Esta página resume el documento para quien no necesita los detalles "
-            "técnicos. El equipo de desarrollo encuentra todo en las secciones 1 a 7.",
             "",
             f"**Qué problema resuelve:** {problema}.",
             "",
@@ -1044,6 +1175,21 @@ _TECH_CONTEXT_LABELS = (
 _UNDEFINED_TEXT = {"no definido", "no definida", "ninguno", "ninguna", "n/a", "-"}
 
 
+_BARE_NUMBER_RE = re.compile(r"[~≈]?\s*\d[\d.,\s]*\+?")
+
+
+def _scale_text(escala: str) -> str:
+    """Una cifra sola ("1000") no dice de qué es. La pregunta de la
+    elicitación es cuántas personas usarían el sistema: se dice así."""
+    number = escala.strip(" .")
+    if _BARE_NUMBER_RE.fullmatch(number):
+        return (
+            f"Unas {number.lstrip('~≈ ')} personas usarían el sistema (cifra aproximada del "
+            "usuario; no precisó si son usuarios simultáneos o en total)."
+        )
+    return escala
+
+
 def _technical_context_block(resumen: dict) -> str:
     """Contexto técnico y datos de viabilidad con las palabras del usuario.
 
@@ -1055,7 +1201,7 @@ def _technical_context_block(resumen: dict) -> str:
     if escala and normalize_text(escala) not in _UNDEFINED_TEXT:
         # Cifras de uso (usuarios, datos, frecuencia): sin ellas la propuesta
         # no puede dimensionar ni justificar costos.
-        blocks.append(f"### Escala y volumen\n\n{escala}")
+        blocks.append(f"### Escala y volumen\n\n{_scale_text(escala)}")
     tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
     items = [
         f"**{label}:** {str(tecnico.get(key)).strip()}"
@@ -1086,6 +1232,96 @@ def _reader_labels(markdown: str) -> str:
     return re.sub(r"Fuente RAG", "Referencia (sección 5)", text, flags=re.IGNORECASE)
 
 
+# Nodos de un flowchart: ``A[API]``, ``B[(DB)]``, ``C((Cola))``, ``D{Regla}``...
+_MERMAID_NODE_RE = re.compile(
+    r"(?<![\w-])[A-Za-z_][\w-]*\s*(?:\[\[|\[\(|\(\[|\(\(|\[|\(|\{\{|\{|>)"
+    r"\s*\"?([^\]\)\}\"|]+?)\"?\s*(?:\]\]|\)\]|\]\)|\)\)|\]|\)|\}\}|\})"
+)
+_MERMAID_EDGE_RE = re.compile(r"<?(?:-{2,}>|-\.+->|={2,}>|-{3,}|-\.+-|={3,})")
+_MERMAID_SUBGRAPH_RE = re.compile(r"^\s*subgraph\s+(?:[\w-]+\s*\[\s*\"?([^\]\"]+)\"?\s*\]|\"?([^\"\n]+)\"?)", re.M)
+
+
+def _human_list(items: list[str], limit: int = 8) -> str:
+    shown = items[:limit]
+    text = shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + f" y {shown[-1]}"
+    extra = len(items) - len(shown)
+    return f"{text} (y {extra} más)" if extra > 0 else text
+
+
+def diagram_overview(code: str, kind: str) -> str:
+    """Una o dos frases que presentan el diagrama: qué piezas tiene y cómo
+    leerlo. Salen del propio Mermaid, sin LLM. Vacío si no es un flowchart."""
+    lines = [line for line in (code or "").splitlines() if line.strip() and not line.strip().startswith("%%")]
+    if lines and lines[0].strip() == "---":
+        # Frontmatter: se salta hasta el cierre.
+        closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), 0)
+        lines = lines[closing + 1:]
+    if not lines or not re.match(r"\s*(flowchart|graph)\b", lines[0], re.I):
+        return ""
+    body = "\n".join(lines[1:])
+    nodes = "\n".join(line for line in lines[1:] if not re.match(r"\s*(subgraph|end|classDef|class|style|linkStyle|click)\b", line))
+    names: list[str] = []
+    for label in _MERMAID_NODE_RE.findall(nodes):
+        label = _plain(re.sub(r"<[^>]+>", " ", label))
+        if label and label not in names:
+            names.append(label)
+    if not names:
+        return ""
+    groups = [_plain(a or b) for a, b in _MERMAID_SUBGRAPH_RE.findall(body)]
+    edges = len(_MERMAID_EDGE_RE.findall(body))
+    what = "dónde corre" if kind == "Despliegue" else "cómo se comunica"
+    text = (
+        f"El diagrama muestra {len(names)} componente{'s' if len(names) != 1 else ''} ({_human_list(names)})"
+        + (f" y {edges} conexi{'ones' if edges != 1 else 'ón'}" if edges else "")
+        + (f", agrupados en {_human_list(groups)}" if groups else "")
+        + f"; las flechas indican {what} cada uno."
+    )
+    if kind != "Despliegue":
+        text += " Son los mismos nombres que usa la sección 7.1."
+    return text
+
+
+_DIAGRAM_MISSING = (
+    "_Todavía no se generó un diagrama. Pídelo en la fase de Refinamiento y vuelve a generar el ADR._"
+)
+
+
+def _diagrams_block(ctx: AdrContext) -> str:
+    """Sección 4: arquitectura y, si existe, despliegue, con el tema del ADR.
+
+    El Mermaid lleva la directiva ``init`` de la paleta azul
+    (``adr_theme.themed_mermaid``): GitHub, GitLab y cualquier visor lo dibujan
+    con los mismos colores que el PDF y las capturas del panel.
+    """
+    state = (
+        "aprobado en la fase de Refinamiento"
+        if ctx.diagram_approved
+        else "último generado; todavía no hay uno aprobado explícitamente"
+    )
+    figures = []
+    if ctx.mermaid:
+        figures.append(("Arquitectura", ctx.mermaid, f"Componentes del sistema y cómo se comunican ({state})"))
+    if ctx.deployment_mermaid:
+        figures.append(("Despliegue", ctx.deployment_mermaid, "Dónde corre cada componente"))
+    if not figures:
+        return f"## 4. Diagrama de arquitectura\n\n{_DIAGRAM_MISSING}"
+
+    def figure(number: int, kind: str, code: str, caption: str) -> str:
+        overview = diagram_overview(code, kind)
+        intro = f"{overview}\n\n" if overview else ""
+        return f"{intro}```mermaid\n{themed_mermaid(code)}\n```\n\n_Figura {number}. {caption}._"
+
+    if len(figures) == 1 and ctx.mermaid:
+        kind, code, caption = figures[0]
+        return f"## 4. Diagrama de arquitectura\n\n{figure(1, kind, code, caption)}"
+    blocks = ["## 4. Diagramas"]
+    if not ctx.mermaid:
+        blocks.append(f"### 4.1 Arquitectura\n\n{_DIAGRAM_MISSING}")
+    for number, (title, code, caption) in enumerate(figures, start=1):
+        blocks.append(f"### 4.{len(blocks)} {title}\n\n{figure(number, title, code, caption)}")
+    return "\n\n".join(blocks)
+
+
 def render_adr_markdown(
     ctx: AdrContext,
     *,
@@ -1099,16 +1335,7 @@ def render_adr_markdown(
     problema = str(resumen.get("problema") or ctx.project_description or "No especificado.").strip()
     usuarios = str(resumen.get("usuarios") or "No especificado.").strip()
 
-    diagram = (
-        f"```mermaid\n{ctx.mermaid.strip()}\n```\n\n"
-        + (
-            "_Diagrama aprobado en la fase de Refinamiento._"
-            if ctx.diagram_approved
-            else "_Último diagrama generado (todavía no hay uno aprobado explícitamente)._"
-        )
-        if ctx.mermaid
-        else "_Todavía no se generó un diagrama. Pídelo en la fase de Refinamiento y vuelve a generar el ADR._"
-    )
+    diagram = _diagrams_block(ctx)
 
     iterations = (
         f"Iteración {ctx.proposal_iteration}" if ctx.proposal_iteration else "Iteración —"
@@ -1121,24 +1348,23 @@ def render_adr_markdown(
     )
 
     guide = _guide_block(ctx, llm_sections)
+    decided = _decision_text(ctx)
+    # La decisión en una línea, antes de la propuesta completa (antes era una
+    # frase fija que no decía cuál arquitectura se eligió).
+    decision_line = (
+        f"**Decisión:** {decided} _({iterations.lower()} de la propuesta)_.\n\n" if decided else ""
+    )
     approved_row = f"| Aprobado | {_approved_date(ctx)} |\n" if ctx.approved_at else ""
-    proposal = _reader_labels(strip_ui_leftovers(ctx.proposal_markdown))
+    proposal = _reader_labels(strip_decorative_emoji(strip_ui_leftovers(ctx.proposal_markdown)))
 
-    return f"""# ADR-001: Arquitectura de {ctx.project_name}
+    return f"""# ADR-001: Arquitectura de {_display_name(ctx.project_name)}
 
 | Campo | Valor |
 |---|---|
 | Estado | {_status(ctx)} |
 | Fecha | {generated_at.strftime('%Y-%m-%d')} |
-{approved_row}| Proyecto | {_cell(ctx.project_name)} |
-| Fase actual | {PHASE_LABELS.get(ctx.current_phase or '', ctx.current_phase or '—')} |
-| Propuesta | {iterations} |
+{approved_row}| Propuesta aprobada | {iterations} |
 | Generado por | ArchAgent |
-
-> Este documento reúne las decisiones tomadas en cada fase (requerimientos,
-> propuesta, refinamiento y revisión) y una guía para empezar a construir el
-> sistema. Las secciones 1 a 6 salen directamente de lo aprobado; la sección 7
-> es una guía redactada a partir de esas decisiones.
 
 {executive_summary(ctx, llm_sections)}
 
@@ -1166,12 +1392,7 @@ def render_adr_markdown(
 {_technical_context_block(resumen)}
 ## 3. Decisión
 
-La arquitectura aprobada es la de la propuesta siguiente ({iterations.lower()}),
-incluida completa con su análisis de trade-offs y la opción elegida.
-
-{_demote_headings(proposal) or '_La propuesta aprobada no tiene contenido._'}{feedback}
-
-## 4. Diagrama de arquitectura
+{decision_line}{_demote_headings(proposal) or '_La propuesta aprobada no tiene contenido._'}{feedback}
 
 {diagram}
 
@@ -1227,8 +1448,8 @@ con las restricciones (presupuesto, equipo, plazo).
 Dos listas: **Positivas** y **Negativas / costos asumidos**.
 
 ### 7.4 Riesgos y mitigaciones
-Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Mitigación, ordenada \
-de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
+Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Probabilidad \
+(alta/media/baja) | Mitigación, ordenada de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
 confirmó (de dónde salen los datos, una integración, la plataforma) es de \
 impacto ALTO y va primero: es lo que puede tumbar el proyecto. Cada riesgo \
 debe ser de ESTE proyecto, no una lista genérica.
@@ -1556,6 +1777,9 @@ formato y las mismas secciones. Para cada tipo de problema:
   entienda una persona.
 - Demasiadas tecnologías en 7.2: deja las de la propuesta y solo lo que un \
   requisito exija.
+- Secciones vacías, muy cortas, genéricas o con relleno: reescríbelas con \
+  datos de ESTE proyecto (sus funcionalidades, componentes del diagrama, \
+  tecnologías y restricciones). Nada que sirva igual para cualquier sistema.
 No cambies lo que no tiene problemas.
 
 Guía a corregir:
@@ -1613,7 +1837,7 @@ async def repair_llm_sections(
     if repaired is None:
         _LOGGER.warning("ADR: la guía corregida vino incompleta; se usa la original")
         return None
-    remaining = lint_adr_guide(ctx, repaired)
+    remaining = review_guide(ctx, repaired)
     if len(remaining) >= len(warnings):
         _LOGGER.info(
             "ADR: la corrección no redujo los avisos (%s -> %s); se usa la original",
@@ -1635,8 +1859,8 @@ async def generate_guide(
     """Guía del ADR con su revisión: ``(guia, corregida)``.
 
     1. El LLM redacta la guía (``generate_llm_sections``).
-    2. ``lint_adr_guide`` la revisa contra lo decidido y contra el resto del
-       documento.
+    2. ``review_guide`` la revisa contra lo decidido, contra el resto del
+       documento y sección por sección (vacía, genérica o con relleno).
     3. Si hay avisos y ``ADR_GUIDE_REPAIR`` está activo, una segunda llamada
        corrige solo esos puntos (``repair_llm_sections``). Si devuelve solo
        algunas secciones, se combinan con las originales.
@@ -1654,7 +1878,7 @@ async def generate_guide(
         return None, False
     repaired_flag = False
     if ADR_GUIDE_REPAIR:
-        warnings = lint_adr_guide(ctx, guide)
+        warnings = review_guide(ctx, guide)
         if warnings:
             repaired = await repair_llm_sections(
                 model, ctx, guide, warnings, callbacks=callbacks, deadline=deadline

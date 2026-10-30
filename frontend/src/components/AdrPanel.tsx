@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
 import { renderMarkdownBlocks } from './MessageBubble'
+import { CheckCircleIcon } from './NavIcons'
 import { ProjectCompletedDialog } from './ProjectCompletedDialog'
 import { buildAdrPrintDocument } from './adrPrint'
 
@@ -41,16 +42,12 @@ function downloadMarkdown(markdown: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-// Parte el ADR en el bloque ```mermaid: en el PDF el diagrama va como imagen
-// (la captura aprobada), no como código, que una persona no técnica no puede leer.
-export function splitAtMermaid(markdown: string): { before: string; after: string; hasMermaid: boolean } {
-  const match = markdown.match(/```mermaid\s*\n[\s\S]*?```/i)
-  if (!match || match.index === undefined) return { before: markdown, after: '', hasMermaid: false }
-  return {
-    before: markdown.slice(0, match.index),
-    after: markdown.slice(match.index + match[0].length),
-    hasMermaid: true,
-  }
+// Parte el ADR en sus bloques ```mermaid: en el PDF cada diagrama va como
+// imagen (la captura aprobada), no como código, que una persona no técnica no
+// puede leer. Con n diagramas devuelve n + 1 tramos de texto; el diagrama i va
+// entre el tramo i y el i + 1 (el 0 es el de arquitectura, el 1 el de despliegue).
+export function splitMermaidBlocks(markdown: string): string[] {
+  return markdown.split(/```mermaid\s*\n[\s\S]*?```/i)
 }
 
 // Abre una vista del ADR lista para imprimir y lanza el diálogo de impresión,
@@ -68,9 +65,15 @@ export function openPrintView(bodyHtml: string, title: string): boolean {
     win.focus()
     win.print()
   }
-  // Se espera a que cargue la imagen del diagrama; si tarda, se imprime igual.
-  win.addEventListener('load', print)
-  setTimeout(print, 2500)
+  // Se espera a que carguen la imagen del diagrama y las tipografías (Google
+  // Fonts): sin document.fonts.ready el PDF sale con las de respaldo. Si
+  // tardan, se imprime igual.
+  win.addEventListener('load', () => {
+    const fonts = win.document.fonts
+    if (fonts?.ready) fonts.ready.then(print, print)
+    else print()
+  })
+  setTimeout(print, 4000)
   return true
 }
 
@@ -189,7 +192,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
   const diagram = pickAdrDiagram(diagrams, adr?.diagram_attachment_id)
   // Copia del ADR armada para imprimir (oculta): el diagrama va como imagen.
   const printRef = useRef<HTMLDivElement>(null)
-  const printParts = markdown ? splitAtMermaid(markdown) : null
+  const printParts = markdown ? splitMermaidBlocks(markdown) : null
 
   function handleDownloadPdf() {
     const html = printRef.current?.innerHTML ?? ''
@@ -197,6 +200,8 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
     if (!opened) setError('El navegador bloqueó la ventana. Permite las ventanas emergentes para descargar el PDF.')
   }
   const warnings = adr?.guide_warnings ?? []
+  // undefined en los ADR generados antes de la verificación: no se muestra nada.
+  const qualityIssues = adr?.quality_issues
 
   return (
     <section
@@ -328,7 +333,10 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
           data-testid="adr-completed"
           className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800"
         >
-          <span className="mr-auto font-medium">✅ Proyecto completado. El ADR quedó aprobado.</span>
+          <span className="mr-auto inline-flex items-center gap-1.5 font-medium">
+            <CheckCircleIcon className="h-4 w-4" />
+            Proyecto completado. El ADR quedó aprobado.
+          </span>
           <button
             type="button"
             data-testid="adr-reopen"
@@ -391,6 +399,33 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
         </div>
       )}
 
+      {markdown && qualityIssues && (
+        <div
+          data-testid="adr-quality"
+          className={`mt-3 rounded-lg px-3 py-2 text-xs ${
+            qualityIssues.length ? 'bg-amber-50 text-amber-900' : 'bg-green-50 text-green-800'
+          }`}
+        >
+          {qualityIssues.length ? (
+            <>
+              <p className="font-medium">
+                Verificación previa a la entrega: {qualityIssues.length === 1 ? 'una sección necesita' : `${qualityIssues.length} puntos necesitan`} atención
+                antes de entregar el documento.
+              </p>
+              <ul className="mt-1 list-disc pl-5">
+                {qualityIssues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="font-medium">
+              Verificación previa a la entrega: todas las secciones tienen contenido específico del proyecto.
+            </p>
+          )}
+        </div>
+      )}
+
       {markdown && diagram && (
         <figure className="mt-3 rounded-lg border border-gray-100 p-3 dark:border-gray-800" data-testid="adr-diagram">
           <figcaption className="mb-2 text-xs font-semibold text-gray-700 dark:text-gray-300">
@@ -415,19 +450,23 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
 
       {printParts && (
         <div ref={printRef} hidden data-testid="adr-print-source">
-          {renderMarkdownBlocks(printParts.before)}
-          {printParts.hasMermaid && diagram && (
-            <figure>
-              <img src={diagram.url} alt="Diagrama de arquitectura del documento" />
-              <figcaption>{diagram.decision === 'approve' ? 'Diagrama aprobado' : 'Último diagrama generado'}</figcaption>
-            </figure>
-          )}
-          {printParts.hasMermaid && !diagram && (
-            <p>
-              <em>El diagrama está en la versión Markdown del documento.</em>
-            </p>
-          )}
-          {renderMarkdownBlocks(printParts.after)}
+          {printParts.map((part, index) => (
+            <Fragment key={index}>
+              {index > 0 &&
+                // El pie de figura es el del propio ADR ("Figura 1. ..."): la
+                // vista de impresión lo mete dentro de la figura.
+                (index === 1 && diagram ? (
+                  <figure>
+                    <img src={diagram.url} alt="Diagrama de arquitectura del documento" />
+                  </figure>
+                ) : (
+                  <p>
+                    <strong>Diagrama disponible en la versión Markdown del documento.</strong>
+                  </p>
+                ))}
+              {renderMarkdownBlocks(part)}
+            </Fragment>
+          ))}
         </div>
       )}
 
