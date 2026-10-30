@@ -18,8 +18,41 @@ Fuente de verdad, duplicada a propósito (el frontend se construye aparte):
 | `app/core/adr_theme.py` | `ADR_PALETTE`, `ADR_FONTS`, tema Mermaid (`mermaid_theme_config`, `themed_mermaid`) |
 | `frontend/src/components/adrTheme.ts` | `ADR_PALETTE`, `ADR_FONTS`, `ADR_SPACE`, `ADR_TYPE` para el PDF |
 
-`tests/core/test_adr_quality.py::test_la_paleta_del_pdf_es_la_misma_que_la_de_los_diagramas`
-falla si las dos paletas se separan. Cambia siempre las dos.
+`tests/core/test_adr_quality.py` (`test_la_paleta_del_pdf_es_la_misma_que_la_de_los_diagramas`
+y `test_las_tipografias_del_pdf_son_las_mismas_que_las_de_los_diagramas`)
+falla si las paletas o las tipografías se separan. Cambia siempre las dos.
+
+### Logo y mascota
+
+La marca es el robot de ArchAgent, no solo el texto. Los mismos archivos que
+usa la app (`Logo.tsx` muestra `robot-avatar.webp`):
+
+| Recurso | Archivo | Dónde va | Dónde NO va |
+| --- | --- | --- | --- |
+| Logo (avatar + "Arch**Agent**") | `frontend/src/assets/robot-avatar.webp` | Portada (arriba a la izquierda, 26 pt de alto) | Dentro del texto corrido, tablas o diagramas |
+| Logo pequeño (solo avatar) | `robot-avatar.webp` | Separador de capítulo: al final del título de cada capítulo que abre página (`.chapter-logo`, 20 pt) | Subsecciones (`###`) ni capítulos que siguen en la misma página |
+| Avatar en nota | `robot-avatar.webp` | Recuadros de **"Nota del agente"**: lo que escribió el sistema, no el usuario (revisión automática, aviso de que no se pudo redactar la guía) | Citas del usuario, datos de la elicitación |
+| Mascota de cuerpo entero | `robot-body.webp` + `wave-a-arm.webp` (el cuerpo trae el hueco del brazo vacío: el brazo va en otra capa, en la posición de `robotLayout.ts`, igual que en la app) | Solo la portada, a la derecha de la banda `navy`, apoyada en su borde inferior (62 mm) | Cualquier otra página: repetirla le quita seriedad |
+
+Reglas:
+
+- El robot nunca se deforma ni se recolorea; va sobre `navy` o blanco.
+- El nombre del proyecto se muestra con mayúscula inicial y las siglas en
+  mayúsculas (`DISPLAY_ACRONYMS`, igual en backend y frontend): "prueba adr" →
+  "Prueba ADR".
+- Una sola mascota por documento (la portada). El resto son avatares pequeños.
+- Nada de emojis en el documento (`1️⃣`, `🚀`...): `strip_decorative_emoji`
+  los quita de la propuesta y de la guía. ✓ / ✗ sí se permiten.
+
+### Referencias de diseño
+
+Estructura: ADR de Michael Nygard (contexto, decisión, estado,
+consecuencias), MADR (opciones consideradas con pros y contras, resultado de
+la decisión) y arc42 (atributos de calidad, riesgos y deuda técnica).
+Maquetación: whitepapers de AWS y del Azure Architecture Center (portada con
+resumen, recuadros de datos clave, un diagrama por vista), reportes de
+Thoughtworks (tarjetas y chips en vez de tablas anchas) y el modelo C4 (cada
+diagrama se presenta con una frase que dice qué muestra y cómo leerlo).
 
 ### Paleta
 
@@ -48,17 +81,38 @@ Reglas: el azul estructura (títulos, tablas, filetes); el texto corrido va en
 
 ### Componentes del PDF
 
-- **Portada**: banda `navy` a sangre con la marca, `ADR-001`, título, subtítulo
-  y estado (insignia verde si está aceptado, ámbar si no); debajo la ficha
-  (fecha, propuesta aprobada, generado por) y la decisión en una línea.
+- **Portada** (una página, sin huecos): banda `navy` a sangre con el logo,
+  `ADR-001`, título (con mayúscula inicial aunque el usuario lo escribiera en
+  minúsculas), subtítulo, estado (insignia verde si está aceptado, ámbar si
+  no) y la mascota. Debajo, el resumen visual: tarjeta ancha con la decisión
+  y tres tarjetas con presupuesto, equipo y plazo (salen del resumen
+  ejecutivo); la miniatura del diagrama de arquitectura junto a la ficha
+  (fecha, propuesta aprobada, generado por).
 - **Capítulos** (`##`): filete izquierdo `primary` de 5 pt; los grandes
-  empiezan en página nueva (`PAGE_BREAK_BEFORE`).
+  empiezan en página nueva (`PAGE_BREAK_BEFORE`) y llevan el logo pequeño.
 - **Tablas**: encabezado `navy` con texto blanco, filas alternas `paper`,
-  bordes `line`, esquinas redondeadas.
+  bordes `line`, esquinas redondeadas; ninguna fila se parte entre páginas
+  (`break-inside: avoid`). Una tabla de más de 4 columnas con texto largo no
+  va como tabla: se convierte en tarjetas.
+- **Trade-offs** (tabla `Opción | Ventajas | Desventajas | ...` de la
+  propuesta): una tarjeta por opción con ventajas y desventajas en dos
+  columnas y el resto de columnas como ficha; la recomendada lleva filete e
+  insignia verdes ("Recomendada").
+- **Atributos de calidad**: chips `tint`; los propuestos por el agente llevan
+  "propuesto por el agente".
+- **7.3 Consecuencias**: "Positivas" y "Negativas" lado a lado (verde / rojo:
+  son estados, no decoración).
+- **7.4 Riesgos**: cada riesgo numerado (R1, R2...) y, encima de la tabla, la
+  matriz impacto × probabilidad (rojo, ámbar, verde según severidad). Los ADR
+  anteriores sin columna `Probabilidad` quedan solo con la tabla.
 - **Resumen ejecutivo**: recuadro `tint` con filete superior `primary`.
-- **Avisos de la revisión automática**: recuadro ámbar (`warning`).
+- **Nota del agente**: avatar + etiqueta "Nota del agente"; ámbar (`warning`)
+  si es un aviso de la revisión automática.
 - **Diagramas**: figura con borde `sky`; el pie es el del propio ADR
   ("_Figura n. ..._"), que la vista de impresión mueve a `<figcaption>`.
+- **Tipografías**: la vista de impresión espera `document.fonts.ready` antes
+  de abrir el diálogo; si Google Fonts no responde, imprime con las de
+  respaldo a los 4 s.
 
 ## 2. Diagramas
 
@@ -66,10 +120,17 @@ Reglas: el azul estructura (títulos, tablas, filetes); el texto corrido va en
   (`mermaid_theme_config`): la captura que hace Puppeteer
   (`agent._build_mermaid_preview_html`) y el bloque del `.md` (con la directiva
   `%%{init: ...}%%` de `themed_mermaid`, que GitHub y GitLab respetan).
+- `themed_mermaid` pone la directiva después del frontmatter (`---` ...
+  `---`) si lo hay, y no toca un diagrama que ya trae tema (`%%{init`,
+  `%%{ init`, `%%{initialize`, aunque vaya tras comentarios `%%`, o
+  `config.theme` en el frontmatter).
 - Sección 4: con un solo diagrama, `## 4. Diagrama de arquitectura`. Con el de
   despliegue (`AdrContext.deployment_mermaid`), `## 4. Diagramas` con
-  `### 4.1 Arquitectura` y `### 4.2 Despliegue`. Cada uno con su pie
-  `_Figura n. <qué muestra>._`
+  `### 4.1 Arquitectura` y `### 4.2 Despliegue`. Cada uno lleva antes una
+  frase que lo presenta (`diagram_overview`: componentes, conexiones y grupos
+  leídos del Mermaid) y después su pie `_Figura n. <qué muestra>._`
+- `collect_adr_context` todavía no llena `deployment_mermaid`: la vista con
+  arquitectura + despliegue solo está probada con contextos armados a mano.
 - Para sumar otro diagrama: agrégalo a `_diagrams_block` con título y pie, y en
   `AdrPanel.tsx` asígnale su imagen por posición (`splitMermaidBlocks`).
 
@@ -80,7 +141,7 @@ Reglas: el azul estructura (títulos, tablas, filetes); el texto corrido va en
 | Ficha | Estado, fecha, aprobación, iteración aprobada | Datos |
 | Resumen ejecutivo | Problema, para quién, decisión, recursos, 3 riesgos, qué falta decidir | Datos + 7.4/7.8 |
 | 1. Contexto | Problema, usuarios, descripción inicial (si difiere) | Elicitación |
-| 2. Requerimientos | Funcionalidades, restricciones, calidad, escala, contexto técnico, datos de viabilidad | Elicitación |
+| 2. Requerimientos | Funcionalidades, restricciones, calidad, escala (una cifra sola se aclara: "Unas 1000 personas usarían el sistema"), contexto técnico, datos de viabilidad | Elicitación |
 | 3. Decisión | La decisión en una línea + la propuesta aprobada con trade-offs y ajustes pedidos | Propuesta |
 | 4. Diagramas | Arquitectura (y despliegue) con el tema del ADR | Refinamiento |
 | 5. Referencias | Patrones usados y sus fuentes curadas | Catálogo |

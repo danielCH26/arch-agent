@@ -1,8 +1,9 @@
 // Identidad visual del ADR ("ArchAgent Blueprint"): paleta de azules,
 // tipografías y espaciados del documento entregable (PDF).
 //
-// Los colores son los mismos de app/core/adr_theme.py, que los usa para los
-// diagramas Mermaid; tests/core/test_adr_theme.py comprueba que no se separen.
+// Colores y tipografías son los mismos de app/core/adr_theme.py, que los usa
+// para los diagramas Mermaid; tests/core/test_adr_quality.py comprueba que no
+// se separen.
 // Reglas de uso en .atl/skills/adr-design/SKILL.md.
 
 export const ADR_PALETTE = {

@@ -916,3 +916,46 @@ class TestVerificacionPreviaALaEntrega:
         )
         warnings = guide_content_warnings(_ctx(), guide)
         assert warnings == ["Sección «7.1 Componentes y responsabilidades»: tiene texto de relleno: «seguir buenas practicas»"]
+
+
+class TestRevisionDelDisenoF30:
+    """Review de F30: título, cifras sin unidad, texto de los diagramas y emojis."""
+
+    def test_el_titulo_lleva_mayuscula_inicial_y_siglas_en_mayusculas(self):
+        md = render_adr_markdown(_ctx(project_name="prueba adr"), llm_sections=LLM_GUIDE)
+        assert md.startswith("# ADR-001: Arquitectura de Prueba ADR\n")
+        md = render_adr_markdown(_ctx(project_name="adr"), llm_sections=LLM_GUIDE)
+        assert md.startswith("# ADR-001: Arquitectura de ADR\n")
+        # Solo palabras completas: "padre" no cambia.
+        md = render_adr_markdown(_ctx(project_name="padre"), llm_sections=LLM_GUIDE)
+        assert md.startswith("# ADR-001: Arquitectura de Padre\n")
+
+    def test_una_escala_sin_unidad_dice_de_que_es_la_cifra(self):
+        md = render_adr_markdown(_ctx(resumen=dict(_ctx().resumen, escala="1000")), llm_sections=None)
+        assert "Unas 1000 personas usarían el sistema" in md
+        assert "### Escala y volumen\n\n1000\n" not in md
+
+    def test_la_seccion_4_presenta_el_diagrama(self):
+        mermaid = 'flowchart TD\n  subgraph Nube["AWS"]\n  A[API] -->|consulta| B[(DB)]\n  end\n  W((Web)) --> A'
+        md = render_adr_markdown(_ctx(mermaid=mermaid), llm_sections=LLM_GUIDE)
+        section = md.split("## 4. Diagrama de arquitectura", 1)[1].split("```mermaid", 1)[0]
+        assert "El diagrama muestra 3 componentes (API, DB y Web) y 2 conexiones, agrupados en AWS" in section
+
+    def test_el_diagrama_de_despliegue_tambien_se_presenta(self):
+        deploy = "---\ntitle: Nube\n---\nflowchart LR\n  W[Web] --> S[(Servidor)]"
+        md = render_adr_markdown(_ctx(deployment_mermaid=deploy), llm_sections=LLM_GUIDE)
+        section = md.split("### 4.2 Despliegue", 1)[1]
+        assert "2 componentes (Web y Servidor) y 1 conexión; las flechas indican dónde corre" in section
+        # El tema va después del frontmatter, no antes.
+        assert "```mermaid\n---\ntitle: Nube\n---\n%%{init: " in section
+
+    def test_sin_emojis_decorativos_en_la_propuesta_ni_en_la_guia(self):
+        proposal = (
+            "## Trade-offs y decisión\n\n| Opción | Ventajas |\n|---|---|\n"
+            "| 1\ufe0f\u20e3 Monolito | \U0001F680 Simple ✓ |\n| 2\ufe0f\u20e3 Microservicios | Escala |"
+        )
+        guide = LLM_GUIDE.replace("Contenido de Primer sprint.", "\U0001F680 Montar la agenda de citas.")
+        md = render_adr_markdown(_ctx(proposal_markdown=proposal), llm_sections=guide)
+        assert "\u20e3" not in md and "\U0001F680" not in md
+        assert "| 1. Monolito | Simple ✓ |" in md
+        assert "Montar la agenda de citas." in md

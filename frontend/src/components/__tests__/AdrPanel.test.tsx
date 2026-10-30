@@ -223,8 +223,15 @@ describe('AdrPanel', () => {
       { message_id: 1, id: 'a', url: '/aprobado.png', filename: null, created_at: '', decision: 'approve' },
     ])
     const written: string[] = []
+    let fontsLoaded = () => {}
+    const fontsReady = new Promise<void>((resolve) => (fontsLoaded = resolve))
     const fakeWindow = {
-      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn() },
+      document: {
+        open: vi.fn(),
+        write: (html: string) => written.push(html),
+        close: vi.fn(),
+        fonts: { ready: fontsReady },
+      },
       addEventListener: vi.fn(),
       focus: vi.fn(),
       print: vi.fn(),
@@ -243,6 +250,13 @@ describe('AdrPanel', () => {
     expect(html).not.toContain('flowchart TD')
     // El pie del ADR queda dentro de la figura.
     expect(html).toContain('<figcaption><strong>Figura 1.</strong> Componentes del sistema.</figcaption>')
+    // No imprime hasta que cargan las tipografías: si no, el PDF sale con las de respaldo.
+    const onLoad = fakeWindow.addEventListener.mock.calls.find(([type]) => type === 'load')![1] as () => void
+    onLoad()
+    await Promise.resolve()
+    expect(fakeWindow.print).not.toHaveBeenCalled()
+    fontsLoaded()
+    await waitFor(() => expect(fakeWindow.print).toHaveBeenCalledTimes(1))
     openSpy.mockRestore()
   })
 

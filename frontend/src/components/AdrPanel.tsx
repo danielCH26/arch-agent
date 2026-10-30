@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
 import { renderMarkdownBlocks } from './MessageBubble'
+import { CheckCircleIcon } from './NavIcons'
 import { ProjectCompletedDialog } from './ProjectCompletedDialog'
 import { buildAdrPrintDocument } from './adrPrint'
 
@@ -64,9 +65,15 @@ export function openPrintView(bodyHtml: string, title: string): boolean {
     win.focus()
     win.print()
   }
-  // Se espera a que cargue la imagen del diagrama; si tarda, se imprime igual.
-  win.addEventListener('load', print)
-  setTimeout(print, 2500)
+  // Se espera a que carguen la imagen del diagrama y las tipografías (Google
+  // Fonts): sin document.fonts.ready el PDF sale con las de respaldo. Si
+  // tardan, se imprime igual.
+  win.addEventListener('load', () => {
+    const fonts = win.document.fonts
+    if (fonts?.ready) fonts.ready.then(print, print)
+    else print()
+  })
+  setTimeout(print, 4000)
   return true
 }
 
@@ -326,7 +333,10 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
           data-testid="adr-completed"
           className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800"
         >
-          <span className="mr-auto font-medium">✅ Proyecto completado. El ADR quedó aprobado.</span>
+          <span className="mr-auto inline-flex items-center gap-1.5 font-medium">
+            <CheckCircleIcon className="h-4 w-4" />
+            Proyecto completado. El ADR quedó aprobado.
+          </span>
           <button
             type="button"
             data-testid="adr-reopen"

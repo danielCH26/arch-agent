@@ -451,6 +451,36 @@ def strip_ui_leftovers(markdown: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+# Emojis que el modelo usa para numerar o adornar ("1️⃣ Monolito", "🚀 MVP"):
+# en un documento técnico restan seriedad. Los números de tecla pasan a "1.";
+# los pictogramas se quitan. ✓/✗ (Dingbats) se conservan.
+_KEYCAP_RE = re.compile(r"([0-9#*])\uFE0F?\u20E3\s*")
+_PICTOGRAPH_RE = re.compile(r"[\U0001F000-\U0001FAFF]\uFE0F?\s?|\uFE0F")
+
+
+def strip_decorative_emoji(markdown: str) -> str:
+    text = _KEYCAP_RE.sub(lambda m: f"{m.group(1)}. ", markdown or "")
+    return _PICTOGRAPH_RE.sub("", text)
+
+
+# Siglas que van siempre en mayúsculas en el título, aunque el usuario las
+# escribiera en minúsculas ("prueba adr" -> "Prueba ADR"). Mismas que
+# DISPLAY_ACRONYMS de frontend/src/lib/format.ts.
+DISPLAY_ACRONYMS = frozenset({"adr", "api", "ia", "ai", "erp", "crm", "mvp", "saas", "iot", "ui", "ux"})
+
+
+def _display_name(name: str) -> str:
+    """El nombre del proyecto como título: con mayúscula inicial y las siglas
+    (ADR, API...) en mayúsculas aunque el usuario lo escribiera en minúsculas
+    ("prueba adr" -> "Prueba ADR")."""
+    name = re.sub(
+        r"\b\w+\b",
+        lambda m: m.group(0).upper() if m.group(0).lower() in DISPLAY_ACRONYMS else m.group(0),
+        (name or "").strip(),
+    )
+    return name[:1].upper() + name[1:]
+
+
 def _quality_items(resumen: dict) -> list[str]:
     """Atributos de calidad marcando los que propuso el agente (no el usuario)."""
     origins = resumen.get("calidad_origen") if isinstance(resumen.get("calidad_origen"), dict) else {}
@@ -914,7 +944,7 @@ def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
 
 def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
     if llm_sections and llm_sections.strip():
-        guide = llm_sections.strip()
+        guide = strip_decorative_emoji(llm_sections.strip())
     else:
         # Antes el aviso mezclaba tres causas posibles y no decía cuál fue.
         cause = (
@@ -1145,6 +1175,21 @@ _TECH_CONTEXT_LABELS = (
 _UNDEFINED_TEXT = {"no definido", "no definida", "ninguno", "ninguna", "n/a", "-"}
 
 
+_BARE_NUMBER_RE = re.compile(r"[~≈]?\s*\d[\d.,\s]*\+?")
+
+
+def _scale_text(escala: str) -> str:
+    """Una cifra sola ("1000") no dice de qué es. La pregunta de la
+    elicitación es cuántas personas usarían el sistema: se dice así."""
+    number = escala.strip(" .")
+    if _BARE_NUMBER_RE.fullmatch(number):
+        return (
+            f"Unas {number.lstrip('~≈ ')} personas usarían el sistema (cifra aproximada del "
+            "usuario; no precisó si son usuarios simultáneos o en total)."
+        )
+    return escala
+
+
 def _technical_context_block(resumen: dict) -> str:
     """Contexto técnico y datos de viabilidad con las palabras del usuario.
 
@@ -1156,7 +1201,7 @@ def _technical_context_block(resumen: dict) -> str:
     if escala and normalize_text(escala) not in _UNDEFINED_TEXT:
         # Cifras de uso (usuarios, datos, frecuencia): sin ellas la propuesta
         # no puede dimensionar ni justificar costos.
-        blocks.append(f"### Escala y volumen\n\n{escala}")
+        blocks.append(f"### Escala y volumen\n\n{_scale_text(escala)}")
     tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
     items = [
         f"**{label}:** {str(tecnico.get(key)).strip()}"
@@ -1187,6 +1232,55 @@ def _reader_labels(markdown: str) -> str:
     return re.sub(r"Fuente RAG", "Referencia (sección 5)", text, flags=re.IGNORECASE)
 
 
+# Nodos de un flowchart: ``A[API]``, ``B[(DB)]``, ``C((Cola))``, ``D{Regla}``...
+_MERMAID_NODE_RE = re.compile(
+    r"(?<![\w-])[A-Za-z_][\w-]*\s*(?:\[\[|\[\(|\(\[|\(\(|\[|\(|\{\{|\{|>)"
+    r"\s*\"?([^\]\)\}\"|]+?)\"?\s*(?:\]\]|\)\]|\]\)|\)\)|\]|\)|\}\}|\})"
+)
+_MERMAID_EDGE_RE = re.compile(r"<?(?:-{2,}>|-\.+->|={2,}>|-{3,}|-\.+-|={3,})")
+_MERMAID_SUBGRAPH_RE = re.compile(r"^\s*subgraph\s+(?:[\w-]+\s*\[\s*\"?([^\]\"]+)\"?\s*\]|\"?([^\"\n]+)\"?)", re.M)
+
+
+def _human_list(items: list[str], limit: int = 8) -> str:
+    shown = items[:limit]
+    text = shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + f" y {shown[-1]}"
+    extra = len(items) - len(shown)
+    return f"{text} (y {extra} más)" if extra > 0 else text
+
+
+def diagram_overview(code: str, kind: str) -> str:
+    """Una o dos frases que presentan el diagrama: qué piezas tiene y cómo
+    leerlo. Salen del propio Mermaid, sin LLM. Vacío si no es un flowchart."""
+    lines = [line for line in (code or "").splitlines() if line.strip() and not line.strip().startswith("%%")]
+    if lines and lines[0].strip() == "---":
+        # Frontmatter: se salta hasta el cierre.
+        closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), 0)
+        lines = lines[closing + 1:]
+    if not lines or not re.match(r"\s*(flowchart|graph)\b", lines[0], re.I):
+        return ""
+    body = "\n".join(lines[1:])
+    nodes = "\n".join(line for line in lines[1:] if not re.match(r"\s*(subgraph|end|classDef|class|style|linkStyle|click)\b", line))
+    names: list[str] = []
+    for label in _MERMAID_NODE_RE.findall(nodes):
+        label = _plain(re.sub(r"<[^>]+>", " ", label))
+        if label and label not in names:
+            names.append(label)
+    if not names:
+        return ""
+    groups = [_plain(a or b) for a, b in _MERMAID_SUBGRAPH_RE.findall(body)]
+    edges = len(_MERMAID_EDGE_RE.findall(body))
+    what = "dónde corre" if kind == "Despliegue" else "cómo se comunica"
+    text = (
+        f"El diagrama muestra {len(names)} componente{'s' if len(names) != 1 else ''} ({_human_list(names)})"
+        + (f" y {edges} conexi{'ones' if edges != 1 else 'ón'}" if edges else "")
+        + (f", agrupados en {_human_list(groups)}" if groups else "")
+        + f"; las flechas indican {what} cada uno."
+    )
+    if kind != "Despliegue":
+        text += " Son los mismos nombres que usa la sección 7.1."
+    return text
+
+
 _DIAGRAM_MISSING = (
     "_Todavía no se generó un diagrama. Pídelo en la fase de Refinamiento y vuelve a generar el ADR._"
 )
@@ -1212,17 +1306,19 @@ def _diagrams_block(ctx: AdrContext) -> str:
     if not figures:
         return f"## 4. Diagrama de arquitectura\n\n{_DIAGRAM_MISSING}"
 
-    def figure(number: int, code: str, caption: str) -> str:
-        return f"```mermaid\n{themed_mermaid(code)}\n```\n\n_Figura {number}. {caption}._"
+    def figure(number: int, kind: str, code: str, caption: str) -> str:
+        overview = diagram_overview(code, kind)
+        intro = f"{overview}\n\n" if overview else ""
+        return f"{intro}```mermaid\n{themed_mermaid(code)}\n```\n\n_Figura {number}. {caption}._"
 
     if len(figures) == 1 and ctx.mermaid:
-        _title, code, caption = figures[0]
-        return f"## 4. Diagrama de arquitectura\n\n{figure(1, code, caption)}"
+        kind, code, caption = figures[0]
+        return f"## 4. Diagrama de arquitectura\n\n{figure(1, kind, code, caption)}"
     blocks = ["## 4. Diagramas"]
     if not ctx.mermaid:
         blocks.append(f"### 4.1 Arquitectura\n\n{_DIAGRAM_MISSING}")
     for number, (title, code, caption) in enumerate(figures, start=1):
-        blocks.append(f"### 4.{len(blocks)} {title}\n\n{figure(number, code, caption)}")
+        blocks.append(f"### 4.{len(blocks)} {title}\n\n{figure(number, title, code, caption)}")
     return "\n\n".join(blocks)
 
 
@@ -1259,9 +1355,9 @@ def render_adr_markdown(
         f"**Decisión:** {decided} _({iterations.lower()} de la propuesta)_.\n\n" if decided else ""
     )
     approved_row = f"| Aprobado | {_approved_date(ctx)} |\n" if ctx.approved_at else ""
-    proposal = _reader_labels(strip_ui_leftovers(ctx.proposal_markdown))
+    proposal = _reader_labels(strip_decorative_emoji(strip_ui_leftovers(ctx.proposal_markdown)))
 
-    return f"""# ADR-001: Arquitectura de {ctx.project_name}
+    return f"""# ADR-001: Arquitectura de {_display_name(ctx.project_name)}
 
 | Campo | Valor |
 |---|---|
@@ -1352,8 +1448,8 @@ con las restricciones (presupuesto, equipo, plazo).
 Dos listas: **Positivas** y **Negativas / costos asumidos**.
 
 ### 7.4 Riesgos y mitigaciones
-Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Mitigación, ordenada \
-de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
+Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Probabilidad \
+(alta/media/baja) | Mitigación, ordenada de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
 confirmó (de dónde salen los datos, una integración, la plataforma) es de \
 impacto ALTO y va primero: es lo que puede tumbar el proyecto. Cada riesgo \
 debe ser de ESTE proyecto, no una lista genérica.

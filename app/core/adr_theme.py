@@ -11,6 +11,8 @@ Reglas de uso en ``.atl/skills/adr-design/SKILL.md``.
 from __future__ import annotations
 
 import json
+import re
+import re
 
 # Azules de la marca, del más oscuro al más claro, más neutros y apoyo.
 # Cambiar un valor aquí obliga a cambiarlo en adrTheme.ts (test de paridad).
@@ -81,16 +83,45 @@ def mermaid_theme_config() -> dict:
     }
 
 
-_INIT_DIRECTIVE_PREFIX = "%%{init"
+# Directiva propia del diagrama: ``%%{init: ...}%%``, ``%%{ init: ...}%%`` o el
+# alias ``initialize``.
+_INIT_DIRECTIVE_RE = re.compile(r"^%%\{\s*init(?:ialize)?\s*:", re.I)
+# Frontmatter de Mermaid (``---`` / ``title: ...`` / ``---``): Mermaid solo lo
+# reconoce en la primera línea, así que la directiva va después.
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", re.S)
+# ``theme:`` dentro del ``config:`` del frontmatter: el diagrama ya trae tema.
+_FRONTMATTER_THEME_RE = re.compile(r"^\s+theme\s*:", re.M)
+
+
+def _has_own_theme(frontmatter: str, body: str) -> bool:
+    if _FRONTMATTER_THEME_RE.search(frontmatter):
+        return True
+    # La directiva puede venir después de líneas en blanco o comentarios ``%%``.
+    for line in body.splitlines():
+        line = line.strip()
+        if _INIT_DIRECTIVE_RE.match(line):
+            return True
+        if line and not line.startswith("%%"):
+            return False
+    return False
 
 
 def themed_mermaid(code: str) -> str:
-    """El código Mermaid con la directiva ``init`` del tema del ADR al inicio.
+    """El código Mermaid con la directiva ``init`` del tema del ADR.
 
-    Si el diagrama ya trae su propia directiva, se respeta tal cual.
+    Va al inicio o, si el diagrama trae frontmatter, justo después. Si el
+    diagrama ya trae su propio tema (directiva ``init`` o ``config.theme`` del
+    frontmatter), se respeta tal cual.
     """
-    body = (code or "").strip()
-    if not body or body.lstrip().startswith(_INIT_DIRECTIVE_PREFIX):
-        return body
+    code = (code or "").strip()
+    if not code:
+        return code
+    match = _FRONTMATTER_RE.match(code)
+    frontmatter = match.group(0) if match else ""
+    body = code[len(frontmatter):].lstrip("\n")
+    if _has_own_theme(frontmatter, body):
+        return code
+    if frontmatter and not frontmatter.endswith("\n"):
+        frontmatter += "\n"
     directive = json.dumps(mermaid_theme_config(), ensure_ascii=False, separators=(",", ":"))
-    return f"%%{{init: {directive}}}%%\n{body}"
+    return f"{frontmatter}%%{{init: {directive}}}%%\n{body}"

@@ -8,6 +8,7 @@
  */
 
 import { useState } from 'react'
+import { phaseLabel } from '../phaseLabels'
 
 export interface RejectDialogProps {
   open: boolean
@@ -41,10 +42,10 @@ export function RejectDialog({
           id="reject-dialog-title"
           className="text-lg font-semibold text-gray-900"
         >
-          Rechazar {phase}
+          Rechazar la fase {phaseLabel(phase)}
         </h3>
         <p className="mt-2 text-sm text-gray-600">
-          Indicale al asistente qué debe ajustar. Esta acción registra una
+          Indícale al asistente qué debe ajustar. Esta acción registra una
           decisión de rechazo en el historial.
         </p>
         <label className="mt-4 block text-sm font-medium text-gray-700">
