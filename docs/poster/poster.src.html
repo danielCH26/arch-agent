@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>ArchAgent · Póster</title>
+<style>
+  /* Fuente del proyecto (frontend/index.html): Plus Jakarta Sans. */
+  @font-face { font-family: "Plus Jakarta Sans"; font-weight: 400; src: url("fonts/pjs-400.woff2") format("woff2"); }
+  @font-face { font-family: "Plus Jakarta Sans"; font-weight: 500; src: url("fonts/pjs-500.woff2") format("woff2"); }
+  @font-face { font-family: "Plus Jakarta Sans"; font-weight: 600; src: url("fonts/pjs-600.woff2") format("woff2"); }
+  @font-face { font-family: "Plus Jakarta Sans"; font-weight: 700; src: url("fonts/pjs-700.woff2") format("woff2"); }
+  @font-face { font-family: "Plus Jakarta Sans"; font-weight: 800; src: url("fonts/pjs-800.woff2") format("woff2"); }
+
+  /* Pendón vertical: 80 cm de ancho x 100 cm de alto. Medidas en mm. */
+  @page { size: 800mm 1000mm; margin: 0; }
+  :root {
+    --blue: #0e54ce;
+    --blue-dark: #0a3a91;
+    --blue-soft: #e8f0fe;
+    --blue-line: #bcd0f7;
+    --ink: #111827;
+    --ink-2: #374151;
+    --muted: #6b7280;
+    --bg: #f5f7fb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 800mm; height: 1000mm; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif;
+    font-size: 7mm;
+    line-height: 1.42;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .poster { width: 800mm; height: 1000mm; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ---------- Encabezado ---------- */
+  header {
+    background: #fff; display: flex; align-items: center;
+    gap: 12mm; padding: 9mm 22mm 8mm;
+  }
+  .brand { display: flex; align-items: center; gap: 9mm; flex: 1; min-width: 0; }
+  .brand .logo { height: 74mm; width: auto; flex: none; }
+  .brand h1 { font-size: 44mm; line-height: 1; font-weight: 600; letter-spacing: -.8mm; color: #1f2937; }
+  .brand h1 .arch { color: var(--blue); }
+  .brand .tagline { font-size: 10.4mm; color: var(--ink-2); margin-top: 3.5mm; line-height: 1.32; }
+  .brand .tagline b { color: var(--blue); font-weight: 700; }
+  .inst {
+    display: flex; flex-direction: column; align-items: center; gap: 3mm; flex: none;
+    padding-left: 12mm; border-left: .6mm solid #e5e7eb;
+  }
+  .inst img { width: 124mm; height: auto; }
+  .inst .course {
+    font-size: 8mm; font-weight: 700; color: var(--blue-dark); background: var(--blue-soft);
+    border: .5mm solid var(--blue-line); border-radius: 2.5mm; padding: 1.4mm 5mm;
+  }
+  .authors {
+    background: linear-gradient(90deg, var(--blue-dark), var(--blue) 55%, #2563eb);
+    color: #fff; padding: 5mm 22mm; display: flex; align-items: center; gap: 8mm; font-size: 7.8mm;
+  }
+  .authors .label { font-size: 5.4mm; text-transform: uppercase; letter-spacing: .6mm; opacity: .85; font-weight: 600; }
+  .authors .names { display: flex; gap: 7mm; flex-wrap: wrap; font-weight: 700; }
+  .authors .names span + span::before { content: "•"; margin-right: 7mm; opacity: .55; font-weight: 400; }
+
+  /* ---------- Cuerpo ---------- */
+  main { flex: 1; display: flex; flex-direction: column; gap: 10mm; padding: 10mm 22mm 8mm; min-height: 0; }
+  .top { display: grid; grid-template-columns: 350mm 1fr; gap: 14mm; }
+  .col { display: flex; flex-direction: column; gap: 8mm; }
+  h2 {
+    display: flex; align-items: center; gap: 4mm; font-size: 12mm; font-weight: 800; letter-spacing: -.2mm;
+    color: var(--blue-dark); padding-bottom: 2.2mm; border-bottom: .9mm solid var(--blue); margin-bottom: 4.5mm;
+  }
+  h2 .n {
+    display: inline-grid; place-items: center; width: 12mm; height: 12mm; border-radius: 50%;
+    background: var(--blue); color: #fff; font-size: 6.6mm; font-weight: 700; flex: none;
+  }
+  h3 { font-size: 8mm; font-weight: 700; color: var(--ink); margin: 3.5mm 0 1.5mm; }
+  p { color: var(--ink-2); }
+  p + p { margin-top: 2.5mm; }
+  b { font-weight: 700; color: var(--ink); }
+  ul.dots { list-style: none; }
+  ul.dots li { position: relative; padding-left: 6mm; color: var(--ink-2); margin-top: 1.6mm; }
+  ul.dots li::before {
+    content: ""; position: absolute; left: .4mm; top: 3.3mm; width: 2.5mm; height: 2.5mm;
+    border-radius: 50%; background: var(--blue);
+  }
+  .callout {
+    background: var(--blue-soft); border-left: 1.6mm solid var(--blue); border-radius: 2.5mm;
+    padding: 4mm 5.5mm; color: var(--ink); font-size: 7.4mm;
+  }
+  .callout b { color: var(--blue-dark); }
+
+  /* Fases */
+  .phases { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm 6mm; }
+  .phase { display: grid; grid-template-columns: 12mm 1fr; gap: 3.5mm; align-items: start; }
+  .phase .num {
+    width: 12mm; height: 12mm; border-radius: 50%; background: var(--blue); color: #fff;
+    display: grid; place-items: center; font-weight: 700; font-size: 6.6mm;
+  }
+  .phase b { display: block; font-size: 7.6mm; }
+  .phase span { font-size: 6.2mm; color: var(--ink-2); display: block; line-height: 1.3; }
+  .controls { display: flex; gap: 2.5mm; margin-top: 5mm; font-size: 6.6mm; font-weight: 700; align-items: center; flex-wrap: wrap; color: var(--ink); }
+  .controls .c { padding: 1.2mm 4mm; border-radius: 2mm; border: .5mm solid; font-weight: 700; }
+  .c.ok { color: #047857; background: #ecfdf5; border-color: #6ee7b7; }
+  .c.mod { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+  .c.no { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+
+  /* Arquitectura */
+  .arch svg { width: 100%; height: auto; display: block; }
+  .chips { display: flex; flex-wrap: wrap; gap: 2.2mm; margin-top: 4mm; }
+  .chip {
+    font-size: 5.8mm; padding: 1mm 3.6mm; border-radius: 10mm; background: #fff;
+    border: .45mm solid var(--blue-line); color: var(--blue-dark); font-weight: 600;
+  }
+  .small li { font-size: 6.5mm; }
+
+  /* Resultados */
+  .lead { font-size: 6.6mm; color: var(--ink-2); margin: -1mm 0 4mm; }
+  .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4mm; }
+  .kpi {
+    background: #fff; border-radius: 3mm; border: .45mm solid #e5e7eb; padding: 3.4mm 4mm;
+    border-top: 1.6mm solid var(--blue);
+  }
+  .kpi .v { font-size: 14mm; font-weight: 800; color: var(--blue); line-height: 1; letter-spacing: -.4mm; }
+  .kpi .v small { font-size: 7mm; font-weight: 700; }
+  .kpi .t { font-size: 5.6mm; color: var(--ink-2); margin-top: 1.8mm; line-height: 1.25; }
+  .shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4.5mm; margin-top: 5mm; }
+  figure { background: #fff; border-radius: 3mm; border: .45mm solid #dfe3ea; overflow: hidden; }
+  figure .frame { aspect-ratio: 1.72 / 1; overflow: hidden; background: #f3f4f6; border-bottom: .45mm solid #e5e7eb; }
+  figure img { width: 100%; height: 100%; object-fit: cover; object-position: left top; display: block; }
+  figcaption { font-size: 5.6mm; padding: 2.2mm 3.4mm 2.6mm; color: var(--ink-2); line-height: 1.28; }
+  figcaption b { color: var(--blue-dark); }
+  /* Número de paso en cada captura (orden de uso). */
+  .shots { counter-reset: paso; }
+  figure { position: relative; counter-increment: paso; }
+  figure::before {
+    content: counter(paso); position: absolute; top: 2.5mm; right: 2.5mm; z-index: 1;
+    width: 9mm; height: 9mm; border-radius: 50%; background: var(--blue); color: #fff;
+    display: grid; place-items: center; font-size: 5.4mm; font-weight: 700;
+    box-shadow: 0 0 0 .8mm #fff;
+  }
+
+  /* Fila inferior */
+  .bottom { display: grid; grid-template-columns: 1.75fr 1fr 1fr; gap: 12mm; flex: 1; min-height: 0; }
+  .features { display: grid; grid-template-columns: 1fr 1fr 1.15fr; gap: 5mm; font-size: 5.6mm; line-height: 1.3; }
+  .features h4 {
+    font-size: 5.8mm; font-weight: 700; color: #fff; background: var(--blue); display: inline-block;
+    padding: .4mm 3mm; border-radius: 1.5mm; margin: 0 0 1.2mm; break-after: avoid;
+  }
+  .features ul { list-style: none; margin-bottom: 2.6mm; }`n  .features h4:not(:first-child) { break-before: column; }
+  .features li { color: var(--ink-2); padding: .35mm 0; }
+  .features li code {
+    font-family: "Cascadia Mono", Consolas, monospace; font-size: 4.9mm; color: var(--blue-dark);
+    background: var(--blue-soft); border-radius: 1mm; padding: 0 1.2mm; margin-right: 1.5mm; font-weight: 700;
+  }
+  .bottom ul.dots li { font-size: 6.5mm; margin-top: 2.6mm; }
+
+  footer {
+    display: flex; justify-content: space-between; align-items: center; padding: 4.5mm 22mm;
+    background: var(--blue-dark); color: #dbe7ff; font-size: 6mm;
+  }
+  footer b { color: #fff; }
+</style>
+</head>
+<body>
+<div class="poster">
+
+  <header>
+    <div class="brand">
+      <img class="logo" src="img/logo.png" alt="Logo de ArchAgent">
+      <div>
+        <h1><span class="arch">Arch</span>Agent</h1>
+        <div class="tagline">Asistente de IA que guía a equipos de desarrollo <b>de la idea a una arquitectura de software justificada</b></div>
+      </div>
+    </div>
+    <div class="inst">
+      <img src="img/upb.png" alt="Universidad Pontificia Bolivariana">
+      <div class="course">Proyecto aplicado en TIC II</div>
+    </div>
+  </header>
+
+  <div class="authors">
+    <span class="label">Desarrolladores</span>
+    <div class="names">
+      <span>Daniel Elías Córdoba Howard</span>
+      <span>Laura Sofía Jiménez Moreno</span>
+      <span>Sofía Mejía Rivas</span>
+      <span>Santiago Arias Bernal</span>
+    </div>
+  </div>
+
+  <main>
+    <div class="top">
+      <!-- ===== Columna izquierda ===== -->
+      <div class="col">
+        <section>
+          <h2><span class="n">1</span>Introducción</h2>
+          <p>Definir la arquitectura de un sistema es una de las decisiones más costosas de corregir. En equipos pequeños y académicos suele tomarse sin requerimientos claros, sin comparar alternativas y sin dejar registro de por qué se eligió cada patrón.</p>
+          <p><b>ArchAgent</b> es un asistente basado en IA generativa que acompaña al equipo desde la idea del producto hasta una propuesta con <b>patrones reconocidos, diagramas, trade-offs y un ADR</b>, dejando al usuario en control de cada decisión.</p>
+        </section>
+
+        <section>
+          <h2><span class="n">2</span>Objetivo</h2>
+          <div class="callout">Desarrollar un agente de IA que guíe la definición de arquitecturas de software, desde la <b>elicitación de requerimientos</b> hasta una <b>propuesta justificada</b> con patrones, diagramas y trade-offs.</div>
+          <h3>Objetivos específicos</h3>
+          <ul class="dots">
+            <li>Levantar requerimientos con preguntas progresivas y un resumen aprobable.</li>
+            <li>Recomendar patrones con RAG sobre un catálogo curado.</li>
+            <li>Generar diagramas Mermaid y tablas de trade-offs.</li>
+            <li>Documentar la decisión final en un ADR revisable.</li>
+            <li>Permitir que cada usuario conecte su propio LLM.</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2><span class="n">3</span>¿Cómo funciona?</h2>
+          <div class="phases">
+            <div class="phase"><div class="num">1</div><div><b>Requerimientos</b><span>Chat de elicitación guiada y resumen con atributos de calidad.</span></div></div>
+            <div class="phase"><div class="num">2</div><div><b>Propuesta</b><span>Arquitectura con patrones del catálogo citados (RAG).</span></div></div>
+            <div class="phase"><div class="num">3</div><div><b>Refinamiento</b><span>Diagramas, ajustes puntuales e iteraciones con feedback.</span></div></div>
+            <div class="phase"><div class="num">4</div><div><b>Revisión</b><span>ADR con contexto, decisión, alternativas y consecuencias.</span></div></div>
+          </div>
+          <div class="controls">En cada fase: <span class="c ok">Aprobar</span><span class="c mod">Modificar</span><span class="c no">Rechazar</span></div>
+        </section>
+      </div>
+
+      <!-- ===== Columna derecha ===== -->
+      <div class="col arch">
+        <section>
+          <h2><span class="n">4</span>Arquitectura</h2>
+          <svg viewBox="0 0 380 244" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Segoe UI, Arial, sans-serif">
+            <defs>
+              <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="#0a3a91"/>
+              </marker>
+            </defs>
+            <!-- Docker Compose -->
+            <rect x="2" y="42" width="376" height="200" rx="5" fill="none" stroke="#6b7280" stroke-width=".7" stroke-dasharray="3 2"/>
+            <rect x="8" y="38" width="98" height="8" rx="2" fill="#f5f7fb"/>
+            <text x="11" y="44" font-size="5.2" fill="#374151" font-weight="600">Docker Compose · 11 servicios</text>
+
+            <!-- Usuario y LLM -->
+            <rect x="10" y="2" width="180" height="27" rx="4" fill="#fff" stroke="#0e54ce" stroke-width=".8"/>
+            <text x="100" y="13.5" font-size="6.4" text-anchor="middle" font-weight="700" fill="#111827">Equipo de desarrollo</text>
+            <text x="100" y="22.5" font-size="4.8" text-anchor="middle" fill="#374151">navegador web</text>
+
+            <rect x="250" y="2" width="128" height="27" rx="4" fill="#0a3a91"/>
+            <text x="314" y="13.5" font-size="6.2" text-anchor="middle" font-weight="700" fill="#fff">LLM del usuario</text>
+            <text x="314" y="22.5" font-size="4.6" text-anchor="middle" fill="#dbe7ff">OpenAI · Groq · Ollama · LM Studio</text>
+
+            <line x1="100" y1="29" x2="100" y2="53" stroke="#0a3a91" stroke-width=".9" marker-end="url(#ah)"/>
+            <line x1="314" y1="30" x2="314" y2="95" stroke="#0a3a91" stroke-width=".9" stroke-dasharray="2.2 1.4" marker-start="url(#ah)" marker-end="url(#ah)"/>
+            <text x="309" y="64" font-size="4.6" fill="#0a3a91" text-anchor="end" font-weight="600">API compatible</text>
+            <text x="309" y="70" font-size="4.6" fill="#0a3a91" text-anchor="end" font-weight="600">con OpenAI</text>
+
+            <!-- SPA -->
+            <rect x="10" y="54" width="230" height="26" rx="4" fill="#fff" stroke="#0e54ce" stroke-width=".8"/>
+            <text x="125" y="65" font-size="6.2" text-anchor="middle" font-weight="700" fill="#0a3a91">Frontend SPA (nginx)</text>
+            <text x="125" y="74" font-size="4.8" text-anchor="middle" fill="#374151">React 18 · Vite · TypeScript · Tailwind</text>
+
+            <line x1="125" y1="80" x2="125" y2="95" stroke="#0a3a91" stroke-width=".9" marker-start="url(#ah)" marker-end="url(#ah)"/>
+            <text x="130" y="90.5" font-size="4.6" fill="#0a3a91" font-weight="600">REST + SSE (streaming)</text>
+
+            <!-- Backend -->
+            <rect x="10" y="96" width="360" height="84" rx="5" fill="#e8f0fe" stroke="#0e54ce" stroke-width=".9"/>
+            <text x="190" y="106.5" font-size="6.4" text-anchor="middle" font-weight="700" fill="#0a3a91">Backend · FastAPI (Python 3.11) · autenticación JWT</text>
+            <g text-anchor="middle">
+              <rect x="17" y="112" width="83" height="61" rx="3" fill="#fff" stroke="#bcd0f7" stroke-width=".7"/>
+              <rect x="105" y="112" width="83" height="61" rx="3" fill="#fff" stroke="#bcd0f7" stroke-width=".7"/>
+              <rect x="193" y="112" width="83" height="61" rx="3" fill="#fff" stroke="#bcd0f7" stroke-width=".7"/>
+              <rect x="281" y="112" width="83" height="61" rx="3" fill="#fff" stroke="#bcd0f7" stroke-width=".7"/>
+              <g font-size="5.6" font-weight="700" fill="#111827">
+                <text x="58.5" y="126">Agente</text><text x="58.5" y="133">LangChain</text>
+                <text x="146.5" y="126">RAG de</text><text x="146.5" y="133">patrones</text>
+                <text x="234.5" y="126">Fases y</text><text x="234.5" y="133">aprobación</text>
+                <text x="322.5" y="126">Validadores</text><text x="322.5" y="133">de calidad</text>
+              </g>
+              <g font-size="4.4" fill="#374151">
+                <text x="58.5" y="146">elicitación</text><text x="58.5" y="153">propuesta</text><text x="58.5" y="160">diagrama · ADR</text>
+                <text x="146.5" y="146">embeddings e5</text><text x="146.5" y="153">ranker</text><text x="146.5" y="160">19 patrones + docs</text>
+                <text x="234.5" y="146">gate por fase</text><text x="234.5" y="153">historial</text><text x="234.5" y="160">ajuste quirúrgico</text>
+                <text x="322.5" y="146">sintaxis Mermaid</text><text x="322.5" y="153">rúbrica del ADR</text><text x="322.5" y="160">trade-offs</text>
+              </g>
+            </g>
+
+            <!-- Datos y servicios -->
+            <g stroke="#0a3a91" stroke-width=".9">
+              <line x1="58.5" y1="180" x2="58.5" y2="193" marker-end="url(#ah)"/>
+              <line x1="146.5" y1="180" x2="146.5" y2="193" marker-end="url(#ah)"/>
+              <line x1="234.5" y1="180" x2="234.5" y2="193" marker-end="url(#ah)"/>
+              <line x1="322.5" y1="180" x2="322.5" y2="193" marker-end="url(#ah)"/>
+            </g>
+            <g text-anchor="middle">
+              <rect x="10" y="194" width="85" height="40" rx="3.5" fill="#fff" stroke="#0e54ce" stroke-width=".8"/>
+              <text x="52.5" y="208" font-size="5.8" font-weight="700" fill="#111827">PostgreSQL</text>
+              <text x="52.5" y="216" font-size="5.8" font-weight="700" fill="#111827">+ PGVector</text>
+              <text x="52.5" y="226" font-size="4.4" fill="#374151">datos + vectores</text>
+              <rect x="101" y="194" width="85" height="40" rx="3.5" fill="#fff" stroke="#0e54ce" stroke-width=".8"/>
+              <text x="143.5" y="210" font-size="5.8" font-weight="700" fill="#111827">Engram</text>
+              <text x="143.5" y="219" font-size="4.4" fill="#374151">memoria de la</text>
+              <text x="143.5" y="225" font-size="4.4" fill="#374151">conversación</text>
+              <rect x="192" y="194" width="85" height="40" rx="3.5" fill="#fff" stroke="#0e54ce" stroke-width=".8"/>
+              <text x="234.5" y="210" font-size="5.8" font-weight="700" fill="#111827">Langfuse</text>
+              <text x="234.5" y="219" font-size="4.4" fill="#374151">trazas y costos</text>
+              <text x="234.5" y="225" font-size="4.4" fill="#374151">del LLM</text>
+              <rect x="283" y="194" width="87" height="40" rx="3.5" fill="#0e54ce"/>
+              <text x="326.5" y="210" font-size="5.8" font-weight="700" fill="#fff">Herramientas MCP</text>
+              <text x="326.5" y="219" font-size="4.4" fill="#dbe7ff">Context7 (documentación)</text>
+              <text x="326.5" y="225" font-size="4.4" fill="#dbe7ff">Puppeteer (diagramas)</text>
+            </g>
+          </svg>
+          <div class="chips">
+            <span class="chip">Python 3.11</span><span class="chip">FastAPI</span><span class="chip">LangChain</span>
+            <span class="chip">React 18</span><span class="chip">TypeScript</span><span class="chip">PostgreSQL + PGVector</span>
+            <span class="chip">Mermaid.js</span><span class="chip">Docker</span><span class="chip">GitHub Actions</span>
+          </div>
+        </section>
+
+        <section>
+          <h3>Decisiones de arquitectura y calidad</h3>
+          <ul class="dots small">
+            <li><b>PostgreSQL + PGVector</b> como única base: datos relacionales y búsqueda semántica juntos.</li>
+            <li><b>SSE</b> para mostrar la propuesta mientras se genera, con opción de cancelar.</li>
+            <li><b>LLM configurable</b> por usuario, con un wizard que filtra modelos por MMLU.</li>
+            <li><b>CI en GitHub Actions:</b> pytest, Vitest y evaluaciones en cada PR; despliegue a Railway.</li>
+            <li><b>Rúbrica del ADR:</b> respeta equipo y plazo, cifras con origen, coherencia y alternativas diversas.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+
+    <!-- ===== Resultados ===== -->
+    <section>
+      <h2><span class="n">5</span>Principales resultados</h2>
+      <p class="lead">Las capturas siguen el orden de uso de la aplicación con el caso de estudio <b>TurnoFácil</b>, un sistema de citas para clínicas pequeñas.</p>
+      <div class="kpis">
+        <div class="kpi"><div class="v">2,4<small> s</small></div><div class="t">propuesta completa generada (meta: &lt; 5 min)</div></div>
+        <div class="kpi"><div class="v">19</div><div class="t">patrones curados en la base de conocimiento</div></div>
+        <div class="kpi"><div class="v">−63<small> %</small></div><div class="t">latencia p50 del RAG con caché de embeddings</div></div>
+        <div class="kpi"><div class="v">+1.500</div><div class="t">pruebas automatizadas en CI (backend + frontend)</div></div>
+        <div class="kpi"><div class="v">8</div><div class="t">casos golden evalúan la propuesta y el ADR</div></div>
+      </div>
+      <div class="shots">
+        <figure><div class="frame"><img src="img/pagina-principal.png" alt=""></div><figcaption><b>Mis proyectos:</b> punto de partida para crear y seguir cada diseño.</figcaption></figure>
+        <figure><div class="frame"><img src="img/llm-resumen.png" alt=""></div><figcaption><b>Configuración del LLM:</b> cada usuario conecta su proveedor en 3 pasos.</figcaption></figure>
+        <figure><div class="frame"><img src="img/elicitacion.png" alt=""></div><figcaption><b>Elicitación guiada:</b> el agente pregunta por usuarios, volumen y restricciones.</figcaption></figure>
+        <figure><div class="frame"><img src="img/resumen-requerimientos-turnofacil.png" alt=""></div><figcaption><b>Resumen de requerimientos</b> y atributos de calidad para aprobar.</figcaption></figure>
+        <figure><div class="frame"><img src="img/propuesta.png" alt=""></div><figcaption><b>Propuesta</b> con patrones citados y botones Aprobar / Modificar / Rechazar.</figcaption></figure>
+        <figure><div class="frame"><img src="img/iterar-propuesta.png" alt=""></div><figcaption><b>Iteración con feedback:</b> el usuario pide simplificar y el agente regenera.</figcaption></figure>
+        <figure><div class="frame"><img src="img/visor-diagrama.png" alt="" style="object-position: center 15%"></div><figcaption><b>Diagrama de arquitectura</b> generado en Mermaid, con visor y zoom.</figcaption></figure>
+        <figure><div class="frame"><img src="img/base-patrones.png" alt=""></div><figcaption><b>Base de patrones:</b> se consulta en cualquier momento; casos de uso, ventajas y desventajas.</figcaption></figure>
+      </div>
+    </section>
+
+    <!-- ===== Fila inferior ===== -->
+    <div class="bottom">
+      <section>
+        <h2><span class="n">6</span>Features implementados</h2>
+        <div class="features">
+          <div><h4>Agente y propuesta</h4>
+          <ul>
+            <li><code>F05</code>Elicitación guiada</li>
+            <li><code>F07</code>Base de patrones</li>
+            <li><code>F08</code>Propuesta y aprobación</li>
+            <li><code>F09</code>Diagramas Mermaid</li>
+            <li><code>F10</code>Tabla de trade-offs</li>
+            <li><code>F11</code>Context7 MCP</li>
+            <li><code>F12</code>Memoria con Engram</li>
+            <li><code>F13</code>Puppeteer MCP</li>
+            <li><code>F30</code>Diseño del ADR</li>
+          </ul></div>
+          <div><h4>Plataforma</h4>
+          <ul>
+            <li><code>F01</code>Stack Docker Compose</li>
+            <li><code>F03</code>Caso de ejemplo (seed)</li>
+            <li><code>F14</code>Observabilidad (Langfuse)</li>
+            <li><code>F17</code>Manejo de errores</li>
+            <li><code>F18</code>Pruebas y CI/CD</li>
+            <li><code>F19</code>Optimización del RAG</li>
+            <li><code>F21</code>Documentación de usuario</li>
+          </ul></div>
+          <div><h4>Historias de usuario</h4>
+          <ul>
+            <li><code>HU1</code>Registro e inicio de sesión</li>
+            <li><code>HU2</code>Recordar sesión</li>
+            <li><code>HU3</code>Lista de proyectos</li>
+            <li><code>HU4</code>Perfil de usuario</li>
+            <li><code>HU5</code>Preguntas progresivas</li>
+            <li><code>HU6</code>Visor de diagramas</li>
+            <li><code>HU8</code>Justificación con patrones</li>
+            <li><code>HU9</code>Propuesta en &lt; 5 min</li>
+            <li><code>HU10</code>Aprobación por fases</li>
+            <li><code>HU11</code>Ajuste quirúrgico</li>
+            <li><code>HU12</code>Configuración del LLM</li>
+            <li><code>HU13</code>Documentos en el RAG</li>
+          </ul></div>
+        </div>
+      </section>
+
+      <section>
+        <h2><span class="n">7</span>Conclusiones</h2>
+        <ul class="dots">
+          <li>ArchAgent cubre el ciclo completo: <b>requerimientos, propuesta, refinamiento y ADR</b>, con aprobación del usuario en cada fase.</li>
+          <li>Apoyar la propuesta en un <b>catálogo curado</b> y una rúbrica evita respuestas genéricas o cifras inventadas.</li>
+          <li>Generar en segundos permite <b>iterar varias veces</b> sobre la arquitectura.</li>
+          <li>El LLM configurable hace la herramienta <b>independiente del proveedor</b>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2><span class="n">8</span>Pasos futuros</h2>
+        <ul class="dots">
+          <li><b>Piloto con equipos reales</b> sobre el despliegue en la nube.</li>
+          <li><b>Exportar</b> el ADR y los diagramas al repositorio del proyecto.</li>
+          <li><b>Generar artefactos:</b> OpenAPI, esquema de BD e IaC.</li>
+          <li><b>Mejorar la búsqueda</b> de patrones y ampliar el catálogo.</li>
+          <li><b>Medir de extremo a extremo</b> en producción (&lt; 3 min).</li>
+          <li><b>Trabajo colaborativo:</b> varios usuarios por proyecto.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <span><b>ArchAgent</b> · Proyecto aplicado en TIC II</span>
+    <span>https://github.com/danielCH26/arch-agent</span>
+    <span>Universidad Pontificia Bolivariana · 2026</span>
+  </footer>
+</div>
+</body>
+</html>
