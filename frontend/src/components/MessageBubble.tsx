@@ -751,7 +751,7 @@ function DiagramAttachments({
                       if (onDiagramApproved) await onDiagramApproved()
                       else await send('Apruebo el diagrama, continuemos.')
                     }}
-                    className="inline-flex items-center gap-1 rounded-md bg-solid-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-solid-emerald-800 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2.5 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50"
                   >
                     <DecisionIcon decision="approve" />
                     Aprobar

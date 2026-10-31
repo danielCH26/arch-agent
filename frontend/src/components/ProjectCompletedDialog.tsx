@@ -28,15 +28,15 @@ export function ProjectCompletedDialog({ open, projectName, onClose }: ProjectCo
         aria-modal="true"
         aria-labelledby="project-completed-title"
         data-testid="project-completed"
-        className="w-full max-w-lg rounded-2xl bg-white p-6 text-center shadow-xl dark:bg-gray-900"
+        className="w-full max-w-lg rounded-2xl bg-white p-6 text-center shadow-xl"
       >
         <div className="flex justify-center">
           <RobotGreeter />
         </div>
-        <h2 id="project-completed-title" className="mt-4 text-xl font-semibold text-gray-900 dark:text-gray-100">
+        <h2 id="project-completed-title" className="mt-4 text-xl font-semibold text-gray-900">
           ¡Felicidades! Completaste todas las fases 🎉
         </h2>
-        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+        <p className="mt-2 text-sm text-gray-600">
           {projectName ? <>La arquitectura de <strong>{projectName}</strong> quedó lista.</> : 'La arquitectura de tu proyecto quedó lista.'}{' '}
           Tienes el ADR con todas las decisiones y una guía para empezar a construir.
         </p>
@@ -52,7 +52,7 @@ export function ProjectCompletedDialog({ open, projectName, onClose }: ProjectCo
             type="button"
             data-testid="completed-new-project"
             onClick={() => navigate('/projects', { state: { openCreate: true } })}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+            className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
           >
             Crear otro proyecto
           </button>
@@ -60,7 +60,7 @@ export function ProjectCompletedDialog({ open, projectName, onClose }: ProjectCo
             type="button"
             data-testid="completed-go-home"
             onClick={() => navigate('/projects')}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
           >
             Ir al inicio
           </button>

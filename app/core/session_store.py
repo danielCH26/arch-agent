@@ -52,7 +52,11 @@ DECISION_FROM_DB = {v: k for k, v in DECISION_TO_DB.items()}
 
 
 def latest_diagram_decisions(
-    db: Session, *, project_id: int, attachment_ids: list[str]
+    db: Session,
+    *,
+    project_id: int,
+    attachment_ids: list[str],
+    phase: str = "diagram",
 ) -> dict[str, str]:
     """Última decisión registrada por diagrama, como ``{attachment_id:
     "approve" | "modify" | "reject"}``. Los diagramas sin decisión no
@@ -61,6 +65,11 @@ def latest_diagram_decisions(
     Una sola consulta para todos los ids (la usan el historial del chat y el
     historial de diagramas). Filtra por ``project_id`` además de por
     ``attachment_id`` para no mezclar proyectos.
+
+    ``phase`` por defecto es "diagram" (el de arquitectura, HU6). El
+    diagrama de despliegue registra sus decisiones bajo "despliegue" y
+    reusa esta función pasando esa fase: son dos diagramas distintos sobre
+    el mismo proyecto y sus aprobaciones no deben mezclarse.
     """
     ids = [a for a in attachment_ids if a]
     if not ids:
@@ -69,7 +78,7 @@ def latest_diagram_decisions(
     rows = (
         db.query(Approval.attachment_id, Approval.decision)
         .filter(
-            Approval.phase == "diagram",
+            Approval.phase == phase,
             Approval.project_id == project_id,
             Approval.attachment_id.in_(ids),
         )

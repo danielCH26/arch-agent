@@ -203,7 +203,7 @@ export function ProfilePage() {
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="mx-auto max-w-4xl">
       <PageHeader title="Perfil" subtitle="Gestiona tus datos y tu contraseña." />
 
       <div className="mb-8 flex flex-col items-center gap-2">

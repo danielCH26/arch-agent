@@ -5,6 +5,7 @@ import { projectsStore } from '../stores/projectsStore'
 import { proposalsStore } from '../stores/proposalsStore'
 import { useApprovalsStore } from '../stores/approvalsStore'
 import { AdrPanel } from './AdrPanel'
+import { DeploymentPanel } from './DeploymentPanel'
 import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ChatInput } from './ChatInput'
 import { ElicitationDocuments } from './ElicitationDocuments'
@@ -53,8 +54,11 @@ interface ChatWindowProps {
   projectId: number
   phase?: string | null
   onProposalPhaseChanged?: () => void | Promise<void>
-  // Refinamiento: aprobar el diagrama cierra la fase y avanza a Revisión.
+  // Refinamiento, paso 1: aprobar el diagrama de arquitectura. Solo refresca;
+  // la fase la cierra el paso 2.
   onDiagramApproved?: () => void | Promise<void>
+  // Refinamiento, paso 2: aprobar el despliegue en la nube cierra la fase.
+  onDeploymentApproved?: () => void | Promise<void>
   // Revisión: al aprobar el ADR el proyecto queda terminado.
   onProjectCompleted?: () => void | Promise<void>
 }
@@ -64,6 +68,7 @@ export function ChatWindow({
   phase,
   onProposalPhaseChanged,
   onDiagramApproved,
+  onDeploymentApproved,
   onProjectCompleted,
 }: ChatWindowProps) {
   const { messages, isStreaming, error, loadingHistory, historyTruncated } = chatStore()
@@ -131,6 +136,36 @@ export function ChatWindow({
       message.role === 'assistant' &&
       (message.attachments ?? []).some((attachment) => attachment.kind === 'screenshot'),
   )
+  // El despliegue en la nube se calcula SOBRE la arquitectura aprobada, así
+  // que su panel solo ofrece generar cuando el diagrama ya tiene un
+  // "approve"; antes de eso explica qué falta en vez de fallar con un 409.
+  //
+  // Hay DOS fuentes para saberlo, y hacen falta las dos:
+  //
+  //  * `attachment.decision`, que llega del servidor al cargar el historial.
+  //    Cubre volver al proyecto más tarde.
+  //  * una marca local, porque aprobar en el chat NO actualiza ese campo en
+  //    el store: <MessageBubble> pinta "Diagrama aprobado." con estado
+  //    propio. Sin la marca, el panel seguía pidiendo aprobar el diagrama
+  //    que acababas de aprobar, hasta recargar la página.
+  const [diagramApprovedNow, setDiagramApprovedNow] = useState(false)
+  useEffect(() => {
+    setDiagramApprovedNow(false)
+  }, [projectId])
+  const architectureApproved =
+    diagramApprovedNow ||
+    messages.some(
+      (message) =>
+        message.role === 'assistant' &&
+        (message.attachments ?? []).some(
+          (attachment) => attachment.kind === 'screenshot' && attachment.decision === 'approve',
+        ),
+    )
+
+  const handleDiagramApproved = async () => {
+    setDiagramApprovedNow(true)
+    await onDiagramApproved?.()
+  }
   const generatingDiagram = isRefinementPhase(currentPhase) && (checkingDiagrams || isStreaming)
   const decisionLivesInTheContent =
     currentPhase === 'propuesta' || (isRefinementPhase(currentPhase) && hasDiagram)
@@ -291,7 +326,7 @@ export function ChatWindow({
               type="button"
               data-testid="toggle-prior-chat"
               onClick={() => setShowPrior((value) => !value)}
-              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100"
             >
               {showPrior
                 ? 'Ocultar la conversación de las fases anteriores'
@@ -316,7 +351,7 @@ export function ChatWindow({
             projectId={projectId}
             onSendMessage={handleSend}
             busy={isStreaming}
-            onDiagramApproved={isRefinementPhase(currentPhase) ? onDiagramApproved : undefined}
+            onDiagramApproved={isRefinementPhase(currentPhase) ? handleDiagramApproved : undefined}
           />
         ))}
 
@@ -324,6 +359,18 @@ export function ChatWindow({
           <p className="text-center text-xs text-gray-500" data-testid="auto-diagram-checking">
             Preparando el diagrama de la propuesta aprobada…
           </p>
+        )}
+
+        {/* Refinamiento, segundo paso: el despliegue en la nube. Va DESPUÉS
+            del diagrama de arquitectura (es su continuación natural) y solo
+            una vez que hay un diagrama generado, para no competir con él
+            mientras se está dibujando. */}
+        {isRefinementPhase(currentPhase) && hasDiagram && !generatingDiagram && (
+          <DeploymentPanel
+            projectId={projectId}
+            architectureApproved={architectureApproved}
+            onApproved={onDeploymentApproved}
+          />
         )}
 
         {/* HU10 v2 (REQ-SA-26.1): mount <PhaseActions> from the

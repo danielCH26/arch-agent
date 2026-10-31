@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
+import { fetchDeploymentHistory, type DeploymentVersion } from '../api/deployments'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { ProjectCompletedDialog } from './ProjectCompletedDialog'
 import { buildAdrPrintDocument } from './adrPrint'
@@ -43,6 +44,24 @@ function downloadMarkdown(markdown: string, filename: string) {
 
 // Parte el ADR en el bloque ```mermaid: en el PDF el diagrama va como imagen
 // (la captura aprobada), no como código, que una persona no técnica no puede leer.
+// Parte el texto en el encabezado del despliegue para poder meter la imagen
+// JUSTO debajo de él (y no suelta al final de la sección anterior). El ADR
+// escribe ese encabezado como "### Despliegue en <nube>".
+export function splitAtDeploymentHeading(
+  markdown: string,
+): { before: string; heading: string; after: string; hasHeading: boolean } {
+  const match = (markdown || '').match(/^###\s+Despliegue en .*$/m)
+  if (!match || match.index === undefined) {
+    return { before: markdown, heading: '', after: '', hasHeading: false }
+  }
+  return {
+    before: markdown.slice(0, match.index),
+    heading: match[0],
+    after: markdown.slice(match.index + match[0].length),
+    hasHeading: true,
+  }
+}
+
 export function splitAtMermaid(markdown: string): { before: string; after: string; hasMermaid: boolean } {
   const match = markdown.match(/```mermaid\s*\n[\s\S]*?```/i)
   if (!match || match.index === undefined) return { before: markdown, after: '', hasMermaid: false }
@@ -68,9 +87,12 @@ export function openPrintView(bodyHtml: string, title: string): boolean {
     win.focus()
     win.print()
   }
-  // Se espera a que cargue la imagen del diagrama; si tarda, se imprime igual.
+  // Se espera a que carguen las imágenes (arquitectura y despliegue); si
+  // tardan, se imprime igual. El respaldo se subió de 2.5 s a 4 s porque
+  // ahora puede haber DOS imágenes y con el tope anterior el PDF salía a
+  // veces sin la segunda.
   win.addEventListener('load', print)
-  setTimeout(print, 2500)
+  setTimeout(print, 4000)
   return true
 }
 
@@ -111,6 +133,10 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
   // Imágenes de los diagramas del proyecto: el ADR trae el diagrama como
   // código Mermaid, que en el panel se vería como texto.
   const [diagrams, setDiagrams] = useState<DiagramVersion[]>([])
+  // Diagrama de despliegue aprobado: el ADR trae la tabla de "dónde va cada
+  // pieza", pero quien solo recibe el PDF no vería nunca la imagen. Solo el
+  // aprobado, igual que el de arquitectura.
+  const [deployment, setDeployment] = useState<DeploymentVersion | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -129,6 +155,11 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
     fetchDiagramHistory(projectId)
       .then((list) => {
         if (!cancelled) setDiagrams(list)
+      })
+      .catch(() => undefined)
+    fetchDeploymentHistory(projectId)
+      .then((list) => {
+        if (!cancelled) setDeployment(list.find((item) => item.decision === 'approve') ?? null)
       })
       .catch(() => undefined)
     return () => {
@@ -202,11 +233,11 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
     <section
       data-testid="adr-panel"
       aria-labelledby="adr-panel-title"
-      className="rounded-xl border border-indigo-200 bg-white p-4 shadow-sm dark:border-indigo-900 dark:bg-gray-900"
+      className="rounded-xl border border-indigo-200 bg-white p-4 shadow-sm"
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h2 id="adr-panel-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">
+          <h2 id="adr-panel-title" className="text-base font-semibold text-gray-900">
             Documento de arquitectura (ADR)
           </h2>
           <p className="text-xs text-gray-600 dark:text-gray-400">
@@ -221,7 +252,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
                 type="button"
                 data-testid="adr-download"
                 onClick={() => downloadMarkdown(markdown, adrFilename(projectName))}
-                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+                className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
               >
                 Descargar .md
               </button>
@@ -230,14 +261,14 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
                 data-testid="adr-download-pdf"
                 onClick={handleDownloadPdf}
                 title="Abre el documento listo para imprimir o guardar como PDF"
-                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+                className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
               >
                 Descargar PDF
               </button>
               <button
                 type="button"
                 onClick={() => void handleCopy()}
-                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
               >
                 {copied ? 'Copiado' : 'Copiar'}
               </button>
@@ -280,7 +311,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
             data-testid="adr-approve"
             disabled={busy}
             onClick={() => void handleApprove()}
-            className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            className="rounded-lg border border-green-300 bg-white px-3 py-1.5 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
           >
             {approving ? 'Aprobando…' : 'Aprobar y finalizar proyecto'}
           </button>
@@ -289,7 +320,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
 
       {showChanges && (
         <div className="mt-3 space-y-2" data-testid="adr-changes-form">
-          <label htmlFor={`adr-changes-${projectId}`} className="block text-sm font-medium text-gray-800 dark:text-gray-200">
+          <label htmlFor={`adr-changes-${projectId}`} className="block text-sm font-medium text-gray-800">
             ¿Qué quieres cambiar en el ADR?
           </label>
           <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="adr-changes-scope">
@@ -308,7 +339,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
             rows={3}
             maxLength={2000}
             placeholder="Por ejemplo: usar Redis para caché, agregar un riesgo sobre la integración con la EPS…"
-            className="w-full rounded-lg border border-gray-300 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            className="w-full rounded-lg border border-gray-300 p-2 text-sm text-gray-900"
           />
           <button
             type="button"
@@ -341,7 +372,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
           <button
             type="button"
             onClick={() => navigate('/projects', { state: { openCreate: true } })}
-            className="rounded-lg bg-green-600 px-3 py-1.5 text-white hover:bg-green-700"
+            className="rounded-lg border border-green-300 px-3 py-1.5 hover:bg-green-100"
           >
             Crear otro proyecto
           </button>
@@ -392,8 +423,8 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
       )}
 
       {markdown && diagram && (
-        <figure className="mt-3 rounded-lg border border-gray-100 p-3 dark:border-gray-800" data-testid="adr-diagram">
-          <figcaption className="mb-2 text-xs font-semibold text-gray-700 dark:text-gray-300">
+        <figure className="mt-3 rounded-lg border border-gray-100 p-3" data-testid="adr-diagram">
+          <figcaption className="mb-2 text-xs font-semibold text-gray-700">
             {diagram.decision === 'approve' ? 'Diagrama aprobado' : 'Último diagrama generado'}
           </figcaption>
           <img
@@ -404,10 +435,24 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
         </figure>
       )}
 
+      {markdown && deployment && (
+        <figure className="mt-3 rounded-lg border border-gray-100 p-3" data-testid="adr-deployment-diagram">
+          <figcaption className="mb-2 text-xs font-semibold text-gray-700">
+            Diagrama de despliegue aprobado
+            {deployment.provider ? ` (${deployment.provider.toUpperCase()})` : ''}
+          </figcaption>
+          <img
+            src={deployment.url}
+            alt="Diagrama de despliegue del proyecto en la nube"
+            className="h-auto max-h-[60vh] w-full max-w-3xl rounded object-contain"
+          />
+        </figure>
+      )}
+
       {markdown && (
         <article
           data-testid="adr-content"
-          className="prose-sm mt-3 max-h-[70vh] overflow-y-auto rounded-lg border border-gray-100 p-3 text-sm text-gray-800 dark:border-gray-800 dark:text-gray-200"
+          className="prose-sm mt-3 max-h-[70vh] overflow-y-auto rounded-lg border border-gray-100 p-3 text-sm text-gray-800"
         >
           {renderMarkdownBlocks(markdown)}
         </article>
@@ -427,7 +472,29 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
               <em>El diagrama está en la versión Markdown del documento.</em>
             </p>
           )}
-          {renderMarkdownBlocks(printParts.after)}
+          {/* El resto del documento, abriendo hueco para la imagen del
+              despliegue justo debajo de su encabezado. Sin este corte la
+              imagen quedaría suelta al final de la sección anterior. */}
+          {(() => {
+            const rest = splitAtDeploymentHeading(printParts.after)
+            if (!rest.hasHeading || !deployment) {
+              return renderMarkdownBlocks(printParts.after)
+            }
+            return (
+              <>
+                {renderMarkdownBlocks(rest.before)}
+                {renderMarkdownBlocks(rest.heading)}
+                <figure>
+                  <img src={deployment.url} alt="Diagrama de despliegue en la nube" />
+                  <figcaption>
+                    Diagrama de despliegue aprobado
+                    {deployment.provider ? ` (${deployment.provider.toUpperCase()})` : ''}
+                  </figcaption>
+                </figure>
+                {renderMarkdownBlocks(rest.after)}
+              </>
+            )
+          })()}
         </div>
       )}
 
