@@ -41,7 +41,12 @@ from app.core.llm_loader import (
 from app.core.pattern_justification import source_for
 from app.core.pattern_ranker import RERANK_POOL_SIZE, rank_candidates, ranking_log
 from app.core.project_context import load_documents_text, load_requirements_text
-from app.core.pattern_catalog import load_patterns, pattern_family, pattern_sources
+from app.core.pattern_catalog import (
+    is_non_architectural,
+    load_patterns,
+    pattern_family,
+    pattern_sources,
+)
 from app.core.query_profile import (
     extract_project_profile,
     profile_to_query,
@@ -1830,6 +1835,15 @@ def _select_citations(
     def _eligible(key: Any, doc: Document) -> bool:
         if stance[key] == "reject":
             return False
+        # Los patrones de nivel `modulo` (Repository, Service Layer, DTO, Unit
+        # of Work) viven en el RAG para el arbol de carpetas, no para la
+        # propuesta: no son estilos de arquitectura. Sin este filtro, un
+        # proyecto CRUD podria hacer que "Repository" saliera primero en el
+        # retrieval y desplazara al estilo real, y la tabla de trade-offs
+        # compararia Repository contra Microservicios, que no le dice nada al
+        # usuario.
+        if is_non_architectural(doc.metadata.get("pattern_name")):
+            return False
         # Lo que el usuario pidio por nombre se cita aunque no llegue al piso.
         return stance[key] in ("want", "compare") or _sim(doc) >= floor
 
@@ -2837,13 +2851,28 @@ def _retrieve_patterns(query: str, user_id: int) -> list[Document]:
     """Wrap ``similarity_search(scope='patterns')`` so failures don't break the stream."""
     # Se piden varios chunks porque un mismo patron tiene varios; luego
     # ``_select_citations`` agrupa por patron y corta en PROPOSAL_RAG_TOP_N.
+    # Los patrones de nivel `modulo` (Repository, Service Layer, DTO, Unit of
+    # Work) estan en la misma tabla del RAG pero NO son estilos de
+    # arquitectura: los consume el arbol de carpetas (F28). Se descartan ACA,
+    # antes de recortar, y no mas abajo en `_eligible`: en un proyecto CRUD sus
+    # chunks puntuan alto y, filtrandolos despues, se quedaban con cupos del
+    # top-k y llegaban menos estilos reales a la propuesta.
+    #
+    # Se sobre-pide para compensar los que se van. El factor es generoso a
+    # proposito: pedir de mas al vector store es barato y quedarse corto
+    # significa una propuesta con menos alternativas.
     docs, _metrics = similarity_search(
         query=query,
         user_id=user_id,
-        k=PROPOSAL_RAG_CANDIDATE_CHUNKS,
+        k=PROPOSAL_RAG_CANDIDATE_CHUNKS * 2,
         scope="patterns",
     )
-    return docs
+    arquitectonicos = [
+        doc
+        for doc in docs
+        if not is_non_architectural(doc.metadata.get("pattern_name"))
+    ]
+    return arquitectonicos[:PROPOSAL_RAG_CANDIDATE_CHUNKS]
 
 
 def _build_summary_query(

@@ -224,6 +224,28 @@ def main():
     finally:
         conn.close()
 
+    # Las convenciones de estructura de repositorio se consultan junto con los
+    # patrones (el arbol de carpetas necesita las dos cosas), asi que se
+    # siembran en la misma corrida. Va despues del commit y en su propio
+    # try/except: si falla el seed de convenciones, los patrones ya quedaron
+    # cargados y la aplicacion sigue funcionando sin el arbol de carpetas.
+    log("-" * 60)
+    log("Seed de convenciones de estructura (repo_convention_chunks)")
+    try:
+        from seed_conventions import main as seed_conventions_main
+
+        seed_conventions_main()
+    except SystemExit as exc:
+        if exc.code:
+            log(
+                "El seed de convenciones no termino; el arbol de carpetas no "
+                "estara disponible hasta que corras: "
+                "python scripts/seed_conventions.py",
+                "WARN",
+            )
+    except Exception as exc:  # pragma: no cover - defensa del arranque
+        log(f"El seed de convenciones fallo: {exc}", "WARN")
+
 
 if __name__ == "__main__":
     main()

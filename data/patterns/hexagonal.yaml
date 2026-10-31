@@ -44,3 +44,30 @@ example_scenarios:
   - "Sistema de pagos que debe poder cambiar de proveedor (Stripe, PayU, Wompi) sin reescribir la lógica de negocio"
   - "Servicio con reglas de negocio complejas que se expone por REST y por una cola de mensajes y debe tener alta cobertura de pruebas unitarias"
   - "Aplicación que hoy usa PostgreSQL pero el cliente podría exigir migrar a otra base de datos o a una API externa"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+# Sin `api`: los puertos y adaptadores son del DOMINIO, no de la capa de
+# entrada. Con `api` incluido, un modulo "API REST" recibia una carpeta
+# `ports/` propia, que no es lo que el patron dice.
+applies_to_modules: [dominio, integracion]
+
+# Puertos y adaptadores son, literalmente, el nombre del patron: las dos
+# fuentes citadas arriba los definen, asi que la carpeta tiene respaldo.
+structure_contributions:
+  - role: port
+    dir_name: ports
+    file_name: ports
+    class_name: Port
+    note: >
+      Puertos del modulo: las interfaces que el dominio define para hablar con
+      el exterior, sin saber quien las implementa.
+    source: 2
+  - role: adapter
+    dir_name: adapters
+    file_name: adapters
+    class_name: Adapter
+    note: >
+      Adaptadores del modulo: la implementacion concreta de cada puerto (base
+      de datos, API externa, cola), reemplazable sin tocar el dominio.
+    source: 2

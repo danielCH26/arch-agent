@@ -1,0 +1,73 @@
+# Convención de estructura de carpetas: Spring Boot (backend Java/Kotlin).
+# El esquema está documentado campo por campo en data/conventions/fastapi.yaml.
+#
+# Esta es la única convención de las cuatro cuya fuente oficial ya nombra los
+# roles Controller, Service y Repository: el listado de "Structuring Your Code"
+# los muestra dentro de la carpeta del módulo. Por eso `documented_roles` trae
+# cuatro entradas y no una.
+
+convention_id: spring_boot
+name: "Spring Boot (backend Java/Kotlin)"
+layer: backend
+matches:
+  - spring boot
+  - springboot
+  - spring
+  - java backend
+  - backend java
+  - kotlin backend
+  - maven
+  - gradle
+weight: 90
+summary: >
+  Spring Boot agrupa por módulo de negocio: un paquete por módulo, y dentro de
+  él la entidad, el controlador, el servicio y el repositorio de ese módulo.
+nesting_limit: null
+
+base_tree:
+  - path: "com/example/myapplication/"
+    note: "Paquete raíz, por encima de todos los demás; Spring recomienda nombre de dominio invertido."
+    source: 1
+  - path: "com/example/myapplication/MyApplication.java"
+    note: >
+      Clase principal con el método main y @SpringBootApplication. Va en el
+      paquete raíz porque esa anotación define el paquete base de búsqueda de
+      componentes y entidades.
+    source: 1
+
+module_tree:
+  - path: "com/example/myapplication/{module}/"
+    note: "Paquete del módulo: agrupa todo lo suyo en un mismo lugar."
+    source: 1
+  - path: "com/example/myapplication/{module}/{Module}.java"
+    note: "Entidad del módulo."
+    source: 1
+    role: domain
+  - path: "com/example/myapplication/{module}/{Module}Controller.java"
+    note: "Controlador: expone los endpoints del módulo."
+    source: 1
+    role: api
+  - path: "com/example/myapplication/{module}/{Module}Service.java"
+    note: "Servicio: coordina la lógica del módulo."
+    source: 1
+    role: service
+  - path: "com/example/myapplication/{module}/{Module}Repository.java"
+    note: "Repositorio: acceso a datos del módulo."
+    source: 1
+    role: repository
+
+pattern_slot: "com/example/myapplication/{module}/{Role}.java"
+pattern_slot_source: 1
+pattern_slot_note: >
+  El listado oficial agrupa por módulo de negocio y nombra las clases
+  `{Modulo}{Rol}.java` dentro del paquete del módulo.
+
+documented_roles:
+  - api
+  - service
+  - repository
+  - domain
+
+fuentes:
+  - titulo: "Structuring Your Code (documentación oficial de Spring Boot)"
+    url: "https://docs.spring.io/spring-boot/reference/using/structuring-your-code.html"

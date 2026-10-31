@@ -1,0 +1,101 @@
+# Convención de estructura de carpetas: Django (backend Python).
+# El esquema está documentado campo por campo en data/conventions/fastapi.yaml.
+
+convention_id: django
+name: "Django (backend Python)"
+layer: backend
+matches:
+  - django
+  - django rest framework
+  - drf
+  - python web
+weight: 85
+summary: >
+  Django organiza el proyecto como un paquete de configuración más una
+  aplicación por módulo de negocio; cada aplicación es un paquete Python con
+  sus modelos, vistas, urls y pruebas.
+nesting_limit: null
+
+base_tree:
+  - path: "manage.py"
+    note: "Utilitario de línea de comandos del proyecto."
+    source: 1
+  - path: "mysite/"
+    note: "Paquete de configuración del proyecto (no de negocio)."
+    source: 1
+  - path: "mysite/__init__.py"
+    note: "Hace de `mysite` un paquete Python."
+    source: 1
+  - path: "mysite/settings.py"
+    note: "Configuración del proyecto, incluido INSTALLED_APPS."
+    source: 1
+  - path: "mysite/urls.py"
+    note: "URLconf raíz: incluye con `include()` las urls de cada aplicación."
+    source: 1
+  - path: "mysite/asgi.py"
+    note: "Punto de entrada ASGI."
+    source: 1
+  - path: "mysite/wsgi.py"
+    note: "Punto de entrada WSGI."
+    source: 1
+  - path: "mysite/templates/"
+    note: "Plantillas a nivel de proyecto (las que no pertenecen a una sola aplicación)."
+    source: 1
+
+module_tree:
+  - path: "{module}/"
+    note: >
+      Aplicación Django del módulo: un paquete Python pensado para un único
+      propósito dentro del proyecto, y reutilizable en otro proyecto.
+    source: 1
+  - path: "{module}/__init__.py"
+    note: "Hace de la aplicación un paquete Python."
+    source: 1
+  - path: "{module}/apps.py"
+    note: "AppConfig de la aplicación: su nombre, label y default_auto_field."
+    source: 1
+  - path: "{module}/models.py"
+    note: "Modelos de datos del módulo."
+    source: 1
+    role: domain
+  - path: "{module}/views.py"
+    note: "Vistas: manejan las peticiones del módulo."
+    source: 1
+    role: api
+  - path: "{module}/urls.py"
+    note: "URLconf de la aplicación, desacoplada de la del proyecto mediante `include()`."
+    source: 1
+  - path: "{module}/admin.py"
+    note: "Registro del módulo en el sitio de administración."
+    source: 1
+  - path: "{module}/migrations/"
+    note: "Historial de cambios del esquema de datos del módulo."
+    source: 1
+  - path: "{module}/tests.py"
+    note: "Pruebas del módulo."
+    source: 1
+    role: tests
+  - path: "{module}/templates/{module}/"
+    note: >
+      Plantillas de la aplicación, dentro de un subdirectorio con su mismo
+      nombre para no colisionar con las de otra aplicación.
+    source: 1
+  - path: "{module}/static/{module}/"
+    note: "Archivos estáticos de la aplicación, con el mismo criterio de espacio de nombres."
+    source: 1
+
+pattern_slot: "{module}/{role_file}.py"
+pattern_slot_source: 1
+pattern_slot_note: >
+  Una aplicación Django es un paquete Python que usa convenciones comunes como
+  tener submódulos models, tests, urls y views; un rol adicional se agrega
+  como otro submódulo de la aplicación.
+
+documented_roles:
+  - api
+  - domain
+  - tests
+
+fuentes:
+  - titulo: "Advanced tutorial: How to write reusable apps (documentación oficial de Django)"
+    url: "https://docs.djangoproject.com/en/stable/intro/reusable-apps/"

@@ -6,6 +6,7 @@ import { proposalsStore } from '../stores/proposalsStore'
 import { useApprovalsStore } from '../stores/approvalsStore'
 import { AdrPanel } from './AdrPanel'
 import { DeploymentPanel } from './DeploymentPanel'
+import { RepoStructurePanel } from './RepoStructurePanel'
 import { PhaseActions } from './PhaseActions/PhaseActions'
 import { ChatInput } from './ChatInput'
 import { ElicitationDocuments } from './ElicitationDocuments'
@@ -370,6 +371,18 @@ export function ChatWindow({
             projectId={projectId}
             architectureApproved={architectureApproved}
             onApproved={onDeploymentApproved}
+          />
+        )}
+
+        {/* F28: el arbol de carpetas. Va DESPUES del despliegue porque es
+            la ultima pieza del refinamiento, y con las mismas condiciones:
+            necesita el diagrama de arquitectura, de donde salen los modulos.
+            No tiene punto de aprobacion: es texto que acompana al ADR, y la
+            historia no pide aprobarlo. */}
+        {isRefinementPhase(currentPhase) && hasDiagram && !generatingDiagram && (
+          <RepoStructurePanel
+            projectId={projectId}
+            architectureApproved={architectureApproved}
           />
         )}
 

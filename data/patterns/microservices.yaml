@@ -39,3 +39,12 @@ example_scenarios:
   - "Plataforma con 5 equipos independientes, millones de usuarios y necesidad de escalar y desplegar cada capacidad por separado"
   - "Marketplace con módulos de búsqueda, pagos y mensajería con cargas de trabajo muy distintas y equipos dedicados"
   - "Empresa que ya tiene Kubernetes, CI/CD y observabilidad y necesita despliegues diarios independientes por dominio"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+#
+# Lista vacia a proposito: este patron organiza COMO se despliega o se compone
+# el sistema, no como se ordenan las carpetas dentro de un modulo. El generador
+# del arbol no lo propone para ningun modulo, y eso es correcto: forzarlo seria
+# inventar una justificacion que la fuente del patron no da.
+applies_to_modules: []

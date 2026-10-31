@@ -1,0 +1,104 @@
+# ---------------------------------------------------------------------------
+# Convención de estructura de carpetas: FastAPI (backend Python).
+#
+# ESQUEMA (el mismo para todos los archivos de data/conventions/):
+#
+#   convention_id   identificador corto y estable; es la clave en la base y en
+#                   la API. Minúsculas, sin espacios.
+#   name            nombre que ve el usuario.
+#   layer           "backend" o "frontend". Un proyecto puede combinar una
+#                   convención de cada capa (FastAPI + React, por ejemplo).
+#   matches         términos NORMALIZADOS (sin tildes, minúsculas) que activan
+#                   esta convención cuando aparecen en las tecnologías o en los
+#                   componentes de la propuesta aprobada.
+#   weight          desempate cuando dos convenciones de la misma capa matchean
+#                   con términos de igual longitud. Más alto gana.
+#   summary         una línea: qué organiza esta convención.
+#   nesting_limit   máximo de niveles que la fuente recomienda, o null si la
+#                   fuente no dice nada. El generador avisa si lo excede.
+#   base_tree       carpetas y archivos del proyecto que NO dependen de los
+#                   módulos detectados. Se emiten siempre.
+#   module_tree     se instancia UNA VEZ POR MÓDULO detectado. `{module}` se
+#                   reemplaza por el nombre del módulo en snake_case.
+#   pattern_slot    cómo se ubica lo que aporta un patrón de diseño. El patrón
+#                   dice QUÉ carpeta necesita (campo `structure_contributions`
+#                   en data/patterns/*.yaml) y esta plantilla dice DÓNDE va,
+#                   según la convención del stack. `{role_dir}` lo pone el
+#                   patrón; `{module}`, el módulo detectado.
+#   documented_roles  roles que la fuente oficial de ESTA convención ya nombra
+#                   explícitamente. Para esos, la línea del árbol se cita con
+#                   la fuente de la convención y no necesita que un patrón la
+#                   justifique.
+#   fuentes         lista de fuentes. `source: N` en cualquier nodo del árbol
+#                   es el índice 1-based dentro de esta lista.
+#
+# REGLA DE ORO: en este archivo solo entra lo que la fuente oficial muestra.
+# Si una carpeta es práctica común pero la documentación no la documenta, NO
+# va acá: la aporta un patrón, con la fuente del patrón. Así ninguna línea del
+# árbol queda sin respaldo.
+# ---------------------------------------------------------------------------
+
+convention_id: fastapi
+name: "FastAPI (backend Python)"
+layer: backend
+matches:
+  - fastapi
+  - fast api
+  - python backend
+  - api python
+  - backend python
+  - uvicorn
+  - pydantic
+weight: 90
+summary: >
+  FastAPI agrupa el código como un paquete Python (`app/`) con subpaquetes por
+  grupo de responsabilidad; cada módulo del sistema es un submódulo con su
+  propio APIRouter.
+nesting_limit: null
+
+base_tree:
+  - path: "app/"
+    note: "Paquete raíz: contiene todo el código de la aplicación."
+    source: 1
+  - path: "app/__init__.py"
+    note: "Hace de `app` un paquete Python; permite `import app.main`."
+    source: 1
+  - path: "app/main.py"
+    note: "Módulo de entrada: crea la instancia FastAPI e incluye los routers."
+    source: 1
+  - path: "app/dependencies.py"
+    note: "Dependencias compartidas por varios routers (autenticación, sesión de BD)."
+    source: 1
+  - path: "app/routers/"
+    note: "Subpaquete con un submódulo por grupo de endpoints."
+    source: 1
+  - path: "app/routers/__init__.py"
+    note: "Necesario para importar los submódulos del subpaquete."
+    source: 1
+  - path: "app/internal/"
+    note: "Subpaquete para endpoints internos o de administración, separados del API público."
+    source: 1
+
+module_tree:
+  - path: "app/routers/{module}.py"
+    note: "APIRouter del módulo: sus path operations con prefix y tags propios."
+    source: 1
+    role: api
+
+# Los docs definen explícitamente el modelo paquete/submódulo
+# (`app/routers/items.py` -> `app.routers.items`, `app/internal/admin.py` ->
+# `app.internal.admin`), así que la FORMA de la ruta está documentada aunque el
+# nombre de la carpeta lo aporte el patrón.
+pattern_slot: "app/{role_dir}/{module}.py"
+pattern_slot_source: 1
+pattern_slot_note: >
+  La documentación oficial organiza el código como subpaquetes de `app/` con un
+  submódulo por módulo del sistema; el nombre del subpaquete lo determina el
+  patrón aplicado.
+
+documented_roles:
+  - api
+
+fuentes:
+  - titulo: "Bigger Applications - Multiple Files (documentación oficial de FastAPI)"
+    url: "https://fastapi.tiangolo.com/tutorial/bigger-applications/"

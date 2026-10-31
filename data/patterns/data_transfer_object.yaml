@@ -1,0 +1,69 @@
+pattern_name: "Data Transfer Object (DTO)"
+# "Patrón de datos" y NO "Distribuida / Integración": un DTO aparece cuando hay
+# una llamada remota de por medio, pero no es un estilo distribuido ni cuesta lo
+# que cuesta uno. Con la categoría "Distribuida" rompía
+# `test_distributed_patterns_are_not_low_complexity`, y la prueba tiene razón:
+# esa regla existe porque un estilo distribuido nunca es de complejidad baja.
+category: "Patrón de datos"
+complexity: "baja"
+family: "complemento"
+level: "modulo"
+description: >
+  Objeto que transporta datos entre procesos para reducir el número de
+  llamadas: en lugar de muchas llamadas remotas con pocos datos cada una, se
+  arma un objeto serializable que lleva todo lo que la llamada necesita.
+use_cases: >
+  Módulos que exponen o consumen una interfaz remota (un API HTTP, un servicio
+  externo) y necesitan definir la forma exacta del dato que entra y sale, sin
+  exponer las entidades internas; módulos de integración cuya respuesta hay que
+  adaptar al formato de un tercero.
+when_not_to_use: >
+  No conviene dentro de un mismo proceso: el propio autor del patrón insiste en
+  que su razón de ser es ahorrar llamadas remotas costosas, y usarlo entre
+  capas locales agrega una traducción que no paga. Tampoco cuando la entidad ya
+  tiene exactamente la forma que el API debe exponer.
+tradeoffs:
+  ventajas:
+    - "Agrupa en una sola llamada los datos que de otro modo exigirían varias llamadas remotas, donde el costo está en el viaje de ida y vuelta"
+    - "Desacopla el contrato del API de las entidades internas: el modelo de datos puede cambiar sin romper a quien consume, y la entidad no se expone tal cual"
+    - "Concentra la serialización en un punto, lo que mantiene esa lógica fuera del resto del código y deja un lugar claro donde cambiarla"
+    - "Permite exponer hacia afuera solo los campos que el consumidor necesita, sin filtrar campos internos o sensibles de la entidad"
+  desventajas:
+    - "Usado fuera de interfaces remotas es puro costo: es el mal uso más común del patrón y obliga a mantener dos formas del mismo dato sin ganar nada"
+    - "Cada campo nuevo hay que agregarlo en la entidad y en el DTO, y mantener el traductor entre ambos"
+    - "Se confunde con el objeto de valor: un DTO no tiene comportamiento más allá de guardar y entregar sus datos, y tratarlo como entidad mete reglas donde no van"
+    - "En un módulo con muchas vistas del mismo dato se multiplican los DTO (uno de creación, uno de respuesta, uno de listado) y el módulo se llena de clases casi iguales"
+decision_signals:
+  - pregunta: "¿Este módulo expone o consume una interfaz remota (API HTTP, servicio de un tercero)?"
+    señal_patron: "sí -> Data Transfer Object (DTO)"
+  - pregunta: "¿El contrato que ve el consumidor debe poder cambiar sin arrastrar la entidad interna?"
+    señal_patron: "sí -> Data Transfer Object (DTO)"
+  - pregunta: "¿La traducción sería entre capas del mismo proceso, sin llamada remota de por medio?"
+    señal_patron: "sí -> no usar DTO ahí"
+fuentes:
+  - titulo: "Data Transfer Object (Patterns of Enterprise Application Architecture, Martin Fowler)"
+    url: "https://martinfowler.com/eaaCatalog/dataTransferObject.html"
+  - titulo: "Local DTO (Martin Fowler) — por qué no usarlo dentro del mismo proceso"
+    url: "https://martinfowler.com/bliki/LocalDTO.html"
+  - titulo: "Data transfer object (Wikipedia)"
+    url: "https://en.wikipedia.org/wiki/Data_transfer_object"
+quality_attributes: [interoperabilidad, modificabilidad, seguridad]
+team_fit: "cualquier equipo que exponga un API o integre un servicio externo"
+example_scenarios:
+  - "Módulo de API que expone pedidos a una aplicación móvil y no debe filtrar los campos internos de la entidad"
+  - "Módulo de integración con una pasarela de pagos cuyo formato de petición y respuesta lo define el proveedor"
+  - "Módulo de reportes que devuelve en una sola llamada datos que viven en tres entidades distintas"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema está
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [api, integracion, ui, reporte]
+
+structure_contributions:
+  - role: dto
+    dir_name: schemas
+    file_name: schemas
+    class_name: Dto
+    note: >
+      Esquemas del módulo: la forma del dato que entra y sale por la interfaz
+      remota, separada de la entidad interna.
+    source: 1

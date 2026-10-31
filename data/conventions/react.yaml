@@ -1,0 +1,79 @@
+# Convención de estructura de carpetas: React (frontend).
+# El esquema está documentado campo por campo en data/conventions/fastapi.yaml.
+#
+# OJO con dos cosas de esta convención:
+#
+# 1. La fuente oficial arranca las rutas en la raíz del código fuente, sin
+#    prefijo `src/`. Acá se respeta tal cual: `src/` es práctica de los
+#    andamiajes (Vite, Create React App), no algo que la documentación de React
+#    prescriba, y meterlo sería atribuirle a la fuente algo que no dice.
+#
+# 2. Es la única de las cuatro convenciones con `nesting_limit`: la fuente
+#    recomienda explícitamente no pasar de tres o cuatro niveles anidados.
+
+convention_id: react
+name: "React (frontend)"
+layer: frontend
+matches:
+  - react
+  - reactjs
+  - react js
+  - frontend react
+  - spa react
+  - next js
+  - nextjs
+  - vite
+  - typescript frontend
+weight: 90
+summary: >
+  React no impone una estructura; la documentación describe dos enfoques
+  habituales y esta convención toma el de agrupar por feature o ruta, con el
+  CSS, el JS y las pruebas de cada módulo juntos en su carpeta.
+nesting_limit: 4
+
+base_tree:
+  - path: "common/"
+    note: >
+      Componentes y utilidades compartidos por varios módulos (por ejemplo
+      Avatar y utilidades de API).
+    source: 1
+
+module_tree:
+  - path: "{module}/"
+    note: >
+      Carpeta del módulo: agrupa CSS, JS y pruebas de esa feature o ruta en un
+      mismo lugar, siguiendo el principio de colocación.
+    source: 1
+  - path: "{module}/index.js"
+    note: "Punto de entrada del módulo: lo que importan los demás."
+    source: 1
+  - path: "{module}/{Module}.js"
+    note: "Componente principal del módulo."
+    source: 1
+    role: ui
+  - path: "{module}/{Module}.css"
+    note: "Estilos del módulo, junto al componente que los usa."
+    source: 1
+  - path: "{module}/{Module}.test.js"
+    note: "Pruebas del módulo, junto al código que prueban."
+    source: 1
+    role: tests
+  - path: "{module}/{Module}API.js"
+    note: "Llamadas al API que necesita este módulo."
+    source: 1
+    role: integration
+
+pattern_slot: "{module}/{Role}.js"
+pattern_slot_source: 1
+pattern_slot_note: >
+  Agrupando por feature, lo que aporta un patrón va dentro de la carpeta del
+  módulo, no en una carpeta nueva por tipo de archivo.
+
+documented_roles:
+  - ui
+  - tests
+  - integration
+
+fuentes:
+  - titulo: "File Structure (documentación oficial de React)"
+    url: "https://legacy.reactjs.org/docs/faq-structure.html"

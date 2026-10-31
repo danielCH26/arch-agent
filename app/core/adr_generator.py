@@ -162,6 +162,10 @@ class AdrContext:
     # como quedó guardado junto a su diagrama. ``None`` si el proyecto no
     # llegó a aprobar un despliegue: el ADR simplemente no trae esa parte.
     deployment: Optional[dict] = None
+    # Plan de estructura del repositorio (árbol de carpetas por convenciones y
+    # patrones por módulo), tal como quedó en el último adjunto generado.
+    # ``None`` si el proyecto no generó ninguno: el ADR no trae esa parte.
+    repo_structure: Optional[dict] = None
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -384,7 +388,28 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
             project_id=project_id,
             architecture_attachment_id=diagram_attachment_id,
         ),
+        repo_structure=_latest_repo_structure(
+            db, user_id=user_id, project_id=project_id
+        ),
     )
+
+
+def _latest_repo_structure(db, *, user_id: int, project_id: int) -> Optional[dict]:
+    """El plan de estructura más reciente, o None.
+
+    Import local y envuelto: ``app.api.repo_structure`` importa este módulo
+    (para ``collect_adr_context``), asi que arriba seria un ciclo. Y si esa
+    parte falla, el ADR se arma sin la sección en lugar de no armarse.
+    """
+    try:
+        from app.api.repo_structure import latest_structure_plan
+
+        return latest_structure_plan(db, user_id=user_id, project_id=project_id)
+    except Exception:  # pragma: no cover - defensa del armado del ADR
+        _LOGGER.exception(
+            "No se pudo leer la estructura de repositorio del proyecto %s", project_id
+        )
+        return None
 
 
 # --- Armado (puro) ------------------------------------------------------------
@@ -553,6 +578,102 @@ def _deployment_block(ctx: AdrContext) -> str:
         "Dónde queda cada pieza de la arquitectura al llevarla a la nube "
         "elegida durante el refinamiento.\n\n" + "\n".join(rows) + extras + "\n"
     )
+
+
+def _repo_structure_block(ctx: AdrContext) -> str:
+    """Subsección con el árbol de carpetas, o cadena vacía si no hay plan.
+
+    Va como subsección de "4. Diagrama de arquitectura" por la misma razón que
+    el despliegue: las secciones están numeradas y hay código que las busca
+    por número. Ver el comentario en ``_deployment_block``.
+
+    El árbol se emite tal como lo compuso ``repo_structure.build_plan``; acá no
+    se recalcula nada. Cada decisión que agregó un patrón se lista con su
+    justificación y su fuente, que es el criterio de aceptación de la historia:
+    nada en esta sección sale sin respaldo.
+    """
+    plan = ctx.repo_structure
+    if not isinstance(plan, dict):
+        return ""
+    tree = str(plan.get("tree_text") or "").strip()
+    if not tree:
+        return ""
+
+    convenciones = [
+        c
+        for c in (plan.get("backend"), plan.get("frontend"))
+        if isinstance(c, dict) and c.get("name")
+    ]
+    partes = ["\n### Estructura del repositorio\n\n"]
+    if convenciones:
+        detalle = "; ".join(
+            f"{_cell(c['name'])} (término que la activó: «{_cell(c.get('matched_term') or '—')}»)"
+            for c in convenciones
+        )
+        partes.append(
+            "Árbol de carpetas propuesto a partir de los módulos del diagrama "
+            f"aprobado y de las convenciones del stack: {detalle}.\n"
+        )
+    partes.append(f"```\n{tree}\n```\n")
+
+    # Patrón por módulo, con la justificación y la fuente de cada decisión.
+    filas: list[str] = []
+    sin_patron: list[str] = []
+    for module in plan.get("modules") or []:
+        if not isinstance(module, dict):
+            continue
+        nombre = str(module.get("name") or "")
+        if not nombre:
+            continue
+        elegidos = [
+            p
+            for p in (module.get("patterns") or [])
+            if isinstance(p, dict) and p.get("pattern_name")
+        ]
+        if not elegidos:
+            razon = str(module.get("uncovered_reason") or "").strip()
+            sin_patron.append(f"{nombre}: {razon}" if razon else nombre)
+            continue
+        for p in elegidos:
+            ubicacion = str(p.get("path") or "")
+            filas.append(
+                f"| {_cell(nombre)} | {_cell(module.get('kind'))} "
+                f"| {_cell(p.get('pattern_name'))} "
+                f"| {_cell(ubicacion or 'sin ubicación documentada')} "
+                f"| {_cell(p.get('justification'))} "
+                f"| {_cell(p.get('source_title'))} |"
+            )
+
+    if filas:
+        partes.append(
+            "\nPatrón aplicado a cada módulo, con la razón y la fuente de la "
+            "que sale:\n\n"
+        )
+        partes.append(
+            "| Módulo | Tipo | Patrón | Dónde queda | Por qué | Fuente |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+        )
+        partes.append("\n".join(filas) + "\n")
+
+    if sin_patron:
+        partes.append(
+            "\nMódulos para los que la base de patrones no tiene hoy ninguno "
+            "aplicable (se dejan sin propuesta en lugar de asignarles uno sin "
+            f"respaldo):\n\n{_bullets(sin_patron)}\n"
+        )
+
+    # Las advertencias por falta de patrón ya tienen su propio párrafo arriba;
+    # repetirlas acá hacía que el ADR dijera lo mismo dos veces seguidas.
+    ya_dichas = {s.split(":", 1)[-1].strip() for s in sin_patron}
+    advertencias = [
+        str(w)
+        for w in (plan.get("warnings") or [])
+        if str(w).strip() and str(w).split(":", 1)[-1].strip() not in ya_dichas
+    ]
+    if advertencias:
+        partes.append(f"\nPendientes de revisar:\n\n{_bullets(advertencias)}\n")
+
+    return "".join(partes)
 
 
 def _status(ctx: AdrContext) -> str:
@@ -1326,7 +1447,7 @@ incluida completa con su análisis de trade-offs y la opción elegida.
 ## 4. Diagrama de arquitectura
 
 {diagram}
-{_deployment_block(ctx)}
+{_deployment_block(ctx)}{_repo_structure_block(ctx)}
 ## 5. Referencias
 
 {_references(ctx.citations)}
