@@ -2,16 +2,20 @@
 Diagrama de despliegue: del plan de mapeo a una imagen PNG.
 
 Se arma una página HTML autocontenida (los íconos van embebidos como data
-URI) y se renderiza con el MISMO sidecar de Puppeteer que ya dibuja los
-diagramas Mermaid de HU6.
+URI), se publica un momento bajo un token y el MISMO sidecar de Puppeteer
+que dibuja los diagramas Mermaid de HU6 la pide por HTTP y la captura.
 
 Por qué HTML y no la librería `diagrams` de Python: esa librería necesita el
 binario de Graphviz, que no está en `backend/Dockerfile`; meterlo obliga a
 reconstruir la imagen y suma dependencias del sistema. El camino
-HTML -> data URL -> `puppeteer_navigate` + `puppeteer_screenshot` ya existe,
-ya funciona en producción y devuelve un adjunto con la misma forma, así que
-el diagrama de despliegue hereda gratis el historial de versiones y el
-flujo de aprobación.
+`puppeteer_navigate` + `puppeteer_screenshot` ya existe, ya funciona en
+producción y devuelve un adjunto con la misma forma, así que el diagrama de
+despliegue hereda gratis el historial de versiones y el flujo de aprobación.
+
+Por qué por HTTP y no como `data:` URL, que era el primer intento: con los
+logos embebidos la página pasa de 100 KB y el transporte del sidecar rechaza
+una petición de ese tamaño, así que el render fallaba siempre. Ver
+`stash_page`.
 
 La sesión MCP se abre aquí y no se reutiliza la de `agent.py` a propósito:
 son unas líneas duplicadas a cambio de que un fallo en esta función nueva
@@ -264,11 +268,6 @@ def build_deployment_html(plan: DeploymentPlan, *, project_name: str = "") -> st
 </body></html>"""
 
 
-def _html_to_data_url(page_html: str) -> str:
-    encoded = base64.b64encode(page_html.encode("utf-8")).decode("ascii")
-    return f"data:text/html;base64,{encoded}"
-
-
 # --------------------------------------------------------------------------
 # Entrega de la página al navegador
 # --------------------------------------------------------------------------
@@ -433,22 +432,31 @@ async def render_deployment_diagram(
             max_bytes,
         )
         return None
-    raw_bytes = base64.b64decode(encoded_png)
-    if len(raw_bytes) > max_bytes:
-        _LOGGER.warning(
-            "Despliegue: captura de %d bytes sobre el tope de %d.",
-            len(raw_bytes),
-            max_bytes,
-        )
-        return None
-
+    # Decodificar y escribir también va dentro de un try: el contrato de
+    # esta función es "nunca lanza, devuelve None si falla". Fuera del try,
+    # un base64 corrupto o un disco lleno hacían que /generate respondiera
+    # 500 en vez de devolver la tabla de mapeo con `render_error`.
     attachment_id = str(uuid.uuid4())
     mime = getattr(image_block, "mimeType", None) or "image/png"
     ext = "png" if "png" in mime else "jpg"
     filename = f"{attachment_id}.{ext}"
-    storage_path = os.path.join(_ensure_uploads_dir(), filename)
-    with open(storage_path, "wb") as handle:
-        handle.write(raw_bytes)
+    try:
+        raw_bytes = base64.b64decode(encoded_png)
+        if len(raw_bytes) > max_bytes:
+            _LOGGER.warning(
+                "Despliegue: captura de %d bytes sobre el tope de %d.",
+                len(raw_bytes),
+                max_bytes,
+            )
+            return None
+        storage_path = os.path.join(_ensure_uploads_dir(), filename)
+        with open(storage_path, "wb") as handle:
+            handle.write(raw_bytes)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Despliegue: no se pudo guardar la captura: %s", _describe_exception(exc)
+        )
+        return None
 
     return {
         "id": attachment_id,

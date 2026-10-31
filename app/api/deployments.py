@@ -162,6 +162,34 @@ def _deployment_rows(db, *, user_id: int, project_id: int):
 # --------------------------------------------------------------------------
 
 
+def has_approved_deployment(*, user_id: int, project_id: int) -> bool:
+    """¿Hay un diagrama de despliegue aprobado en este proyecto?
+
+    La usa el endpoint de decisión de fase para no dejar cerrar Refinamiento
+    sin haber pasado por el despliegue. Abre su propia sesión porque la
+    llaman desde fuera de una transacción.
+    """
+    db = SessionLocal()
+    try:
+        rows = _deployment_rows(db, user_id=user_id, project_id=project_id)
+        ids = [
+            str(att["id"])
+            for _m, _c, attachments in rows
+            for att in (attachments or [])
+            if isinstance(att, dict)
+            and att.get("kind") == ATTACHMENT_KIND
+            and att.get("id")
+        ]
+        if not ids:
+            return False
+        decisions = latest_diagram_decisions(
+            db, project_id=project_id, attachment_ids=ids, phase=PHASE
+        )
+        return any(value == "approve" for value in decisions.values())
+    finally:
+        db.close()
+
+
 @router.get("/render/{token}", include_in_schema=False)
 def render_page(token: str) -> HTMLResponse:
     """Sirve la página del diagrama para que la cargue Puppeteer.
@@ -258,6 +286,10 @@ async def generate(
 
         project_name = project.name or ""
         payload = plan_to_dict(plan)
+        # Sobre QUÉ arquitectura se calculó este despliegue. El ADR lo usa
+        # para no mostrar el diagrama de arquitectura nuevo junto a una
+        # tabla de despliegue calculada sobre la anterior.
+        architecture_id = context.diagram_attachment_id
     finally:
         db.close()
 
@@ -305,6 +337,7 @@ async def generate(
                     "filename": attachment["filename"],
                     "storage_path": attachment["storage_path"],
                     "provider": plan.provider.id,
+                    "architecture_attachment_id": architecture_id,
                     # El plan viaja junto al adjunto para que el ADR pueda
                     # escribir la tabla de "dónde va cada pieza" sin tener
                     # que recalcular el mapeo (que dependería de que la

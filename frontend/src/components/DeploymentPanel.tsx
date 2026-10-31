@@ -40,6 +40,14 @@ export function DeploymentPanel({
   const [generating, setGenerating] = useState(false)
   const [deciding, setDeciding] = useState(false)
   const [decided, setDecided] = useState<string | null>(null)
+  // Qué se decidió: el mensaje de "Refinamiento queda cerrado" solo vale
+  // para aprobar. Tras rechazar o pedir cambios la fase sigue abierta.
+  const [decidedAction, setDecidedAction] = useState<'approve' | 'modify' | 'reject' | null>(
+    null,
+  )
+  // La decisión se registró pero el cierre de la fase falló: hay que poder
+  // reintentar SOLO el cierre, porque repetir la decisión da 409.
+  const [phaseCloseFailed, setPhaseCloseFailed] = useState(false)
   const [error, setError] = useState('')
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
@@ -94,6 +102,28 @@ export function DeploymentPanel({
     }
   }
 
+  /** Cierra la fase. Separado de la decisión porque son DOS llamadas y la
+   *  segunda puede fallar sola: la decisión sobre el diagrama ya quedó
+   *  registrada y el backend responde 409 si se repite, así que reintentar
+   *  tiene que reintentar SOLO esto. */
+  async function closePhase() {
+    setDeciding(true)
+    setError('')
+    try {
+      await onApproved?.()
+      setPhaseCloseFailed(false)
+    } catch (err) {
+      setPhaseCloseFailed(true)
+      setError(
+        err instanceof Error && err.message
+          ? `El despliegue quedó aprobado, pero no se pudo cerrar la fase: ${err.message}`
+          : 'El despliegue quedó aprobado, pero no se pudo cerrar la fase.',
+      )
+    } finally {
+      setDeciding(false)
+    }
+  }
+
   async function handleDecision(decision: 'approve' | 'modify' | 'reject') {
     if (!plan?.attachment_id) return
     if (decision === 'modify' && !feedback.trim()) return
@@ -107,12 +137,13 @@ export function DeploymentPanel({
         decision === 'modify' ? feedback.trim() : undefined,
       )
       setDecided(result.message)
+      setDecidedAction(decision)
       setShowFeedback(false)
       setFeedback('')
       refreshHistory()
       // Solo aprobar cierra la fase: pedir cambios o rechazar dejan
       // Refinamiento abierto, que es justo lo que se quiere.
-      if (decision === 'approve') await onApproved?.()
+      if (decision === 'approve') await closePhase()
     } catch (err) {
       setError(
         err instanceof Error && err.message ? err.message : 'No se pudo registrar la decisión.',
@@ -359,14 +390,35 @@ export function DeploymentPanel({
             </div>
           )}
 
+          {phaseCloseFailed && (
+            <button
+              type="button"
+              data-testid="deployment-retry-close"
+              disabled={deciding}
+              onClick={() => void closePhase()}
+              className="rounded-lg border border-sky-600 px-3 py-1.5 text-sm font-medium text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+            >
+              {deciding ? 'Cerrando la fase…' : 'Reintentar cerrar la fase'}
+            </button>
+          )}
+
           {decided && (
             <p
               role="status"
               data-testid="deployment-decided"
               className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800"
             >
-              {decided} Refinamiento queda cerrado: usa{' '}
-              <span className="font-medium">Avanzar fase</span> arriba para pasar a Revisión.
+              {decided}{' '}
+              {decidedAction === 'approve' && !phaseCloseFailed && (
+                <>
+                  Refinamiento queda cerrado: usa{' '}
+                  <span className="font-medium">Avanzar fase</span> arriba para pasar a
+                  Revisión.
+                </>
+              )}
+              {decidedAction !== 'approve' && (
+                <>Refinamiento sigue abierto: genera otra versión cuando quieras.</>
+              )}
             </p>
           )}
         </div>

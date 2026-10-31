@@ -5,7 +5,11 @@ El ADR documenta decisiones, así que solo entra el despliegue APROBADO: uno
 generado y sin decidir todavía es un borrador.
 """
 
-from app.core.adr_generator import AdrContext, _deployment_block
+from app.core.adr_generator import (
+    AdrContext,
+    _deployment_block,
+    deployment_matches_architecture,
+)
 
 
 def _ctx(deployment=None) -> AdrContext:
@@ -79,3 +83,25 @@ def test_es_una_subseccion_y_no_renumera_el_adr():
     bloque = _deployment_block(_ctx(PLAN))
     assert bloque.lstrip().startswith("###")
     assert "## 5." not in bloque
+
+
+class TestNoMezclaArquitecturas:
+    """Si después de aprobar un despliegue se aprueba OTRO diagrama de
+    arquitectura, el de antes ya no describe lo que hay. Sin este filtro el
+    ADR enseñaba el diagrama nuevo junto a la tabla vieja."""
+
+    def test_acepta_el_despliegue_de_esta_arquitectura(self):
+        att = {"architecture_attachment_id": "arq-1"}
+        assert deployment_matches_architecture(att, "arq-1") is True
+
+    def test_descarta_el_calculado_sobre_otra(self):
+        att = {"architecture_attachment_id": "arq-1"}
+        assert deployment_matches_architecture(att, "arq-2") is False
+
+    def test_acepta_los_guardados_antes_de_registrar_ese_dato(self):
+        """Descartarlos dejaría sin despliegue a los ADR ya generados."""
+        assert deployment_matches_architecture({}, "arq-1") is True
+
+    def test_sin_arquitectura_de_referencia_no_filtra(self):
+        att = {"architecture_attachment_id": "arq-1"}
+        assert deployment_matches_architecture(att, None) is True

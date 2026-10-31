@@ -72,8 +72,10 @@ _EXTERNAL_PATTERNS: tuple[str, ...] = (
     r"\bexterno?s?\b",
     r"\bexterna?s?\b",
     r"\bterceros?\b",
+    # OJO: "pasarela" a secas NO va aquí. "Pasarela de API (BFF)" es un API
+    # gateway de la propia nube, no un tercero. Hace falta que diga de pagos.
     r"\bpasarela de pagos?\b",
-    r"\bpasarela\b",
+    r"\bpayments? gateway\b",
     r"\bstripe\b",
     r"\bpaypal\b",
     r"\bpayu\b",
@@ -85,7 +87,6 @@ _EXTERNAL_PATTERNS: tuple[str, ...] = (
     r"\bfirebase\b",
     r"\bgoogle maps\b",
     r"\bapi de un tercero\b",
-    r"\bpasarela de pago\b",
     r"\bproveedor externo\b",
 )
 _EXTERNAL_RE = re.compile("|".join(_EXTERNAL_PATTERNS))
@@ -120,21 +121,32 @@ _NODE_RE = re.compile(
     re.VERBOSE,
 )
 
-# Arista: origen, flecha, destino. Cubre -->, ---, -.->, ==> y la forma con
-# etiqueta -->|texto|. Se aplica SOBRE la línea ya sin etiquetas de nodo (ver
-# `_strip_node_labels`): sin ese paso, `A[Uno] --> B[Dos]` no matchea, porque
-# antes de la flecha está el `]` y no el identificador.
-_EDGE_RE = re.compile(
-    r"(?P<src>[A-Za-z_][\w-]*)\s*"
-    r"(?:-{2,3}>|-{3}|-\.-+>|={2,3}>)"
-    r"\s*(?:\|[^|]*\|\s*)?"
-    r"(?P<dst>[A-Za-z_][\w-]*)"
+# Etiqueta de arista entre barras: `-->|consulta (SQL)|`. Se quita ANTES de
+# buscar nodos y aristas. Si no, `_NODE_RE` lee ese texto como un nodo
+# `consulta` con etiqueta `SQL`, y ese fantasma termina en "sin equivalente"
+# o mapeado a algún servicio.
+_EDGE_LABEL_RE = re.compile(r"\|[^|]*\|")
+
+# Etiqueta en medio del guion: `A -- consulta --> B`. Se normaliza a `-->`
+# para que el texto no parezca un nodo más al partir la línea.
+_MID_LABEL_RE = re.compile(r"-{2,}[^->]*?-{1,}>")
+
+# Operadores de flecha de Mermaid, incluidos los bidireccionales (`<-->`) y
+# los que no llevan punta (`---`). Se usan para PARTIR la línea, no para
+# buscar pares: así `A --> B --> C` da las dos aristas. Con una expresión de
+# par y `finditer`, que no solapa coincidencias, la segunda se perdía.
+_ARROW_RE = re.compile(
+    r"\s*(?:"
+    r"<-{2,}>|<={2,}>|<-\.-+>"      # bidireccionales
+    r"|-{2,}>|={2,}>|-\.-+>"        # con punta
+    r"|o-{2,}|x-{2,}"               # extremos de círculo y cruz
+    r"|-{3,}|={3,}"                 # sin punta
+    r")\s*"
 )
 
-# Arista con la etiqueta en medio del guion: A -- texto --> B
-_EDGE_MID_LABEL_RE = re.compile(
-    r"(?P<src>[A-Za-z_][\w-]*)\s*-{2}\s*[^->|]+?\s*-{1,2}>\s*(?P<dst>[A-Za-z_][\w-]*)"
-)
+# Identificador de nodo. Un grupo puede traer varios separados por `&`
+# (`A --> B & C`), y entonces la flecha vale para todos.
+_NODE_ID_RE = re.compile(r"[A-Za-z_][\w-]*")
 
 _MERMAID_KEYWORDS = {
     "graph",
@@ -178,6 +190,10 @@ def parse_mermaid_nodes(mermaid: str) -> dict[str, str]:
             # `subgraph Nombre[Etiqueta]` sí define una caja, pero es un
             # agrupador, no un componente desplegable.
             continue
+        # La etiqueta de una arista puede traer paréntesis
+        # (`-->|consulta (SQL)|`) y `_NODE_RE` la leería como un nodo
+        # `consulta` con etiqueta `SQL`. Fuera antes de buscar nodos.
+        stripped = _EDGE_LABEL_RE.sub(" ", stripped)
         for match in _NODE_RE.finditer(stripped):
             label = next(
                 (
@@ -209,8 +225,30 @@ def _strip_node_labels(line: str) -> str:
     return _NODE_RE.sub(lambda match: match.group("id"), line)
 
 
+def _node_ids(fragment: str) -> list[str]:
+    """Identificadores de un tramo entre flechas (`B & C` -> ``[B, C]``)."""
+    return [
+        name
+        for name in _NODE_ID_RE.findall(fragment)
+        if name.lower() not in _MERMAID_KEYWORDS
+    ]
+
+
 def parse_mermaid_edges(mermaid: str) -> list[tuple[str, str]]:
-    """Pares ``(origen, destino)`` de las flechas del Mermaid."""
+    """Pares ``(origen, destino)`` de las flechas del Mermaid.
+
+    La línea se parte por los operadores de flecha y se emparejan los tramos
+    consecutivos, en vez de buscar pares con una expresión regular. Así:
+
+    * ``A --> B --> C`` da las DOS aristas (antes solo la primera: los
+      ``finditer`` no solapan coincidencias y la ``B`` ya estaba consumida).
+    * ``A --> B & C`` llega a las dos puntas.
+    * ``A <--> B`` se lee (una dirección basta: si el proveedor solo permite
+      la contraria, la flecha se endereza más adelante).
+
+    Las etiquetas de arista se quitan antes, en las dos formas que acepta
+    Mermaid, para que su texto no parezca un nodo.
+    """
     edges: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for line in (mermaid or "").splitlines():
@@ -220,12 +258,17 @@ def parse_mermaid_edges(mermaid: str) -> list[tuple[str, str]]:
         if stripped.split(None, 1)[0].lower() in _MERMAID_KEYWORDS:
             continue
         stripped = _strip_node_labels(stripped)
-        for regex in (_EDGE_MID_LABEL_RE, _EDGE_RE):
-            for match in regex.finditer(stripped):
-                pair = (match.group("src"), match.group("dst"))
-                if pair not in seen:
-                    seen.add(pair)
-                    edges.append(pair)
+        stripped = _EDGE_LABEL_RE.sub(" ", stripped)
+        stripped = _MID_LABEL_RE.sub("-->", stripped)
+
+        groups = [_node_ids(part) for part in _ARROW_RE.split(stripped)]
+        for left, right in zip(groups, groups[1:]):
+            for src in left:
+                for dst in right:
+                    pair = (src, dst)
+                    if src != dst and pair not in seen:
+                        seen.add(pair)
+                        edges.append(pair)
     return edges
 
 
@@ -377,6 +420,14 @@ def _best_service(label: str, provider: CloudProvider) -> tuple[CloudService, st
     return best[2], best[3]
 
 
+# Categorías que pueden hacer de puente: las que enrutan tráfico. Una base
+# de datos o un bucket nunca conectan dos piezas, aunque el catálogo permita
+# el par en ambos tramos.
+_BRIDGE_CATEGORIES = frozenset(
+    {"loadbalancer", "apigateway", "cdn", "dns", "queue", "network"}
+)
+
+
 def _find_bridge(
     src_id: str,
     dst_id: str,
@@ -394,6 +445,11 @@ def _find_bridge(
     o de dibujar una conexión que no existe, se busca el intermediario que
     el catálogo sí permite.
 
+    Solo valen servicios que ENRUTAN (balanceador, API gateway, CDN, DNS,
+    cola, red). Sin ese filtro salían puentes absurdos: para unir cómputo y
+    CDN, el catálogo permite `ECS -> S3` y `S3 -> CloudFront`, así que un
+    bucket de almacenamiento acababa haciendo de conector.
+
     Prioridad: un servicio que YA esté en el despliegue (no agrega cajas),
     y si no, el de mayor `weight`, que es el más típico de su categoría.
     """
@@ -401,6 +457,7 @@ def _find_bridge(
         service
         for service in provider.services
         if service.id not in (src_id, dst_id)
+        and service.category in _BRIDGE_CATEGORIES
         and (src_id, service.id) in allowed
         and (service.id, dst_id) in allowed
     ]
@@ -589,7 +646,19 @@ def build_plan(
             # nube (p. ej. la base "apunta" al backend). Se endereza.
             add((dst.id, src.id))
         else:
-            bridge = _find_bridge(src.id, dst.id, allowed=allowed, provider=provider, preferred=chosen_ids)
+            # El puente se busca en las DOS direcciones. Antes solo en
+            # src->dst: una flecha dibujada al revés ("Backend --> Frontend")
+            # se descartaba, cuando al derecho habría dado
+            # CloudFront -> balanceador -> ECS.
+            bridge = _find_bridge(
+                src.id, dst.id, allowed=allowed, provider=provider, preferred=chosen_ids
+            )
+            origen, destino = src.id, dst.id
+            if bridge is None:
+                bridge = _find_bridge(
+                    dst.id, src.id, allowed=allowed, provider=provider, preferred=chosen_ids
+                )
+                origen, destino = dst.id, src.id
             if bridge is None:
                 dropped.append(pair)
                 continue
@@ -597,8 +666,8 @@ def build_plan(
             # componente de la arquitectura: se agrega al diagrama.
             if bridge.id not in chosen_ids and bridge.id not in {b.id for b in bridges}:
                 bridges.append(bridge)
-            add((src.id, bridge.id))
-            add((bridge.id, dst.id))
+            add((origen, bridge.id))
+            add((bridge.id, destino))
 
     # Sin flechas utilizables (diagrama sin aristas, o todas descartadas) el
     # diagrama quedaría como cajas sueltas: se completa con las conexiones

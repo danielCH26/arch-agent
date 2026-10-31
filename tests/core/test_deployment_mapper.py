@@ -407,3 +407,86 @@ def test_plan_to_dict_trae_lo_que_consume_la_interfaz():
     )
     # La nota de despliegue es lo que responde "dónde va cada pieza".
     assert all(item["deploy_note"] for item in data["components"])
+
+# --------------------------------------------------------------------------
+# Hallazgos de la revisión del PR
+# --------------------------------------------------------------------------
+
+
+class TestRevisionPR:
+    """Casos que la revisión señaló y que antes se leían mal."""
+
+    def test_cadena_de_flechas_da_todas_las_aristas(self):
+        """`A --> B --> C` daba solo la primera: `finditer` no solapa
+        coincidencias y la B ya estaba consumida."""
+        assert parse_mermaid_edges("graph TD\n  A --> B --> C\n") == [
+            ("A", "B"),
+            ("B", "C"),
+        ]
+
+    def test_cadena_con_etiquetas_tambien(self):
+        assert parse_mermaid_edges(
+            "graph TD\n  A[Uno] --> B[Dos] --> C[Tres]\n"
+        ) == [("A", "B"), ("B", "C")]
+
+    def test_ampersand_reparte_la_flecha(self):
+        assert parse_mermaid_edges("graph TD\n  A --> B & C\n") == [
+            ("A", "B"),
+            ("A", "C"),
+        ]
+
+    def test_flecha_bidireccional(self):
+        """Una dirección basta: si el proveedor solo permite la contraria,
+        la flecha se endereza más adelante."""
+        assert parse_mermaid_edges("graph TD\n  A <--> B\n") == [("A", "B")]
+
+    def test_etiqueta_de_arista_con_parentesis_no_crea_un_nodo(self):
+        """`-->|consulta (SQL)|` se leía como un nodo `consulta` con
+        etiqueta `SQL`, y ese fantasma acababa en "sin equivalente"."""
+        mermaid = "graph TD\n  A[Backend] -->|consulta (SQL)| B[Base de datos]\n"
+        assert set(parse_mermaid_nodes(mermaid)) == {"A", "B"}
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_una_flecha_al_reves_tambien_busca_puente(self):
+        """Antes el puente solo se probaba en src->dst, así que
+        "Backend --> Frontend" se descartaba en vez de dar
+        CloudFront -> gateway -> ECS."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> FE[Frontend React]\n",
+        )
+        assert plan.dropped_connections == ()
+        assert plan.bridges
+        puente = plan.bridges[0].id
+        assert ("cloudfront", puente) in plan.connections
+        assert (puente, "ecs") in plan.connections
+
+    def test_el_puente_tiene_que_enrutar(self):
+        """El catálogo permite `ECS -> S3` y `S3 -> CloudFront`, así que sin
+        filtrar por categoría un bucket hacía de conector."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> FE[Frontend React]\n",
+        )
+        enrutan = {"loadbalancer", "apigateway", "cdn", "dns", "queue", "network"}
+        assert all(b.category in enrutan for b in plan.bridges)
+
+    @pytest.mark.parametrize("provider_id", ["aws", "gcp"])
+    def test_una_pasarela_de_api_no_es_un_tercero(self, provider_id):
+        """"Pasarela" a secas mandaba los API gateways a la columna de
+        terceros."""
+        plan = build_plan(
+            provider_id=provider_id, mermaid="graph TD\n  A[Pasarela de API (BFF)]\n"
+        )
+        assert plan.externals == ()
+        assert [m.service.category for m in plan.components] == ["apigateway"]
+
+    @pytest.mark.parametrize(
+        "componente", ["Pasarela de pagos (Stripe)", "Payment Gateway"]
+    )
+    def test_una_pasarela_de_pagos_si_es_un_tercero(self, componente):
+        """En inglés caía en API Gateway por el término `gateway`."""
+        plan = build_plan(
+            provider_id="aws", mermaid=f"graph TD\n  A[{componente}]\n"
+        )
+        assert [e.name for e in plan.externals] == [componente]

@@ -235,7 +235,28 @@ def _approved_mermaid(
     return code, False, (ids[0] if ids else None)
 
 
-def _approved_deployment(db: Session, *, user_id: int, project_id: int) -> Optional[dict]:
+def deployment_matches_architecture(
+    attachment: dict, architecture_attachment_id: Optional[str]
+) -> bool:
+    """¿Este despliegue se calculó sobre la arquitectura que muestra el ADR?
+
+    Un despliegue guardado antes de que se registrara ese dato no trae
+    ``architecture_attachment_id``: se acepta, porque descartarlo dejaría sin
+    despliegue a los ADR ya generados.
+    """
+    sobre = attachment.get("architecture_attachment_id")
+    if not sobre or not architecture_attachment_id:
+        return True
+    return sobre == architecture_attachment_id
+
+
+def _approved_deployment(
+    db: Session,
+    *,
+    user_id: int,
+    project_id: int,
+    architecture_attachment_id: Optional[str] = None,
+) -> Optional[dict]:
     """Plan del diagrama de despliegue APROBADO más reciente, o ``None``.
 
     Mismo criterio que ``_approved_mermaid`` pero sobre los adjuntos
@@ -244,6 +265,15 @@ def _approved_deployment(db: Session, *, user_id: int, project_id: int) -> Optio
 
     Solo entra al ADR lo aprobado. Un despliegue generado y no decidido es un
     borrador, y el ADR documenta decisiones.
+
+    Además tiene que corresponder a la arquitectura que el ADR está
+    mostrando: si después de aprobar un despliegue se aprueba OTRO diagrama
+    de arquitectura, el de antes ya no describe lo que hay. Sin este filtro
+    el ADR enseñaba el diagrama nuevo junto a la tabla vieja.
+
+    Los despliegues guardados antes de que se registrara ese dato no traen
+    ``architecture_attachment_id``; esos se aceptan, porque descartarlos
+    dejaría sin despliegue a los ADR ya generados.
     """
     rows = (
         db.query(Message)
@@ -263,8 +293,12 @@ def _approved_deployment(db: Session, *, user_id: int, project_id: int) -> Optio
             if not isinstance(att, dict) or att.get("kind") != "deployment":
                 continue
             plan = att.get("plan")
-            if att.get("id") and isinstance(plan, dict):
-                candidates.append((str(att["id"]), plan))
+            if not (att.get("id") and isinstance(plan, dict)):
+                continue
+            if not deployment_matches_architecture(att, architecture_attachment_id):
+                # Calculado sobre otra arquitectura: ya no describe esta.
+                continue
+            candidates.append((str(att["id"]), plan))
     if not candidates:
         return None
 
@@ -344,7 +378,12 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         diagram_approved=diagram_approved,
         diagram_attachment_id=diagram_attachment_id,
         decisions=decisions,
-        deployment=_approved_deployment(db, user_id=user_id, project_id=project_id),
+        deployment=_approved_deployment(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=diagram_attachment_id,
+        ),
     )
 
 

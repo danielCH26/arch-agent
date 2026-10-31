@@ -422,7 +422,39 @@ async def post_phase_decision(
             detail={"error": "missing_feedback", "action": "modify"},
         )
 
-    _require_project(current_user["user_id"], project_id)
+    project = _require_project(current_user["user_id"], project_id)
+
+    # Refinamiento tiene dos pasos: la arquitectura y el despliegue en la
+    # nube. Que el segundo no se pueda saltar no puede depender solo de que
+    # el frontend esconda el botón: una llamada directa a esta API cerraba
+    # la fase sin haber decidido el despliegue.
+    #
+    # Solo cuando el proyecto está DE VERDAD en refinamiento: si la fase
+    # pedida no es la actual, el error que corresponde es `phase_mismatch`,
+    # que es más básico y lo reporta `record_decision` más abajo
+    # (REQ-SA-28). Sin esta condición, pedir `refinamiento` desde
+    # `requerimientos` respondía "falta aprobar el despliegue", que despista.
+    if (
+        phase == "refinamiento"
+        and body.action == "approve"
+        and project.current_phase == phase
+    ):
+        from app.api.deployments import has_approved_deployment
+
+        if not has_approved_deployment(
+            user_id=current_user["user_id"], project_id=project_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "deployment_not_approved",
+                    "phase": phase,
+                    "message": (
+                        "Falta aprobar el diagrama de despliegue en la nube "
+                        "antes de cerrar Refinamiento."
+                    ),
+                },
+            )
 
     db = SessionLocal()
     try:

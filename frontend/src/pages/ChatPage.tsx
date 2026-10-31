@@ -102,6 +102,11 @@ function ChatPageContent() {
   // Cierra Refinamiento: se llama al aprobar el diagrama de DESPLIEGUE, que
   // es el último paso de la fase. Hasta aquí `phase_ready` sigue en false y
   // "Avanzar fase" no aparece, así que no se puede saltar la nube.
+  // RELANZA si falla. El panel de despliegue necesita enterarse: la decisión
+  // sobre el diagrama ya quedó registrada y el backend responde 409 si se
+  // repite, así que el reintento tiene que ser solo de ESTO, y el panel es
+  // quien ofrece ese botón. Si el error se tragara aquí, el botón Aprobar ya
+  // no estaría y el proyecto se quedaría trabado en Refinamiento.
   const handleDeploymentApproved = async () => {
     setPhaseActionError('')
     setPhaseActionLoading(true)
@@ -113,12 +118,6 @@ function ChatPageContent() {
         if (!(err instanceof ApiConflictError)) throw err
       }
       await refreshAfterPhaseChange()
-    } catch (err) {
-      const detail = err instanceof Error && err.message ? ` (${err.message})` : ''
-      setPhaseActionError(
-        `El despliegue quedó aprobado, pero no se pudo cerrar la fase${detail}. ` +
-          'Vuelve a intentarlo.',
-      )
     } finally {
       setPhaseActionLoading(false)
     }

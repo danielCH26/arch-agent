@@ -84,7 +84,7 @@ services:
     deploy_note: >-
       Expón aquí la API pública y enruta cada ruta a Lambda o al servicio de
       contenedores; aplica el rate limiting en esta capa, no en el backend.
-    matches: [api gateway, gateway, puerta de enlace, bff, backend for frontend]
+    matches: [api gateway, gateway, puerta de enlace, bff, backend for frontend, pasarela de api, pasarela de apis]
     weight: 70
     connects_to: [lambda, ecs, fargate, ec2, cognito]
 
