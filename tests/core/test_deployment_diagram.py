@@ -7,7 +7,11 @@ dibujarse: los logos embebidos, un nodo por servicio con el id que esperan
 las flechas, y las conexiones del plan.
 """
 
+import base64
 import re
+from types import SimpleNamespace
+
+import pytest
 
 from app.core import deployment_diagram
 from app.core.deployment_diagram import build_deployment_html, stash_page, take_page
@@ -134,3 +138,59 @@ def test_el_svg_de_las_flechas_queda_debajo_de_las_tarjetas():
     html = _html()
     svg_rule = re.search(r"svg#wires\s*\{[^}]*\}", html)
     assert svg_rule and "z-index: 0" in svg_rule.group(0)
+
+
+class TestGuardadoDeLaCaptura:
+    """`save_capture` nunca lanza: devuelve None y el panel muestra el mapeo.
+
+    Se extrajo de `render_deployment_diagram` para poder probarla sin levantar
+    una sesión MCP. El caso que importa —un base64 corrupto— no necesita
+    navegador, solo un bloque de imagen con datos inválidos.
+    """
+
+    @staticmethod
+    def _bloque(data, mime="image/png"):
+        return SimpleNamespace(type="image", data=data, mimeType=mime)
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            "no-es-base64-válido!!",
+            "????",
+            "iVBORw0KGgo",           # longitud que no es múltiplo de 4
+            "<html>error</html>",
+        ],
+    )
+    def test_un_base64_invalido_devuelve_none_y_no_lanza(self, data):
+        assert deployment_diagram.save_capture(self._bloque(data), max_bytes=10_000_000) is None
+
+    def test_una_captura_vacia_devuelve_none(self):
+        assert deployment_diagram.save_capture(self._bloque(""), max_bytes=10_000_000) is None
+
+    def test_un_bloque_sin_datos_devuelve_none(self):
+        assert (
+            deployment_diagram.save_capture(
+                SimpleNamespace(type="image"), max_bytes=10_000_000
+            )
+            is None
+        )
+
+    def test_una_captura_sobre_el_tope_devuelve_none(self):
+        grande = base64.b64encode(b"x" * 64).decode()
+        assert deployment_diagram.save_capture(self._bloque(grande), max_bytes=8) is None
+
+    def test_una_captura_valida_se_guarda(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            deployment_diagram, "_ensure_uploads_dir", lambda: str(tmp_path)
+        )
+        contenido = b"\x89PNG\r\n\x1a\n" + b"datos"
+        guardado = deployment_diagram.save_capture(
+            self._bloque(base64.b64encode(contenido).decode()), max_bytes=10_000_000
+        )
+        assert guardado is not None
+        assert guardado["kind"] == "deployment"
+        assert guardado["filename"].endswith(".png")
+        with open(guardado["storage_path"], "rb") as handle:
+            assert handle.read() == contenido
+        # El proveedor lo agrega quien la llama: no es cosa del guardado.
+        assert "provider" not in guardado

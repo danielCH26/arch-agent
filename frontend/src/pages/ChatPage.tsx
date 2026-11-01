@@ -14,6 +14,33 @@ const ELICITATION_PHASE = 'requerimientos'
 const REFINEMENT_PHASE = 'refinamiento'
 
 /**
+ * ¿El 409 dice que Refinamiento YA estaba cerrada (otra pestaña, doble clic)?
+ *
+ * Es el único conflicto que se puede tratar como éxito. El caso llega como
+ * `phase_mismatch`, pero ese código es ambiguo: también lo devuelve pedir
+ * `refinamiento` cuando el proyecto todavía va por `requerimientos`, que sí
+ * es un error. Los distingue la POSICIÓN de `current_phase`: si el proyecto
+ * ya pasó Refinamiento, la fase se cerró; si no llegó, no.
+ *
+ * `deployment_not_approved` nunca es benigno: significa que el servidor
+ * rechazó el cierre porque falta aprobar el despliegue.
+ */
+export function yaEstabaCerrada(
+  err: ApiConflictError,
+  availablePhases: string[] = [],
+): boolean {
+  if (err.detail?.error !== 'phase_mismatch') return false
+  const actual = err.detail.current_phase ?? ''
+  if (!actual) return false
+  const indiceActual = availablePhases.indexOf(actual)
+  const indiceRefinamiento = availablePhases.indexOf(REFINEMENT_PHASE)
+  // Sin la lista de fases no se puede decidir: se prefiere relanzar y que el
+  // panel ofrezca reintentar, antes que declarar un éxito que no pasó.
+  if (indiceActual < 0 || indiceRefinamiento < 0) return false
+  return indiceActual > indiceRefinamiento
+}
+
+/**
  * Se vuelve a montar al cambiar de proyecto (`key`), para que ningún render
  * combine el `projectId` nuevo con la fase o el proyecto anteriores.
  */
@@ -114,8 +141,17 @@ function ChatPageContent() {
       try {
         await decidePhase(projectId, REFINEMENT_PHASE, { action: 'approve' })
       } catch (err) {
-        // Ya aprobada (p. ej. desde otra pestaña): no es un error.
-        if (!(err instanceof ApiConflictError)) throw err
+        // Antes se descartaba CUALQUIER 409 como "ya aprobada". Desde que el
+        // servidor controla que el despliegue esté aprobado hay dos 409
+        // nuevos (`deployment_not_approved` y un `phase_mismatch` hacia
+        // atrás), y tragárselos hacía que el panel dijera "Refinamiento queda
+        // cerrado" con la fase todavía abierta.
+        if (
+          !(err instanceof ApiConflictError) ||
+          !yaEstabaCerrada(err, phase?.available_phases ?? [])
+        ) {
+          throw err
+        }
       }
       await refreshAfterPhaseChange()
     } finally {

@@ -27,7 +27,11 @@ from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_current_user
 from app.core.attachment_tokens import build_attachment_url
-from app.core.adr_generator import AdrNotReadyError, collect_adr_context
+from app.core.adr_generator import (
+    AdrNotReadyError,
+    collect_adr_context,
+    deployment_matches_architecture,
+)
 from app.core.cloud_catalog import CloudCatalogError, list_providers
 from app.core.database import SessionLocal
 from app.core.deployment_diagram import render_deployment_diagram, take_page
@@ -163,29 +167,60 @@ def _deployment_rows(db, *, user_id: int, project_id: int):
 
 
 def has_approved_deployment(*, user_id: int, project_id: int) -> bool:
-    """¿Hay un diagrama de despliegue aprobado en este proyecto?
+    """¿Hay un despliegue aprobado SOBRE LA ARQUITECTURA VIGENTE?
 
     La usa el endpoint de decisión de fase para no dejar cerrar Refinamiento
     sin haber pasado por el despliegue. Abre su propia sesión porque la
     llaman desde fuera de una transacción.
+
+    Mira la arquitectura con el MISMO criterio que el ADR
+    (``deployment_matches_architecture``). Antes aceptaba cualquier despliegue
+    aprobado del proyecto, y eso abría este agujero:
+
+      1. se aprueba la arquitectura v1 y después su despliegue;
+      2. se aprueba una arquitectura v2;
+      3. el servidor dejaba cerrar Refinamiento con el despliegue de v1;
+      4. el ADR descartaba ese despliegue por no corresponder a v2 y salía
+         sin la sección de despliegue.
+
+    O sea: la puerta decía que sí y el documento quedaba incompleto. Los dos
+    tienen que aplicar la misma regla.
     """
     db = SessionLocal()
     try:
+        # La arquitectura que el ADR considera vigente. Si no se puede
+        # determinar (proyecto a medio armar), se cae al criterio anterior:
+        # cualquier despliegue aprobado sirve. Es lo mismo que hace
+        # `deployment_matches_architecture` cuando falta el dato.
+        architecture_id: Optional[str] = None
+        try:
+            context = collect_adr_context(db, user_id=user_id, project_id=project_id)
+            architecture_id = context.diagram_attachment_id
+        except AdrNotReadyError:
+            architecture_id = None
+
         rows = _deployment_rows(db, user_id=user_id, project_id=project_id)
-        ids = [
-            str(att["id"])
-            for _m, _c, attachments in rows
-            for att in (attachments or [])
-            if isinstance(att, dict)
-            and att.get("kind") == ATTACHMENT_KIND
-            and att.get("id")
-        ]
-        if not ids:
+        por_id: dict[str, dict] = {}
+        for _m, _c, attachments in rows:
+            for att in attachments or []:
+                if (
+                    isinstance(att, dict)
+                    and att.get("kind") == ATTACHMENT_KIND
+                    and att.get("id")
+                ):
+                    por_id.setdefault(str(att["id"]), att)
+        if not por_id:
             return False
+
         decisions = latest_diagram_decisions(
-            db, project_id=project_id, attachment_ids=ids, phase=PHASE
+            db, project_id=project_id, attachment_ids=list(por_id), phase=PHASE
         )
-        return any(value == "approve" for value in decisions.values())
+        return any(
+            value == "approve"
+            and deployment_matches_architecture(por_id[att_id], architecture_id)
+            for att_id, value in decisions.items()
+            if att_id in por_id
+        )
     finally:
         db.close()
 

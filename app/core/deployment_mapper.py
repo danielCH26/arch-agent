@@ -129,18 +129,40 @@ _EDGE_LABEL_RE = re.compile(r"\|[^|]*\|")
 
 # Etiqueta en medio del guion: `A -- consulta --> B`. Se normaliza a `-->`
 # para que el texto no parezca un nodo más al partir la línea.
-_MID_LABEL_RE = re.compile(r"-{2,}[^->]*?-{1,}>")
+#
+# El `(?<!-)--(?!-)` de la forma sólida es lo que evita que se coma un nodo:
+# con `-{2,}` suelto, en `A --- B --> C` la expresión tomaba `--- B -->`
+# entera como si fuera una etiqueta y devolvía la arista falsa `('A','C')`,
+# perdiendo B. Mermaid escribe la etiqueta con EXACTAMENTE dos guiones
+# (`A -- texto --> B`), así que exigirlo distingue la etiqueta de un `---`,
+# que es una flecha completa.
+_MID_LABEL_RE = re.compile(
+    r"(?<!-)--(?!-)[^->]*?-{1,}>"   # sólida:   A -- texto --> B
+    r"|-\.[^.>]*?\.-+>"             # punteada: A -. texto .-> B
+    r"|(?<!=)==(?!=)[^=>]*?={1,}>"  # gruesa:   A == texto ==> B
+)
 
 # Operadores de flecha de Mermaid, incluidos los bidireccionales (`<-->`) y
 # los que no llevan punta (`---`). Se usan para PARTIR la línea, no para
 # buscar pares: así `A --> B --> C` da las dos aristas. Con una expresión de
 # par y `finditer`, que no solapa coincidencias, la segunda se perdía.
+#
+# OJO con los extremos de círculo y cruz. La versión anterior usaba
+# `o-{2,}|x-{2,}` y se comía la última letra del nodo cuando la flecha venía
+# sin espacios: `Usuario-->API` partía en `Usuari` + `>API`, y como `Usuari`
+# no coincide con ningún nodo, la arista se perdía. En español pega fuerte
+# (Usuario, Catálogo, Pago, Servicio) y Mermaid escribe `A-->B` muy seguido.
+# El `(?<![\w-])` exige que el `o`/`x` abra el operador y no cierre un
+# identificador. De paso se agregan `--o` y `--x`, que son la forma habitual
+# y que antes no se reconocían.
 _ARROW_RE = re.compile(
     r"\s*(?:"
-    r"<-{2,}>|<={2,}>|<-\.-+>"      # bidireccionales
-    r"|-{2,}>|={2,}>|-\.-+>"        # con punta
-    r"|o-{2,}|x-{2,}"               # extremos de círculo y cruz
-    r"|-{3,}|={3,}"                 # sin punta
+    r"<-{2,}>|<={2,}>|<-\.-+>"          # bidireccionales
+    r"|-{2,}>|={2,}>|-\.-+>"            # con punta
+    r"|(?<![\w-])o-{2,}[ox]?"           # A o-- B, A o--o B
+    r"|(?<![\w-])x-{2,}[ox]?"           # A x-- B, A x--x B
+    r"|-{2,}[ox]"                       # A --o B, A --x B
+    r"|-{3,}|={3,}"                     # sin punta
     r")\s*"
 )
 

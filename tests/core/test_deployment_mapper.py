@@ -490,3 +490,70 @@ class TestRevisionPR:
             provider_id="aws", mermaid=f"graph TD\n  A[{componente}]\n"
         )
         assert [e.name for e in plan.externals] == [componente]
+
+
+class TestSegundaRevisionPR:
+    """Los defectos de la segunda revisión del PR, con sus entradas exactas.
+
+    Los dos del parser venían del mismo sitio: una alternativa de la
+    expresión de flechas que matcheaba más de lo que debía.
+    """
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            # A. Regresión: `o-{2,}` se comía la última letra del nodo cuando
+            # la flecha venía sin espacios. En español pega fuerte (Usuario,
+            # Catálogo, Pago, Servicio) y Mermaid escribe `A-->B` muy seguido.
+            ("Usuario[Usuario]-->API[API]", [("Usuario", "API")]),
+            ("Inbox-->Worker", [("Inbox", "Worker")]),
+            ("Catalogo-->Pedido", [("Catalogo", "Pedido")]),
+            ("Pago-->Banco", [("Pago", "Banco")]),
+            # Con espacios ya funcionaba; que siga.
+            ("Usuario --> API", [("Usuario", "API")]),
+        ],
+    )
+    def test_los_nodos_que_terminan_en_o_o_x_no_pierden_la_ultima_letra(
+        self, mermaid, esperado
+    ):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        ["A --o B", "A --x B", "A o--o B", "A x--x B", "A o-- B", "A x-- B"],
+    )
+    def test_los_extremos_de_circulo_y_cruz_si_se_reconocen(self, mermaid):
+        """Antes `A --o B` no daba arista: la alternativa solo cubría `o--`."""
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_una_flecha_sin_punta_entre_dos_no_se_come_el_nodo_del_medio(self):
+        """D. `_MID_LABEL_RE` tomaba `--- B -->` como si fuera una etiqueta.
+
+        Resultado: la arista falsa `('A','C')`, y B desaparecía.
+        """
+        assert parse_mermaid_edges("A --- B --> C") == [("A", "B"), ("B", "C")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -.texto.-> B",      # punteada con etiqueta: antes no daba arista
+            "A -. texto .-> B",
+            "A ==texto==> B",      # gruesa: antes daba ('texto','B') de más
+            "A == texto ==> B",
+            "A -- texto --> B",
+            "A -->|texto| B",
+        ],
+    )
+    def test_todas_las_formas_de_etiqueta_dan_una_sola_arista(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        ["A --> B", "A ==> B", "A -.-> B", "A --- B", "A <--> B", "A ===> B"],
+    )
+    def test_las_flechas_sin_etiqueta_siguen_funcionando(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_el_encadenado_y_las_listas_siguen_funcionando(self):
+        assert parse_mermaid_edges("A --> B --> C") == [("A", "B"), ("B", "C")]
+        assert parse_mermaid_edges("A --> B & C") == [("A", "B"), ("A", "C")]

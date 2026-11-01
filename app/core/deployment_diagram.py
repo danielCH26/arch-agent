@@ -293,7 +293,16 @@ RENDER_BASE_URL: str = os.getenv("DEPLOYMENT_RENDER_BASE_URL", "http://backend:8
 
 
 def _prune_pages(now: float) -> None:
-    for token in [t for t, (born, _h) in _PENDING_PAGES.items() if now - born > _PAGE_TTL_SECONDS]:
+    # `>=` y no `>`: con `>` un TTL de 0 no caducaba nada, porque la
+    # resolución de `time.monotonic()` en Windows (unos 15 ms) hace que
+    # `now == born` dentro de la misma llamada y `0 > 0` es falso. La prueba
+    # del caducado pasaba en Linux y fallaba en Windows. Con `>=`, un TTL de 0
+    # significa lo que parece: caduca ya.
+    for token in [
+        t
+        for t, (born, _h) in _PENDING_PAGES.items()
+        if now - born >= _PAGE_TTL_SECONDS
+    ]:
         _PENDING_PAGES.pop(token, None)
 
 
@@ -312,6 +321,73 @@ def take_page(token: str) -> Optional[str]:
     _prune_pages(now)
     entry = _PENDING_PAGES.get(token)
     return entry[1] if entry else None
+
+
+def save_capture(image_block: Any, max_bytes: Optional[int] = None) -> Optional[dict]:
+    """Guarda la captura en disco y devuelve el adjunto, o ``None`` si falla.
+
+    Extraída de ``render_deployment_diagram`` para poder probarla sin levantar
+    una sesión MCP: el caso que importa —un base64 corrupto— no necesita
+    navegador, solo un bloque de imagen con datos inválidos.
+
+    Contrato: NUNCA lanza. Decodificar y escribir van dentro del try porque
+    fuera de él un base64 corrupto o un disco lleno hacían que ``/generate``
+    respondiera 500 en vez de devolver la tabla de mapeo con ``render_error``.
+    """
+    # Mismo tope de bytes que el diagrama de arquitectura: una captura enorme
+    # no puede llegar a la fila de adjuntos ni al disco. Se puede pasar por
+    # parámetro para no arrastrar `puppeteer_mcp` (y su cliente MCP) a una
+    # prueba que solo decodifica base64.
+    if max_bytes is None:
+        from app.core.puppeteer_mcp import _max_render_bytes
+
+        max_bytes = _max_render_bytes()
+    encoded_png = getattr(image_block, "data", None) or ""
+    if len(encoded_png) > ((max_bytes + 2) // 3) * 4:
+        _LOGGER.warning(
+            "Despliegue: captura de %d chars codificados sobre el tope de %d bytes.",
+            len(encoded_png),
+            max_bytes,
+        )
+        return None
+
+    attachment_id = str(uuid.uuid4())
+    mime = getattr(image_block, "mimeType", None) or "image/png"
+    ext = "png" if "png" in mime else "jpg"
+    filename = f"{attachment_id}.{ext}"
+    try:
+        # `validate=True`: sin esto, b64decode ignora los caracteres que no
+        # son del alfabeto y un PNG corrupto se "decodifica" a basura que se
+        # escribiría en disco como si fuera una imagen.
+        raw_bytes = base64.b64decode(encoded_png, validate=True)
+        if not raw_bytes:
+            _LOGGER.warning("Despliegue: la captura llegó vacía.")
+            return None
+        if len(raw_bytes) > max_bytes:
+            _LOGGER.warning(
+                "Despliegue: captura de %d bytes sobre el tope de %d.",
+                len(raw_bytes),
+                max_bytes,
+            )
+            return None
+        storage_path = os.path.join(_ensure_uploads_dir(), filename)
+        with open(storage_path, "wb") as handle:
+            handle.write(raw_bytes)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Despliegue: no se pudo guardar la captura: %s", _describe_exception(exc)
+        )
+        return None
+
+    return {
+        "id": attachment_id,
+        # Tipo propio: el historial de diagramas de arquitectura filtra por
+        # "screenshot", así que un diagrama de despliegue no se cuela ahí.
+        "kind": "deployment",
+        "mime": mime,
+        "filename": filename,
+        "storage_path": storage_path,
+    }
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -421,50 +497,7 @@ async def render_deployment_diagram(
         _LOGGER.warning("Despliegue: la captura no trajo bloque de imagen.")
         return None
 
-    # Mismo tope de bytes que el diagrama de arquitectura: una captura
-    # enorme no puede llegar a la fila de adjuntos ni al disco.
-    max_bytes = _max_render_bytes()
-    encoded_png = getattr(image_block, "data", None) or ""
-    if len(encoded_png) > ((max_bytes + 2) // 3) * 4:
-        _LOGGER.warning(
-            "Despliegue: captura de %d chars codificados sobre el tope de %d bytes.",
-            len(encoded_png),
-            max_bytes,
-        )
+    guardado = save_capture(image_block, max_bytes=_max_render_bytes())
+    if guardado is None:
         return None
-    # Decodificar y escribir también va dentro de un try: el contrato de
-    # esta función es "nunca lanza, devuelve None si falla". Fuera del try,
-    # un base64 corrupto o un disco lleno hacían que /generate respondiera
-    # 500 en vez de devolver la tabla de mapeo con `render_error`.
-    attachment_id = str(uuid.uuid4())
-    mime = getattr(image_block, "mimeType", None) or "image/png"
-    ext = "png" if "png" in mime else "jpg"
-    filename = f"{attachment_id}.{ext}"
-    try:
-        raw_bytes = base64.b64decode(encoded_png)
-        if len(raw_bytes) > max_bytes:
-            _LOGGER.warning(
-                "Despliegue: captura de %d bytes sobre el tope de %d.",
-                len(raw_bytes),
-                max_bytes,
-            )
-            return None
-        storage_path = os.path.join(_ensure_uploads_dir(), filename)
-        with open(storage_path, "wb") as handle:
-            handle.write(raw_bytes)
-    except Exception as exc:
-        _LOGGER.warning(
-            "Despliegue: no se pudo guardar la captura: %s", _describe_exception(exc)
-        )
-        return None
-
-    return {
-        "id": attachment_id,
-        # Tipo propio: el historial de diagramas de arquitectura filtra por
-        # "screenshot", así que un diagrama de despliegue no se cuela ahí.
-        "kind": "deployment",
-        "mime": mime,
-        "filename": filename,
-        "storage_path": storage_path,
-        "provider": plan.provider.id,
-    }
+    return {**guardado, "provider": plan.provider.id}

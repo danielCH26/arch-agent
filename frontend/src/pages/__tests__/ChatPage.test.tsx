@@ -17,7 +17,8 @@ vi.mock('../../components/ChatWindow', () => ({ ChatWindow: () => null }))
 vi.mock('../../components/ElicitationPanel', () => ({ ElicitationPanel: () => null }))
 vi.mock('../../components/DiagramHistoryPanel', () => ({ DiagramHistoryPanel: () => null }))
 
-import { ChatPage } from '../ChatPage'
+import { ChatPage, yaEstabaCerrada } from '../ChatPage'
+import { ApiConflictError } from '../../api/approvals'
 import { getProject, getProjectPhase, type PhaseInfo } from '../../api/projects'
 import { projectsStore } from '../../stores/projectsStore'
 
@@ -95,5 +96,56 @@ describe('ChatPage — barra de fase (HU10)', () => {
 
     expect(await screen.findByText('Fase en progreso.')).toBeInTheDocument()
     expect(screen.queryByText('Proyecto completado.')).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Segunda revisión del PR, bloqueante B: el reintento ocultaba los 409 nuevos
+// ---------------------------------------------------------------------------
+
+describe('yaEstabaCerrada', () => {
+  const FASES = ['requerimientos', 'propuesta', 'refinamiento', 'revision', 'cierre']
+
+  const conflicto = (detail: Record<string, unknown>) =>
+    new ApiConflictError(409, detail as never)
+
+  it('acepta el phase_mismatch de una fase YA pasada (otra pestaña, doble clic)', () => {
+    const err = conflicto({ error: 'phase_mismatch', current_phase: 'revision' })
+    expect(yaEstabaCerrada(err, FASES)).toBe(true)
+  })
+
+  it('rechaza el phase_mismatch de una fase anterior: eso es un error de verdad', () => {
+    const err = conflicto({ error: 'phase_mismatch', current_phase: 'requerimientos' })
+    expect(yaEstabaCerrada(err, FASES)).toBe(false)
+  })
+
+  it('rechaza deployment_not_approved: el servidor dice que falta el despliegue', () => {
+    // Tragarse este 409 hacía que el panel dijera "Refinamiento queda
+    // cerrado" con la fase todavía abierta.
+    const err = conflicto({ error: 'deployment_not_approved', phase: 'refinamiento' })
+    expect(yaEstabaCerrada(err, FASES)).toBe(false)
+  })
+
+  it.each(['wrong_owner', 'invalid_action', 'missing_feedback', 'validation_error'])(
+    'rechaza %s',
+    (error) => {
+      expect(yaEstabaCerrada(conflicto({ error }), FASES)).toBe(false)
+    },
+  )
+
+  it('rechaza si no se sabe en qué fase está', () => {
+    expect(yaEstabaCerrada(conflicto({ error: 'phase_mismatch' }), FASES)).toBe(false)
+  })
+
+  it('rechaza si no hay lista de fases con la que comparar', () => {
+    // Ante la duda se relanza y el panel ofrece reintentar: mejor eso que
+    // declarar un éxito que no pasó.
+    const err = conflicto({ error: 'phase_mismatch', current_phase: 'revision' })
+    expect(yaEstabaCerrada(err, [])).toBe(false)
+  })
+
+  it('rechaza una fase que no está en la lista', () => {
+    const err = conflicto({ error: 'phase_mismatch', current_phase: 'inventada' })
+    expect(yaEstabaCerrada(err, FASES)).toBe(false)
   })
 })
