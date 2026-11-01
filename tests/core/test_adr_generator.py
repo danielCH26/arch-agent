@@ -20,7 +20,9 @@ from app.core.adr_generator import (
     AdrNotReadyError,
     clean_llm_sections,
     collect_adr_context,
+    diagram_overview,
     generate_llm_sections,
+    lint_adr_guide,
     render_adr_markdown,
 )
 
@@ -948,6 +950,36 @@ class TestRevisionDelDisenoF30:
         assert "2 componentes (Web y Servidor) y 1 conexión; las flechas indican dónde corre" in section
         # El tema va después del frontmatter, no antes.
         assert "```mermaid\n---\ntitle: Nube\n---\n%%{init: " in section
+
+    def test_etiquetas_entre_comillas_con_parentesis_no_se_cortan(self):
+        mermaid = 'flowchart TB\n  UI["Interfaz Web (React)"] --> GW[API Gateway]'
+        overview = diagram_overview(mermaid, "Arquitectura")
+        assert "2 componentes (Interfaz Web (React) y API Gateway)" in overview
+
+    def test_nodos_sin_etiqueta_usan_su_id(self):
+        overview = diagram_overview("flowchart LR\n  Web --> API\n  API -->|SQL| DB", "Arquitectura")
+        assert "3 componentes (Web, API y DB) y 2 conexiones" in overview
+
+    def test_etiquetas_con_la_sintaxis_de_forma(self):
+        mermaid = 'flowchart LR\n  A@{ shape: rect, label: "Web" }\n  B@{ shape: cyl, label: "Base" }\n  A --> B'
+        assert "2 componentes (Web y Base)" in diagram_overview(mermaid, "Arquitectura")
+
+    def test_un_diagrama_que_no_es_flowchart_igual_tiene_texto(self):
+        mermaid = "C4Container\n  Container(api, \"API\")"
+        md = render_adr_markdown(_ctx(mermaid=mermaid), llm_sections=LLM_GUIDE)
+        section = md.split("## 4. Diagrama de arquitectura", 1)[1].split("```mermaid", 1)[0]
+        assert "El diagrama muestra los componentes del sistema" in section
+
+    def test_riesgos_sin_probabilidad_se_avisan(self):
+        guide = LLM_GUIDE.replace(
+            "Contenido de Riesgos y mitigaciones.",
+            "| Riesgo | Impacto | Mitigación |\n|---|---|---|\n| Datos sin confirmar | alto | Validarlos |",
+        )
+        assert any("Probabilidad" in w for w in lint_adr_guide(_ctx(), guide))
+        with_probability = guide.replace("| Impacto |", "| Impacto | Probabilidad |").replace(
+            "|---|---|---|", "|---|---|---|---|"
+        ).replace("| alto |", "| alto | alta |")
+        assert not any("Probabilidad" in w for w in lint_adr_guide(_ctx(), with_probability))
 
     def test_sin_emojis_decorativos_en_la_propuesta_ni_en_la_guia(self):
         proposal = (

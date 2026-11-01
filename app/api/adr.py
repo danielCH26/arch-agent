@@ -33,6 +33,7 @@ from app.core.adr_generator import (
     generate_guide,
     lint_adr_guide,
     render_adr_markdown,
+    strip_decorative_emoji,
     verify_adr,
 )
 from app.core.database import SessionLocal
@@ -122,7 +123,8 @@ def _out(stored: dict) -> AdrOut:
     if not stored.get("markdown"):
         return AdrOut(markdown=None, generated_at=None)
     return AdrOut(
-        markdown=stored["markdown"],
+        # Los ADR guardados antes del filtro de emojis los conservaban.
+        markdown=strip_decorative_emoji(stored["markdown"]),
         generated_at=stored.get("generated_at"),
         guide_complete=bool(stored.get("guide_complete")),
         feedback_history=list(stored.get("feedback_history") or []),

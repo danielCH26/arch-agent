@@ -797,6 +797,14 @@ def _coherence_warnings(ctx: AdrContext, guide: str) -> list[str]:
                 "Componentes de 7.1 que no aparecen en el diagrama: " + ", ".join(missing)
             )
 
+    # Sin probabilidad el PDF no puede armar la matriz impacto × probabilidad.
+    risk_lines = _section_lines(guide, "7.4")
+    if _table_column(risk_lines, "riesgo") and not _table_column(risk_lines, "probabilidad"):
+        warnings.append(
+            "La tabla de 7.4 no tiene la columna Probabilidad (alta/media/baja): "
+            "agrégala para cada riesgo."
+        )
+
     sprint = normalize_text(" ".join(_section_lines(guide, "7.6")))
     if sprint.strip():
         for risk, impact, mitigation in _risk_rows(guide):
@@ -1233,9 +1241,18 @@ def _reader_labels(markdown: str) -> str:
 
 
 # Nodos de un flowchart: ``A[API]``, ``B[(DB)]``, ``C((Cola))``, ``D{Regla}``...
+# Con comillas la etiqueta puede llevar paréntesis (``UI["Web (React)"]``, como
+# la deja sanitize_mermaid); antes se cortaba en "Web (React".
 _MERMAID_NODE_RE = re.compile(
     r"(?<![\w-])[A-Za-z_][\w-]*\s*(?:\[\[|\[\(|\(\[|\(\(|\[|\(|\{\{|\{|>)"
-    r"\s*\"?([^\]\)\}\"|]+?)\"?\s*(?:\]\]|\)\]|\]\)|\)\)|\]|\)|\}\}|\})"
+    r"\s*(?:\"([^\"]+)\"|([^\]\)\}\"|]+?))\s*(?:\]\]|\)\]|\]\)|\)\)|\]|\)|\}\}|\})"
+)
+# Sintaxis nueva de forma: ``A@{ shape: rect, label: "Web" }``.
+_MERMAID_SHAPE_LABEL_RE = re.compile(r"@\{[^}]*?\blabel\s*:\s*\"([^\"]+)\"")
+# Ids a los lados de una flecha, para diagramas sin etiquetas (``A --> B``).
+_MERMAID_EDGE_ID_RE = re.compile(
+    r"(?<![\w-])([A-Za-z_][\w-]*)(?=\s*(?::::[\w-]+)?\s*<?(?:-{2,}|={2,}|-\.))"
+    r"|(?:-{2,}>|-\.+->|={2,}>|-{3,}|\|[^|]*\|)\s*([A-Za-z_][\w-]*)\b"
 )
 _MERMAID_EDGE_RE = re.compile(r"<?(?:-{2,}>|-\.+->|={2,}>|-{3,}|-\.+-|={3,})")
 _MERMAID_SUBGRAPH_RE = re.compile(r"^\s*subgraph\s+(?:[\w-]+\s*\[\s*\"?([^\]\"]+)\"?\s*\]|\"?([^\"\n]+)\"?)", re.M)
@@ -1250,26 +1267,39 @@ def _human_list(items: list[str], limit: int = 8) -> str:
 
 def diagram_overview(code: str, kind: str) -> str:
     """Una o dos frases que presentan el diagrama: qué piezas tiene y cómo
-    leerlo. Salen del propio Mermaid, sin LLM. Vacío si no es un flowchart."""
+    leerlo. Salen del propio Mermaid, sin LLM. Si no se puede leer (otro tipo
+    de diagrama, nodos sin nombre) queda una frase general: vacía la sección
+    4 quedaba solo con el pie de figura."""
     lines = [line for line in (code or "").splitlines() if line.strip() and not line.strip().startswith("%%")]
     if lines and lines[0].strip() == "---":
         # Frontmatter: se salta hasta el cierre.
         closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), 0)
         lines = lines[closing + 1:]
-    if not lines or not re.match(r"\s*(flowchart|graph)\b", lines[0], re.I):
+    if not lines:
         return ""
+    if not re.match(r"\s*(flowchart|graph)\b", lines[0], re.I):
+        return (
+            "El diagrama muestra dónde se despliega cada componente del sistema."
+            if kind == "Despliegue"
+            else "El diagrama muestra los componentes del sistema y cómo se relacionan entre sí."
+        )
     body = "\n".join(lines[1:])
     nodes = "\n".join(line for line in lines[1:] if not re.match(r"\s*(subgraph|end|classDef|class|style|linkStyle|click)\b", line))
+    labels = [quoted or bare for quoted, bare in _MERMAID_NODE_RE.findall(nodes)]
+    labels += _MERMAID_SHAPE_LABEL_RE.findall(nodes)
+    if not labels:
+        # Sin etiquetas, los ids de los nodos son lo único que nombra las piezas.
+        labels = [a or b for a, b in _MERMAID_EDGE_ID_RE.findall(nodes)]
     names: list[str] = []
-    for label in _MERMAID_NODE_RE.findall(nodes):
+    for label in labels:
         label = _plain(re.sub(r"<[^>]+>", " ", label))
         if label and label not in names:
             names.append(label)
-    if not names:
-        return ""
-    groups = [_plain(a or b) for a, b in _MERMAID_SUBGRAPH_RE.findall(body)]
     edges = len(_MERMAID_EDGE_RE.findall(body))
     what = "dónde corre" if kind == "Despliegue" else "cómo se comunica"
+    if not names:
+        return f"El diagrama muestra los componentes del sistema; las flechas indican {what} cada uno."
+    groups = [_plain(a or b) for a, b in _MERMAID_SUBGRAPH_RE.findall(body)]
     text = (
         f"El diagrama muestra {len(names)} componente{'s' if len(names) != 1 else ''} ({_human_list(names)})"
         + (f" y {edges} conexi{'ones' if edges != 1 else 'ón'}" if edges else "")
@@ -1449,7 +1479,9 @@ Dos listas: **Positivas** y **Negativas / costos asumidos**.
 
 ### 7.4 Riesgos y mitigaciones
 Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Probabilidad \
-(alta/media/baja) | Mitigación, ordenada de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
+(alta/media/baja) | Mitigación, ordenada de mayor a menor impacto. Las \
+cuatro columnas son obligatorias: con Impacto y Probabilidad se arma la matriz \
+de riesgos del documento. Todo lo que dependa de un dato que el usuario no \
 confirmó (de dónde salen los datos, una integración, la plataforma) es de \
 impacto ALTO y va primero: es lo que puede tumbar el proyecto. Cada riesgo \
 debe ser de ESTE proyecto, no una lista genérica.

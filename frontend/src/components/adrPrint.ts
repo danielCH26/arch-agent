@@ -39,8 +39,17 @@ function cssString(text: string): string {
 
 // Capítulos que empiezan en página nueva. Los cortos (Contexto y
 // Requerimientos, Referencias e Historial) van seguidos para no dejar
-// páginas casi vacías.
-const PAGE_BREAK_BEFORE = /^(resumen ejecutivo|1\.|3\.|4\.|7\.|anexo)/i
+// páginas casi vacías. El diagrama (4) tampoco: forzarlo dejaba media página
+// en blanco al final de la Decisión.
+const PAGE_BREAK_BEFORE = /^(resumen ejecutivo|1\.|3\.|7\.|anexo)/i
+
+// Mismo filtro que strip_decorative_emoji del backend, para ADR guardados
+// antes de él: "1️⃣" pasa a "1."; los pictogramas se quitan; ✓/✗ quedan.
+const KEYCAP_RE = /([0-9#*])️?⃣\s*/g
+const PICTOGRAPH_RE = /[\u{1F000}-\u{1FAFF}]️?\s?|️/gu
+
+// Columnas de valores cortos (Alto, Media, Fase 1): sin cortar palabras.
+const SHORT_COLUMN = /^(impacto|probabilidad|fase|prioridad|severidad|estado|semana|duracion)/
 
 const C = ADR_PALETTE
 const F = ADR_FONTS
@@ -121,9 +130,10 @@ const PRINT_STYLES = (runningTitle: string) => `
 
   h3, h4, h5, h6 { font-family: ${F.heading}; line-height: 1.25; break-after: avoid; }
   h4 { font-size: ${T.h4}pt; font-weight: 700; margin: 26pt 0 ${S.md}pt; padding: 0 0 6pt 12pt; color: ${C.navy}; border-left: 5px solid ${C.primary}; border-bottom: 1px solid ${C.sky}; }
-  h4.page-break { break-before: page; margin-top: 0; }
-  /* Separador de capítulo: el logo pequeño al final del título */
-  .chapter-logo { float: right; height: 20pt; width: auto; margin: -3pt 0 0 ${S.sm}pt; }
+  h4.page-break { break-before: page; margin-top: 0; display: flex; align-items: center; gap: ${S.sm}pt; }
+  /* Separador de capítulo: el logo pequeño al final del título. Sin margen
+     negativo: al inicio de página Chrome recortaba la cabeza del robot. */
+  .chapter-logo { order: 1; margin-left: auto; height: 20pt; width: auto; flex: none; }
   h5 { font-size: ${T.h5}pt; font-weight: 700; margin: ${S.lg}pt 0 6pt; color: ${C.primary}; }
   h6 { font-size: ${T.body}pt; font-weight: 700; margin: ${S.md}pt 0 ${S.xs}pt; color: ${C.secondary}; text-transform: uppercase; letter-spacing: .04em; }
   p, ul, ol { margin: 0 0 ${S.sm}pt; }
@@ -136,7 +146,10 @@ const PRINT_STYLES = (runningTitle: string) => `
   table { border-collapse: separate; border-spacing: 0; width: 100%; margin: 6pt 0 ${S.md}pt; font-size: 9pt; border: 1px solid ${C.line}; border-radius: 6px; overflow: hidden; }
   thead { display: table-header-group; }
   tr, td, th { break-inside: avoid; }
-  th, td { padding: 6pt 8pt; text-align: left; vertical-align: top; border-bottom: 1px solid ${C.line}; overflow-wrap: anywhere; }
+  /* break-word y no anywhere: con anywhere la columna se encogía por debajo de
+     su palabra más larga ("Impa/cto", "Infraestruc/tura") */
+  th, td { padding: 6pt 8pt; text-align: left; vertical-align: top; border-bottom: 1px solid ${C.line}; overflow-wrap: break-word; }
+  th.nowrap, td.nowrap { white-space: nowrap; }
   th { background: ${C.navy}; color: #fff; font-weight: 600; font-family: ${F.heading}; letter-spacing: .01em; }
   tbody tr:nth-child(even) td { background: ${C.paper}; }
   tbody tr:last-child td { border-bottom: 0; }
@@ -181,7 +194,7 @@ const PRINT_STYLES = (runningTitle: string) => `
 
   /* Consecuencias positivas y negativas lado a lado */
   .conseq { display: grid; grid-template-columns: 1fr 1fr; gap: ${S.md}pt; margin: 0 0 ${S.md}pt; }
-  .conseq-col { border-radius: 6px; padding: ${S.sm}pt ${S.md}pt; break-inside: avoid; }
+  .conseq-col { border-radius: 6px; padding: ${S.sm}pt ${S.md}pt; }
   .conseq-col.pos { background: ${C.success_bg}; border-top: 3px solid ${C.success}; }
   .conseq-col.neg { background: ${C.danger_bg}; border-top: 3px solid ${C.danger}; }
   .conseq-col ul { margin: 0; }
@@ -196,9 +209,12 @@ const PRINT_STYLES = (runningTitle: string) => `
   .risk-matrix td.sev-high { background: ${C.danger_bg} !important; color: ${C.danger}; }
   .risk-matrix td.sev-mid { background: ${C.warning_bg} !important; color: ${C.warning}; }
   .risk-matrix td.sev-low { background: ${C.success_bg} !important; color: ${C.success}; }
+  .risk-note { font-size: ${T.small}pt; color: ${C.muted}; margin: -6pt 0 0; }
   .risk-id { display: inline-block; font-family: ${F.heading}; font-weight: 700; color: ${C.primary}; margin-right: 4pt; }
 
   img { max-width: 100%; height: auto; }
+  /* Tope de alto: un diagrama de página entera no cabía tras el texto y dejaba un hueco */
+  figure img { max-height: 160mm; width: auto; }
   figure { margin: ${S.sm}pt 0 ${S.md}pt; text-align: center; break-inside: avoid; border: 1px solid ${C.sky}; border-radius: 8px; padding: ${S.md}pt; background: #fff; }
   figcaption { font-size: ${T.small}pt; color: ${C.muted}; margin-top: 6pt; }
   figcaption strong { color: ${C.primary}; }
@@ -347,9 +363,14 @@ function consequenceColumns(doc: Document, root: Element): void {
 const IMPACT_ROW: Record<string, number> = { alto: 0, alta: 0, medio: 1, media: 1, bajo: 2, baja: 2 }
 const PROBABILITY_COL: Record<string, number> = { baja: 0, bajo: 0, media: 1, medio: 1, alta: 2, alto: 2 }
 
+// Columna "sin estimar": riesgos sin probabilidad (o con un valor que no se
+// entiende). Su color sale solo del impacto.
+const UNKNOWN_COL = 3
+
 // 7.4 Riesgos: numera cada riesgo (R1, R2...) y arma la matriz impacto x
-// probabilidad encima de la tabla. Los ADR anteriores, sin columna de
-// probabilidad, quedan solo con la tabla.
+// probabilidad encima de la tabla. Si el modelo no dio la probabilidad (ADR
+// anteriores al prompt que la pide), los riesgos van a la columna "Sin
+// estimar" en vez de quedarse sin matriz.
 function riskMatrix(doc: Document, root: Element): void {
   const heading = findHeading(root, 'h5', /^7\.4\s/)
   if (!heading) return
@@ -361,18 +382,19 @@ function riskMatrix(doc: Document, root: Element): void {
   const riskCol = headers.findIndex((h) => h.startsWith('riesgo'))
   const impactCol = headers.findIndex((h) => h.startsWith('impacto'))
   const probabilityCol = headers.findIndex((h) => h.startsWith('probabilidad'))
-  if (riskCol < 0 || impactCol < 0 || probabilityCol < 0) return
-  const grid: string[][][] = [0, 1, 2].map(() => [[], [], []])
+  if (riskCol < 0 || impactCol < 0) return
+  const grid: string[][][] = [0, 1, 2].map(() => [[], [], [], []])
   bodyRows(table).forEach((cells, index) => {
     const id = `R${index + 1}`
     cells[riskCol]?.insertAdjacentHTML('afterbegin', `<span class="risk-id">${id}</span>`)
     const row = IMPACT_ROW[normalize(text(cells[impactCol])).split(/\W/)[0]]
-    const col = PROBABILITY_COL[normalize(text(cells[probabilityCol])).split(/\W/)[0]]
-    if (row !== undefined && col !== undefined) grid[row][col].push(id)
+    const col = probabilityCol < 0 ? undefined : PROBABILITY_COL[normalize(text(cells[probabilityCol])).split(/\W/)[0]]
+    if (row !== undefined) grid[row][col ?? UNKNOWN_COL].push(id)
   })
   if (!grid.flat(2).length) return
+  const withUnknown = grid.some((cols) => cols[UNKNOWN_COL].length)
   const severity = (row: number, col: number) => {
-    const score = 2 - row + col
+    const score = col === UNKNOWN_COL ? 3 - row : 2 - row + col
     return score >= 3 ? 'sev-high' : score === 2 ? 'sev-mid' : 'sev-low'
   }
   const impacts = ['alto', 'medio', 'bajo']
@@ -380,17 +402,45 @@ function riskMatrix(doc: Document, root: Element): void {
   matrix.className = 'risk-matrix'
   matrix.innerHTML =
     `<p class="option-label">Matriz de riesgos (impacto × probabilidad)</p>` +
-    `<table><thead><tr><th></th><th>Prob. baja</th><th>Prob. media</th><th>Prob. alta</th></tr></thead><tbody>` +
+    `<table><thead><tr><th></th><th>Prob. baja</th><th>Prob. media</th><th>Prob. alta</th>` +
+    (withUnknown ? '<th>Sin estimar</th>' : '') +
+    `</tr></thead><tbody>` +
     impacts
       .map(
         (impact, row) =>
           `<tr><th>Impacto ${impact}</th>${grid[row]
+            .slice(0, withUnknown ? 4 : 3)
             .map((ids, col) => `<td class="${severity(row, col)}">${ids.join(' ')}</td>`)
             .join('')}</tr>`,
       )
       .join('') +
-    `</tbody></table>`
+    `</tbody></table>` +
+    (probabilityCol < 0
+      ? `<p class="risk-note">El documento no estima la probabilidad de los riesgos; regenera el ADR para obtenerla.</p>`
+      : '')
   tableBox(table, root).before(matrix)
+}
+
+// Columnas de valores cortos sin partir: "Impa/cto", "Medi/o", "Fase 1".
+function shortColumns(root: Element): void {
+  root.querySelectorAll('table').forEach((table) => {
+    const rows = Array.from(table.querySelectorAll('tr'))
+    headerCells(table).forEach((header, index) => {
+      if (!SHORT_COLUMN.test(header)) return
+      // Una "Fase" con descripción larga no cabe en una línea: esa se deja partir.
+      if (rows.some((row) => text(row.children[index]).length > 22)) return
+      rows.forEach((row) => row.children[index]?.classList.add('nowrap'))
+    })
+  })
+}
+
+function stripDecorativeEmoji(root: Element): void {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const value = node.nodeValue ?? ''
+    const clean = value.replace(KEYCAP_RE, '$1. ').replace(PICTOGRAPH_RE, '')
+    if (clean !== value) node.nodeValue = clean
+  }
 }
 
 // Notas del agente: lo que escribió la revisión automática (o el aviso de que
@@ -417,6 +467,7 @@ export function buildAdrPrintDocument(bodyHtml: string, options: AdrPrintOptions
   const root = parsed.getElementById('adr-root') as HTMLElement
   // Las clases de Tailwind del panel no aplican en la ventana de impresión.
   root.querySelectorAll('[class]').forEach((el) => el.removeAttribute('class'))
+  stripDecorativeEmoji(root)
 
   const firstSection = root.querySelector('h4')
   const titleEl = root.querySelector('h3')
@@ -504,6 +555,7 @@ export function buildAdrPrintDocument(bodyHtml: string, options: AdrPrintOptions
   qualityChips(parsed, root)
   consequenceColumns(parsed, root)
   riskMatrix(parsed, root)
+  shortColumns(root)
   agentNotes(parsed, root)
 
   // Sin introducción ni decisión en la ficha, la portada lleva la decisión en

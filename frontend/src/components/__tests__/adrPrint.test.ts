@@ -97,7 +97,6 @@ describe('buildAdrPrintDocument', () => {
       'Resumen ejecutivo',
       '1. Contexto',
       '3. Decisión',
-      '4. Diagrama de arquitectura',
       '7. Guía para empezar',
       'Anexo A. Elicitación de requerimientos',
     ])
@@ -189,9 +188,54 @@ describe('buildAdrPrintDocument', () => {
     expect(doc.querySelector('.risk-id')?.textContent).toBe('R1')
   })
 
-  it('sin columna de probabilidad (ADR anteriores) no hay matriz', () => {
+  it('sin columna de probabilidad (ADR anteriores) la matriz los pone en "Sin estimar"', () => {
     const { doc } = render(BODY.replace(/<th>Probabilidad<\/th>|<td>(alta|baja)<\/td>/g, ''))
-    expect(doc.querySelector('.risk-matrix')).toBeNull()
+    const matrix = doc.querySelector('.risk-matrix')!
+    expect(Array.from(matrix.querySelectorAll('thead th')).pop()?.textContent).toBe('Sin estimar')
+    const unknown = (row: number) => matrix.querySelectorAll('tbody tr')[row].querySelectorAll('td')[3]
+    expect(unknown(0).textContent).toBe('R1')
+    expect(unknown(0).className).toBe('sev-high')
+    expect(unknown(2).textContent).toBe('R2')
+    expect(unknown(2).className).toBe('sev-low')
+    expect(matrix.querySelector('.risk-note')?.textContent).toContain('no estima la probabilidad')
+  })
+
+  it('con probabilidad no hay columna "Sin estimar"', () => {
+    const { doc } = render()
+    expect(doc.querySelectorAll('.risk-matrix thead th').length).toBe(4)
+    expect(doc.querySelector('.risk-note')).toBeNull()
+  })
+
+  it('quita los emojis numerados y decorativos (ADR guardados antes del filtro)', () => {
+    const { doc } = render(
+      BODY.replace('Simple de operar', '1️⃣ Simple de operar<br>2️⃣ \u{1F680} Rápido ✓'),
+    )
+    const pros = doc.querySelector('.option .pros')!.textContent!
+    expect(pros).toContain('1. Simple de operar')
+    expect(pros).toContain('2. Rápido ✓')
+    expect(pros).not.toMatch(/⃣|️|\u{1F680}/u)
+  })
+
+  it('las columnas cortas (impacto, probabilidad) no parten palabras', () => {
+    const { doc } = render()
+    const riskRow = Array.from(doc.querySelectorAll('tbody tr')).find((tr) => tr.textContent?.includes('Fuente de datos'))!
+    const cells = riskRow.querySelectorAll('td')
+    expect(cells[0].classList.contains('nowrap')).toBe(false)
+    expect(cells[1].classList.contains('nowrap')).toBe(true)
+    expect(cells[2].classList.contains('nowrap')).toBe(true)
+  })
+
+  it('una columna corta con texto largo sí puede partirse', () => {
+    const { doc } = render(BODY.replace('<td>alto</td>', '<td>alto porque depende de un proveedor externo</td>'))
+    const riskRow = Array.from(doc.querySelectorAll('tbody tr')).find((tr) => tr.textContent?.includes('Fuente de datos'))!
+    expect(riskRow.querySelectorAll('td')[1].classList.contains('nowrap')).toBe(false)
+  })
+
+  it('el logo del capítulo no lleva margen negativo (se recortaba)', () => {
+    const { html } = render()
+    expect(html).not.toMatch(/\.chapter-logo \{[^}]*margin: -/)
+    expect(html).toContain('overflow-wrap: break-word')
+    expect(html).not.toContain('overflow-wrap: anywhere')
   })
 
   it('la revisión automática va como nota del agente con su avatar', () => {

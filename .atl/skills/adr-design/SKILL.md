@@ -89,10 +89,14 @@ Reglas: el azul estructura (títulos, tablas, filetes); el texto corrido va en
   ejecutivo); la miniatura del diagrama de arquitectura junto a la ficha
   (fecha, propuesta aprobada, generado por).
 - **Capítulos** (`##`): filete izquierdo `primary` de 5 pt; los grandes
-  empiezan en página nueva (`PAGE_BREAK_BEFORE`) y llevan el logo pequeño.
+  empiezan en página nueva (`PAGE_BREAK_BEFORE`) y llevan el logo pequeño
+  (sin margen negativo: al inicio de página Chrome lo recortaba). El 4
+  (diagrama) no fuerza página nueva: dejaba media página en blanco.
 - **Tablas**: encabezado `navy` con texto blanco, filas alternas `paper`,
   bordes `line`, esquinas redondeadas; ninguna fila se parte entre páginas
-  (`break-inside: avoid`). Una tabla de más de 4 columnas con texto largo no
+  (`break-inside: avoid`). Las celdas usan `overflow-wrap: break-word`, nunca
+  `anywhere` (partía "Impa/cto"); las columnas cortas (impacto, probabilidad,
+  fase...) van con `nowrap` si ningún valor pasa de 22 caracteres. Una tabla de más de 4 columnas con texto largo no
   va como tabla: se convierte en tarjetas.
 - **Trade-offs** (tabla `Opción | Ventajas | Desventajas | ...` de la
   propuesta): una tarjeta por opción con ventajas y desventajas en dos
@@ -103,8 +107,11 @@ Reglas: el azul estructura (títulos, tablas, filetes); el texto corrido va en
 - **7.3 Consecuencias**: "Positivas" y "Negativas" lado a lado (verde / rojo:
   son estados, no decoración).
 - **7.4 Riesgos**: cada riesgo numerado (R1, R2...) y, encima de la tabla, la
-  matriz impacto × probabilidad (rojo, ámbar, verde según severidad). Los ADR
-  anteriores sin columna `Probabilidad` quedan solo con la tabla.
+  matriz impacto × probabilidad (rojo, ámbar, verde según severidad). Los
+  riesgos sin probabilidad van a la columna "Sin estimar" (color según el
+  impacto) con una nota; el lint de la guía pide la columna al modelo.
+- **Emojis**: la vista de impresión quita los numerados ("1️⃣" -> "1.") y los
+  pictogramas, igual que `strip_decorative_emoji` del backend.
 - **Resumen ejecutivo**: recuadro `tint` con filete superior `primary`.
 - **Nota del agente**: avatar + etiqueta "Nota del agente"; ámbar (`warning`)
   si es un aviso de la revisión automática.
