@@ -44,3 +44,10 @@ fuentes:
     url: "https://www.oreilly.com/library/view/software-architecture-patterns/9781491971437/ch03.html"
   - titulo: "Plug-in (computing) (Wikipedia)"
     url: "https://en.wikipedia.org/wiki/Plug-in_(computing)"
+image: "/pattern-images/microkernel.svg"
+image_alt: "Núcleo central con funcionalidad mínima y registro de plug-ins, conectado a varios plug-ins independientes que se agregan o quitan sin modificar el núcleo."
+image_source:
+  titulo: "Diagrama propio del proyecto"
+  autor: "Equipo arch-agent"
+  licencia: "Elaboración propia"
+  url: null

@@ -44,3 +44,10 @@ fuentes:
     url: "https://martinfowler.com/eaaDev/uiArchs.html"
   - titulo: "Model-View-ViewModel (Microsoft Learn)"
     url: "https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm"
+image: "/pattern-images/mvc_mvvm.svg"
+image_alt: "Diagrama MVC: el controlador actualiza el modelo, el modelo alimenta la vista, el usuario interactúa con la vista y la vista notifica al controlador."
+image_source:
+  titulo: "File:MVC Diagram (Model-View-Controller).svg (Wikimedia Commons)"
+  autor: "Xinfe, a partir del trabajo de Deltacen"
+  licencia: "CC BY-SA 3.0"
+  url: "https://commons.wikimedia.org/wiki/File:MVC_Diagram_(Model-View-Controller).svg"

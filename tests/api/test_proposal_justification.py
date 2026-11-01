@@ -191,6 +191,9 @@ class TestPatternDetail:
             tradeoffs={"ventajas": ["testeable"]},
             when_not_to_use="CRUD simple",
             decision_signals=[{"pregunta": "¿?", "señal_patron": "sí"}],
+            image="/pattern-images/hexagonal.svg",
+            image_alt="Hexagono con el nucleo y sus adaptadores",
+            image_source={"titulo": "Commons", "autor": "Cth027", "licencia": "CC BY-SA 4.0", "url": "https://x"},
         )
         chunks = [
             SimpleNamespace(id=1, chunk_type="summary", chunk_text="resumen", chunk_metadata=None),
@@ -209,6 +212,8 @@ class TestPatternDetail:
             out = asyncio.run(module.get_pattern(7, CURRENT_USER))
 
         assert out.pattern_name == "Hexagonal"
+        assert out.image == "/pattern-images/hexagonal.svg"
+        assert out.image_source["licencia"] == "CC BY-SA 4.0"
         assert [c.source for c in out.chunks] == [module.CURATED_SOURCE_LABEL, "cockburn.pdf"]
         db.close.assert_called_once()
 

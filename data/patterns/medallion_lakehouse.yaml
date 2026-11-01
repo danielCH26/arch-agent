@@ -43,3 +43,10 @@ example_scenarios:
 fuentes:
   - titulo: "What is the medallion lakehouse architecture? (Databricks)"
     url: "https://www.databricks.com/glossary/medallion-architecture"
+image: "/pattern-images/medallion_lakehouse.svg"
+image_alt: "Fuentes (bases de datos, APIs, archivos) entran a un lakehouse con tres capas: bronce con datos crudos, plata con datos limpios y unificados, y oro con datos agregados listos para el negocio."
+image_source:
+  titulo: "Diagrama propio del proyecto"
+  autor: "Equipo arch-agent"
+  licencia: "Elaboración propia"
+  url: null

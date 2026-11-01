@@ -51,6 +51,12 @@ def load_patterns() -> list[dict]:
                 f"no es una de {VALID_COMPLEXITY}; ese patron no se penalizara al reordenar",
                 "WARN",
             )
+        if not pattern.get("image") or not pattern.get("image_alt") or not pattern.get("image_source"):
+            log(
+                f"{pattern['pattern_name']}: falta image / image_alt / image_source; "
+                "la Base de patrones mostrara el aviso de patron sin imagen",
+                "WARN",
+            )
     return patterns
 
 
@@ -107,14 +113,16 @@ def upsert_pattern(cur, pattern: dict) -> int:
     embedding = to_pgvector_literal(embed_passage(embedding_text))
     decision_signals = json.dumps(pattern.get("decision_signals", []))
     fuentes = json.dumps(pattern.get("fuentes", []))
+    image_source = json.dumps(pattern["image_source"]) if pattern.get("image_source") else None
 
     if row is None:
         cur.execute(
             """
             INSERT INTO architect_patterns
                 (pattern_name, category, description, use_cases, tradeoffs,
-                 when_not_to_use, decision_signals, complexity, fuentes, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                 when_not_to_use, decision_signals, complexity, fuentes,
+                 image, image_alt, image_source, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
             RETURNING id
             """,
             (
@@ -127,6 +135,9 @@ def upsert_pattern(cur, pattern: dict) -> int:
                 decision_signals,
                 pattern.get("complexity"),
                 fuentes,
+                pattern.get("image"),
+                pattern.get("image_alt"),
+                image_source,
                 embedding,
             ),
         )
@@ -137,7 +148,8 @@ def upsert_pattern(cur, pattern: dict) -> int:
         UPDATE architect_patterns
         SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
             when_not_to_use = %s, decision_signals = %s, complexity = %s,
-            fuentes = %s, embedding = %s::vector
+            fuentes = %s, image = %s, image_alt = %s, image_source = %s,
+            embedding = %s::vector
         WHERE id = %s
         """,
         (
@@ -149,6 +161,9 @@ def upsert_pattern(cur, pattern: dict) -> int:
             decision_signals,
             pattern.get("complexity"),
             fuentes,
+            pattern.get("image"),
+            pattern.get("image_alt"),
+            image_source,
             embedding,
             row[0],
         ),

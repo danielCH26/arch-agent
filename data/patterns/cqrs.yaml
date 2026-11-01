@@ -39,3 +39,10 @@ example_scenarios:
   - "Plataforma con 100 veces más lecturas que escrituras, dashboards pesados y modelos de consulta distintos al modelo de escritura"
   - "Sistema de trading o de reservas con picos de lectura donde las consultas deben escalar aparte de los comandos"
   - "Aplicación de reportes en tiempo casi real sobre datos que se escriben con reglas de negocio complejas"
+image: "/pattern-images/cqrs.png"
+image_alt: "CQRS con almacenes separados: validación, comandos, lógica de dominio y persistencia escriben en un almacén de escritura que alimenta un almacén de lectura, desde el que las consultas generan DTOs para la presentación."
+image_source:
+  titulo: "CQRS pattern (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"

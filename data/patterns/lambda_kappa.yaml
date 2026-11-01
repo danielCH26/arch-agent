@@ -44,3 +44,10 @@ fuentes:
     url: "https://learn.microsoft.com/en-us/azure/architecture/databases/guide/big-data-architectures"
   - titulo: "Lambda architecture (Wikipedia)"
     url: "https://en.wikipedia.org/wiki/Lambda_architecture"
+image: "/pattern-images/lambda_kappa.png"
+image_alt: "Arquitectura Lambda: un log unificado de eventos alimenta una capa de velocidad (ruta caliente, vistas en tiempo real) y una capa batch (ruta fría) con una capa de servicio; ambas llegan al cliente analítico."
+image_source:
+  titulo: "Big data architectures (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/databases/guide/big-data-architectures"

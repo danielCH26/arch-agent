@@ -43,3 +43,10 @@ example_scenarios:
 fuentes:
   - titulo: "Extract, transform, and load (ETL) (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/data-guide/relational-data/etl"
+image: "/pattern-images/etl_pipeline.png"
+image_alt: "Tres etapas de un pipeline ETL: extracción desde dos fuentes de datos, transformación en un motor de transformación y carga en un almacén destino."
+image_source:
+  titulo: "Extract, transform, load (ETL) (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/data-guide/relational-data/etl"

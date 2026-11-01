@@ -9,6 +9,18 @@ export interface Pattern {
   // Curado desde data/patterns/*.yaml; normalmente { ventajas: string[], desventajas: string[] }.
   tradeoffs: Record<string, unknown> | null
   when_not_to_use: string | null
+  // Imagen ilustrativa: ruta servida por el front (/pattern-images/...) o URL. Null si el patrón aún no tiene.
+  image?: string | null
+  image_alt?: string | null
+  image_source?: PatternImageSource | null
+}
+
+/** Atribución de la imagen del patrón (campo `image_source` del YAML). */
+export interface PatternImageSource {
+  titulo?: string | null
+  autor?: string | null
+  licencia?: string | null
+  url?: string | null
 }
 
 export interface PatternList {

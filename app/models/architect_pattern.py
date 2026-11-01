@@ -20,5 +20,9 @@ class ArchitectPattern(Base):
     decision_signals = Column(JSONB)
     complexity = Column(String(10))  # baja | media | alta
     fuentes = Column(JSONB, nullable=False, default=list)
+    # Imagen ilustrativa (frontend/public/pattern-images) y su atribucion.
+    image = Column(String(500))
+    image_alt = Column(Text)
+    image_source = Column(JSONB)  # {titulo, autor, licencia, url}
     embedding = Column(Vector(384))
     created_at = Column(TIMESTAMP, server_default=func.now())

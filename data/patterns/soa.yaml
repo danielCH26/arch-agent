@@ -45,3 +45,10 @@ fuentes:
     url: "https://aws.amazon.com/what-is/service-oriented-architecture/"
   - titulo: "Service-oriented architecture (Wikipedia)"
     url: "https://en.wikipedia.org/wiki/Service-oriented_architecture"
+image: "/pattern-images/soa.svg"
+image_alt: "Elementos de SOA: frontend de aplicaciones, servicios, repositorio de servicios y bus de servicios; cada servicio tiene contrato, implementación (lógica de negocio y datos) e interfaz."
+image_source:
+  titulo: "File:SOA Elements.svg (Wikimedia Commons)"
+  autor: "AzaToth (según Wikimedia Commons)"
+  licencia: "CC BY-SA 3.0"
+  url: "https://commons.wikimedia.org/wiki/File:SOA_Elements.svg"

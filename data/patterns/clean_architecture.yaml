@@ -43,3 +43,10 @@ example_scenarios:
   - "Aplicación móvil y web con la misma lógica de negocio que debe sobrevivir a un cambio de framework en los próximos años"
   - "Sistema de reservas de larga vida donde casos de uso como 'crear reserva' y 'cancelar reserva' deben ser claros y testeables"
   - "Backend de una fintech que necesita aislar reglas de negocio del ORM y del framework web"
+image: "/pattern-images/clean_architecture.svg"
+image_alt: "Círculos concéntricos de Clean Architecture: el modelo de dominio en el centro, rodeado por servicios de dominio y casos de uso (UC); las dependencias apuntan hacia el centro."
+image_source:
+  titulo: "File:Clean Architecture core.svg (Wikimedia Commons)"
+  autor: "Jeroen De Dauw (Wikimedia Deutschland)"
+  licencia: "CC0 1.0"
+  url: "https://commons.wikimedia.org/wiki/File:Clean_Architecture_core.svg"
