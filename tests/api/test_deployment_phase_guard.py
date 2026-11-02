@@ -16,8 +16,6 @@ Se prueba con dobles porque la función abre su propia sesión (la llaman desde
 fuera de una transacción) y lo que importa es la REGLA, no el SQL.
 """
 
-from types import SimpleNamespace
-
 import pytest
 
 from app.api import deployments
@@ -35,7 +33,7 @@ def _att(att_id: str, arquitectura: str | None):
 def entorno(monkeypatch):
     """Deja configurar adjuntos, decisiones y la arquitectura vigente."""
 
-    estado = {"adjuntos": [], "decisiones": {}, "arquitectura": None, "falla_adr": False}
+    estado = {"adjuntos": [], "decisiones": {}, "arquitectura": None}
 
     class _Sesion:
         def close(self):
@@ -52,13 +50,14 @@ def entorno(monkeypatch):
         "latest_diagram_decisions",
         lambda db, **kw: estado["decisiones"],
     )
-
-    def _context(db, **kw):
-        if estado["falla_adr"]:
-            raise deployments.AdrNotReadyError("todavía no")
-        return SimpleNamespace(diagram_attachment_id=estado["arquitectura"])
-
-    monkeypatch.setattr(deployments, "collect_adr_context", _context)
+    # La arquitectura vigente sale de `_approved_mermaid`, la misma función que
+    # usa el ADR para elegir el diagrama. Acá solo interesa el tercer valor
+    # (el id del adjunto); el Mermaid y el "aprobado" no los mira la puerta.
+    monkeypatch.setattr(
+        deployments,
+        "_approved_mermaid",
+        lambda db, **kw: (None, False, estado["arquitectura"]),
+    )
     return estado
 
 
@@ -90,10 +89,13 @@ class TestLaPuertaMiraLaArquitecturaVigente:
         entorno["arquitectura"] = "arq-v2"
         assert has_approved_deployment(user_id=1, project_id=1) is True
 
-    def test_si_el_adr_no_esta_listo_se_cae_al_criterio_anterior(self, entorno):
+    def test_sin_arquitectura_vigente_se_cae_al_criterio_anterior(self, entorno):
+        # Proyecto a medio armar: todavía no hay ningún diagrama. Descartar el
+        # despliegue acá trabaría la fase sin motivo; es el mismo criterio que
+        # `deployment_matches_architecture` cuando falta el dato.
         entorno["adjuntos"] = [_att("dep-v1", "arq-v1")]
         entorno["decisiones"] = {"dep-v1": "approve"}
-        entorno["falla_adr"] = True
+        entorno["arquitectura"] = None
         assert has_approved_deployment(user_id=1, project_id=1) is True
 
 

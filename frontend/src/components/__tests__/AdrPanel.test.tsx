@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -224,12 +224,13 @@ describe('AdrPanel', () => {
 
     await waitFor(() => expect(screen.getByTestId('adr-print-source')).toBeInTheDocument())
     const fuente = screen.getByTestId('adr-print-source')
-    const encabezado = fuente.querySelector('h3')
+    // Por el nombre, no por la etiqueta: `renderMarkdownBlocks` baja dos
+    // niveles cada encabezado (un `###` del ADR sale como <h5>).
+    const encabezado = within(fuente).getByText('Despliegue en AWS')
     const figura = fuente.querySelector('figure')
-    expect(encabezado?.textContent).toContain('Despliegue en AWS')
     expect(figura?.querySelector('img')).toHaveAttribute('src', '/despliegue.png')
     // La figura va DESPUÉS del encabezado, no antes ni al final de otra sección.
-    expect(encabezado!.compareDocumentPosition(figura!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(encabezado.compareDocumentPosition(figura!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('pickAdrDiagram usa el aprobado o el último si el ADR no dice cuál', () => {
