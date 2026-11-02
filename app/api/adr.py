@@ -72,8 +72,9 @@ class AdrOut(BaseModel):
     # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
     diagram_attachment_id: Optional[str] = None
     # Verificación previa a la entrega: secciones vacías, genéricas o sin un
-    # dato que el lector necesita. Vacía = cada sección aporta.
-    quality_issues: list[str] = []
+    # dato que el lector necesita. Vacía = cada sección aporta; None = el ADR
+    # es anterior al verificador y nunca pasó por él.
+    quality_issues: Optional[list[str]] = None
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -131,7 +132,7 @@ def _out(stored: dict) -> AdrOut:
         approved_at=stored.get("approved_at"),
         guide_warnings=list(stored.get("guide_warnings") or []),
         diagram_attachment_id=stored.get("diagram_attachment_id"),
-        quality_issues=list(stored.get("quality_issues") or []),
+        quality_issues=stored.get("quality_issues"),
     )
 
 
