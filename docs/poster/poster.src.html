@@ -39,7 +39,7 @@
   /* ---------- Encabezado ---------- */
   header {
     background: #fff; display: flex; align-items: center;
-    gap: 12mm; padding: 9mm 22mm 8mm;
+    gap: 12mm; padding: 8mm 22mm 7mm;
   }
   .brand { display: flex; align-items: center; gap: 9mm; flex: 1; min-width: 0; }
   .brand .logo { height: 74mm; width: auto; flex: none; }
@@ -65,7 +65,7 @@
   .authors .names span + span::before { content: "•"; margin-right: 7mm; opacity: .55; font-weight: 400; }
 
   /* ---------- Cuerpo ---------- */
-  main { flex: 1; display: flex; flex-direction: column; gap: 9mm; padding: 9mm 22mm 7mm; min-height: 0; }
+  main { flex: 1; display: flex; flex-direction: column; gap: 7mm; padding: 9mm 22mm 7mm; min-height: 0; }
   .top { display: grid; grid-template-columns: 350mm 1fr; gap: 14mm; }
   .col { display: flex; flex-direction: column; gap: 8mm; }
   h2 {
@@ -143,7 +143,7 @@
   }
 
   /* Fila inferior */
-  .bottom { display: grid; grid-template-columns: 1.75fr 1fr 1fr; gap: 12mm; flex: 1; min-height: 0; }
+  .bottom { display: grid; grid-template-columns: 1.6fr 1fr 1.1fr; gap: 12mm; flex: 1; min-height: 0; }
   .features { display: grid; grid-template-columns: 1fr 1fr 1.15fr; gap: 5mm; font-size: 5.6mm; line-height: 1.22; }
   .features h4 {
     font-size: 5.8mm; font-weight: 700; color: #fff; background: var(--blue); display: inline-block;
@@ -156,7 +156,15 @@
     font-family: "Cascadia Mono", Consolas, monospace; font-size: 4.9mm; color: var(--blue-dark);
     background: var(--blue-soft); border-radius: 1mm; padding: 0 1.2mm; margin-right: 1.5mm; font-weight: 700;
   }
-  .bottom ul.dots li { font-size: 6.5mm; margin-top: 2.6mm; }
+  .bottom ul.dots li { font-size: 6.5mm; margin-top: 1.8mm; }
+  /* QR a la app desplegada, en la esquina de "Pasos futuros". */
+  .try {
+    display: flex; align-items: center; gap: 5mm; margin-top: 3mm; padding: 2mm 4mm 2mm 2mm;
+    background: #fff; border: .45mm solid var(--blue-line); border-left: 1.6mm solid var(--blue); border-radius: 2.5mm;
+  }
+  .try img { width: 40mm; height: 40mm; flex: none; display: block; }
+  .try b { display: block; font-size: 11mm; font-weight: 800; color: var(--blue); line-height: 1.05; }
+  .try span { display: block; font-size: 6.2mm; color: var(--ink-2); line-height: 1.3; margin-top: 1.5mm; }
 
   footer {
     display: flex; justify-content: space-between; align-items: center; padding: 4.5mm 22mm;
@@ -350,7 +358,7 @@
         <figure><div class="frame"><img src="img/propuesta.png" alt=""></div><figcaption><b>Propuesta</b> con patrones y fuentes citadas, y botones Aprobar / Modificar / Rechazar.</figcaption></figure>
         <figure><div class="frame"><img src="img/iterar-propuesta.png" alt=""></div><figcaption><b>Iteración con feedback:</b> el usuario pide un cambio y el agente regenera.</figcaption></figure>
         <figure><div class="frame"><img src="img/visor-diagrama.png" alt=""></div><figcaption><b>Diagrama de arquitectura</b> generado en Mermaid, con visor y zoom.</figcaption></figure>
-        <figure><div class="frame"><img src="img/despliegue.png" alt=""></div><figcaption><b>Despliegue en la nube:</b> diagrama en AWS o GCP y dónde va cada pieza.</figcaption></figure>
+        <figure><div class="frame"><img src="img/despliegue.png" alt=""></div><figcaption><b>Despliegue en la nube:</b> cada componente pasa al servicio equivalente de la nube elegida (AWS o GCP).</figcaption></figure>
         <figure><div class="frame"><img src="img/adr.png" alt=""></div><figcaption><b>ADR:</b> resumen, opciones comparadas, consecuencias y riesgos.</figcaption></figure>
       </div>
     </section>
@@ -424,6 +432,10 @@
           <li><b>Medir de extremo a extremo</b> en producción (&lt; 3 min).</li>
           <li><b>Trabajo colaborativo:</b> varios usuarios por proyecto.</li>
         </ul>
+        <div class="try">
+          <img src="img/qr-despliegue.png" alt="Código QR de la aplicación desplegada">
+          <div><b>Pruébalo</b><span>Escanea el código y abre ArchAgent desde tu dispositivo.</span></div>
+        </div>
       </section>
     </div>
   </main>
