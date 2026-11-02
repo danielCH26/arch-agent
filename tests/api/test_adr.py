@@ -325,3 +325,12 @@ def test_aprobar_bloquea_la_fila_de_sesion(client):
         before = _FakeSession.store.get("locked", 0)
         http.post("/api/projects/5/adr/approve")
     assert _FakeSession.store.get("locked", 0) == before + 1
+
+
+def test_adr_anterior_al_verificador_no_se_presenta_como_verificado():
+    from app.api.adr import _out
+
+    base = {"markdown": "# ADR", "generated_at": "2026-01-01T00:00:00+00:00"}
+    # Sin la clave: nunca pasó por el verificador, no es "sin problemas".
+    assert _out(base).quality_issues is None
+    assert _out({**base, "quality_issues": []}).quality_issues == []

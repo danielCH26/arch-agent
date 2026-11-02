@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Project } from '../api/projects'
 import { useDialog } from '../hooks/useDialog'
+import { PHASE_LABELS } from './phaseLabels'
 import { formatDate } from '../lib/format'
 import { projectsStore } from '../stores/projectsStore'
 
@@ -9,14 +10,6 @@ interface ProjectCardProps {
   project: Project
 }
 
-const PHASE_LABELS: Record<string, string> = {
-  requerimientos: 'Requerimientos',
-  propuesta: 'Propuesta',
-  refinamiento: 'Refinamiento',
-  revision: 'Revisión',
-  // HU10: quinta fase (mismo label que PHASE_LABELS del backend).
-  final: 'Cierre',
-}
 
 // Íconos de línea (Heroicons outline), como el resto de la interfaz.
 const LAYERS_PATH =
