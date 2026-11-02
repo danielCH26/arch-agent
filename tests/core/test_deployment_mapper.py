@@ -557,3 +557,78 @@ class TestSegundaRevisionPR:
     def test_el_encadenado_y_las_listas_siguen_funcionando(self):
         assert parse_mermaid_edges("A --> B --> C") == [("A", "B"), ("B", "C")]
         assert parse_mermaid_edges("A --> B & C") == [("A", "B"), ("A", "C")]
+
+
+class TestTerceraRevisionPR:
+    """El defecto D, que volví a introducir en la forma punteada, y dos menores.
+
+    La corrección anterior arregló `A --- B --> C` en la forma sólida y, al
+    agregar la punteada, repetí el mismo error. La causa de fondo era que el
+    cuerpo de la etiqueta rechazaba CARACTERES (`[^->]`, `[^.>]`) en vez de
+    rechazar FLECHAS. Ahora usa `(?:(?!<cierre>)[^>])*?`, que acepta guiones y
+    puntos pero se detiene en la flecha.
+    """
+
+    def test_la_punteada_sin_punta_no_se_come_el_nodo_del_medio(self):
+        """`A -.- B -.-> C` daba `('A','C')` y B desaparecía."""
+        assert parse_mermaid_edges("A -.- B -.-> C") == [("A", "B"), ("B", "C")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -.- B",            # antes no daba arista: `-.-` no era flecha
+            "A -.-> B",
+            "A -. texto .-> B",
+            "A -.texto.-> B",
+            "A -. t .- B",        # etiqueta y sin punta
+        ],
+    )
+    def test_todas_las_formas_punteadas_dan_una_arista(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_dos_punteadas_encadenadas(self):
+        assert parse_mermaid_edges("A -. a .-> B -. b .-> C") == [
+            ("A", "B"),
+            ("B", "C"),
+        ]
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            # Menor 2: `-{2,}[ox]` tomaba la primera letra del nodo destino.
+            ("A---orders", [("A", "orders")]),
+            ("A---oso", [("A", "oso")]),
+            ("A---xenon", [("A", "xenon")]),
+            ("A o--orders", [("A", "orders")]),
+            # Y los extremos de verdad siguen andando.
+            ("A --o B", [("A", "B")]),
+            ("A --x B", [("A", "B")]),
+            ("A o--o B", [("A", "B")]),
+        ],
+    )
+    def test_los_extremos_de_circulo_y_cruz_no_se_comen_el_nodo(
+        self, mermaid, esperado
+    ):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            # Menor 3: una etiqueta con guion dejaba un nodo fantasma, porque
+            # `[^->]` prohibía cualquier guion y la etiqueta no matcheaba.
+            "A -- e-commerce --> B",
+            "A -. e-commerce .-> B",
+            "A == e-commerce ==> B",
+            "A -- multi-tenant SaaS --> B",
+            "A -- back-end --> B",
+        ],
+    )
+    def test_una_etiqueta_con_guion_no_deja_un_nodo_fantasma(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_lo_de_la_revision_anterior_sigue_funcionando(self):
+        assert parse_mermaid_edges("A --- B --> C") == [("A", "B"), ("B", "C")]
+        assert parse_mermaid_edges("Usuario[Usuario]-->API[API]") == [
+            ("Usuario", "API")
+        ]
+        assert parse_mermaid_edges("A --> B & C") == [("A", "B"), ("A", "C")]

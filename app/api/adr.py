@@ -33,6 +33,8 @@ from app.core.adr_generator import (
     generate_guide,
     lint_adr_guide,
     render_adr_markdown,
+    strip_decorative_emoji,
+    verify_adr,
 )
 from app.core.database import SessionLocal
 from app.core.langfuse_tracer import flush as flush_langfuse
@@ -69,6 +71,10 @@ class AdrOut(BaseModel):
     guide_warnings: list[str] = []
     # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
     diagram_attachment_id: Optional[str] = None
+    # Verificación previa a la entrega: secciones vacías, genéricas o sin un
+    # dato que el lector necesita. Vacía = cada sección aporta; None = el ADR
+    # es anterior al verificador y nunca pasó por él.
+    quality_issues: Optional[list[str]] = None
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -118,13 +124,15 @@ def _out(stored: dict) -> AdrOut:
     if not stored.get("markdown"):
         return AdrOut(markdown=None, generated_at=None)
     return AdrOut(
-        markdown=stored["markdown"],
+        # Los ADR guardados antes del filtro de emojis los conservaban.
+        markdown=strip_decorative_emoji(stored["markdown"]),
         generated_at=stored.get("generated_at"),
         guide_complete=bool(stored.get("guide_complete")),
         feedback_history=list(stored.get("feedback_history") or []),
         approved_at=stored.get("approved_at"),
         guide_warnings=list(stored.get("guide_warnings") or []),
         diagram_attachment_id=stored.get("diagram_attachment_id"),
+        quality_issues=stored.get("quality_issues"),
     )
 
 
@@ -266,6 +274,7 @@ async def generate_adr(
         # True si la guía pasó por la segunda llamada de corrección.
         "guide_repaired": guide_repaired,
         "guide_warnings": lint_adr_guide(ctx, guide),
+        "quality_issues": verify_adr(ctx, markdown, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
         "feedback_history": history,
         "guide_failure": ctx.guide_failure,
@@ -323,6 +332,7 @@ def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
     updated["markdown"] = render_adr_markdown(ctx, llm_sections=guide, generated_at=generated_at)
     updated["guide"] = guide
     updated["guide_warnings"] = lint_adr_guide(ctx, guide)
+    updated["quality_issues"] = verify_adr(ctx, updated["markdown"], guide)
     updated["diagram_attachment_id"] = ctx.diagram_attachment_id
     updated["approved_at"] = approved_at
     return updated

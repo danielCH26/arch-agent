@@ -136,10 +136,23 @@ _EDGE_LABEL_RE = re.compile(r"\|[^|]*\|")
 # perdiendo B. Mermaid escribe la etiqueta con EXACTAMENTE dos guiones
 # (`A -- texto --> B`), así que exigirlo distingue la etiqueta de un `---`,
 # que es una flecha completa.
+# El cuerpo de la etiqueta rechaza FLECHAS, no caracteres sueltos. La versión
+# anterior usaba `[^->]`, que prohibía cualquier guion, y eso daba dos
+# problemas:
+#
+#   - una etiqueta con guion no matcheaba y dejaba un nodo fantasma:
+#     `A -- e-commerce --> B` devolvía además `('e-commerce', 'B')`;
+#   - en la forma punteada, `[^.>]` sí aceptaba guiones y se comía un nodo
+#     entero: `A -.- B -.-> C` devolvía `('A','C')` y B desaparecía. Es el
+#     mismo error que ya se había corregido en la forma sólida.
+#
+# Con `(?:(?!<cierre>)[^>])*?` el cuerpo avanza mientras no empiece el cierre,
+# así que acepta guiones y puntos pero se detiene en la flecha.
 _MID_LABEL_RE = re.compile(
-    r"(?<!-)--(?!-)[^->]*?-{1,}>"   # sólida:   A -- texto --> B
-    r"|-\.[^.>]*?\.-+>"             # punteada: A -. texto .-> B
-    r"|(?<!=)==(?!=)[^=>]*?={1,}>"  # gruesa:   A == texto ==> B
+    r"(?<!-)--(?!-)(?:(?!-{1,}>)[^>])*?-{1,}>"       # sólida:   A -- texto --> B
+    r"|-\.(?!-)(?:(?!\.-+>)[^>])*?\.-+>"             # punteada: A -. texto .-> B
+    r"|-\.(?!-)(?:(?!\.-)[^>])*?\.-(?!>)"            # punteada sin punta: A -. t .- B
+    r"|(?<!=)==(?!=)(?:(?!={1,}>)[^>])*?={1,}>"      # gruesa:   A == texto ==> B
 )
 
 # Operadores de flecha de Mermaid, incluidos los bidireccionales (`<-->`) y
@@ -155,14 +168,20 @@ _MID_LABEL_RE = re.compile(
 # El `(?<![\w-])` exige que el `o`/`x` abra el operador y no cierre un
 # identificador. De paso se agregan `--o` y `--x`, que son la forma habitual
 # y que antes no se reconocían.
+#
+# El `(?![\w-])` del otro lado es la misma idea por la derecha: sin él,
+# `A---orders` partía en `A` + `rders`, porque `-{2,}[ox]` tomaba la `o` del
+# nodo. Y `-\.-` cierra el hueco de la punteada sin punta, que no se
+# reconocía como flecha.
 _ARROW_RE = re.compile(
     r"\s*(?:"
-    r"<-{2,}>|<={2,}>|<-\.-+>"          # bidireccionales
-    r"|-{2,}>|={2,}>|-\.-+>"            # con punta
-    r"|(?<![\w-])o-{2,}[ox]?"           # A o-- B, A o--o B
-    r"|(?<![\w-])x-{2,}[ox]?"           # A x-- B, A x--x B
-    r"|-{2,}[ox]"                       # A --o B, A --x B
-    r"|-{3,}|={3,}"                     # sin punta
+    r"<-{2,}>|<={2,}>|<-\.-+>"              # bidireccionales
+    r"|-{2,}>|={2,}>|-\.-+>"                # con punta
+    r"|(?<![\w-])o-{2,}(?:[ox](?![\w-]))?"  # A o-- B, A o--o B
+    r"|(?<![\w-])x-{2,}(?:[ox](?![\w-]))?"  # A x-- B, A x--x B
+    r"|-{2,}[ox](?![\w-])"                  # A --o B, A --x B
+    r"|-\.-(?!>)"                           # A -.- B (punteada sin punta)
+    r"|-{3,}|={3,}"                         # sin punta
     r")\s*"
 )
 

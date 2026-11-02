@@ -29,6 +29,7 @@ from app.api.dependencies import get_current_user
 from app.core.attachment_tokens import build_attachment_url
 from app.core.adr_generator import (
     AdrNotReadyError,
+    _approved_mermaid,
     collect_adr_context,
     deployment_matches_architecture,
 )
@@ -192,12 +193,14 @@ def has_approved_deployment(*, user_id: int, project_id: int) -> bool:
         # determinar (proyecto a medio armar), se cae al criterio anterior:
         # cualquier despliegue aprobado sirve. Es lo mismo que hace
         # `deployment_matches_architecture` cuando falta el dato.
-        architecture_id: Optional[str] = None
-        try:
-            context = collect_adr_context(db, user_id=user_id, project_id=project_id)
-            architecture_id = context.diagram_attachment_id
-        except AdrNotReadyError:
-            architecture_id = None
+        # `_approved_mermaid` y no `collect_adr_context`: lo único que hace
+        # falta es el id del diagrama vigente, y el contexto completo trae
+        # además todas las propuestas, las aprobaciones y otra consulta de
+        # despliegues. Las dos usan `latest_diagram_decisions`, así que el
+        # criterio de "cuál es el diagrama vigente" es el mismo.
+        _mermaid, _aprobado, architecture_id = _approved_mermaid(
+            db, user_id=user_id, project_id=project_id
+        )
 
         rows = _deployment_rows(db, user_id=user_id, project_id=project_id)
         por_id: dict[str, dict] = {}

@@ -382,7 +382,9 @@ async def post_phase_decision(
 
     Returns:
         200 + PhaseDecisionOut on success.
-        409 with typed body on phase_mismatch or decision_conflict.
+        409 with typed body on phase_mismatch or deployment_not_approved.
+        (`decision_conflict` was removed in v3: a repeated decision now
+        returns 200 with `idempotent=true`.)
         422 on invalid phase/action (forwarded from PhaseDecisionError).
         404 when the project does not exist or is not owned by the caller.
     """

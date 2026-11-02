@@ -8,10 +8,15 @@ vi.mock('../../api/diagrams', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/diagrams')>()
   return { ...actual, fetchDiagramHistory: vi.fn() }
 })
+vi.mock('../../api/deployments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/deployments')>()
+  return { ...actual, fetchDeploymentHistory: vi.fn() }
+})
 
-import { AdrPanel, adrFilename, pickAdrDiagram, splitAtMermaid } from '../AdrPanel'
+import { AdrPanel, adrFilename, pickAdrDiagram, splitMermaidBlocks } from '../AdrPanel'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
+import { fetchDeploymentHistory } from '../../api/deployments'
 
 const EMPTY: AdrOut = { markdown: null, generated_at: null, guide_complete: false, feedback_history: [], approved_at: null }
 const ADR: AdrOut = {
@@ -42,6 +47,7 @@ function renderPanel(props: Partial<Parameters<typeof AdrPanel>[0]> = {}) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchDiagramHistory).mockResolvedValue([])
+  vi.mocked(fetchDeploymentHistory).mockResolvedValue([])
 })
 
 describe('AdrPanel', () => {
@@ -176,6 +182,56 @@ describe('AdrPanel', () => {
     expect(screen.getByAltText('Diagrama de la arquitectura del proyecto')).toHaveAttribute('src', '/del-adr.png')
   })
 
+  it('muestra solo el diagrama de despliegue aprobado', async () => {
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    vi.mocked(fetchDeploymentHistory).mockResolvedValue([
+      { message_id: 4, id: 'd', url: '/ultimo-despliegue.png', provider: 'aws', created_at: '', decision: null },
+      { message_id: 3, id: 'c', url: '/despliegue.png', provider: 'aws', created_at: '', decision: 'approve' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-deployment-diagram')).toBeInTheDocument())
+    expect(screen.getByAltText('Diagrama de despliegue del proyecto en la nube')).toHaveAttribute(
+      'src',
+      '/despliegue.png',
+    )
+    expect(screen.getByText(/Diagrama de despliegue aprobado/)).toBeInTheDocument()
+  })
+
+  it('sin despliegue aprobado no muestra la figura de despliegue', async () => {
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    vi.mocked(fetchDeploymentHistory).mockResolvedValue([
+      { message_id: 4, id: 'd', url: '/ultimo-despliegue.png', provider: 'aws', created_at: '', decision: 'modify' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-content')).toBeInTheDocument())
+    expect(screen.queryByTestId('adr-deployment-diagram')).not.toBeInTheDocument()
+  })
+
+  it('la copia de impresión mete la captura del despliegue bajo su encabezado', async () => {
+    vi.mocked(getAdr).mockResolvedValue({
+      ...ADR,
+      markdown: '## 5. Despliegue\n\n### Despliegue en AWS\n\n| Pieza | Servicio |\n| --- | --- |\n',
+    })
+    vi.mocked(fetchDeploymentHistory).mockResolvedValue([
+      { message_id: 3, id: 'c', url: '/despliegue.png', provider: 'aws', created_at: '', decision: 'approve' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-print-source')).toBeInTheDocument())
+    const fuente = screen.getByTestId('adr-print-source')
+    const encabezado = fuente.querySelector('h3')
+    const figura = fuente.querySelector('figure')
+    expect(encabezado?.textContent).toContain('Despliegue en AWS')
+    expect(figura?.querySelector('img')).toHaveAttribute('src', '/despliegue.png')
+    // La figura va DESPUÉS del encabezado, no antes ni al final de otra sección.
+    expect(encabezado!.compareDocumentPosition(figura!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('pickAdrDiagram usa el aprobado o el último si el ADR no dice cuál', () => {
     const list = [
       { message_id: 2, id: 'b', url: '/b.png', filename: null, created_at: '', decision: null },
@@ -214,15 +270,24 @@ describe('AdrPanel', () => {
   it('Descargar PDF abre la vista de impresión con el diagrama como imagen', async () => {
     vi.mocked(getAdr).mockResolvedValue({
       ...ADR,
-      markdown: '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n## 5. Referencias\n\nFuentes',
+      markdown:
+        '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n' +
+        '_Figura 1. Componentes del sistema._\n\n## 5. Referencias\n\nFuentes',
       diagram_attachment_id: 'a',
     })
     vi.mocked(fetchDiagramHistory).mockResolvedValue([
       { message_id: 1, id: 'a', url: '/aprobado.png', filename: null, created_at: '', decision: 'approve' },
     ])
     const written: string[] = []
+    let fontsLoaded = () => {}
+    const fontsReady = new Promise<void>((resolve) => (fontsLoaded = resolve))
     const fakeWindow = {
-      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn() },
+      document: {
+        open: vi.fn(),
+        write: (html: string) => written.push(html),
+        close: vi.fn(),
+        fonts: { ready: fontsReady },
+      },
       addEventListener: vi.fn(),
       focus: vi.fn(),
       print: vi.fn(),
@@ -239,6 +304,15 @@ describe('AdrPanel', () => {
     expect(html).toContain('src="/aprobado.png"')
     expect(html).toContain('Referencias')
     expect(html).not.toContain('flowchart TD')
+    // El pie del ADR queda dentro de la figura.
+    expect(html).toContain('<figcaption><strong>Figura 1.</strong> Componentes del sistema.</figcaption>')
+    // No imprime hasta que cargan las tipografías: si no, el PDF sale con las de respaldo.
+    const onLoad = fakeWindow.addEventListener.mock.calls.find(([type]) => type === 'load')![1] as () => void
+    onLoad()
+    await Promise.resolve()
+    expect(fakeWindow.print).not.toHaveBeenCalled()
+    fontsLoaded()
+    await waitFor(() => expect(fakeWindow.print).toHaveBeenCalledTimes(1))
     openSpy.mockRestore()
   })
 
@@ -253,10 +327,30 @@ describe('AdrPanel', () => {
     openSpy.mockRestore()
   })
 
-  it('splitAtMermaid separa el bloque del diagrama', () => {
-    const parts = splitAtMermaid('antes\n```mermaid\nflowchart TD\n```\ndespués')
-    expect(parts).toEqual({ before: 'antes\n', after: '\ndespués', hasMermaid: true })
-    expect(splitAtMermaid('sin diagrama')).toEqual({ before: 'sin diagrama', after: '', hasMermaid: false })
+  it('splitMermaidBlocks separa cada bloque de diagrama', () => {
+    expect(splitMermaidBlocks('antes\n```mermaid\nflowchart TD\n```\ndespués')).toEqual(['antes\n', '\ndespués'])
+    expect(
+      splitMermaidBlocks('a\n```mermaid\nflowchart TD\n```\nb\n```mermaid\n%%{init: {}}%%\nflowchart LR\n```\nc'),
+    ).toEqual(['a\n', '\nb\n', '\nc'])
+    expect(splitMermaidBlocks('sin diagrama')).toEqual(['sin diagrama'])
+  })
+
+  it('muestra la verificación previa a la entrega', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, quality_issues: ['«7.3 Consecuencias»: es genérica'] })
+    renderPanel()
+    expect(await screen.findByTestId('adr-quality')).toHaveTextContent('«7.3 Consecuencias»: es genérica')
+  })
+
+  it('la verificación sin problemas lo dice, y un ADR viejo no muestra nada', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, quality_issues: [] })
+    const { unmount } = renderPanel()
+    expect(await screen.findByTestId('adr-quality')).toHaveTextContent('todas las secciones tienen contenido específico')
+    unmount()
+
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    renderPanel()
+    await screen.findByTestId('adr-content')
+    expect(screen.queryByTestId('adr-quality')).not.toBeInTheDocument()
   })
 
   it('arma un nombre de archivo seguro', () => {

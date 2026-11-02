@@ -104,7 +104,9 @@ describe('ChatPage — barra de fase (HU10)', () => {
 // ---------------------------------------------------------------------------
 
 describe('yaEstabaCerrada', () => {
-  const FASES = ['requerimientos', 'propuesta', 'refinamiento', 'revision', 'cierre']
+  // Los mismos nombres que `AVAILABLE_PHASES` en app/api/projects.py: la
+  // última se llama `final`, no `cierre`.
+  const FASES = ['requerimientos', 'propuesta', 'refinamiento', 'revision', 'final']
 
   const conflicto = (detail: Record<string, unknown>) =>
     new ApiConflictError(409, detail as never)
