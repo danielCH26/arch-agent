@@ -14,6 +14,9 @@ export interface AdrOut {
   guide_warnings?: string[]
   // Adjunto del diagrama que usa el ADR, para mostrar esa misma imagen.
   diagram_attachment_id?: string | null
+  // Patrón principal de la propuesta aprobada: su imagen va en la sección 3.
+  // Opcional: los ADR guardados antes no lo traen.
+  primary_pattern_id?: number | null
 }
 
 const adrPath = (projectId: number) => `/api/projects/${encodeURIComponent(String(projectId))}/adr`

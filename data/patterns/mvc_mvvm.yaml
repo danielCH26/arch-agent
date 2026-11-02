@@ -45,9 +45,9 @@ fuentes:
   - titulo: "Model-View-ViewModel (Microsoft Learn)"
     url: "https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm"
 image: "/pattern-images/mvc_mvvm.svg"
-image_alt: "Diagrama MVC: el controlador actualiza el modelo, el modelo alimenta la vista, el usuario interactúa con la vista y la vista notifica al controlador."
+image_alt: "Comparación MVC y MVVM: en MVC el usuario actúa sobre la vista, el controlador actualiza el modelo y el modelo alimenta la vista; en MVVM la vista se enlaza en dos sentidos al ViewModel, que lee y actualiza el modelo sin que la vista lo conozca."
 image_source:
-  titulo: "File:MVC Diagram (Model-View-Controller).svg (Wikimedia Commons)"
-  autor: "Xinfe, a partir del trabajo de Deltacen"
-  licencia: "CC BY-SA 3.0"
-  url: "https://commons.wikimedia.org/wiki/File:MVC_Diagram_(Model-View-Controller).svg"
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados (licencia del repositorio)"
+  url: null

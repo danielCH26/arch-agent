@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
+import type { Pattern } from '../api/patterns'
+import { usePatternCatalog } from '../hooks/usePatternCatalog'
+import { PatternFigure, patternImageAlt, patternImageCredit } from './PatternFigure'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { ProjectCompletedDialog } from './ProjectCompletedDialog'
 import { buildAdrPrintDocument } from './adrPrint'
@@ -51,6 +54,57 @@ export function splitAtMermaid(markdown: string): { before: string; after: strin
     after: markdown.slice(match.index + match[0].length),
     hasMermaid: true,
   }
+}
+
+// Parte el ADR después del párrafo que abre la sección 3 (Decisión): ahí va la
+// imagen del patrón elegido, antes de la propuesta completa.
+export function splitAtDecision(markdown: string): { before: string; after: string; found: boolean } {
+  const match = markdown.match(/^#{2,}\s*3\.\s*Decisi[oó]n[^\n]*\n+(?:[^\n]+\n)*/im)
+  if (!match || match.index === undefined) return { before: markdown, after: '', found: false }
+  const end = match.index + match[0].length
+  return { before: markdown.slice(0, end), after: markdown.slice(end), found: true }
+}
+
+// La ventana de impresión no resuelve bien rutas relativas (/pattern-images/...):
+// el PDF lleva la URL absoluta de la imagen.
+function absoluteUrl(path: string): string {
+  try {
+    return new URL(path, window.location.origin).href
+  } catch {
+    return path
+  }
+}
+
+// Imagen del patrón elegido para el PDF, con la atribución en el pie (texto
+// plano: en papel el enlace no se puede abrir, así que la URL va escrita).
+function PrintPatternFigure({ pattern }: { pattern: Pattern }) {
+  const source = pattern.image_source
+  const credit = patternImageCredit(source)
+  return (
+    <figure>
+      <img src={absoluteUrl(pattern.image!)} alt={patternImageAlt(pattern)} />
+      <figcaption>
+        Patrón seleccionado: {pattern.pattern_name}.
+        {source && ` Fuente: ${[source.titulo, credit, source.url].filter(Boolean).join(' — ')}.`}
+      </figcaption>
+    </figure>
+  )
+}
+
+// Markdown con la imagen del patrón elegido al inicio de la sección 3.
+function renderWithPattern(markdown: string, pattern: Pattern | null) {
+  const parts = pattern?.image ? splitAtDecision(markdown) : null
+  if (!parts?.found) return renderMarkdownBlocks(markdown)
+  return (
+    <>
+      {renderMarkdownBlocks(parts.before)}
+      <section className="my-3 rounded-lg border border-gray-100 p-3 dark:border-gray-800" data-testid="adr-selected-pattern">
+        <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Patrón seleccionado: {pattern!.pattern_name}</p>
+        <PatternFigure key={pattern!.id} pattern={pattern!} className="max-h-64 md:max-h-80" />
+      </section>
+      {renderMarkdownBlocks(parts.after)}
+    </>
+  )
 }
 
 // Abre una vista del ADR lista para imprimir y lanza el diálogo de impresión,
@@ -190,6 +244,11 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
   // Copia del ADR armada para imprimir (oculta): el diagrama va como imagen.
   const printRef = useRef<HTMLDivElement>(null)
   const printParts = markdown ? splitAtMermaid(markdown) : null
+  // Patrón elegido en la propuesta aprobada, con su imagen (sección 3 y PDF).
+  const primaryPatternId = adr?.primary_pattern_id ?? null
+  const catalog = usePatternCatalog(primaryPatternId !== null)
+  const selectedPattern = primaryPatternId !== null ? catalog?.get(primaryPatternId) ?? null : null
+  const printDecision = printParts && selectedPattern?.image ? splitAtDecision(printParts.before) : null
 
   function handleDownloadPdf() {
     const html = printRef.current?.innerHTML ?? ''
@@ -409,13 +468,21 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
           data-testid="adr-content"
           className="prose-sm mt-3 max-h-[70vh] overflow-y-auto rounded-lg border border-gray-100 p-3 text-sm text-gray-800 dark:border-gray-800 dark:text-gray-200"
         >
-          {renderMarkdownBlocks(markdown)}
+          {renderWithPattern(markdown, selectedPattern)}
         </article>
       )}
 
       {printParts && (
         <div ref={printRef} hidden data-testid="adr-print-source">
-          {renderMarkdownBlocks(printParts.before)}
+          {printDecision?.found ? (
+            <>
+              {renderMarkdownBlocks(printDecision.before)}
+              <PrintPatternFigure pattern={selectedPattern!} />
+              {renderMarkdownBlocks(printDecision.after)}
+            </>
+          ) : (
+            renderMarkdownBlocks(printParts.before)
+          )}
           {printParts.hasMermaid && diagram && (
             <figure>
               <img src={diagram.url} alt="Diagrama de arquitectura del documento" />

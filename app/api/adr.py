@@ -38,6 +38,7 @@ from app.core.database import SessionLocal
 from app.core.langfuse_tracer import flush as flush_langfuse
 from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import LLMConfigError, build_langchain_model
+from app.core.pattern_justification import primary_citation
 from app.core.session_store import record_approval_decision
 from app.models.project import Project
 from app.models.session import UserSession
@@ -69,6 +70,14 @@ class AdrOut(BaseModel):
     guide_warnings: list[str] = []
     # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
     diagram_attachment_id: Optional[str] = None
+    # Patrón principal de la propuesta aprobada: el panel y el PDF muestran su
+    # imagen en la sección 3 (Decisión). None en ADR guardados antes de F29.
+    primary_pattern_id: Optional[int] = None
+
+
+def _primary_pattern_id(ctx) -> Optional[int]:
+    pattern_id = (primary_citation(ctx.citations) or {}).get("pattern_id")
+    return int(pattern_id) if pattern_id is not None else None
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -125,6 +134,7 @@ def _out(stored: dict) -> AdrOut:
         approved_at=stored.get("approved_at"),
         guide_warnings=list(stored.get("guide_warnings") or []),
         diagram_attachment_id=stored.get("diagram_attachment_id"),
+        primary_pattern_id=stored.get("primary_pattern_id"),
     )
 
 
@@ -267,6 +277,7 @@ async def generate_adr(
         "guide_repaired": guide_repaired,
         "guide_warnings": lint_adr_guide(ctx, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
+        "primary_pattern_id": _primary_pattern_id(ctx),
         "feedback_history": history,
         "guide_failure": ctx.guide_failure,
         # Un ADR nuevo vuelve a necesitar aprobación.
@@ -324,6 +335,7 @@ def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
     updated["guide"] = guide
     updated["guide_warnings"] = lint_adr_guide(ctx, guide)
     updated["diagram_attachment_id"] = ctx.diagram_attachment_id
+    updated["primary_pattern_id"] = _primary_pattern_id(ctx)
     updated["approved_at"] = approved_at
     return updated
 

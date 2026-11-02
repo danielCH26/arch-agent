@@ -9,8 +9,14 @@ Cada corrida reconcilia la tabla contra el YAML actual: cualquier fila que
 no corresponda a un pattern_name presente en data/patterns/*.yaml se borra
 (residuo de scripts/seed_bench_vectors.py, filas huerfanas de versiones
 anteriores, etc.). Los chunks asociados se borran en cascada por el FK.
+
+Con ``--images-only`` solo copia image / image_alt / image_source del YAML a
+las filas que ya existen, sin cargar el modelo de embeddings (segundos). El
+backend lo corre en cada arranque (docker-compose.yml), asi ningun entorno
+queda con las columnas de la migracion 0022 vacias.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -203,6 +209,36 @@ def seed_pattern_chunks(cur, pattern_id: int, pattern: dict) -> int:
     return created
 
 
+def sync_pattern_images(conn) -> int:
+    """Copia la imagen y su atribucion del YAML a los patrones ya sembrados.
+
+    No inserta ni borra patrones ni toca embeddings: eso sigue siendo el seed
+    completo. Devuelve cuantas filas actualizo.
+    """
+    patterns = load_patterns()
+    cur = conn.cursor()
+    updated = 0
+    for pattern in patterns:
+        image_source = json.dumps(pattern["image_source"]) if pattern.get("image_source") else None
+        cur.execute(
+            """
+            UPDATE architect_patterns
+            SET image = %s, image_alt = %s, image_source = %s
+            WHERE pattern_name = %s
+            """,
+            (pattern.get("image"), pattern.get("image_alt"), image_source, pattern["pattern_name"]),
+        )
+        updated += cur.rowcount
+    if updated < len(patterns):
+        log(
+            f"Solo {updated} de {len(patterns)} patrones estan en la base: corre el seed "
+            "completo (python scripts/seed_patterns.py) para cargar los que faltan",
+            "WARN",
+        )
+    log(f"Imagenes de patrones sincronizadas: {updated}", "OK")
+    return updated
+
+
 def seed_patterns(conn):
     patterns = load_patterns()
     cur = conn.cursor()
@@ -229,12 +265,23 @@ def seed_patterns(conn):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "--images-only",
+        action="store_true",
+        help="solo sincroniza image / image_alt / image_source (sin embeddings)",
+    )
+    args = parser.parse_args()
+
     log("=" * 60)
     log("Seed de patrones de arquitectura (architect_patterns + chunks)")
     log("=" * 60)
     conn = connect_db()
     try:
-        seed_patterns(conn)
+        if args.images_only:
+            sync_pattern_images(conn)
+        else:
+            seed_patterns(conn)
         conn.commit()
     finally:
         conn.close()

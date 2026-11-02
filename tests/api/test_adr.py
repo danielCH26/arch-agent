@@ -325,3 +325,34 @@ def test_aprobar_bloquea_la_fila_de_sesion(client):
         before = _FakeSession.store.get("locked", 0)
         http.post("/api/projects/5/adr/approve")
     assert _FakeSession.store.get("locked", 0) == before + 1
+
+
+# --- F29: imagen del patrón elegido en la sección 3 y en el PDF ---
+
+
+def _ctx_con_patron() -> AdrContext:
+    ctx = _ctx()
+    ctx.citations = [
+        {"pattern_id": 8, "pattern_name": "Microservicios", "source_role": "tradeoff_option"},
+        {"pattern_id": 3, "pattern_name": "Monolito modular", "source_role": "primary"},
+    ]
+    return ctx
+
+
+def test_el_adr_devuelve_el_patron_principal_de_la_propuesta(client):
+    http, _ = client
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx_con_patron()):
+        created = http.post("/api/projects/5/adr").json()
+        approved = http.post("/api/projects/5/adr/approve").json()
+
+    assert created["primary_pattern_id"] == 3
+    assert approved["primary_pattern_id"] == 3
+    assert http.get("/api/projects/5/adr").json()["primary_pattern_id"] == 3
+
+
+def test_sin_cita_principal_el_patron_queda_en_null(client):
+    http, _ = client
+    with patch("app.api.adr.collect_adr_context", return_value=_ctx()):
+        created = http.post("/api/projects/5/adr").json()
+
+    assert created["primary_pattern_id"] is None

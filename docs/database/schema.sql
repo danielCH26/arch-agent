@@ -148,7 +148,7 @@ CREATE TABLE architect_patterns (
     fuentes JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{titulo, url}] curadas
     image VARCHAR(500),             -- /pattern-images/<archivo> (frontend/public/pattern-images)
     image_alt TEXT,
-    image_source JSONB,             -- {titulo, autor, licencia, url}
+    image_source JSONB,             -- {titulo, autor, licencia, url, modificada?}
     embedding vector(384),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

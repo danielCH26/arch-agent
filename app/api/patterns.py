@@ -22,7 +22,7 @@ class PatternOut(BaseModel):
     tradeoffs: Optional[dict]
     when_not_to_use: Optional[str]
     # Imagen ilustrativa (ruta servida por el frontend o URL) y su atribucion
-    # {titulo, autor, licencia, url}. Se cargan desde el YAML con seed_patterns.py.
+    # {titulo, autor, licencia, url, modificada?}. Se cargan desde el YAML con seed_patterns.py.
     image: Optional[str] = None
     image_alt: Optional[str] = None
     image_source: Optional[dict] = None

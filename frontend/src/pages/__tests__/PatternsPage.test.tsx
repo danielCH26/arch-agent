@@ -25,6 +25,8 @@ const { basePattern, patterns } = vi.hoisted(() => {
   const patterns: Pattern[] = [
     basePattern,
     { ...basePattern, id: 2, pattern_name: 'Patrón sin imagen', image: null, image_alt: null, image_source: null },
+    { ...basePattern, id: 3, pattern_name: 'Eventos', image: '/pattern-images/event_driven.svg', image_alt: 'Productores que envían eventos a un canal y consumidores independientes',
+      image_source: { ...basePattern.image_source, autor: 'Microsoft', licencia: 'CC BY 4.0', modificada: true } },
   ]
   return { basePattern, patterns }
 })
@@ -65,6 +67,19 @@ describe('PatternsPage: imagen del patrón', () => {
     expect(screen.getByRole('status')).toHaveTextContent('No se pudo cargar la imagen')
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Arquitectura hexagonal' })).toBeInTheDocument()
+  })
+
+  it('al cambiar de patrón no arrastra el aviso de la imagen que no cargó', async () => {
+    await openPattern('Arquitectura hexagonal')
+    fireEvent.error(screen.getByRole('img', { name: basePattern.image_alt! }))
+    expect(screen.getByRole('status')).toHaveTextContent('No se pudo cargar la imagen')
+
+    fireEvent.click(screen.getByRole('button', { name: /Eventos/ }))
+
+    expect(screen.getByRole('img', { name: /Productores que envían eventos/ })).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    // Imagen adaptada: CC BY exige indicarlo.
+    expect(screen.getByText(/Microsoft · CC BY 4.0, adaptada/)).toBeInTheDocument()
   })
 
   it('avisa cuando el patrón todavía no tiene imagen', async () => {

@@ -23,6 +23,6 @@ class ArchitectPattern(Base):
     # Imagen ilustrativa (frontend/public/pattern-images) y su atribucion.
     image = Column(String(500))
     image_alt = Column(Text)
-    image_source = Column(JSONB)  # {titulo, autor, licencia, url}
+    image_source = Column(JSONB)  # {titulo, autor, licencia, url, modificada?}
     embedding = Column(Vector(384))
     created_at = Column(TIMESTAMP, server_default=func.now())

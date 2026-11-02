@@ -13,6 +13,8 @@ import yaml
 PATTERNS_DIR = Path(__file__).resolve().parents[2] / "data" / "patterns"
 # Las imagenes se sirven desde el frontend: /pattern-images/x -> frontend/public/pattern-images/x
 PUBLIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "public"
+# Licencia de los diagramas propios: la del repositorio (ver README, "Licencia").
+REPO_LICENSE = "Todos los derechos reservados (licencia del repositorio)"
 
 MIN_BULLETS = 4
 MIN_WORDS_PER_BULLET = 10
@@ -72,5 +74,8 @@ def test_every_pattern_has_an_attributed_image():
             assert (source.get(key) or "").strip(), f"{filename}: image_source sin {key}"
         url = source.get("url")
         assert url is None or url.startswith("https://"), f"{filename}: {url}"
+        # Sin URL solo puede ser un diagrama propio, bajo la licencia del repo.
         if url is None:
-            assert source["licencia"] == "Elaboración propia", filename
+            assert source["licencia"] == REPO_LICENSE, filename
+        # CC BY exige indicar los cambios: el pie dice "adaptada" si es True.
+        assert isinstance(source.get("modificada", False), bool), filename

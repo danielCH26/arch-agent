@@ -43,7 +43,7 @@ example_scenarios:
 image: "/pattern-images/serverless.svg"
 image_alt: "Eventos (petición HTTP, mensaje en cola, archivo subido) disparan funciones en una plataforma gestionada; las funciones usan una base de datos gestionada y otros servicios."
 image_source:
-  titulo: "Diagrama propio del proyecto"
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
   autor: "Equipo arch-agent"
-  licencia: "Elaboración propia"
+  licencia: "Todos los derechos reservados (licencia del repositorio)"
   url: null

@@ -45,7 +45,7 @@ fuentes:
 image: "/pattern-images/mlops_pipeline.svg"
 image_alt: "Ciclo de MLOps: ingesta y validación de datos, entrenamiento, evaluación, registro de modelos, despliegue por CI/CD y monitoreo en producción, que dispara el reentrenamiento."
 image_source:
-  titulo: "Diagrama propio del proyecto"
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
   autor: "Equipo arch-agent"
-  licencia: "Elaboración propia"
+  licencia: "Todos los derechos reservados (licencia del repositorio)"
   url: null

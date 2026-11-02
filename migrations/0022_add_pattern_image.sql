@@ -6,8 +6,9 @@
 --   image_alt    texto alternativo que describe la imagen
 --   image_source {titulo, autor, licencia, url} para la atribucion
 -- Las imagenes viven en frontend/public/pattern-images/ (no se enlazan a sitios
--- externos para que no se rompan). Despues de aplicar esta migracion ejecutar
--- scripts/seed_patterns.py, igual que con 0018 y 0019.
+-- externos para que no se rompan). La migracion deja las columnas vacias: las
+-- llena scripts/seed_patterns.py, que el backend corre con --images-only en
+-- cada arranque (docker-compose.yml). Fuera de Docker, correrlo a mano.
 -- =============================================================================
 
 ALTER TABLE architect_patterns

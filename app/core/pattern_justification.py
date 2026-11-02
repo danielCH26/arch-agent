@@ -68,7 +68,8 @@ def source_for(metadata: dict) -> dict:
     return {"type": "curated_catalog", "label": CURATED_SOURCE_LABEL, "filename": None}
 
 
-def _primary_citation(citations: Iterable[dict]) -> dict | None:
+def primary_citation(citations: Iterable[dict]) -> dict | None:
+    """Cita del patrón principal de la propuesta (``source_role == "primary"``)."""
     for citation in citations:
         if citation.get("source_role") == "primary":
             return citation
@@ -147,7 +148,7 @@ def analyze_justification(markdown: str | None, citations: Iterable[dict] | None
     Devuelve un dict nuevo; ``citations`` no se modifica.
     """
     normalized = _normalize_lines(markdown or "")
-    primary = _primary_citation(citations or [])
+    primary = primary_citation(citations or [])
     primary_name = (primary or {}).get("pattern_name")
     declared = _declared_primary(normalized)
 

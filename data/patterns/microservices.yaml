@@ -40,9 +40,9 @@ example_scenarios:
   - "Marketplace con módulos de búsqueda, pagos y mensajería con cargas de trabajo muy distintas y equipos dedicados"
   - "Empresa que ya tiene Kubernetes, CI/CD y observabilidad y necesita despliegues diarios independientes por dominio"
 image: "/pattern-images/microservices.svg"
-image_alt: "Clientes que acceden por un API gateway a varios microservicios, cada uno con su propia base de datos, comunicados mediante middleware de mensajería y apoyados por observabilidad, gestión/orquestación y DevOps."
+image_alt: "Clientes web y móvil que entran por un API gateway, que enruta a tres microservicios (pedidos, pagos y catálogo), cada uno con su propia base de datos."
 image_source:
-  titulo: "Microservices architecture style (Azure Architecture Center)"
-  autor: "Microsoft (Azure Architecture Center)"
-  licencia: "CC BY 4.0"
-  url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/microservices"
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados (licencia del repositorio)"
+  url: null

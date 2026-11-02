@@ -50,3 +50,4 @@ image_source:
   autor: "Microsoft (Azure Architecture Center)"
   licencia: "CC BY 4.0"
   url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/event-driven"
+  modificada: true

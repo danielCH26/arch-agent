@@ -79,9 +79,12 @@ services:
     # visible en `docker compose logs backend`) en vez de arrancar contra una
     # DB desactualizada. Sobrescribir `command` reemplaza el CMD del
     # Dockerfile, por eso se repiten los flags de uvicorn.
+    # `seed_patterns.py --images-only` copia las imagenes de los patrones del
+    # YAML a la base (migracion 0022): es rapido porque no recalcula embeddings.
     command: >
       sh -c "python scripts/init_db.py &&
              python -m migrations.run_migrations &&
+             python scripts/seed_patterns.py --images-only &&
              exec uvicorn server:app --host 0.0.0.0 --port 8000 --proxy-headers"
     restart: unless-stopped
 

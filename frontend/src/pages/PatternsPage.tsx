@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { PatternListSkeleton } from '../components/Skeleton'
 import { listPatterns, listPatternSourceChunks, Pattern, PatternSourceChunk } from '../api/patterns'
 import { PageHeader } from '../components/PageHeader'
+import { PatternFigure } from '../components/PatternFigure'
 
 const PAGE_SIZE = 200 // máximo permitido por GET /api/patterns
 
@@ -162,7 +163,7 @@ function PatternDetail({ pattern }: { pattern: Pattern }) {
         {pattern.category && <p className="text-sm text-gray-500">{pattern.category}</p>}
       </header>
       <Section title="Descripción" text={pattern.description} />
-      <PatternImage pattern={pattern} />
+      <PatternImage key={pattern.id} pattern={pattern} />
       <Section title="Casos de uso" text={pattern.use_cases} />
       <Tradeoffs tradeoffs={pattern.tradeoffs} />
       <Section title="Cuándo no usarlo" text={pattern.when_not_to_use} />
@@ -171,52 +172,12 @@ function PatternDetail({ pattern }: { pattern: Pattern }) {
   )
 }
 
-// Imagen ilustrativa del patrón con su atribución. Si falta o no carga se
-// muestra un aviso en su lugar: el resto del detalle sigue funcionando.
+// Imagen ilustrativa del patrón con su atribución, junto a la descripción.
 function PatternImage({ pattern }: { pattern: Pattern }) {
-  const [failed, setFailed] = useState(false)
-  useEffect(() => setFailed(false), [pattern.image])
-
-  const source = pattern.image_source
-  const credit = [source?.autor, source?.licencia].filter(Boolean).join(' · ')
-
   return (
     <section>
       <h3 className={SECTION_TITLE}>Cómo se ve</h3>
-      {!pattern.image || failed ? (
-        <p role="status" className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          {pattern.image
-            ? 'No se pudo cargar la imagen de este patrón.'
-            : 'Este patrón todavía no tiene una imagen ilustrativa.'}
-        </p>
-      ) : (
-        <figure className="mt-2">
-          {/* Fondo blanco fijo (no bg-white, que el modo oscuro oscurece): los diagramas son de fondo claro. */}
-          <a href={pattern.image} target="_blank" rel="noreferrer" title="Abrir la imagen en tamaño completo"
-            className="block overflow-hidden rounded-lg border border-gray-200 bg-[#ffffff] p-2">
-            <img
-              src={pattern.image}
-              alt={pattern.image_alt || `Diagrama ilustrativo de ${pattern.pattern_name}`}
-              loading="lazy"
-              onError={() => setFailed(true)}
-              className="mx-auto max-h-96 w-full object-contain"
-            />
-          </a>
-          {source && (
-            <figcaption className="mt-1 text-xs text-gray-500">
-              Fuente:{' '}
-              {source.url ? (
-                <a href={source.url} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline">
-                  {source.titulo || source.url}
-                </a>
-              ) : (
-                source.titulo
-              )}
-              {credit && ` — ${credit}`}
-            </figcaption>
-          )}
-        </figure>
-      )}
+      <PatternFigure pattern={pattern} />
     </section>
   )
 }

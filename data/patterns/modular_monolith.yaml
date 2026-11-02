@@ -45,7 +45,7 @@ example_scenarios:
 image: "/pattern-images/modular_monolith.svg"
 image_alt: "Una sola aplicación desplegable dividida en módulos (pedidos, pagos, catálogo), cada uno con su API pública y su lógica y datos, sobre una base de datos compartida con esquemas separados."
 image_source:
-  titulo: "Diagrama propio del proyecto"
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
   autor: "Equipo arch-agent"
-  licencia: "Elaboración propia"
+  licencia: "Todos los derechos reservados (licencia del repositorio)"
   url: null

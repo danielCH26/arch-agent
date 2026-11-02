@@ -35,6 +35,10 @@ docker compose up -d
 # El backend aplica schema.sql y las migraciones pendientes al arrancar
 # (ver `command` en docker-compose.yml); si cambias migrations/, reconstruye:
 #   docker compose up -d --build backend
+# También sincroniza las imágenes de los patrones (seed_patterns.py
+# --images-only). En una base nueva, el seed completo es OBLIGATORIO una vez:
+# sin él la Base de patrones, la propuesta y el ADR quedan sin patrones:
+#   docker compose exec -T backend python scripts/seed_patterns.py
 # Si la migración cambia datos curados de patrones (por ejemplo 0018/0019),
 # vuelve a indexarlos inmediatamente después de migrar:
 #   docker compose exec -T backend python scripts/seed_patterns.py
