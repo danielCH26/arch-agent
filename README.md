@@ -19,6 +19,8 @@ Asistente IA que guía a equipos de desarrollo en la definición de arquitectura
 
 Índice completo: [`docs/usuario/`](docs/usuario/README.md).
 
+¿Vas a **desarrollar o desplegar** Arch Agent? → [Guía de despliegue](docs/GUIA-DEPLOYMENT.md): requisitos, instalación local, variables de entorno, troubleshooting y despliegue a producción.
+
 ---
 
 ## Quickstart
