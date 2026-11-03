@@ -555,6 +555,12 @@ _LEGACY_VIABILITY_QUESTIONS: dict[str, tuple[str, ...]] = {
 _VIABILITY_REGEXES = {
     name: _factor_regex(patterns) for name, patterns, _question in _VIABILITY_FACTORS
 }
+# Los mismos patrones, uno por uno: `_factor_score` cuenta cuántos casan en una
+# oración para elegir entre varias que mencionan el factor.
+_VIABILITY_SUBPATTERNS = {
+    name: tuple(_factor_regex((patron,)) for patron in patterns)
+    for name, patterns, _question in _VIABILITY_FACTORS
+}
 
 
 def _missing_viability_factors(
@@ -1156,17 +1162,74 @@ def next_step(
 _ADJUSTMENT_QUESTION = "(ajuste solicitado por el usuario)"
 
 
+# Cómo se parte un texto en oraciones. Son dos cortes distintos:
+#
+#   1. FIN DE BLOQUE: una línea en blanco, o un renglón que empieza algo nuevo
+#      (viñeta, encabezado, fila de tabla, cita, "**Campo:**"). El patrón
+#      anterior exigía un espacio después del salto y en un markdown no hay
+#      ninguno ("...(APO)\n**Versión:** 1.0..."), así que no cortaba NADA y la
+#      "oración" se llevaba medio encabezado por delante.
+#   2. Dentro del bloque, punto o punto y coma.
+#
+# Los saltos que quedan dentro de un bloque son renglones partidos por el ancho
+# del archivo, así que se unen con un espacio en vez de cortar la frase a la
+# mitad.
+_CORTE_DE_BLOQUE = re.compile(r"\n\s*\n+|\n(?=\s*(?:[-*#>|]|\d+[.)]))")
+_CORTE_DE_ORACION = re.compile(r"(?<=[.;])\s+")
+_RENGLON_PARTIDO = re.compile(r"\s*\n\s*")
+
+# Los tres datos de viabilidad son cantidades: plata, personas y tiempo. Si hay
+# varias oraciones que mencionan el factor, la que trae una cifra es casi
+# siempre la buena.
+_TIENE_CIFRA = re.compile(r"\d")
+
+
+def _oraciones(text: str) -> list[str]:
+    oraciones: list[str] = []
+    for bloque in _CORTE_DE_BLOQUE.split(text or ""):
+        bloque = _RENGLON_PARTIDO.sub(" ", bloque)
+        oraciones += [s.strip() for s in _CORTE_DE_ORACION.split(bloque) if s.strip()]
+    return oraciones
+
+
 def _first_matching_sentence(name: str, text: str) -> str:
-    """Primera oración de ``text`` que menciona el factor ``name``."""
-    return _sentence_matching(_VIABILITY_REGEXES[name], text)
+    """Oración de ``text`` que menciona el factor ``name``.
+
+    Entre las que lo mencionan gana la que trae una cifra. Sin esto, un
+    documento de requerimientos arruinaba la portada del ADR: «Equipo» salía
+    como «Borrador para el equipo de desarrollo» (la firma del documento) en
+    vez de «Equipo de 4 personas...», y «Plazo» como «armar las rutas de
+    entrega» (la palabra «entrega» dispara el factor) en vez de «5 meses».
+    """
+    candidatas = [
+        s for s in _oraciones(text) if _VIABILITY_REGEXES[name].search(_normalize_text(s))
+    ]
+    if not candidatas:
+        return ""
+    return max(candidatas, key=lambda s: _factor_score(name, s))
 
 
 def _sentence_matching(pattern: "re.Pattern[str]", text: str) -> str:
     """Primera oración de ``text`` que casa con ``pattern`` (ya normalizado)."""
-    for sentence in re.split(r"(?<=[.;\n])\s+", text or ""):
-        if pattern.search(_normalize_text(sentence)):
-            return sentence.strip()
-    return ""
+    return next(
+        (s for s in _oraciones(text) if pattern.search(_normalize_text(s))), ""
+    )
+
+
+def _factor_score(name: str, sentence: str) -> tuple[int, int]:
+    """Qué tan bien habla del factor una oración: (patrones que casan, cifra).
+
+    Un documento de requerimientos menciona el factor en varios lados y solo
+    uno es el dato. La oración buena casa con VARIOS de los patrones del
+    factor a la vez -«Plazo: 5 meses» casa con «plazo» y con «N meses»-,
+    mientras que la que confunde casa con uno solo y por casualidad -«armar
+    las rutas de entrega» casa con «entrega» y nada más-.
+    """
+    normalized = _normalize_text(sentence)
+    casan = sum(
+        1 for patron in _VIABILITY_SUBPATTERNS[name] if patron.search(normalized)
+    )
+    return casan, 1 if _TIENE_CIFRA.search(sentence) else 0
 
 
 def viability_facts(
@@ -1229,15 +1292,7 @@ def viability_facts(
         if not answer:
             candidates = [project_description or "", documents_context or ""]
             for text in candidates:
-                sentences = re.split(r"(?<=[.;\n])\s+", text)
-                hit = next(
-                    (
-                        sentence.strip()
-                        for sentence in sentences
-                        if _VIABILITY_REGEXES[name].search(_normalize_text(sentence))
-                    ),
-                    "",
-                )
+                hit = _first_matching_sentence(name, text)
                 if hit:
                     answer = hit
                     break

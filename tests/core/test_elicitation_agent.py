@@ -1015,6 +1015,42 @@ class TestViabilityFacts:
         assert facts["presupuesto"] == "Tenemos 15000 USD."
         assert facts["plazo"] == "Entregamos en 4 meses."
 
+    def test_un_documento_de_requerimientos_no_confunde_la_firma_con_el_equipo(self):
+        """Bug real (ADR de MercadoCampo): la portada mostraba como Equipo la
+        firma del documento («Borrador para el equipo de desarrollo») y como
+        Plazo una fila de la tabla de actores («armar las rutas de entrega»).
+
+        Dos causas: el corte de oraciones exigía un espacio después del salto
+        de línea, que en un markdown no existe, y entre varias oraciones que
+        mencionan el factor ganaba la primera.
+        """
+        from app.core.elicitation_agent import viability_facts
+
+        documento = (
+            "# MercadoCampo — documento de requerimientos\n"
+            "**Cliente:** Asociación de Productores\n"
+            "**Versión:** 1.0 · Borrador para el equipo de desarrollo\n"
+            "\n"
+            "## 3. Actores\n"
+            "| Actor | Cuántos | Qué hace |\n"
+            "| Coordinador | 3 | arma las rutas de entrega y resuelve faltantes |\n"
+            "\n"
+            "## 6. Restricciones\n"
+            "- Equipo de 4 personas: dos desarrolladores con experiencia en\n"
+            "  Python, uno en React y un líder técnico.\n"
+            "- Presupuesto: 22.000 USD de construcción y hasta 500 USD mensuales.\n"
+            "- Plazo: 5 meses para la primera temporada completa.\n"
+        )
+        facts = viability_facts([], documents_context=documento)
+
+        assert "4 personas" in facts["equipo"]
+        assert "Borrador" not in facts["equipo"]
+        # El renglón partido por el ancho del archivo se une, no se corta.
+        assert "líder técnico" in facts["equipo"]
+        assert "5 meses" in facts["plazo"]
+        assert "rutas de entrega" not in facts["plazo"]
+        assert "22.000 USD" in facts["presupuesto"]
+
     def test_el_resumen_lleva_los_datos_textuales(self):
         team_question = _VIABILITY_FACTORS[1][2]
         model = _FakeModel(
