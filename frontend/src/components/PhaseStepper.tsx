@@ -1,11 +1,4 @@
-const PHASE_LABELS: Record<string, string> = {
-  requerimientos: 'Requerimientos',
-  propuesta: 'Propuesta',
-  refinamiento: 'Refinamiento',
-  revision: 'Revisión',
-  // HU10: quinta fase (mismo label que PHASE_LABELS del backend).
-  final: 'Cierre',
-}
+import { PHASE_LABELS } from './phaseLabels'
 
 interface PhaseStepperProps {
   phases: string[]

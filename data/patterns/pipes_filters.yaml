@@ -42,3 +42,14 @@ example_scenarios:
 fuentes:
   - titulo: "Pipes and Filters pattern (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters"
+image: "/pattern-images/pipes_filters.png"
+image_alt: "Dos pipelines de tuberías y filtros: los datos de cada fuente pasan por una secuencia de tareas (filtros) unidas por tuberías, con componentes reutilizados entre pipelines, hasta la lógica de negocio."
+image_source:
+  titulo: "Pipes and Filters pattern (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [procesamiento]

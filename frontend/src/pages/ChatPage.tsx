@@ -14,6 +14,33 @@ const ELICITATION_PHASE = 'requerimientos'
 const REFINEMENT_PHASE = 'refinamiento'
 
 /**
+ * ¿El 409 dice que Refinamiento YA estaba cerrada (otra pestaña, doble clic)?
+ *
+ * Es el único conflicto que se puede tratar como éxito. El caso llega como
+ * `phase_mismatch`, pero ese código es ambiguo: también lo devuelve pedir
+ * `refinamiento` cuando el proyecto todavía va por `requerimientos`, que sí
+ * es un error. Los distingue la POSICIÓN de `current_phase`: si el proyecto
+ * ya pasó Refinamiento, la fase se cerró; si no llegó, no.
+ *
+ * `deployment_not_approved` nunca es benigno: significa que el servidor
+ * rechazó el cierre porque falta aprobar el despliegue.
+ */
+export function yaEstabaCerrada(
+  err: ApiConflictError,
+  availablePhases: string[] = [],
+): boolean {
+  if (err.detail?.error !== 'phase_mismatch') return false
+  const actual = err.detail.current_phase ?? ''
+  if (!actual) return false
+  const indiceActual = availablePhases.indexOf(actual)
+  const indiceRefinamiento = availablePhases.indexOf(REFINEMENT_PHASE)
+  // Sin la lista de fases no se puede decidir: se prefiere relanzar y que el
+  // panel ofrezca reintentar, antes que declarar un éxito que no pasó.
+  if (indiceActual < 0 || indiceRefinamiento < 0) return false
+  return indiceActual > indiceRefinamiento
+}
+
+/**
  * Se vuelve a montar al cambiar de proyecto (`key`), para que ningún render
  * combine el `projectId` nuevo con la fase o el proyecto anteriores.
  */
@@ -87,30 +114,46 @@ function ChatPageContent() {
     projectsStore.getState().setCurrentProject(projectData)
   }, [projectId])
 
-  // Refinamiento: aprobar el diagrama en el chat cierra la fase y lleva a
-  // Revisión. Son DOS registros distintos: `/api/diagrams/decision` (que ya
-  // hizo <MessageBubble>) solo guarda la decisión sobre el diagrama y no
-  // toca la fase. Sin la decisión de fase, `phase_ready` sigue en false y
-  // "Avanzar" responde "La fase actual todavía no está aprobada".
+  // Refinamiento tiene DOS pasos: aprobar la arquitectura y después llevarla
+  // a una nube. Aprobar el diagrama ya NO cierra la fase -- solo refresca,
+  // para que aparezca el panel de despliegue. La fase la cierra el paso de
+  // la nube (`handleDeploymentApproved`).
+  //
+  // La decisión sobre el diagrama en sí ya la registró <MessageBubble> con
+  // `/api/diagrams/decision`; eso no toca la fase.
   const handleDiagramApproved = async () => {
+    setPhaseActionError('')
+    await refreshAfterPhaseChange()
+  }
+
+  // Cierra Refinamiento: se llama al aprobar el diagrama de DESPLIEGUE, que
+  // es el último paso de la fase. Hasta aquí `phase_ready` sigue en false y
+  // "Avanzar fase" no aparece, así que no se puede saltar la nube.
+  // RELANZA si falla. El panel de despliegue necesita enterarse: la decisión
+  // sobre el diagrama ya quedó registrada y el backend responde 409 si se
+  // repite, así que el reintento tiene que ser solo de ESTO, y el panel es
+  // quien ofrece ese botón. Si el error se tragara aquí, el botón Aprobar ya
+  // no estaría y el proyecto se quedaría trabado en Refinamiento.
+  const handleDeploymentApproved = async () => {
     setPhaseActionError('')
     setPhaseActionLoading(true)
     try {
       try {
         await decidePhase(projectId, REFINEMENT_PHASE, { action: 'approve' })
       } catch (err) {
-        // Ya aprobada (p. ej. desde otra pestaña): no es un error, se avanza.
-        if (!(err instanceof ApiConflictError)) throw err
+        // Antes se descartaba CUALQUIER 409 como "ya aprobada". Desde que el
+        // servidor controla que el despliegue esté aprobado hay dos 409
+        // nuevos (`deployment_not_approved` y un `phase_mismatch` hacia
+        // atrás), y tragárselos hacía que el panel dijera "Refinamiento queda
+        // cerrado" con la fase todavía abierta.
+        if (
+          !(err instanceof ApiConflictError) ||
+          !yaEstabaCerrada(err, phase?.available_phases ?? [])
+        ) {
+          throw err
+        }
       }
-      await advancePhase(projectId)
       await refreshAfterPhaseChange()
-    } catch (err) {
-      // El diagrama YA quedó aprobado: lo que falló es pasar de fase. Antes el
-      // mensaje técnico del error reemplazaba la indicación de qué hacer.
-      const detail = err instanceof Error && err.message ? ` (${err.message})` : ''
-      setPhaseActionError(
-        `El diagrama quedó aprobado, pero no se pudo avanzar de fase${detail}. Usa "Avanzar fase".`,
-      )
     } finally {
       setPhaseActionLoading(false)
     }
@@ -238,6 +281,7 @@ function ChatPageContent() {
               phase={phase?.current_phase}
               onProposalPhaseChanged={refreshAfterPhaseChange}
               onDiagramApproved={handleDiagramApproved}
+              onDeploymentApproved={handleDeploymentApproved}
               onProjectCompleted={refreshAfterPhaseChange}
             />
           </div>

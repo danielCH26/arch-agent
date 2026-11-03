@@ -1,0 +1,761 @@
+"""
+Pruebas del mapeo "componente -> servicio de nube".
+
+El mapeo es determinista a propósito (ver el docstring del módulo), así que
+se puede fijar el resultado exacto: si alguien cambia los términos del
+catálogo y un componente típico deja de caer donde debe, estas pruebas lo
+dicen.
+"""
+
+import pytest
+
+from app.core.deployment_mapper import (
+    build_plan,
+    parse_mermaid_edges,
+    parse_mermaid_nodes,
+    parse_proposal_components,
+    plan_to_dict,
+)
+
+MERMAID = """graph TD
+    U[Usuario] --> FE[Frontend React SPA]
+    FE --> API[Backend API FastAPI]
+    API --> DB[(Base de datos PostgreSQL)]
+    API --> CACHE[Cache Redis]
+    API --> COLA[Cola de mensajes]
+    COLA --> WORKER[Worker de procesamiento]
+    WORKER --> STORE[Almacenamiento de archivos]
+"""
+
+PROPUESTA = """## Componentes
+- **Frontend React SPA**: interfaz del usuario.
+- **Backend API FastAPI**: expone los endpoints.
+- **Monitoreo**: métricas y registros.
+
+## Tecnologías
+- Python 3.11
+"""
+
+
+# --------------------------------------------------------------------------
+# Lectura del Mermaid
+# --------------------------------------------------------------------------
+
+
+def test_lee_los_nodos_con_sus_etiquetas():
+    nodos = parse_mermaid_nodes(MERMAID)
+    assert nodos["FE"] == "Frontend React SPA"
+    # La forma [( )] de base de datos también se reconoce.
+    assert nodos["DB"] == "Base de datos PostgreSQL"
+
+
+def test_lee_nodos_con_comillas_y_saltos_de_linea():
+    nodos = parse_mermaid_nodes('graph TD\n  A["Servicio de<br/>pagos"] --> B[Otro]')
+    assert nodos["A"] == "Servicio de pagos"
+
+
+def test_ignora_las_directivas_de_estilo():
+    """`style A fill:#fff` encaja con el patrón de nodo; no debe colarse."""
+    nodos = parse_mermaid_nodes("graph TD\n  A[Backend]\n  style A fill:#fff\n")
+    assert list(nodos) == ["A"]
+
+
+def test_lee_las_flechas():
+    aristas = parse_mermaid_edges(MERMAID)
+    assert ("FE", "API") in aristas
+    assert ("API", "DB") in aristas
+
+
+@pytest.mark.parametrize(
+    "linea",
+    [
+        "A --> B",
+        "A --- B",
+        "A -.-> B",
+        "A ==> B",
+        "A -->|guarda| B",
+        "A -- guarda --> B",
+    ],
+)
+def test_reconoce_las_formas_de_flecha(linea):
+    assert ("A", "B") in parse_mermaid_edges(f"graph TD\n  {linea}\n")
+
+
+def test_lee_la_flecha_aunque_los_dos_nodos_traigan_su_etiqueta():
+    """Mermaid escribe la etiqueta solo la PRIMERA vez que aparece un nodo.
+    En un diagrama corto los dos extremos la traen, y antes la flecha se
+    perdía porque justo antes de `-->` estaba el `]` y no el identificador.
+    """
+    aristas = parse_mermaid_edges("graph TD\n  FE[Frontend] --> API[Backend]\n")
+    assert ("FE", "API") in aristas
+
+
+def test_una_etiqueta_con_guiones_no_parece_una_flecha():
+    aristas = parse_mermaid_edges("graph TD\n  A[Carga --> proceso] --> B[Fin]\n")
+    assert aristas == [("A", "B")]
+
+
+# --------------------------------------------------------------------------
+# Lectura de la propuesta
+# --------------------------------------------------------------------------
+
+
+def test_lee_los_componentes_de_la_propuesta():
+    assert parse_proposal_components(PROPUESTA) == [
+        "Frontend React SPA",
+        "Backend API FastAPI",
+        "Monitoreo",
+    ]
+
+
+def test_se_detiene_en_la_siguiente_seccion():
+    """Sin el corte, "Python 3.11" entraría como componente."""
+    assert "Python 3.11" not in parse_proposal_components(PROPUESTA)
+
+
+# --------------------------------------------------------------------------
+# Mapeo
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provider_id,esperado",
+    [
+        (
+            "aws",
+            {
+                "Frontend React SPA": "cloudfront",
+                "Backend API FastAPI": "ecs",
+                "Base de datos PostgreSQL": "rds",
+                "Cache Redis": "elasticache",
+                "Cola de mensajes": "sqs",
+                "Worker de procesamiento": "lambda",
+                "Almacenamiento de archivos": "s3",
+                "Monitoreo": "cloudwatch",
+            },
+        ),
+        (
+            "gcp",
+            {
+                "Frontend React SPA": "cloud-cdn",
+                "Backend API FastAPI": "cloud-run",
+                "Base de datos PostgreSQL": "cloud-sql",
+                "Cache Redis": "memorystore",
+                "Cola de mensajes": "pubsub",
+                "Worker de procesamiento": "functions",
+                "Almacenamiento de archivos": "cloud-storage",
+                "Monitoreo": "monitoring",
+            },
+        ),
+    ],
+)
+def test_mapea_cada_componente_al_servicio_equivalente(provider_id, esperado):
+    plan = build_plan(
+        provider_id=provider_id, mermaid=MERMAID, proposal_markdown=PROPUESTA
+    )
+    obtenido = {m.component: m.service.id for m in plan.components}
+    assert obtenido == esperado
+
+
+def test_no_quedan_componentes_sin_mapear_en_el_caso_tipico():
+    for provider_id in ("aws", "gcp"):
+        plan = build_plan(
+            provider_id=provider_id, mermaid=MERMAID, proposal_markdown=PROPUESTA
+        )
+        assert plan.unmapped == ()
+
+
+def test_el_usuario_no_es_un_componente_desplegable():
+    plan = build_plan(provider_id="aws", mermaid=MERMAID)
+    assert "Usuario" not in [m.component for m in plan.components]
+    assert "Usuario" not in plan.unmapped
+
+
+class TestServiciosDeTerceros:
+    """Stripe no se despliega, se consume. Listarlos como "sin equivalente"
+    daba a entender un problema donde solo hay una dependencia externa."""
+
+    @pytest.mark.parametrize(
+        "componente",
+        [
+            "Pasarela de pagos (Stripe)",
+            "Pasarela de pago",
+            "Integración con sistema externo",
+            "API externa de catálogo",
+            "Servicio de un tercero",
+        ],
+    )
+    def test_se_reconocen_como_externos(self, componente):
+        plan = build_plan(
+            provider_id="aws", mermaid=f"graph TD\n  A[{componente}] --> B[Backend FastAPI]\n"
+        )
+        assert [e.name for e in plan.externals] == [componente]
+        assert plan.unmapped == ()
+
+    def test_no_se_confunde_un_componente_propio_con_uno_externo(self):
+        plan = build_plan(
+            provider_id="aws", mermaid="graph TD\n  A[Base de datos PostgreSQL]\n"
+        )
+        assert plan.externals == ()
+
+    def test_la_flecha_sale_de_lo_nuestro_hacia_el_tercero(self):
+        """El catálogo describe la nube, no a Stripe: la dirección se decide
+        por quién llama a quién, no por `connects_to`."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos Stripe]\n",
+        )
+        externo = plan.externals[0]
+        assert ("ecs", externo.id) in plan.connections
+
+    def test_una_caja_por_servicio_aunque_se_nombre_de_dos_formas(self):
+        """El diagrama lo nombra "Pasarela de pagos" y la propuesta
+        "Pasarela de pagos (Stripe)": es el mismo tercero, no dos."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        assert [e.name for e in plan.externals] == ["Pasarela de pagos (Stripe)"]
+
+    def test_la_flecha_llega_a_la_caja_que_quedo(self):
+        """Al juntar variantes, el nodo del diagrama tiene que apuntar al
+        servicio que sobrevivió, no a uno que ya no existe."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        destino = plan.externals[0].id
+        assert ("ecs", destino) in plan.connections
+
+    def test_un_tercero_sin_nodo_en_el_diagrama_igual_se_conecta(self):
+        """Si la pieza solo aparece en la sección Componentes, no hay arista
+        que traducir y la caja quedaba flotando. Quien llama a un servicio
+        externo es siempre el cómputo."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  FE[Frontend Web] --> API[API REST Django]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        externo = plan.externals[0]
+        assert ("ecs", externo.id) in plan.connections
+
+    def test_no_duplica_la_flecha_si_el_diagrama_ya_la_tenia(self):
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> P[Pasarela de pagos]\n",
+            proposal_markdown="## Componentes\n- **Pasarela de pagos (Stripe)**: cobros.\n",
+        )
+        hacia_externos = [c for c in plan.connections if c[1].startswith("ext-")]
+        assert len(hacia_externos) == 1
+
+    def test_viajan_en_el_plan_serializado(self):
+        plan = build_plan(
+            provider_id="gcp",
+            mermaid="graph TD\n  A[Backend FastAPI] --> B[Pasarela de pagos Stripe]\n",
+        )
+        data = plan_to_dict(plan)
+        assert data["externals"] and data["externals"][0]["name"]
+
+
+def test_no_repite_el_mismo_componente_con_distinto_detalle():
+    """El mismo componente llega del diagrama ("Motor de reglas") y de la
+    propuesta ("Motor de reglas (Drools)"). Listar los dos hacía parecer
+    que había el doble de problemas; se conserva el más informativo.
+
+    El ejemplo NO es una pasarela de pagos a propósito: eso ahora se
+    reconoce como servicio de un tercero y no llega a `unmapped`.
+    """
+    mermaid = "graph TD\n  A[Motor de reglas] --> B[Backend FastAPI]\n"
+    propuesta = "## Componentes\n- **Motor de reglas (Drools)**: decisiones.\n"
+    plan = build_plan(
+        provider_id="aws", mermaid=mermaid, proposal_markdown=propuesta
+    )
+    assert plan.unmapped == ("Motor de reglas (Drools)",)
+
+
+def test_no_junta_componentes_que_solo_se_parecen():
+    mermaid = "graph TD\n  A[Motor de reglas] --> B[Firma digital]\n"
+    plan = build_plan(provider_id="aws", mermaid=mermaid)
+    assert len(plan.unmapped) == 2
+
+
+def test_un_componente_desconocido_se_reporta_en_vez_de_inventarse():
+    """Preferimos decir "esto no lo sé mapear" a poner un servicio al azar."""
+    plan = build_plan(
+        provider_id="aws", mermaid="graph TD\n  X[Cosa rarisima inclasificable]\n"
+    )
+    assert plan.components == ()
+    assert plan.unmapped == ("Cosa rarisima inclasificable",)
+
+
+@pytest.mark.parametrize("provider_id", ["aws", "gcp"])
+@pytest.mark.parametrize(
+    "componente",
+    ["Dominio", "Dominio (Modelos y reglas)", "Capa de Dominio"],
+)
+def test_la_capa_de_dominio_no_es_un_servicio_de_dns(provider_id, componente):
+    """En estas arquitecturas "dominio" es la capa de negocio, no un nombre
+    DNS. Con "dominio" como término del catálogo, "Dominio (Modelos y
+    reglas)" salía mapeado a Route 53, que es un error visible en la tabla.
+    Preferimos dejarlo sin mapear antes que mapearlo mal."""
+    plan = build_plan(provider_id=provider_id, mermaid=f"graph TD\n  A[{componente}]\n")
+    categorias = {m.service.category for m in plan.components}
+    assert "dns" not in categorias
+
+
+@pytest.mark.parametrize("provider_id", ["aws", "gcp"])
+@pytest.mark.parametrize("componente", ["Nombre de dominio", "DNS", "Dominio web"])
+def test_el_dns_de_verdad_si_se_mapea(provider_id, componente):
+    plan = build_plan(provider_id=provider_id, mermaid=f"graph TD\n  A[{componente}]\n")
+    assert [m.service.category for m in plan.components] == ["dns"]
+
+
+def test_el_termino_mas_especifico_gana():
+    """"base de datos" tiene que pesar más que "bd" o "sql" sueltos."""
+    plan = build_plan(provider_id="aws", mermaid="graph TD\n  A[Base de datos]\n")
+    assert plan.components[0].service.id == "rds"
+    assert plan.components[0].reason == "base de datos"
+
+
+def test_dos_componentes_pueden_caer_en_el_mismo_servicio():
+    plan = build_plan(
+        provider_id="gcp",
+        mermaid="graph TD\n  A[Cola de mensajes] --> B[Notificaciones]\n",
+    )
+    assert {m.service.id for m in plan.components} == {"pubsub"}
+    # Pero el diagrama dibuja UNA caja, con los dos componentes dentro.
+    assert len(plan.services) == 1
+    assert len(plan.components_for("pubsub")) == 2
+
+
+# --------------------------------------------------------------------------
+# Conexiones
+# --------------------------------------------------------------------------
+
+
+def test_las_conexiones_salen_de_la_arquitectura_aprobada():
+    plan = build_plan(provider_id="aws", mermaid=MERMAID)
+    assert ("ecs", "rds") in plan.connections
+    assert ("ecs", "elasticache") in plan.connections
+
+
+def test_no_dibuja_conexiones_que_el_proveedor_no_permite():
+    """Todo par dibujado tiene que estar declarado en `connects_to`."""
+    for provider_id in ("aws", "gcp"):
+        plan = build_plan(
+            provider_id=provider_id, mermaid=MERMAID, proposal_markdown=PROPUESTA
+        )
+        permitidas = {
+            (s.id, destino)
+            for s in plan.provider.services
+            for destino in s.connects_to
+        }
+        for par in plan.connections:
+            assert par in permitidas, f"{provider_id}: {par} no está en connects_to"
+
+
+def test_inserta_el_servicio_intermedio_cuando_hace_falta():
+    """CloudFront no habla con ECS: habla con el balanceador o el gateway.
+    En vez de descartar la flecha del frontend al backend, se mete el
+    intermediario que el catálogo sí permite."""
+    plan = build_plan(
+        provider_id="aws",
+        mermaid="graph TD\n  FE[Frontend React] --> API[Backend FastAPI]\n",
+    )
+    assert plan.bridges, "esperaba un servicio puente entre la CDN y el cómputo"
+    puente = plan.bridges[0].id
+    assert ("cloudfront", puente) in plan.connections
+    assert (puente, "ecs") in plan.connections
+    # El puente no corresponde a ningún componente de la arquitectura.
+    assert plan.components_for(puente) == []
+
+
+def test_endereza_una_flecha_dibujada_al_reves():
+    """Si la arquitectura dibuja "base de datos -> backend", en la nube el
+    que llama es el backend."""
+    plan = build_plan(
+        provider_id="aws",
+        mermaid="graph TD\n  DB[(Base de datos PostgreSQL)] --> API[Backend FastAPI]\n",
+    )
+    assert ("ecs", "rds") in plan.connections
+    assert ("rds", "ecs") not in plan.connections
+
+
+def test_sin_flechas_usa_las_conexiones_del_catalogo():
+    """Un diagrama de cajas sueltas no debe dar un despliegue sin ninguna
+    línea: se completan las conexiones posibles entre los servicios."""
+    plan = build_plan(
+        provider_id="aws",
+        mermaid="graph TD\n  A[Backend FastAPI]\n  B[(Base de datos PostgreSQL)]\n",
+    )
+    assert ("ecs", "rds") in plan.connections
+
+
+# --------------------------------------------------------------------------
+# Serialización
+# --------------------------------------------------------------------------
+
+
+def test_plan_to_dict_trae_lo_que_consume_la_interfaz():
+    plan = build_plan(provider_id="aws", mermaid=MERMAID, proposal_markdown=PROPUESTA)
+    data = plan_to_dict(plan)
+    assert data["provider"]["id"] == "aws"
+    assert {"component", "service_id", "service_name", "deploy_note"} <= set(
+        data["components"][0]
+    )
+    # La nota de despliegue es lo que responde "dónde va cada pieza".
+    assert all(item["deploy_note"] for item in data["components"])
+
+# --------------------------------------------------------------------------
+# Hallazgos de la revisión del PR
+# --------------------------------------------------------------------------
+
+
+class TestRevisionPR:
+    """Casos que la revisión señaló y que antes se leían mal."""
+
+    def test_cadena_de_flechas_da_todas_las_aristas(self):
+        """`A --> B --> C` daba solo la primera: `finditer` no solapa
+        coincidencias y la B ya estaba consumida."""
+        assert parse_mermaid_edges("graph TD\n  A --> B --> C\n") == [
+            ("A", "B"),
+            ("B", "C"),
+        ]
+
+    def test_cadena_con_etiquetas_tambien(self):
+        assert parse_mermaid_edges(
+            "graph TD\n  A[Uno] --> B[Dos] --> C[Tres]\n"
+        ) == [("A", "B"), ("B", "C")]
+
+    def test_ampersand_reparte_la_flecha(self):
+        assert parse_mermaid_edges("graph TD\n  A --> B & C\n") == [
+            ("A", "B"),
+            ("A", "C"),
+        ]
+
+    def test_flecha_bidireccional(self):
+        """Una dirección basta: si el proveedor solo permite la contraria,
+        la flecha se endereza más adelante."""
+        assert parse_mermaid_edges("graph TD\n  A <--> B\n") == [("A", "B")]
+
+    def test_etiqueta_de_arista_con_parentesis_no_crea_un_nodo(self):
+        """`-->|consulta (SQL)|` se leía como un nodo `consulta` con
+        etiqueta `SQL`, y ese fantasma acababa en "sin equivalente"."""
+        mermaid = "graph TD\n  A[Backend] -->|consulta (SQL)| B[Base de datos]\n"
+        assert set(parse_mermaid_nodes(mermaid)) == {"A", "B"}
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_una_flecha_al_reves_tambien_busca_puente(self):
+        """Antes el puente solo se probaba en src->dst, así que
+        "Backend --> Frontend" se descartaba en vez de dar
+        CloudFront -> gateway -> ECS."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> FE[Frontend React]\n",
+        )
+        assert plan.dropped_connections == ()
+        assert plan.bridges
+        puente = plan.bridges[0].id
+        assert ("cloudfront", puente) in plan.connections
+        assert (puente, "ecs") in plan.connections
+
+    def test_el_puente_tiene_que_enrutar(self):
+        """El catálogo permite `ECS -> S3` y `S3 -> CloudFront`, así que sin
+        filtrar por categoría un bucket hacía de conector."""
+        plan = build_plan(
+            provider_id="aws",
+            mermaid="graph TD\n  API[Backend FastAPI] --> FE[Frontend React]\n",
+        )
+        enrutan = {"loadbalancer", "apigateway", "cdn", "dns", "queue", "network"}
+        assert all(b.category in enrutan for b in plan.bridges)
+
+    @pytest.mark.parametrize("provider_id", ["aws", "gcp"])
+    def test_una_pasarela_de_api_no_es_un_tercero(self, provider_id):
+        """"Pasarela" a secas mandaba los API gateways a la columna de
+        terceros."""
+        plan = build_plan(
+            provider_id=provider_id, mermaid="graph TD\n  A[Pasarela de API (BFF)]\n"
+        )
+        assert plan.externals == ()
+        assert [m.service.category for m in plan.components] == ["apigateway"]
+
+    @pytest.mark.parametrize(
+        "componente", ["Pasarela de pagos (Stripe)", "Payment Gateway"]
+    )
+    def test_una_pasarela_de_pagos_si_es_un_tercero(self, componente):
+        """En inglés caía en API Gateway por el término `gateway`."""
+        plan = build_plan(
+            provider_id="aws", mermaid=f"graph TD\n  A[{componente}]\n"
+        )
+        assert [e.name for e in plan.externals] == [componente]
+
+
+class TestSegundaRevisionPR:
+    """Los defectos de la segunda revisión del PR, con sus entradas exactas.
+
+    Los dos del parser venían del mismo sitio: una alternativa de la
+    expresión de flechas que matcheaba más de lo que debía.
+    """
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            # A. Regresión: `o-{2,}` se comía la última letra del nodo cuando
+            # la flecha venía sin espacios. En español pega fuerte (Usuario,
+            # Catálogo, Pago, Servicio) y Mermaid escribe `A-->B` muy seguido.
+            ("Usuario[Usuario]-->API[API]", [("Usuario", "API")]),
+            ("Inbox-->Worker", [("Inbox", "Worker")]),
+            ("Catalogo-->Pedido", [("Catalogo", "Pedido")]),
+            ("Pago-->Banco", [("Pago", "Banco")]),
+            # Con espacios ya funcionaba; que siga.
+            ("Usuario --> API", [("Usuario", "API")]),
+        ],
+    )
+    def test_los_nodos_que_terminan_en_o_o_x_no_pierden_la_ultima_letra(
+        self, mermaid, esperado
+    ):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        ["A --o B", "A --x B", "A o--o B", "A x--x B", "A o-- B", "A x-- B"],
+    )
+    def test_los_extremos_de_circulo_y_cruz_si_se_reconocen(self, mermaid):
+        """Antes `A --o B` no daba arista: la alternativa solo cubría `o--`."""
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_una_flecha_sin_punta_entre_dos_no_se_come_el_nodo_del_medio(self):
+        """D. `_MID_LABEL_RE` tomaba `--- B -->` como si fuera una etiqueta.
+
+        Resultado: la arista falsa `('A','C')`, y B desaparecía.
+        """
+        assert parse_mermaid_edges("A --- B --> C") == [("A", "B"), ("B", "C")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -.texto.-> B",      # punteada con etiqueta: antes no daba arista
+            "A -. texto .-> B",
+            "A ==texto==> B",      # gruesa: antes daba ('texto','B') de más
+            "A == texto ==> B",
+            "A -- texto --> B",
+            "A -->|texto| B",
+        ],
+    )
+    def test_todas_las_formas_de_etiqueta_dan_una_sola_arista(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        ["A --> B", "A ==> B", "A -.-> B", "A --- B", "A <--> B", "A ===> B"],
+    )
+    def test_las_flechas_sin_etiqueta_siguen_funcionando(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_el_encadenado_y_las_listas_siguen_funcionando(self):
+        assert parse_mermaid_edges("A --> B --> C") == [("A", "B"), ("B", "C")]
+        assert parse_mermaid_edges("A --> B & C") == [("A", "B"), ("A", "C")]
+
+
+class TestTerceraRevisionPR:
+    """El defecto D, que volví a introducir en la forma punteada, y dos menores.
+
+    La corrección anterior arregló `A --- B --> C` en la forma sólida y, al
+    agregar la punteada, repetí el mismo error. La causa de fondo era que el
+    cuerpo de la etiqueta rechazaba CARACTERES (`[^->]`, `[^.>]`) en vez de
+    rechazar FLECHAS. Ahora acepta guiones y puntos y se detiene en el primer
+    cierre (ver `TestCuartaRevisionPR` para los cierres sin punta).
+    """
+
+    def test_la_punteada_sin_punta_no_se_come_el_nodo_del_medio(self):
+        """`A -.- B -.-> C` daba `('A','C')` y B desaparecía."""
+        assert parse_mermaid_edges("A -.- B -.-> C") == [("A", "B"), ("B", "C")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -.- B",            # antes no daba arista: `-.-` no era flecha
+            "A -.-> B",
+            "A -. texto .-> B",
+            "A -.texto.-> B",
+            "A -. t .- B",        # etiqueta y sin punta
+        ],
+    )
+    def test_todas_las_formas_punteadas_dan_una_arista(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_dos_punteadas_encadenadas(self):
+        assert parse_mermaid_edges("A -. a .-> B -. b .-> C") == [
+            ("A", "B"),
+            ("B", "C"),
+        ]
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            # Menor 2: `-{2,}[ox]` tomaba la primera letra del nodo destino.
+            ("A---orders", [("A", "orders")]),
+            ("A---oso", [("A", "oso")]),
+            ("A---xenon", [("A", "xenon")]),
+            ("A o--orders", [("A", "orders")]),
+            # Y los extremos de verdad siguen andando.
+            ("A --o B", [("A", "B")]),
+            ("A --x B", [("A", "B")]),
+            ("A o--o B", [("A", "B")]),
+        ],
+    )
+    def test_los_extremos_de_circulo_y_cruz_no_se_comen_el_nodo(
+        self, mermaid, esperado
+    ):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            # Menor 3: una etiqueta con guion dejaba un nodo fantasma, porque
+            # `[^->]` prohibía cualquier guion y la etiqueta no matcheaba.
+            "A -- e-commerce --> B",
+            "A -. e-commerce .-> B",
+            "A == e-commerce ==> B",
+            "A -- multi-tenant SaaS --> B",
+            "A -- back-end --> B",
+        ],
+    )
+    def test_una_etiqueta_con_guion_no_deja_un_nodo_fantasma(self, mermaid):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    def test_lo_de_la_revision_anterior_sigue_funcionando(self):
+        assert parse_mermaid_edges("A --- B --> C") == [("A", "B"), ("B", "C")]
+        assert parse_mermaid_edges("Usuario[Usuario]-->API[API]") == [
+            ("Usuario", "API")
+        ]
+        assert parse_mermaid_edges("A --> B & C") == [("A", "B"), ("A", "C")]
+
+
+class TestCuartaRevisionPR:
+    """El defecto D en la forma punteada, ahora con cierre sin punta.
+
+    La etiqueta punteada solo se detenía ante un cierre CON punta (`.->`);
+    ante `.-` seguía de largo y se tragaba el nodo siguiente. Ahora la
+    etiqueta termina en cualquier cierre válido de su familia, con o sin
+    punta, y esos cierres son los mismos que `_ARROW_RE` reconoce como flecha
+    completa (`_SOLID_END`, `_THICK_END`, `_DOT_END`).
+    """
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -. t .- B -.-> C",    # la entrada exacta del bloqueante
+            "A -..- B -.-> C",       # varios puntos, sin etiqueta
+            "A -. t ..- B -.-> C",
+            "A -.- B -. x .- C -.-> D",
+        ],
+    )
+    def test_la_punteada_con_cierre_sin_punta_no_se_come_el_nodo_del_medio(
+        self, mermaid
+    ):
+        edges = parse_mermaid_edges(mermaid)
+        assert ("A", "C") not in edges  # la conexión falsa que dibujaba
+        assert edges[:2] == [("A", "B"), ("B", "C")]
+
+    def test_los_dos_casos_de_la_tabla_del_revisor(self):
+        assert parse_mermaid_edges("A -. t .- B -.-> C") == [("A", "B"), ("B", "C")]
+        assert parse_mermaid_edges("A -..- B -.-> C") == [("A", "B"), ("B", "C")]
+
+    def test_el_encadenado_en_el_otro_orden_sigue_funcionando(self):
+        assert parse_mermaid_edges("A -.-> B -. x .- C") == [("A", "B"), ("B", "C")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -.-x B",
+            "A -.-o B",
+            "A -..-x B",     # antes dejaba la arista fantasma ('A', 'x')
+            "A -..-o B",
+            "A -...-> B",
+            "A -..-> B",
+            "A <-.-> B",
+        ],
+    )
+    def test_extremos_de_cruz_y_circulo_y_varios_puntos_sin_nodo_fantasma(
+        self, mermaid
+    ):
+        """Menor del revisor: `A -.-x B` daba una arista hacia un nodo `x`."""
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            # Menor del revisor: la etiqueta de una flecha SIN punta dejaba
+            # la arista falsa ('t', 'B'). Venía de antes del PR.
+            "A -- t --- B",
+            "A -- t ---- B",
+            "A -- t --o B",
+            "A -- t --x B",
+            "A == t === B",
+            "A -- e-commerce --- B",
+            "A -- lee y escribe --o B",
+        ],
+    )
+    def test_la_etiqueta_en_una_flecha_sin_punta_no_deja_un_nodo_fantasma(
+        self, mermaid
+    ):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            ("A --o B -- t --> C", [("A", "B"), ("B", "C")]),
+            ("A -- t --o B -- u --x C", [("A", "B"), ("B", "C")]),
+            ("A -- t --- B == u === C", [("A", "B"), ("B", "C")]),
+            ("A <-- t --> B", [("A", "B")]),
+            ("A o-- t --o B", [("A", "B")]),
+            ("A -- t --xenon", []),  # `--xenon` no es un cierre: no inventa B
+        ],
+    )
+    def test_formas_mezcladas_en_una_misma_linea(self, mermaid, esperado):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            ("A -. a.b .- B -.-> C", [("A", "B"), ("B", "C")]),
+            ("A -. v1.2 .-> B", [("A", "B")]),
+            ("A -- a.b --> B", [("A", "B")]),
+            ("A -. e-commerce .- B -.-> C", [("A", "B"), ("B", "C")]),
+        ],
+    )
+    def test_las_etiquetas_con_punto_o_guion_siguen_dando_las_aristas_correctas(
+        self, mermaid, esperado
+    ):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    def test_ninguna_combinacion_de_flechas_pierde_ni_inventa_aristas(self):
+        """Recorre todas las formas válidas de flecha, con y sin etiqueta,
+        encadenadas de a tres nodos, y exige exactamente `(A,B)` y `(B,C)`.
+
+        Es lo que habría atrapado el bloqueante: las pruebas anteriores
+        encadenaban casos sueltos en un solo orden.
+        """
+        sin_etiqueta = [
+            "-->", "--->", "---", "----", "==>", "===>", "===",
+            "-.->", "-..->", "-...->", "-.-", "-..-", "--o", "--x",
+            "-.-x", "-.-o", "-..-x", "<-->", "<==>", "<-.->", "o--o", "x--x",
+        ]
+        con_etiqueta = [
+            "-- t -->", "-- t --->", "-- t ---", "-- t --o", "-- t --x",
+            "== t ==>", "== t ===",
+            "-. t .->", "-. t ..->", "-. t .-", "-. t ..-",
+            "<-- t -->", "o-- t --o",
+        ]
+        etiquetas = ["t", "e-commerce", "a.b", "lee y escribe", "x-ray"]
+        formas = list(sin_etiqueta)
+        for forma in con_etiqueta:
+            for etiqueta in etiquetas:
+                formas.append(forma.replace(" t ", f" {etiqueta} "))
+        for primera in formas:
+            for segunda in formas:
+                linea = f"A {primera} B {segunda} C"
+                assert parse_mermaid_edges(linea) == [("A", "B"), ("B", "C")], linea

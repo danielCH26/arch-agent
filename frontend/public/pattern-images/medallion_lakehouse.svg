@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" font-family="Segoe UI, Arial, sans-serif" font-size="16">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+  <rect width="640" height="400" fill="#ffffff"/>
+  <text x="320" y="32" text-anchor="middle" font-size="20" font-weight="600" fill="#1f2937">Arquitectura medallion (lakehouse)</text>
+  <text x="70" y="80" text-anchor="middle" font-size="14" fill="#475569">Fuentes</text>
+  <g fill="#f1f5f9" stroke="#64748b" stroke-width="2"><rect x="15" y="95" width="110" height="44" rx="8"/><rect x="15" y="168" width="110" height="44" rx="8"/><rect x="15" y="241" width="110" height="44" rx="8"/></g>
+  <g fill="#334155" text-anchor="middle" font-size="14"><text x="70" y="122">Bases de datos</text><text x="70" y="195">APIs / eventos</text><text x="70" y="268">Archivos</text></g>
+  <rect x="150" y="55" width="475" height="270" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="7 5"/>
+  <text x="387" y="80" text-anchor="middle" font-size="14" fill="#475569">Lakehouse (almacenamiento abierto + tablas transaccionales)</text>
+  <rect x="165" y="100" width="135" height="200" rx="12" fill="#f5d0a9" stroke="#b45309" stroke-width="2"/>
+  <rect x="325" y="100" width="135" height="200" rx="12" fill="#e5e7eb" stroke="#6b7280" stroke-width="2"/>
+  <rect x="485" y="100" width="125" height="200" rx="12" fill="#fde68a" stroke="#ca8a04" stroke-width="2"/>
+  <g text-anchor="middle" font-weight="600"><text x="232" y="135" fill="#7c2d12">Bronce</text><text x="392" y="135" fill="#374151">Plata</text><text x="547" y="135" fill="#713f12">Oro</text></g>
+  <g text-anchor="middle" font-size="13">
+    <text x="232" y="175" fill="#7c2d12">Datos crudos</text><text x="232" y="195" fill="#7c2d12">tal como llegan</text><text x="232" y="215" fill="#7c2d12">(histórico)</text>
+    <text x="392" y="175" fill="#374151">Limpios,</text><text x="392" y="195" fill="#374151">validados y</text><text x="392" y="215" fill="#374151">unificados</text>
+    <text x="547" y="175" fill="#713f12">Agregados</text><text x="547" y="195" fill="#713f12">listos para</text><text x="547" y="215" fill="#713f12">el negocio</text>
+  </g>
+  <g stroke="#475569" stroke-width="2" marker-end="url(#a)">
+    <line x1="125" y1="117" x2="160" y2="160"/><line x1="125" y1="190" x2="160" y2="190"/><line x1="125" y1="263" x2="160" y2="220"/>
+    <line x1="300" y1="200" x2="320" y2="200"/><line x1="460" y1="200" x2="480" y2="200"/>
+  </g>
+  <text x="320" y="365" text-anchor="middle" font-size="13" fill="#475569">Cada capa mejora la calidad del dato; BI, reportes y modelos de ML consumen la capa oro</text>
+</svg>

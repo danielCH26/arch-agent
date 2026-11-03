@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { proposalsStore } from '../stores/proposalsStore'
 import type { ProposalCitation, ProposalJustification } from '../api/proposals'
-import { getPatternDetail, type PatternDetail } from '../api/patterns'
+import { getPatternDetail, type Pattern, type PatternDetail } from '../api/patterns'
+import { usePatternCatalog } from '../hooks/usePatternCatalog'
+import { PatternFigure, PatternThumbnail } from './PatternFigure'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { ProposalProgress } from './ProposalProgress'
 import { formatDateTime } from '../lib/format'
@@ -43,6 +45,8 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   const streaming = activity === 'generating' || activity === 'modifying'
   const busy = activity !== 'idle'
   const approvedWithoutContent = !proposal && projectState?.approved
+  // Imágenes de los patrones citados: solo se pide el catálogo si hay citas.
+  const catalog = usePatternCatalog(Boolean(proposal?.citations.length))
   // El tope lo define el backend (PROPOSAL_MAX_ITER). Si no lo informa, no se
   // bloquea en el cliente: el servidor rechaza la iteración de más con su mensaje.
   const maxIterations = projectState?.max_iterations ?? null
@@ -142,7 +146,9 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
         </div>
       )}
 
-      {proposal && (proposal.citations.length > 0 || !streaming) && <Citations citations={proposal.citations} justification={streaming ? null : proposal.justification} />}
+      {proposal && !streaming && <SelectedPattern pattern={primaryPattern(proposal.justification, catalog)} />}
+
+      {proposal && (proposal.citations.length > 0 || !streaming) && <Citations citations={proposal.citations} justification={streaming ? null : proposal.justification} catalog={catalog} />}
 
       {proposal?.id && proposal.lifecycle === 'proposed' && !streaming && (
         <div className="mt-4 border-t border-gray-100 pt-4">
@@ -201,7 +207,32 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   )
 }
 
-function Citations({ citations, justification }: { citations: ProposalCitation[]; justification?: ProposalJustification | null }) {
+// Patrón que eligió la propuesta (el declarado en "Patrón principal: X"). No
+// se usa la cita principal a ciegas: si el RAG trajo otro patrón, el bloque
+// mostraría una imagen que contradice la recomendación.
+function primaryPattern(
+  justification: ProposalJustification | null | undefined,
+  catalog: Map<number, Pattern> | null,
+): Pattern | null {
+  const id = justification?.selected_pattern_id !== undefined
+    ? justification.selected_pattern_id
+    // Backend sin selected_pattern_id: la cita principal solo si es la declarada.
+    : justification?.primary_in_sources ? justification.primary_pattern_id : null
+  return id != null ? catalog?.get(id) ?? null : null
+}
+
+// El patrón elegido con su imagen y atribución: se ve donde se decide, no solo en el catálogo.
+function SelectedPattern({ pattern }: { pattern: Pattern | null }) {
+  if (!pattern?.image) return null
+  return (
+    <section className="mt-3 rounded-xl border border-gray-100 p-3" data-testid="proposal-selected-pattern" aria-labelledby="proposal-selected-pattern-title">
+      <h3 id="proposal-selected-pattern-title" className="text-sm font-semibold text-gray-900">Patrón seleccionado: {pattern.pattern_name}</h3>
+      <PatternFigure key={pattern.id} pattern={pattern} className="max-h-64 md:max-h-80" />
+    </section>
+  )
+}
+
+function Citations({ citations, justification, catalog }: { citations: ProposalCitation[]; justification?: ProposalJustification | null; catalog: Map<number, Pattern> | null }) {
   if (!citations.length) return <p className="mt-3 text-xs italic text-gray-500">Sin patrones recuperados de la base vectorial: propuesta basada en el conocimiento general del modelo.</p>
   return (
     <div className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-600">
@@ -209,7 +240,7 @@ function Citations({ citations, justification }: { citations: ProposalCitation[]
       {justification && <JustificationStatus justification={justification} />}
       {/* Sin numeración propia: el [n] ya es el número que cita la tabla. */}
       <ul className="mt-1 list-none space-y-1 pl-0">
-        {citations.map((citation, index) => <CitationRow key={`${citation.pattern_id ?? 'pattern'}-${index}`} citation={citation} position={index + 1} />)}
+        {citations.map((citation, index) => <CitationRow key={`${citation.pattern_id ?? 'pattern'}-${index}`} citation={citation} position={index + 1} pattern={citation.pattern_id != null ? catalog?.get(citation.pattern_id) ?? null : null} />)}
       </ul>
     </div>
   )
@@ -228,7 +259,7 @@ function JustificationStatus({ justification }: { justification: ProposalJustifi
   return <p className="mt-1 text-amber-700" data-testid="justification-status">La propuesta no cita patrones: {reason}.</p>
 }
 
-function CitationRow({ citation, position }: { citation: ProposalCitation; position: number }) {
+function CitationRow({ citation, position, pattern }: { citation: ProposalCitation; position: number; pattern: Pattern | null }) {
   const [open, setOpen] = useState(false)
   const [detail, setDetail] = useState<PatternDetail | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -249,6 +280,8 @@ function CitationRow({ citation, position }: { citation: ProposalCitation; posit
 
   return (
     <li title={citation.snippet ?? undefined} data-testid={`citation-${number}`}>
+      {/* Miniatura del patrón de cada cita. */}
+      {pattern && <PatternThumbnail key={pattern.id} pattern={pattern} />}
       [{number}] {citation.pattern_name ?? `Patrón #${patternId ?? number}`}
       {citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}
       {citation.source_role === 'primary' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700">patrón principal</span>}

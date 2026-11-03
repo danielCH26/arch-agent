@@ -159,6 +159,23 @@ class TestGetProposalExposesJustification:
         assert out.justification["primary_pattern_name"] == "Hexagonal"
         # El análisis no toca las citas guardadas.
         assert out.citations == CITATIONS
+        assert out.justification["selected_pattern_id"] == 7
+
+    def test_selected_pattern_is_the_declared_one_not_the_primary_citation(self):
+        from app.api import proposals as module
+
+        # La propuesta recomienda Hexagonal, pero el RAG trajo API Gateway como principal.
+        citations = [{"index": 1, "pattern_id": 4, "pattern_name": "API Gateway + BFF", "source_role": "primary"}]
+        db = MagicMock()
+        db.get.return_value = _proposal(3, CITED, citations=citations)
+        with patch.object(module, "SessionLocal", return_value=db), \
+             patch.object(module, "_require_owned_project"), \
+             patch.object(module, "pattern_names", return_value=[(4, "API Gateway + BFF"), (7, "Hexagonal")]):
+            out = asyncio.run(module.get_proposal(3, CURRENT_USER))
+
+        assert out.justification["primary_in_sources"] is False
+        assert out.justification["primary_pattern_id"] == 4
+        assert out.justification["selected_pattern_id"] == 7
 
 
 class TestDecideChecksOpenProject:
@@ -191,6 +208,9 @@ class TestPatternDetail:
             tradeoffs={"ventajas": ["testeable"]},
             when_not_to_use="CRUD simple",
             decision_signals=[{"pregunta": "¿?", "señal_patron": "sí"}],
+            image="/pattern-images/hexagonal.svg",
+            image_alt="Hexagono con el nucleo y sus adaptadores",
+            image_source={"titulo": "Commons", "autor": "Cth027", "licencia": "CC BY-SA 4.0", "url": "https://x"},
         )
         chunks = [
             SimpleNamespace(id=1, chunk_type="summary", chunk_text="resumen", chunk_metadata=None),
@@ -209,6 +229,8 @@ class TestPatternDetail:
             out = asyncio.run(module.get_pattern(7, CURRENT_USER))
 
         assert out.pattern_name == "Hexagonal"
+        assert out.image == "/pattern-images/hexagonal.svg"
+        assert out.image_source["licencia"] == "CC BY-SA 4.0"
         assert [c.source for c in out.chunks] == [module.CURATED_SOURCE_LABEL, "cockburn.pdf"]
         db.close.assert_called_once()
 

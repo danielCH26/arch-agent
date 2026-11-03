@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" font-family="Segoe UI, Arial, sans-serif" font-size="16">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+  <rect width="640" height="400" fill="#ffffff"/>
+  <text x="320" y="32" text-anchor="middle" font-size="20" font-weight="600" fill="#1f2937">Microservicios</text>
+  <g fill="#f1f5f9" stroke="#64748b" stroke-width="2">
+    <rect x="130" y="52" width="150" height="44" rx="10"/><rect x="360" y="52" width="150" height="44" rx="10"/>
+  </g>
+  <g text-anchor="middle" fill="#334155"><text x="205" y="80">Cliente web</text><text x="435" y="80">Cliente móvil</text></g>
+  <g stroke="#475569" stroke-width="2" marker-end="url(#a)">
+    <line x1="205" y1="96" x2="270" y2="126"/><line x1="435" y1="96" x2="370" y2="126"/>
+  </g>
+  <rect x="200" y="130" width="240" height="48" rx="10" fill="#1d4ed8"/>
+  <text x="320" y="160" text-anchor="middle" fill="#ffffff" font-weight="600">API gateway</text>
+  <g stroke="#475569" stroke-width="2" marker-end="url(#a)">
+    <line x1="260" y1="178" x2="125" y2="214"/><line x1="320" y1="178" x2="320" y2="214"/><line x1="380" y1="178" x2="515" y2="214"/>
+  </g>
+  <g fill="#ecfdf5" stroke="#059669" stroke-width="2">
+    <rect x="45" y="218" width="160" height="56" rx="10"/><rect x="240" y="218" width="160" height="56" rx="10"/><rect x="435" y="218" width="160" height="56" rx="10"/>
+  </g>
+  <g fill="#065f46" text-anchor="middle" font-weight="600">
+    <text x="125" y="252">Servicio Pedidos</text><text x="320" y="252">Servicio Pagos</text><text x="515" y="252">Servicio Catálogo</text>
+  </g>
+  <g stroke="#475569" stroke-width="2" marker-end="url(#a)">
+    <line x1="125" y1="274" x2="125" y2="300"/><line x1="320" y1="274" x2="320" y2="300"/><line x1="515" y1="274" x2="515" y2="300"/>
+  </g>
+  <g fill="#e2e8f0" stroke="#475569" stroke-width="2">
+    <rect x="75" y="304" width="100" height="40" rx="8"/><rect x="270" y="304" width="100" height="40" rx="8"/><rect x="465" y="304" width="100" height="40" rx="8"/>
+  </g>
+  <g text-anchor="middle" fill="#334155" font-size="14"><text x="125" y="329">BD propia</text><text x="320" y="329">BD propia</text><text x="515" y="329">BD propia</text></g>
+  <text x="320" y="380" text-anchor="middle" font-size="13" fill="#475569">Cada servicio se despliega y escala por separado y es el único dueño de sus datos</text>
+</svg>

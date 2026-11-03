@@ -3,16 +3,7 @@ import bodyImg from '../assets/robot-body.webp'
 import restArm from '../assets/rest-arm.webp'
 import waveAArm from '../assets/wave-a-arm.webp'
 import waveBArm from '../assets/wave-b-arm.webp'
-
-// Posición del recorte del brazo/mano sobre el cuerpo (robot-body.png, 1129x970).
-// El cuerpo tiene ese hueco siempre transparente: la capa de brazo (una de las tres)
-// lo cubre por completo en todo momento, así nunca se asoma un brazo "fantasma" detrás.
-const ARM_STYLE = {
-  left: '62.0%',
-  top: '19.6%',
-  width: '32.8%',
-  height: '32.0%',
-}
+import { ARM_STYLE, ROBOT_ASPECT_RATIO } from './robotLayout'
 
 const SEQUENCE = [restArm, waveAArm, waveBArm, waveAArm, restArm]
 const FRAME_MS = 260
@@ -42,7 +33,7 @@ export function RobotGreeter() {
       className={`relative w-40 select-none drop-shadow-[0_18px_24px_rgba(14,84,206,0.25)] sm:w-52 ${
         floating ? 'animate-robot-float' : ''
       }`}
-      style={{ aspectRatio: '1129 / 970' }}
+      style={{ aspectRatio: ROBOT_ASPECT_RATIO }}
     >
       <img src={bodyImg} alt="Asistente robot de ArchAgent" draggable={false} loading="lazy" className="absolute inset-0 h-full w-full" />
       {[restArm, waveAArm, waveBArm].map((src) => (

@@ -38,6 +38,9 @@ class TestListPatternsEndpoint:
         p1.use_cases = "Sistemas grandes"
         p1.tradeoffs = {"complexity": "alta"}
         p1.when_not_to_use = "Sistemas pequenos o con poca carga"
+        p1.image = "/pattern-images/microservices.svg"
+        p1.image_alt = "Clientes, API gateway y microservicios con su propia base"
+        p1.image_source = {"titulo": "Azure", "autor": "Microsoft", "licencia": "CC BY 4.0", "url": "https://learn.microsoft.com"}
 
         p2 = MagicMock()
         p2.id = 2
@@ -47,6 +50,11 @@ class TestListPatternsEndpoint:
         p2.use_cases = "Sistemas pequenos"
         p2.tradeoffs = {"scaling": "limitado"}
         p2.when_not_to_use = "Sistemas distribuidos a gran escala"
+        # Patron todavia sin imagen: la respuesta lo devuelve en null y el
+        # front muestra el aviso.
+        p2.image = None
+        p2.image_alt = None
+        p2.image_source = None
 
         db = MagicMock()
         # The query chain: .query().order_by().count() and .query().order_by().offset().limit().all()
@@ -62,6 +70,10 @@ class TestListPatternsEndpoint:
         assert len(body["items"]) == 2
         assert body["items"][0]["pattern_name"] == "Microservicios"
         assert body["items"][1]["category"] == "Monolitica"
+        assert body["items"][0]["image"] == "/pattern-images/microservices.svg"
+        assert body["items"][0]["image_source"]["licencia"] == "CC BY 4.0"
+        assert body["items"][1]["image"] is None
+        assert body["items"][1]["image_alt"] is None
 
     def test_returns_empty_list_when_no_patterns(self):
         db = MagicMock()
@@ -164,6 +176,9 @@ class TestPatternModels:
         p = PatternOut(id=1, pattern_name="X", category=None, description=None, use_cases=None, tradeoffs=None, when_not_to_use=None)
         assert p.category is None
         assert p.tradeoffs is None
+        assert p.image is None
+        assert p.image_alt is None
+        assert p.image_source is None
 
     def test_pattern_list_out(self):
         from app.api.patterns import PatternListOut, PatternOut

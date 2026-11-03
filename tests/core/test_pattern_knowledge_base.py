@@ -11,6 +11,10 @@ from pathlib import Path
 import yaml
 
 PATTERNS_DIR = Path(__file__).resolve().parents[2] / "data" / "patterns"
+# Las imagenes se sirven desde el frontend: /pattern-images/x -> frontend/public/pattern-images/x
+PUBLIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "public"
+# Licencia de los diagramas propios: el repo no tiene LICENSE (README, "Licencia").
+REPO_LICENSE = "Todos los derechos reservados"
 
 MIN_BULLETS = 4
 MIN_WORDS_PER_BULLET = 10
@@ -55,3 +59,23 @@ def test_every_pattern_declares_verifiable_sources():
         for fuente in fuentes:
             assert fuente["titulo"].strip(), filename
             assert fuente["url"].startswith("https://"), f"{filename}: {fuente['url']}"
+
+
+def test_every_pattern_has_an_attributed_image():
+    for filename, pattern in _patterns():
+        image = pattern.get("image")
+        assert image, f"{filename}: sin image"
+        # Guardadas en el repo (no enlazadas) para que no se rompan.
+        assert image.startswith("/pattern-images/"), f"{filename}: {image}"
+        assert (PUBLIC_DIR / image.lstrip("/")).is_file(), f"{filename}: no existe {image}"
+        assert len(pattern.get("image_alt", "").split()) >= 8, f"{filename}: image_alt muy corto"
+        source = pattern.get("image_source") or {}
+        for key in ("titulo", "autor", "licencia"):
+            assert (source.get(key) or "").strip(), f"{filename}: image_source sin {key}"
+        url = source.get("url")
+        assert url is None or url.startswith("https://"), f"{filename}: {url}"
+        # Sin URL solo puede ser un diagrama propio, bajo la licencia del repo.
+        if url is None:
+            assert source["licencia"] == REPO_LICENSE, filename
+        # CC BY exige indicar los cambios: el pie dice "adaptada" si es True.
+        assert isinstance(source.get("modificada", False), bool), filename

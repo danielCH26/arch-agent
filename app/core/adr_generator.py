@@ -13,7 +13,9 @@ fases anteriores, para que quien lo lea pueda empezar a construir el sistema:
   respuesta vacía), el ADR se genera igual, sin esas secciones y con un aviso.
 
 La recolección (``collect_adr_context``) toca la base de datos; el armado
-(``render_adr_markdown``) es puro para poder testearlo sin DB ni LLM.
+(``render_adr_markdown``) es puro para poder testearlo sin DB ni LLM. Antes de
+entregarlo, ``verify_adr`` revisa que cada sección aporte algo del proyecto.
+Identidad visual y contrato de cada sección: ``.atl/skills/adr-design/SKILL.md``.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
+from app.core.adr_quality import SectionIssue, project_terms, section_issues, split_sections
+from app.core.adr_theme import themed_mermaid
 from app.core.domain_concerns import (
     DomainConcern,
     concern_by_question,
@@ -46,6 +50,7 @@ from app.core.llm_errors import (
     llm_error_message,
 )
 from app.core.mermaid_validator import extract_mermaid_block, sanitize_mermaid
+from app.core.pattern_justification import selected_pattern_id
 from app.core.proposal_notes import strip_modification_note
 from app.core.session_store import latest_diagram_decisions
 from app.core.text_norm import normalize_text
@@ -55,6 +60,7 @@ from app.core.viability_rules import (
     GUIDE_ASSUMPTION_RULES,
 )
 from app.models.approval import Approval
+from app.models.architect_pattern import pattern_names
 from app.models.message import Message
 from app.models.project import Project
 from app.models.proposal import Proposal
@@ -155,9 +161,26 @@ class AdrContext:
     # Adjunto (captura) del diagrama que se usó: el panel muestra esa imagen,
     # así la imagen y el Mermaid del ADR son siempre el mismo diagrama.
     diagram_attachment_id: Optional[str] = None
+    # Diagrama de despliegue (Mermaid) en la sección 4. HOY NADIE LO ASIGNA
+    # fuera de las pruebas: el despliegue aprobado entra por `deployment`
+    # y se escribe aparte, como "### Despliegue en <nube>". Si algún día se
+    # conecta este campo, el ADR mostraría el despliegue dos veces (aquí y en
+    # esa sección); habría que quitar una de las dos antes de usarlo.
+    deployment_mermaid: Optional[str] = None
     # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
     # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
     guide_failure: Optional[str] = None
+    # Patrón que declara la propuesta aprobada (no siempre la cita principal
+    # del RAG): su imagen va en la sección 3. None si no se pudo ubicar.
+    selected_pattern_id: Optional[int] = None
+    # Plan de despliegue APROBADO (mapeo componente -> servicio de nube), tal
+    # como quedó guardado junto a su diagrama. ``None`` si el proyecto no
+    # llegó a aprobar un despliegue: el ADR simplemente no trae esa parte.
+    deployment: Optional[dict] = None
+    # Plan de estructura del repositorio (árbol de carpetas por convenciones y
+    # patrones por módulo), tal como quedó en el último adjunto generado.
+    # ``None`` si el proyecto no generó ninguno: el ADR no trae esa parte.
+    repo_structure: Optional[dict] = None
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -231,6 +254,85 @@ def _approved_mermaid(
     return code, False, (ids[0] if ids else None)
 
 
+def deployment_matches_architecture(
+    attachment: dict, architecture_attachment_id: Optional[str]
+) -> bool:
+    """¿Este despliegue se calculó sobre la arquitectura que muestra el ADR?
+
+    Un despliegue guardado antes de que se registrara ese dato no trae
+    ``architecture_attachment_id``: se acepta, porque descartarlo dejaría sin
+    despliegue a los ADR ya generados.
+    """
+    sobre = attachment.get("architecture_attachment_id")
+    if not sobre or not architecture_attachment_id:
+        return True
+    return sobre == architecture_attachment_id
+
+
+def _approved_deployment(
+    db: Session,
+    *,
+    user_id: int,
+    project_id: int,
+    architecture_attachment_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Plan del diagrama de despliegue APROBADO más reciente, o ``None``.
+
+    Mismo criterio que ``_approved_mermaid`` pero sobre los adjuntos
+    ``kind="deployment"`` y las decisiones de la fase "despliegue": un
+    despliegue que se aprobó y luego se rechazó ya no cuenta.
+
+    Solo entra al ADR lo aprobado. Un despliegue generado y no decidido es un
+    borrador, y el ADR documenta decisiones.
+
+    Además tiene que corresponder a la arquitectura que el ADR está
+    mostrando: si después de aprobar un despliegue se aprueba OTRO diagrama
+    de arquitectura, el de antes ya no describe lo que hay. Sin este filtro
+    el ADR enseñaba el diagrama nuevo junto a la tabla vieja.
+
+    Los despliegues guardados antes de que se registrara ese dato no traen
+    ``architecture_attachment_id``; esos se aceptan, porque descartarlos
+    dejaría sin despliegue a los ADR ya generados.
+    """
+    rows = (
+        db.query(Message)
+        .filter(
+            Message.project_id == project_id,
+            Message.user_id == user_id,
+            Message.role == "assistant",
+            Message.attachments != None,  # noqa: E711 (comparación JSONB)
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(200)
+        .all()
+    )
+    candidates: list[tuple[str, dict]] = []
+    for row in rows:
+        for att in row.attachments or []:
+            if not isinstance(att, dict) or att.get("kind") != "deployment":
+                continue
+            plan = att.get("plan")
+            if not (att.get("id") and isinstance(plan, dict)):
+                continue
+            if not deployment_matches_architecture(att, architecture_attachment_id):
+                # Calculado sobre otra arquitectura: ya no describe esta.
+                continue
+            candidates.append((str(att["id"]), plan))
+    if not candidates:
+        return None
+
+    decisions = latest_diagram_decisions(
+        db,
+        project_id=project_id,
+        attachment_ids=[att_id for att_id, _plan in candidates],
+        phase="despliegue",
+    )
+    for att_id, plan in candidates:
+        if decisions.get(att_id) == "approve":
+            return plan
+    return None
+
+
 def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrContext:
     """Junta todo lo decidido en el proyecto. Lanza ``AdrNotReadyError`` si
     todavía no hay una propuesta aprobada: sin decisión no hay ADR."""
@@ -278,13 +380,14 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         .all()
     ]
 
+    proposal_markdown = strip_modification_note(_content_to_text(proposal.content)).strip()
     return AdrContext(
         project_name=project.name or f"Proyecto {project_id}",
         project_description=(project.description or "").strip(),
         current_phase=project.current_phase,
         resumen=elicitation.get("resumen") or {},
         preguntas_respuestas=list(elicitation.get("preguntas_respuestas") or []),
-        proposal_markdown=strip_modification_note(_content_to_text(proposal.content)).strip(),
+        proposal_markdown=proposal_markdown,
         proposal_iteration=proposal.iteration,
         proposal_lifecycle=proposal.lifecycle,
         proposal_feedback_history=[
@@ -295,7 +398,56 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         diagram_approved=diagram_approved,
         diagram_attachment_id=diagram_attachment_id,
         decisions=decisions,
+        # El catálogo solo se consulta si el patrón declarado no está en las citas.
+        selected_pattern_id=selected_pattern_id(
+            proposal_markdown, list(proposal.citations or []), lambda: pattern_names(db)
+        ),
+        deployment=_approved_deployment(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=diagram_attachment_id,
+        ),
+        repo_structure=_latest_repo_structure(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=diagram_attachment_id,
+        ),
     )
+
+
+def _latest_repo_structure(
+    db,
+    *,
+    user_id: int,
+    project_id: int,
+    architecture_attachment_id: Optional[str] = None,
+) -> Optional[dict]:
+    """El plan de estructura más reciente SOBRE LA ARQUITECTURA VIGENTE, o None.
+
+    Mismo criterio que el despliegue: si el usuario aprueba un diagrama nuevo
+    y no vuelve a generar la estructura, el ADR tiene que salir sin la sección
+    antes que mostrar un árbol armado sobre el diagrama anterior.
+
+    Import local y envuelto: ``app.api.repo_structure`` importa este módulo
+    (para ``collect_adr_context``), asi que arriba seria un ciclo. Y si esa
+    parte falla, el ADR se arma sin la sección en lugar de no armarse.
+    """
+    try:
+        from app.api.repo_structure import latest_structure_plan
+
+        return latest_structure_plan(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=architecture_attachment_id,
+        )
+    except Exception:  # pragma: no cover - defensa del armado del ADR
+        _LOGGER.exception(
+            "No se pudo leer la estructura de repositorio del proyecto %s", project_id
+        )
+        return None
 
 
 # --- Armado (puro) ------------------------------------------------------------
@@ -349,9 +501,9 @@ def _references(citations: list[dict]) -> str:
     lines = []
     for index, citation in enumerate(citations, start=1):
         name = citation.get("pattern_name") or f"Patrón #{citation.get('pattern_id') or index}"
-        similarity = citation.get("similarity")
-        sim = f" (similitud {float(similarity) * 100:.0f}%)" if similarity is not None else ""
-        lines.append(f"{index}. **{name}**{sim}")
+        # Sin el "(similitud 87%)" de antes: es una medida interna de la
+        # búsqueda y al lector no le dice nada.
+        lines.append(f"{index}. **{name}**")
         for source in citation.get("fuentes") or []:
             if isinstance(source, dict) and source.get("url"):
                 title = source.get("titulo") or source["url"]
@@ -403,6 +555,187 @@ def _elicitation_annex(preguntas_respuestas: list[dict]) -> str:
 _ADJUSTMENT = "(ajuste solicitado por el usuario)"
 
 
+def _deployment_block(ctx: AdrContext) -> str:
+    """Subsección del despliegue en la nube, o cadena vacía si no hay uno
+    aprobado.
+
+    Va como subsección de "4. Diagrama de arquitectura" y NO como sección
+    numerada propia: las secciones del ADR están numeradas y hay código que
+    las busca por número (``extract_guide_section`` con "## 7.", los saltos
+    de página del PDF, el lint de la guía). Insertar una sección 5 obligaría
+    a renumerar todo eso. Como subsección cuelga del diagrama, que es
+    justamente de lo que habla.
+    """
+    plan = ctx.deployment
+    if not isinstance(plan, dict):
+        return ""
+    provider = plan.get("provider") or {}
+    components = [c for c in (plan.get("components") or []) if isinstance(c, dict)]
+    if not provider.get("name") or not components:
+        return ""
+
+    rows = [
+        "| Componente | Servicio | Cómo se despliega |",
+        "| --- | --- | --- |",
+    ]
+    for item in components:
+        rows.append(
+            f"| {_cell(item.get('component'))} | {_cell(item.get('service_name'))} "
+            f"| {_cell(item.get('deploy_note'))} |"
+        )
+
+    extras = ""
+    bridges = [b for b in (plan.get("bridges") or []) if isinstance(b, dict)]
+    if bridges:
+        nombres = ", ".join(str(b.get("service_name") or "") for b in bridges if b.get("service_name"))
+        if nombres:
+            extras += (
+                f"\n\nServicios que agrega {provider.get('short_name') or provider['name']} "
+                f"para conectar las piezas (no salen de un componente de la "
+                f"arquitectura): {nombres}."
+            )
+    externals = [
+        str(e.get("name") or "")
+        for e in (plan.get("externals") or [])
+        if isinstance(e, dict) and e.get("name")
+    ]
+    if externals:
+        extras += (
+            "\n\nServicios de terceros de los que depende el sistema y que no se "
+            f"despliegan en esta nube (se consumen por API): {', '.join(externals)}."
+        )
+    unmapped = [str(u) for u in (plan.get("unmapped") or []) if str(u).strip()]
+    if unmapped:
+        extras += (
+            "\n\nComponentes sin equivalente directo en esta nube, pendientes "
+            f"de decidir: {', '.join(unmapped)}."
+        )
+
+    return (
+        f"\n### Despliegue en {provider['name']}\n\n"
+        "Dónde queda cada pieza de la arquitectura al llevarla a la nube "
+        "elegida durante el refinamiento.\n\n" + "\n".join(rows) + extras + "\n"
+    )
+
+
+def _repo_structure_block(ctx: AdrContext) -> str:
+    """Subsección con el árbol de carpetas, o cadena vacía si no hay plan.
+
+    Va como subsección de "4. Diagrama de arquitectura" por la misma razón que
+    el despliegue: las secciones están numeradas y hay código que las busca
+    por número. Ver el comentario en ``_deployment_block``.
+
+    El árbol se emite tal como lo compuso ``repo_structure.build_plan``; acá no
+    se recalcula nada. Cada decisión que agregó un patrón se lista con su
+    justificación y su fuente, que es el criterio de aceptación de la historia:
+    nada en esta sección sale sin respaldo.
+    """
+    plan = ctx.repo_structure
+    if not isinstance(plan, dict):
+        return ""
+    tree = str(plan.get("tree_text") or "").strip()
+    if not tree:
+        return ""
+
+    convenciones = [
+        c
+        for c in (plan.get("backend"), plan.get("frontend"))
+        if isinstance(c, dict) and c.get("name")
+    ]
+    partes = ["\n### Estructura del repositorio\n\n"]
+    if convenciones:
+        detalle = "; ".join(
+            f"{_cell(c['name'])} (término que la activó: «{_cell(c.get('matched_term') or '—')}»)"
+            for c in convenciones
+        )
+        partes.append(
+            "Árbol de carpetas propuesto a partir de los módulos del diagrama "
+            f"aprobado y de las convenciones del stack: {detalle}.\n"
+        )
+    # La línea en blanco antes del bloque NO es decorativa: el renderer del ADR
+    # (`renderMarkdownBlocks`) consume un párrafo hasta encontrar una línea
+    # vacía, así que sin ella se tragaba el ``` y el árbol entero, y en el PDF
+    # salía todo en un renglón con los backticks a la vista.
+    # Aclaraciones: van junto al árbol y NO en "Pendientes de revisar", porque
+    # no hay nada que revisar (un proyecto Django no tiene un hueco de
+    # frontend: sus plantillas ya están en el árbol).
+    for nota in plan.get("notes") or []:
+        if str(nota).strip():
+            partes.append(f"{_cell(str(nota))}\n")
+
+    partes.append(f"\n```\n{tree}\n```\n")
+
+    # Patrón por módulo, con la justificación y la fuente de cada decisión.
+    filas: list[str] = []
+    sin_patron: list[str] = []
+    for module in plan.get("modules") or []:
+        if not isinstance(module, dict):
+            continue
+        nombre = str(module.get("name") or "")
+        if not nombre:
+            continue
+        elegidos = [
+            p
+            for p in (module.get("patterns") or [])
+            if isinstance(p, dict) and p.get("pattern_name")
+        ]
+        if not elegidos:
+            razon = str(module.get("uncovered_reason") or "").strip()
+            sin_patron.append(f"{nombre}: {razon}" if razon else nombre)
+            continue
+        for p in elegidos:
+            ubicacion = str(p.get("path") or "")
+            # La razón y la fuente van en UNA columna. Con seis, la tabla se
+            # desbordaba del ancho de la página en el PDF y la última —la
+            # fuente— quedaba cortada a media palabra. Justo la columna que
+            # sostiene el criterio de aceptación: cada decisión con su fuente.
+            # Pasa con rutas largas, como las de Spring Boot
+            # (`com/example/myapplication/spring_security_jwt/...`).
+            razon = str(p.get("justification") or "").strip()
+            fuente = str(p.get("source_title") or "").strip()
+            # `" ".join(...)` y no una f-string: sin justificación, la celda
+            # arrancaba con un espacio (« Fuente: X.»).
+            cita = f"Fuente: {fuente}." if fuente else ""
+            porque = " ".join(trozo for trozo in (razon, cita) if trozo)
+            filas.append(
+                f"| {_cell(nombre)} | {_cell(module.get('kind'))} "
+                f"| {_cell(p.get('pattern_name'))} "
+                f"| {_cell(ubicacion or 'sin ubicación documentada')} "
+                f"| {_cell(porque)} |"
+            )
+
+    if filas:
+        partes.append(
+            "\nPatrón aplicado a cada módulo, con la razón y la fuente de la "
+            "que sale:\n\n"
+        )
+        partes.append(
+            "| Módulo | Tipo | Patrón | Dónde queda | Por qué y de dónde sale |\n"
+            "| --- | --- | --- | --- | --- |\n"
+        )
+        partes.append("\n".join(filas) + "\n")
+
+    if sin_patron:
+        partes.append(
+            "\nMódulos para los que la base de patrones no tiene hoy ninguno "
+            "aplicable (se dejan sin propuesta en lugar de asignarles uno sin "
+            f"respaldo):\n\n{_bullets(sin_patron)}\n"
+        )
+
+    # Las advertencias por falta de patrón ya tienen su propio párrafo arriba;
+    # repetirlas acá hacía que el ADR dijera lo mismo dos veces seguidas.
+    ya_dichas = {s.split(":", 1)[-1].strip() for s in sin_patron}
+    advertencias = [
+        str(w)
+        for w in (plan.get("warnings") or [])
+        if str(w).strip() and str(w).split(":", 1)[-1].strip() not in ya_dichas
+    ]
+    if advertencias:
+        partes.append(f"\nPendientes de revisar:\n\n{_bullets(advertencias)}\n")
+
+    return "".join(partes)
+
+
 def _status(ctx: AdrContext) -> str:
     """Estado del ADR según su aprobación (``approved_at``).
 
@@ -442,6 +775,36 @@ def strip_ui_leftovers(markdown: str) -> str:
         if not _UI_LEFTOVER_RE.match(normalize_text(line))
     ]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+# Emojis que el modelo usa para numerar o adornar ("1️⃣ Monolito", "🚀 MVP"):
+# en un documento técnico restan seriedad. Los números de tecla pasan a "1.";
+# los pictogramas se quitan. ✓/✗ (Dingbats) se conservan.
+_KEYCAP_RE = re.compile(r"([0-9#*])\uFE0F?\u20E3\s*")
+_PICTOGRAPH_RE = re.compile(r"[\U0001F000-\U0001FAFF]\uFE0F?\s?|\uFE0F")
+
+
+def strip_decorative_emoji(markdown: str) -> str:
+    text = _KEYCAP_RE.sub(lambda m: f"{m.group(1)}. ", markdown or "")
+    return _PICTOGRAPH_RE.sub("", text)
+
+
+# Siglas que van siempre en mayúsculas en el título, aunque el usuario las
+# escribiera en minúsculas ("prueba adr" -> "Prueba ADR"). Mismas que
+# DISPLAY_ACRONYMS de frontend/src/lib/format.ts.
+DISPLAY_ACRONYMS = frozenset({"adr", "api", "ia", "ai", "erp", "crm", "mvp", "saas", "iot", "ui", "ux"})
+
+
+def _display_name(name: str) -> str:
+    """El nombre del proyecto como título: con mayúscula inicial y las siglas
+    (ADR, API...) en mayúsculas aunque el usuario lo escribiera en minúsculas
+    ("prueba adr" -> "Prueba ADR")."""
+    name = re.sub(
+        r"\b\w+\b",
+        lambda m: m.group(0).upper() if m.group(0).lower() in DISPLAY_ACRONYMS else m.group(0),
+        (name or "").strip(),
+    )
+    return name[:1].upper() + name[1:]
 
 
 def _quality_items(resumen: dict) -> list[str]:
@@ -760,6 +1123,14 @@ def _coherence_warnings(ctx: AdrContext, guide: str) -> list[str]:
                 "Componentes de 7.1 que no aparecen en el diagrama: " + ", ".join(missing)
             )
 
+    # Sin probabilidad el PDF no puede armar la matriz impacto × probabilidad.
+    risk_lines = _section_lines(guide, "7.4")
+    if _table_column(risk_lines, "riesgo") and not _table_column(risk_lines, "probabilidad"):
+        warnings.append(
+            "La tabla de 7.4 no tiene la columna Probabilidad (alta/media/baja): "
+            "agrégala para cada riesgo."
+        )
+
     sprint = normalize_text(" ".join(_section_lines(guide, "7.6")))
     if sprint.strip():
         for risk, impact, mitigation in _risk_rows(guide):
@@ -790,6 +1161,97 @@ def _coherence_warnings(ctx: AdrContext, guide: str) -> list[str]:
     return warnings
 
 
+# --- Verificación previa a la entrega -------------------------------------------
+
+_MERMAID_LABEL_RE = re.compile(r"[\[({]+\"?([^\]\)}\"]+)\"?[\])}]+")
+
+
+def _project_vocabulary(ctx: AdrContext) -> set[str]:
+    """Palabras propias del proyecto: lo que dijo el usuario, las tecnologías y
+    el patrón de la propuesta aprobada y los nombres del diagrama.
+
+    De la propuesta no se toma todo el texto: su prosa ("permite", "facilita")
+    haría pasar por específica cualquier sección.
+    """
+    resumen = ctx.resumen or {}
+    texts = [
+        ctx.project_name,
+        ctx.project_description,
+        str(resumen.get("problema") or ""),
+        str(resumen.get("usuarios") or ""),
+        str(resumen.get("escala") or ""),
+        *_as_list(resumen.get("funcionalidades")),
+        *_as_list(resumen.get("restricciones")),
+        *_as_list(resumen.get("calidad")),
+        *_dict_values(resumen.get("contexto_tecnico")),
+        *_dict_values(resumen.get("datos_viabilidad")),
+        *(str(i.get("respuesta") or "") for i in ctx.preguntas_respuestas if isinstance(i, dict)),
+        *ctx.proposal_feedback_history,
+        *ctx.revision_feedback,
+        *_proposal_technologies(ctx.proposal_markdown),
+        _decision_text(ctx),
+    ]
+    for code in (ctx.mermaid, ctx.deployment_mermaid):
+        texts.extend(m.group(1) for m in _MERMAID_LABEL_RE.finditer(code or ""))
+    return project_terms(texts)
+
+
+def guide_content_warnings(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    """Subsecciones de la guía (7.1 a 7.8) vacías, cortas, genéricas o con
+    relleno. Van junto con el lint a la pasada de corrección del LLM."""
+    if not guide:
+        return []
+    terms = _project_vocabulary(ctx)
+    issues: list[SectionIssue] = []
+    for title, body in split_sections(guide, 3):
+        issues.extend(section_issues(title, body, terms))
+    return [f"Sección {issue}" for issue in issues]
+
+
+def review_guide(ctx: AdrContext, guide: Optional[str]) -> list[str]:
+    """Todo lo que la revisión automática le pide corregir a la guía."""
+    return lint_adr_guide(ctx, guide) + guide_content_warnings(ctx, guide)
+
+
+_UNDEFINED_RESOURCE_RE = re.compile(r"^\s*-\s*\*\*(\w+):\*\*\s*no definido\s*$", re.M)
+# Subsecciones de datos que, vacías, dejan al lector sin algo que necesita.
+_REQUIRED_DATA = ("Funcionalidades", "Restricciones", "Atributos de calidad")
+
+
+def verify_adr(ctx: AdrContext, markdown: str, guide: Optional[str]) -> list[str]:
+    """Verificación previa a la entrega del ADR completo.
+
+    Devuelve los problemas que impiden decir que cada sección aporta algo
+    específico del proyecto; lista vacía = listo para entregar. Revisa:
+      * que ninguna sección quede vacía o con solo un marcador;
+      * los datos que no pueden faltar (funcionalidades, restricciones,
+        atributos de calidad, presupuesto/equipo/plazo y el diagrama);
+      * que la guía (7.1 a 7.8) exista y sea de este proyecto, no genérica.
+    """
+    issues: list[str] = []
+    for title, body in split_sections(markdown, 2):
+        if title.startswith("7."):
+            continue  # la guía se revisa abajo, subsección por subsección
+        if title.startswith("4.") and "```mermaid" not in body:
+            issues.append(f"«{title}»: no tiene diagrama")
+            continue
+        issues.extend(str(i) for i in section_issues(title, body, set(), min_chars=1, check_specific=False))
+        if title.startswith("2."):
+            for sub, sub_body in split_sections(body, 3):
+                if sub in _REQUIRED_DATA:
+                    issues.extend(str(i) for i in section_issues(sub, sub_body, set(), min_chars=1, check_specific=False))
+        if title == "Resumen ejecutivo":
+            missing = [m.group(1).lower() for m in _UNDEFINED_RESOURCE_RE.finditer(body)]
+            if missing:
+                issues.append(f"«Resumen ejecutivo»: falta el dato de {', '.join(missing)} (pídelo en Requerimientos)")
+    if not guide:
+        issues.append("«7. Guía para empezar»: no se pudo redactar; regenera el ADR")
+    else:
+        issues.extend(guide_content_warnings(ctx, guide))
+    seen: set[str] = set()
+    return [i for i in issues if not (i in seen or seen.add(i))]
+
+
 def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
     """La guía (sección 7) tal como quedó en un ADR ya generado.
 
@@ -816,7 +1278,7 @@ def extract_guide_section(markdown: Optional[str]) -> Optional[str]:
 
 def _guide_block(ctx: AdrContext, llm_sections: Optional[str]) -> str:
     if llm_sections and llm_sections.strip():
-        guide = llm_sections.strip()
+        guide = strip_decorative_emoji(llm_sections.strip())
     else:
         # Antes el aviso mezclaba tres causas posibles y no decía cuál fue.
         cause = (
@@ -985,6 +1447,14 @@ def _summary_pending(ctx: AdrContext, guide: Optional[str]) -> list[str]:
     return [p for p in pending if not (p in seen or seen.add(p))][:6]
 
 
+def _decision_text(ctx: AdrContext) -> str:
+    """La decisión en una línea: la recomendación o el patrón principal de la
+    propuesta aprobada. Vacío si la propuesta no los trae."""
+    proposal = ctx.proposal_markdown or ""
+    decision = _RECOMMENDATION_RE.search(proposal) or _PRIMARY_RE.search(proposal)
+    return _plain(decision.group(1)) if decision else ""
+
+
 def executive_summary(ctx: AdrContext, guide: Optional[str]) -> str:
     """Resumen de media página para quien no es técnico.
 
@@ -997,19 +1467,14 @@ def executive_summary(ctx: AdrContext, guide: Optional[str]) -> str:
     resumen = ctx.resumen or {}
     problema = _plain(str(resumen.get("problema") or ctx.project_description or "")) or "No especificado"
     usuarios = _plain(str(resumen.get("usuarios") or "")) or "No especificado"
-    proposal = ctx.proposal_markdown or ""
-    decision = _RECOMMENDATION_RE.search(proposal) or _PRIMARY_RE.search(proposal)
-    decision_text = (
-        _plain(decision.group(1)) if decision else "ver la sección 3 (Decisión)"
-    )
+    decision_text = _decision_text(ctx) or "ver la sección 3 (Decisión)"
     risks = _summary_risks(ctx, guide)
     pending = _summary_pending(ctx, guide)
+    # Sin el párrafo que explicaba para quién es esta página: era el mismo en
+    # todos los ADR y no decía nada del proyecto.
     return "\n".join(
         [
             "## Resumen ejecutivo",
-            "",
-            "> Esta página resume el documento para quien no necesita los detalles "
-            "técnicos. El equipo de desarrollo encuentra todo en las secciones 1 a 7.",
             "",
             f"**Qué problema resuelve:** {problema}.",
             "",
@@ -1044,6 +1509,21 @@ _TECH_CONTEXT_LABELS = (
 _UNDEFINED_TEXT = {"no definido", "no definida", "ninguno", "ninguna", "n/a", "-"}
 
 
+_BARE_NUMBER_RE = re.compile(r"[~≈]?\s*\d[\d.,\s]*\+?")
+
+
+def _scale_text(escala: str) -> str:
+    """Una cifra sola ("1000") no dice de qué es. La pregunta de la
+    elicitación es cuántas personas usarían el sistema: se dice así."""
+    number = escala.strip(" .")
+    if _BARE_NUMBER_RE.fullmatch(number):
+        return (
+            f"Unas {number.lstrip('~≈ ')} personas usarían el sistema (cifra aproximada del "
+            "usuario; no precisó si son usuarios simultáneos o en total)."
+        )
+    return escala
+
+
 def _technical_context_block(resumen: dict) -> str:
     """Contexto técnico y datos de viabilidad con las palabras del usuario.
 
@@ -1055,7 +1535,7 @@ def _technical_context_block(resumen: dict) -> str:
     if escala and normalize_text(escala) not in _UNDEFINED_TEXT:
         # Cifras de uso (usuarios, datos, frecuencia): sin ellas la propuesta
         # no puede dimensionar ni justificar costos.
-        blocks.append(f"### Escala y volumen\n\n{escala}")
+        blocks.append(f"### Escala y volumen\n\n{_scale_text(escala)}")
     tecnico = resumen.get("contexto_tecnico") if isinstance(resumen.get("contexto_tecnico"), dict) else {}
     items = [
         f"**{label}:** {str(tecnico.get(key)).strip()}"
@@ -1086,6 +1566,119 @@ def _reader_labels(markdown: str) -> str:
     return re.sub(r"Fuente RAG", "Referencia (sección 5)", text, flags=re.IGNORECASE)
 
 
+# Nodos de un flowchart: ``A[API]``, ``B[(DB)]``, ``C((Cola))``, ``D{Regla}``...
+# Con comillas la etiqueta puede llevar paréntesis (``UI["Web (React)"]``, como
+# la deja sanitize_mermaid); antes se cortaba en "Web (React".
+_MERMAID_NODE_RE = re.compile(
+    r"(?<![\w-])[A-Za-z_][\w-]*\s*(?:\[\[|\[\(|\(\[|\(\(|\[|\(|\{\{|\{|>)"
+    r"\s*(?:\"([^\"]+)\"|([^\]\)\}\"|]+?))\s*(?:\]\]|\)\]|\]\)|\)\)|\]|\)|\}\}|\})"
+)
+# Sintaxis nueva de forma: ``A@{ shape: rect, label: "Web" }``.
+_MERMAID_SHAPE_LABEL_RE = re.compile(r"@\{[^}]*?\blabel\s*:\s*\"([^\"]+)\"")
+# Ids a los lados de una flecha, para diagramas sin etiquetas (``A --> B``).
+_MERMAID_EDGE_ID_RE = re.compile(
+    r"(?<![\w-])([A-Za-z_][\w-]*)(?=\s*(?::::[\w-]+)?\s*<?(?:-{2,}|={2,}|-\.))"
+    r"|(?:-{2,}>|-\.+->|={2,}>|-{3,}|\|[^|]*\|)\s*([A-Za-z_][\w-]*)\b"
+)
+_MERMAID_EDGE_RE = re.compile(r"<?(?:-{2,}>|-\.+->|={2,}>|-{3,}|-\.+-|={3,})")
+_MERMAID_SUBGRAPH_RE = re.compile(r"^\s*subgraph\s+(?:[\w-]+\s*\[\s*\"?([^\]\"]+)\"?\s*\]|\"?([^\"\n]+)\"?)", re.M)
+
+
+def _human_list(items: list[str], limit: int = 8) -> str:
+    shown = items[:limit]
+    text = shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + f" y {shown[-1]}"
+    extra = len(items) - len(shown)
+    return f"{text} (y {extra} más)" if extra > 0 else text
+
+
+def diagram_overview(code: str, kind: str) -> str:
+    """Una o dos frases que presentan el diagrama: qué piezas tiene y cómo
+    leerlo. Salen del propio Mermaid, sin LLM. Si no se puede leer (otro tipo
+    de diagrama, nodos sin nombre) queda una frase general: vacía la sección
+    4 quedaba solo con el pie de figura."""
+    lines = [line for line in (code or "").splitlines() if line.strip() and not line.strip().startswith("%%")]
+    if lines and lines[0].strip() == "---":
+        # Frontmatter: se salta hasta el cierre.
+        closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), 0)
+        lines = lines[closing + 1:]
+    if not lines:
+        return ""
+    if not re.match(r"\s*(flowchart|graph)\b", lines[0], re.I):
+        return (
+            "El diagrama muestra dónde se despliega cada componente del sistema."
+            if kind == "Despliegue"
+            else "El diagrama muestra los componentes del sistema y cómo se relacionan entre sí."
+        )
+    body = "\n".join(lines[1:])
+    nodes = "\n".join(line for line in lines[1:] if not re.match(r"\s*(subgraph|end|classDef|class|style|linkStyle|click)\b", line))
+    labels = [quoted or bare for quoted, bare in _MERMAID_NODE_RE.findall(nodes)]
+    labels += _MERMAID_SHAPE_LABEL_RE.findall(nodes)
+    if not labels:
+        # Sin etiquetas, los ids de los nodos son lo único que nombra las piezas.
+        labels = [a or b for a, b in _MERMAID_EDGE_ID_RE.findall(nodes)]
+    names: list[str] = []
+    for label in labels:
+        label = _plain(re.sub(r"<[^>]+>", " ", label))
+        if label and label not in names:
+            names.append(label)
+    edges = len(_MERMAID_EDGE_RE.findall(body))
+    what = "dónde corre" if kind == "Despliegue" else "cómo se comunica"
+    if not names:
+        return f"El diagrama muestra los componentes del sistema; las flechas indican {what} cada uno."
+    groups = [_plain(a or b) for a, b in _MERMAID_SUBGRAPH_RE.findall(body)]
+    text = (
+        f"El diagrama muestra {len(names)} componente{'s' if len(names) != 1 else ''} ({_human_list(names)})"
+        + (f" y {edges} conexi{'ones' if edges != 1 else 'ón'}" if edges else "")
+        + (f", agrupados en {_human_list(groups)}" if groups else "")
+        + f"; las flechas indican {what} cada uno."
+    )
+    if kind != "Despliegue":
+        text += " Son los mismos nombres que usa la sección 7.1."
+    return text
+
+
+_DIAGRAM_MISSING = (
+    "_Todavía no se generó un diagrama. Pídelo en la fase de Refinamiento y vuelve a generar el ADR._"
+)
+
+
+def _diagrams_block(ctx: AdrContext) -> str:
+    """Sección 4: arquitectura y, si existe, despliegue, con el tema del ADR.
+
+    El Mermaid lleva la directiva ``init`` de la paleta azul
+    (``adr_theme.themed_mermaid``): GitHub, GitLab y cualquier visor lo dibujan
+    con los mismos colores que el PDF y las capturas del panel.
+    """
+    state = (
+        "aprobado en la fase de Refinamiento"
+        if ctx.diagram_approved
+        else "último generado; todavía no hay uno aprobado explícitamente"
+    )
+    figures = []
+    if ctx.mermaid:
+        figures.append(("Arquitectura", ctx.mermaid, f"Componentes del sistema y cómo se comunican ({state})"))
+    # Rama sin uso en producción: ver `AdrContext.deployment_mermaid`.
+    if ctx.deployment_mermaid:
+        figures.append(("Despliegue", ctx.deployment_mermaid, "Dónde corre cada componente"))
+    if not figures:
+        return f"## 4. Diagrama de arquitectura\n\n{_DIAGRAM_MISSING}"
+
+    def figure(number: int, kind: str, code: str, caption: str) -> str:
+        overview = diagram_overview(code, kind)
+        intro = f"{overview}\n\n" if overview else ""
+        return f"{intro}```mermaid\n{themed_mermaid(code)}\n```\n\n_Figura {number}. {caption}._"
+
+    if len(figures) == 1 and ctx.mermaid:
+        kind, code, caption = figures[0]
+        return f"## 4. Diagrama de arquitectura\n\n{figure(1, kind, code, caption)}"
+    blocks = ["## 4. Diagramas"]
+    if not ctx.mermaid:
+        blocks.append(f"### 4.1 Arquitectura\n\n{_DIAGRAM_MISSING}")
+    for number, (title, code, caption) in enumerate(figures, start=1):
+        blocks.append(f"### 4.{len(blocks)} {title}\n\n{figure(number, title, code, caption)}")
+    return "\n\n".join(blocks)
+
+
 def render_adr_markdown(
     ctx: AdrContext,
     *,
@@ -1099,16 +1692,7 @@ def render_adr_markdown(
     problema = str(resumen.get("problema") or ctx.project_description or "No especificado.").strip()
     usuarios = str(resumen.get("usuarios") or "No especificado.").strip()
 
-    diagram = (
-        f"```mermaid\n{ctx.mermaid.strip()}\n```\n\n"
-        + (
-            "_Diagrama aprobado en la fase de Refinamiento._"
-            if ctx.diagram_approved
-            else "_Último diagrama generado (todavía no hay uno aprobado explícitamente)._"
-        )
-        if ctx.mermaid
-        else "_Todavía no se generó un diagrama. Pídelo en la fase de Refinamiento y vuelve a generar el ADR._"
-    )
+    diagram = _diagrams_block(ctx)
 
     iterations = (
         f"Iteración {ctx.proposal_iteration}" if ctx.proposal_iteration else "Iteración —"
@@ -1121,24 +1705,23 @@ def render_adr_markdown(
     )
 
     guide = _guide_block(ctx, llm_sections)
+    decided = _decision_text(ctx)
+    # La decisión en una línea, antes de la propuesta completa (antes era una
+    # frase fija que no decía cuál arquitectura se eligió).
+    decision_line = (
+        f"**Decisión:** {decided} _({iterations.lower()} de la propuesta)_.\n\n" if decided else ""
+    )
     approved_row = f"| Aprobado | {_approved_date(ctx)} |\n" if ctx.approved_at else ""
-    proposal = _reader_labels(strip_ui_leftovers(ctx.proposal_markdown))
+    proposal = _reader_labels(strip_decorative_emoji(strip_ui_leftovers(ctx.proposal_markdown)))
 
-    return f"""# ADR-001: Arquitectura de {ctx.project_name}
+    return f"""# ADR-001: Arquitectura de {_display_name(ctx.project_name)}
 
 | Campo | Valor |
 |---|---|
 | Estado | {_status(ctx)} |
 | Fecha | {generated_at.strftime('%Y-%m-%d')} |
-{approved_row}| Proyecto | {_cell(ctx.project_name)} |
-| Fase actual | {PHASE_LABELS.get(ctx.current_phase or '', ctx.current_phase or '—')} |
-| Propuesta | {iterations} |
+{approved_row}| Propuesta aprobada | {iterations} |
 | Generado por | ArchAgent |
-
-> Este documento reúne las decisiones tomadas en cada fase (requerimientos,
-> propuesta, refinamiento y revisión) y una guía para empezar a construir el
-> sistema. Las secciones 1 a 6 salen directamente de lo aprobado; la sección 7
-> es una guía redactada a partir de esas decisiones.
 
 {executive_summary(ctx, llm_sections)}
 
@@ -1166,15 +1749,10 @@ def render_adr_markdown(
 {_technical_context_block(resumen)}
 ## 3. Decisión
 
-La arquitectura aprobada es la de la propuesta siguiente ({iterations.lower()}),
-incluida completa con su análisis de trade-offs y la opción elegida.
-
-{_demote_headings(proposal) or '_La propuesta aprobada no tiene contenido._'}{feedback}
-
-## 4. Diagrama de arquitectura
+{decision_line}{_demote_headings(proposal) or '_La propuesta aprobada no tiene contenido._'}{feedback}
 
 {diagram}
-
+{_deployment_block(ctx)}{_repo_structure_block(ctx)}
 ## 5. Referencias
 
 {_references(ctx.citations)}
@@ -1227,8 +1805,10 @@ con las restricciones (presupuesto, equipo, plazo).
 Dos listas: **Positivas** y **Negativas / costos asumidos**.
 
 ### 7.4 Riesgos y mitigaciones
-Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Mitigación, ordenada \
-de mayor a menor impacto. Todo lo que dependa de un dato que el usuario no \
+Tabla con columnas Riesgo | Impacto (alto/medio/bajo) | Probabilidad \
+(alta/media/baja) | Mitigación, ordenada de mayor a menor impacto. Las \
+cuatro columnas son obligatorias: con Impacto y Probabilidad se arma la matriz \
+de riesgos del documento. Todo lo que dependa de un dato que el usuario no \
 confirmó (de dónde salen los datos, una integración, la plataforma) es de \
 impacto ALTO y va primero: es lo que puede tumbar el proyecto. Cada riesgo \
 debe ser de ESTE proyecto, no una lista genérica.
@@ -1556,6 +2136,9 @@ formato y las mismas secciones. Para cada tipo de problema:
   entienda una persona.
 - Demasiadas tecnologías en 7.2: deja las de la propuesta y solo lo que un \
   requisito exija.
+- Secciones vacías, muy cortas, genéricas o con relleno: reescríbelas con \
+  datos de ESTE proyecto (sus funcionalidades, componentes del diagrama, \
+  tecnologías y restricciones). Nada que sirva igual para cualquier sistema.
 No cambies lo que no tiene problemas.
 
 Guía a corregir:
@@ -1613,7 +2196,7 @@ async def repair_llm_sections(
     if repaired is None:
         _LOGGER.warning("ADR: la guía corregida vino incompleta; se usa la original")
         return None
-    remaining = lint_adr_guide(ctx, repaired)
+    remaining = review_guide(ctx, repaired)
     if len(remaining) >= len(warnings):
         _LOGGER.info(
             "ADR: la corrección no redujo los avisos (%s -> %s); se usa la original",
@@ -1635,8 +2218,8 @@ async def generate_guide(
     """Guía del ADR con su revisión: ``(guia, corregida)``.
 
     1. El LLM redacta la guía (``generate_llm_sections``).
-    2. ``lint_adr_guide`` la revisa contra lo decidido y contra el resto del
-       documento.
+    2. ``review_guide`` la revisa contra lo decidido, contra el resto del
+       documento y sección por sección (vacía, genérica o con relleno).
     3. Si hay avisos y ``ADR_GUIDE_REPAIR`` está activo, una segunda llamada
        corrige solo esos puntos (``repair_llm_sections``). Si devuelve solo
        algunas secciones, se combinan con las originales.
@@ -1654,7 +2237,7 @@ async def generate_guide(
         return None, False
     repaired_flag = False
     if ADR_GUIDE_REPAIR:
-        warnings = lint_adr_guide(ctx, guide)
+        warnings = review_guide(ctx, guide)
         if warnings:
             repaired = await repair_llm_sections(
                 model, ctx, guide, warnings, callbacks=callbacks, deadline=deadline

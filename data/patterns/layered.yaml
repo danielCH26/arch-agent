@@ -43,3 +43,15 @@ example_scenarios:
   - "Aplicación web de gestión de citas para una clínica pequeña, equipo de 3 desarrolladores, 4 meses de plazo, un solo servidor y una base de datos relacional"
   - "Sistema de inventario interno para una tienda con formularios, reportes sencillos y menos de 200 usuarios concurrentes"
   - "Proyecto universitario de un sistema de biblioteca con login, catálogo y préstamos, sin equipo de infraestructura"
+image: "/pattern-images/layered.svg"
+image_alt: "Arquitectura en N capas: el cliente pasa por un firewall de aplicación web a la capa web, luego a dos capas intermedias (con caché y mensajería) y finalmente a la capa de datos y servicios remotos."
+image_source:
+  titulo: "N-tier architecture style (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/n-tier"
+  modificada: true
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [crud, consulta, api]

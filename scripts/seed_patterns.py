@@ -9,8 +9,15 @@ Cada corrida reconcilia la tabla contra el YAML actual: cualquier fila que
 no corresponda a un pattern_name presente en data/patterns/*.yaml se borra
 (residuo de scripts/seed_bench_vectors.py, filas huerfanas de versiones
 anteriores, etc.). Los chunks asociados se borran en cascada por el FK.
+
+Con ``--images-only`` solo copia image / image_alt / image_source del YAML a
+las filas que ya existen, sin cargar el modelo de embeddings (segundos). El
+backend lo corre en cada arranque (scripts/start_backend.sh, tanto en Docker
+Compose como en Railway), asi ningun entorno
+queda con las columnas de la migracion 0024 vacias.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -49,6 +56,12 @@ def load_patterns() -> list[dict]:
             log(
                 f"{pattern['pattern_name']}: complexity={pattern.get('complexity')!r} "
                 f"no es una de {VALID_COMPLEXITY}; ese patron no se penalizara al reordenar",
+                "WARN",
+            )
+        if not pattern.get("image") or not pattern.get("image_alt") or not pattern.get("image_source"):
+            log(
+                f"{pattern['pattern_name']}: falta image / image_alt / image_source; "
+                "la Base de patrones mostrara el aviso de patron sin imagen",
                 "WARN",
             )
     return patterns
@@ -107,14 +120,16 @@ def upsert_pattern(cur, pattern: dict) -> int:
     embedding = to_pgvector_literal(embed_passage(embedding_text))
     decision_signals = json.dumps(pattern.get("decision_signals", []))
     fuentes = json.dumps(pattern.get("fuentes", []))
+    image_source = json.dumps(pattern["image_source"]) if pattern.get("image_source") else None
 
     if row is None:
         cur.execute(
             """
             INSERT INTO architect_patterns
                 (pattern_name, category, description, use_cases, tradeoffs,
-                 when_not_to_use, decision_signals, complexity, fuentes, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                 when_not_to_use, decision_signals, complexity, fuentes,
+                 image, image_alt, image_source, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
             RETURNING id
             """,
             (
@@ -127,6 +142,9 @@ def upsert_pattern(cur, pattern: dict) -> int:
                 decision_signals,
                 pattern.get("complexity"),
                 fuentes,
+                pattern.get("image"),
+                pattern.get("image_alt"),
+                image_source,
                 embedding,
             ),
         )
@@ -137,7 +155,8 @@ def upsert_pattern(cur, pattern: dict) -> int:
         UPDATE architect_patterns
         SET category = %s, description = %s, use_cases = %s, tradeoffs = %s,
             when_not_to_use = %s, decision_signals = %s, complexity = %s,
-            fuentes = %s, embedding = %s::vector
+            fuentes = %s, image = %s, image_alt = %s, image_source = %s,
+            embedding = %s::vector
         WHERE id = %s
         """,
         (
@@ -149,6 +168,9 @@ def upsert_pattern(cur, pattern: dict) -> int:
             decision_signals,
             pattern.get("complexity"),
             fuentes,
+            pattern.get("image"),
+            pattern.get("image_alt"),
+            image_source,
             embedding,
             row[0],
         ),
@@ -188,6 +210,36 @@ def seed_pattern_chunks(cur, pattern_id: int, pattern: dict) -> int:
     return created
 
 
+def sync_pattern_images(conn) -> int:
+    """Copia la imagen y su atribucion del YAML a los patrones ya sembrados.
+
+    No inserta ni borra patrones ni toca embeddings: eso sigue siendo el seed
+    completo. Devuelve cuantas filas actualizo.
+    """
+    patterns = load_patterns()
+    cur = conn.cursor()
+    updated = 0
+    for pattern in patterns:
+        image_source = json.dumps(pattern["image_source"]) if pattern.get("image_source") else None
+        cur.execute(
+            """
+            UPDATE architect_patterns
+            SET image = %s, image_alt = %s, image_source = %s
+            WHERE pattern_name = %s
+            """,
+            (pattern.get("image"), pattern.get("image_alt"), image_source, pattern["pattern_name"]),
+        )
+        updated += cur.rowcount
+    if updated < len(patterns):
+        log(
+            f"Solo {updated} de {len(patterns)} patrones estan en la base: corre el seed "
+            "completo (python scripts/seed_patterns.py) para cargar los que faltan",
+            "WARN",
+        )
+    log(f"Imagenes de patrones sincronizadas: {updated}", "OK")
+    return updated
+
+
 def seed_patterns(conn):
     patterns = load_patterns()
     cur = conn.cursor()
@@ -214,15 +266,48 @@ def seed_patterns(conn):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "--images-only",
+        action="store_true",
+        help="solo sincroniza image / image_alt / image_source (sin embeddings)",
+    )
+    args = parser.parse_args()
+
     log("=" * 60)
     log("Seed de patrones de arquitectura (architect_patterns + chunks)")
     log("=" * 60)
     conn = connect_db()
     try:
-        seed_patterns(conn)
+        if args.images_only:
+            sync_pattern_images(conn)
+        else:
+            seed_patterns(conn)
         conn.commit()
     finally:
         conn.close()
+
+    # Las convenciones de estructura de repositorio se consultan junto con los
+    # patrones (el arbol de carpetas necesita las dos cosas), asi que se
+    # siembran en la misma corrida. Va despues del commit y en su propio
+    # try/except: si falla el seed de convenciones, los patrones ya quedaron
+    # cargados y la aplicacion sigue funcionando sin el arbol de carpetas.
+    log("-" * 60)
+    log("Seed de convenciones de estructura (repo_convention_chunks)")
+    try:
+        from seed_conventions import main as seed_conventions_main
+
+        seed_conventions_main()
+    except SystemExit as exc:
+        if exc.code:
+            log(
+                "El seed de convenciones no termino; el arbol de carpetas no "
+                "estara disponible hasta que corras: "
+                "python scripts/seed_conventions.py",
+                "WARN",
+            )
+    except Exception as exc:  # pragma: no cover - defensa del arranque
+        log(f"El seed de convenciones fallo: {exc}", "WARN")
 
 
 if __name__ == "__main__":
