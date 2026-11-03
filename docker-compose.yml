@@ -336,7 +336,15 @@ services:
 
   minio:
     container_name: minio
-    image: minio/minio:latest
+    # MinIO borró minio/minio y minio/mc de Docker Hub en septiembre de 2026 y
+    # quay.io dejó de aceptar descargas anónimas, así que el `docker compose
+    # up` fallaba con "pull access denied" y arrastraba a toda la pila.
+    # `docker login` no sirve: el repositorio ya no existe. Este espejo es una
+    # copia sin modificar de la última imagen comunitaria (mismo entrypoint,
+    # mismo formato de datos), así que el resto del servicio queda igual. Es
+    # de un tercero y está congelada: solo la usa el entorno local, Langfuse
+    # para guardar sus eventos; producción no levanta esta pila.
+    image: scnd/minio-mirror:RELEASE.2025-09-07T16-13-09Z
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" /data'
     environment:
