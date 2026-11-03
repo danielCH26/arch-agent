@@ -17,6 +17,10 @@ export interface AdrOut {
   // Patrón principal de la propuesta aprobada: su imagen va en la sección 3.
   // Opcional: los ADR guardados antes no lo traen.
   primary_pattern_id?: number | null
+  // Verificación previa a la entrega: secciones vacías, genéricas o sin un
+  // dato que el lector necesita. Vacía = cada sección aporta; null = el ADR
+  // es anterior al verificador y nunca pasó por él (no se pinta el panel).
+  quality_issues?: string[] | null
 }
 
 const adrPath = (projectId: number) => `/api/projects/${encodeURIComponent(String(projectId))}/adr`

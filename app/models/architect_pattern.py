@@ -26,3 +26,11 @@ class ArchitectPattern(Base):
     image_source = Column(JSONB)  # {titulo, autor, licencia, url, modificada?}
     embedding = Column(Vector(384))
     created_at = Column(TIMESTAMP, server_default=func.now())
+
+
+def pattern_names(db) -> list[tuple[int, str]]:
+    """Pares ``(id, pattern_name)`` del catálogo, para buscar un patrón por nombre."""
+    return [
+        (int(row.id), row.pattern_name)
+        for row in db.query(ArchitectPattern.id, ArchitectPattern.pattern_name).all()
+    ]

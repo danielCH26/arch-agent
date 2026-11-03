@@ -14,14 +14,16 @@ fuentes. Con esa definición se mide el KR "≥80% de propuestas citan patrones"
    verifique (``GET /api/patterns/{pattern_id}``).
 2. ``analyze_justification`` comprueba la definición de arriba sobre el
    markdown guardado y sus citas. No modifica sus argumentos.
-3. ``summarize_citation_rate`` agrega varios análisis para el KR.
+3. ``selected_pattern_id`` dice qué patrón eligió la propuesta (el declarado,
+   no siempre la cita ``primary`` del RAG) para mostrar su imagen.
+4. ``summarize_citation_rate`` agrega varios análisis para el KR.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Iterable
+from typing import Callable, Iterable
 
 # KR de HU8: al menos el 80% de las propuestas debe citar patrones.
 CITATION_TARGET_RATE = 0.8
@@ -164,6 +166,34 @@ def analyze_justification(markdown: str | None, citations: Iterable[dict] | None
         "primary_in_sources": primary_in_sources,
         "justified": justified,
     }
+
+
+def selected_pattern_id(
+    markdown: str | None,
+    citations: Iterable[dict] | None,
+    load_catalog: Callable[[], Iterable[tuple[int, str]]] | None = None,
+) -> int | None:
+    """Id del patrón que declara la propuesta en ``Patrón principal: X``.
+
+    La cita ``primary`` es lo que trajo el RAG y puede no ser lo que eligió el
+    modelo (``primary_in_sources: false``): mostrar su imagen como "Patrón
+    seleccionado" contradiría la recomendación. Se busca el nombre declarado
+    primero en las citas (la principal antes) y, si no está, en el catálogo
+    (``load_catalog`` devuelve pares ``(id, pattern_name)``; solo se llama en
+    ese caso). Sin patrón declarado o sin coincidencia devuelve None.
+    """
+    declared = _declared_primary(_normalize_lines(markdown or ""))
+    if not declared:
+        return None
+    ordered = sorted(citations or [], key=lambda c: c.get("source_role") != "primary")
+    for citation in ordered:
+        pattern_id = citation.get("pattern_id")
+        if pattern_id is not None and _names_match(declared, citation.get("pattern_name") or ""):
+            return int(pattern_id)
+    for pattern_id, name in (load_catalog() if load_catalog else ()):
+        if _names_match(declared, name or ""):
+            return int(pattern_id)
+    return None
 
 
 def summarize_citation_rate(

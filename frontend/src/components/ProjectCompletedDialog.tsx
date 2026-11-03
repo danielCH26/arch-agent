@@ -1,5 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useDialog } from '../hooks/useDialog'
+import { displayProjectName } from '../lib/format'
+import { CheckIcon, SparklesIcon } from './NavIcons'
 import { RobotGreeter } from './RobotGreeter'
 
 interface ProjectCompletedDialogProps {
@@ -33,17 +35,19 @@ export function ProjectCompletedDialog({ open, projectName, onClose }: ProjectCo
         <div className="flex justify-center">
           <RobotGreeter />
         </div>
-        <h2 id="project-completed-title" className="mt-4 text-xl font-semibold text-gray-900 dark:text-gray-100">
-          ¡Felicidades! Completaste todas las fases 🎉
+        <h2 id="project-completed-title" className="mt-4 inline-flex items-center gap-2 text-xl font-semibold text-gray-900 dark:text-gray-100">
+          ¡Felicidades! Completaste todas las fases
+          <SparklesIcon className="h-5 w-5 text-indigo-500" />
         </h2>
         <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-          {projectName ? <>La arquitectura de <strong>{projectName}</strong> quedó lista.</> : 'La arquitectura de tu proyecto quedó lista.'}{' '}
+          {projectName ? <>La arquitectura de <strong>{displayProjectName(projectName)}</strong> quedó lista.</> : 'La arquitectura de tu proyecto quedó lista.'}{' '}
           Tienes el ADR con todas las decisiones y una guía para empezar a construir.
         </p>
         <ul className="mt-4 flex flex-wrap justify-center gap-2 text-xs" aria-label="Fases completadas">
           {PHASES_DONE.map((phase) => (
-            <li key={phase} className="rounded-full bg-green-50 px-3 py-1 font-medium text-green-800">
-              ✓ {phase}
+            <li key={phase} className="inline-flex items-center gap-1 rounded-full bg-green-50 px-3 py-1 font-medium text-green-800">
+              <CheckIcon className="h-3.5 w-3.5" />
+              {phase}
             </li>
           ))}
         </ul>

@@ -10,6 +10,7 @@ from app.core.pattern_justification import (
     CITATION_TARGET_RATE,
     CURATED_SOURCE_LABEL,
     analyze_justification,
+    selected_pattern_id,
     source_for,
     summarize_citation_rate,
 )
@@ -260,3 +261,40 @@ class TestSelectCitationsPayload:
         assert citations[0]["category"] == "Estructural"
         assert citations[1]["source"]["filename"] == "fowler.pdf"
         assert citations[1]["chunk_type"] == "source_upload"
+
+
+# --- F29: patrón seleccionado (el declarado, no la cita principal del RAG) ---
+
+
+class TestSelectedPatternId:
+    def test_si_coincide_con_la_cita_principal_es_esa(self):
+        assert selected_pattern_id(PROPOSAL, CITATIONS) == 7
+
+    def test_si_la_cita_principal_es_otra_usa_la_cita_del_declarado(self):
+        citations = [
+            {"pattern_id": 4, "pattern_name": "API Gateway + BFF", "source_role": "primary"},
+            {"pattern_id": 7, "pattern_name": "Monolito modular", "source_role": "tradeoff_option"},
+        ]
+        assert analyze_justification(PROPOSAL, citations)["primary_in_sources"] is False
+        assert selected_pattern_id(PROPOSAL, citations) == 7
+
+    def test_si_no_esta_en_las_citas_lo_busca_en_el_catalogo(self):
+        citations = [{"pattern_id": 4, "pattern_name": "API Gateway + BFF", "source_role": "primary"}]
+        catalog = [(4, "API Gateway + BFF"), (9, "Monolito modular (Modular Monolith)")]
+        assert selected_pattern_id(PROPOSAL, citations, lambda: catalog) == 9
+
+    def test_sin_coincidencia_no_devuelve_la_cita_principal(self):
+        citations = [{"pattern_id": 4, "pattern_name": "API Gateway + BFF", "source_role": "primary"}]
+        assert selected_pattern_id(PROPOSAL, citations, lambda: [(4, "API Gateway + BFF")]) is None
+
+    def test_sin_patron_declarado_no_consulta_el_catalogo(self):
+        def catalog():
+            raise AssertionError("no debía consultar el catálogo")
+
+        assert selected_pattern_id("## Patrones\n- Hexagonal\n", CITATIONS, catalog) is None
+
+    def test_si_esta_en_las_citas_no_consulta_el_catalogo(self):
+        def catalog():
+            raise AssertionError("no debía consultar el catálogo")
+
+        assert selected_pattern_id(PROPOSAL, CITATIONS, catalog) == 7

@@ -25,7 +25,11 @@ from app.api.phase_errors import INTERNAL_ERROR_DETAIL, phase_decision_http_erro
 from app.api.projects import AVAILABLE_PHASES
 from app.core.database import SessionLocal
 from app.core.env import env_float
-from app.core.pattern_justification import analyze_justification, summarize_citation_rate
+from app.core.pattern_justification import (
+    analyze_justification,
+    selected_pattern_id,
+    summarize_citation_rate,
+)
 from app.core.phase_decisions import PhaseDecisionError, record_decision
 from app.core.proposal_generator import (
     PROPOSAL_MAX_ITER,  # noqa: F401  re-export: development lo expone aqui
@@ -35,6 +39,7 @@ from app.core.proposal_generator import (
 from app.core.session_store import record_approval_decision
 from app.models import InteractionLog, Proposal, ProposalApproval
 from app.models.approval import Approval
+from app.models.architect_pattern import pattern_names
 from app.models.message import Message
 from app.models.project import Project
 from app.models.session import UserSession
@@ -285,9 +290,15 @@ def _content_to_text(content) -> str:
     return str(content)
 
 
-def _proposal_out(proposal: Proposal) -> ProposalOut:
+def _proposal_out(proposal: Proposal, db: Session) -> ProposalOut:
     content = _content_to_text(proposal.content)
     citations = list(proposal.citations or [])
+    justification = analyze_justification(content, citations)
+    # F29: patrón que eligió la propuesta, para su imagen. No siempre es la
+    # cita principal: si el RAG trajo otro, se busca el declarado por nombre.
+    justification["selected_pattern_id"] = selected_pattern_id(
+        content, citations, lambda: pattern_names(db)
+    )
     return ProposalOut(
         id=int(proposal.id),
         project_id=int(proposal.project_id),
@@ -298,7 +309,7 @@ def _proposal_out(proposal: Proposal) -> ProposalOut:
         lifecycle=proposal.lifecycle,
         created_at=proposal.created_at.isoformat() if proposal.created_at else "",
         # Se calcula al leer: asi tambien lo exponen las propuestas anteriores a HU8.
-        justification=analyze_justification(content, citations),
+        justification=justification,
     )
 
 
@@ -786,7 +797,7 @@ async def get_proposal(
                 detail="Propuesta no encontrada",
             )
         _require_owned_project(db, user_id=user_id, project_id=int(proposal.project_id))
-        return _proposal_out(proposal)
+        return _proposal_out(proposal, db)
     finally:
         db.close()
 
@@ -811,7 +822,7 @@ async def get_proposal_history(
             .order_by(Proposal.iteration.desc(), Proposal.id.desc())
             .all()
         )
-        return [_proposal_out(proposal) for proposal in proposals]
+        return [_proposal_out(proposal, db) for proposal in proposals]
     finally:
         db.close()
 
@@ -848,7 +859,7 @@ async def get_latest_proposal(
         )
         if proposal is None:
             return None
-        return _proposal_out(proposal)
+        return _proposal_out(proposal, db)
     finally:
         db.close()
 

@@ -3,7 +3,7 @@
  *
  * Reads the pending decision from `useApprovalsStore` and renders one
  * button per available action. Closes PR #78 findings:
- *   * Aprobar button has `text-white` so the green background is readable.
+ *   * Aprobar, Modificar y Rechazar comparten estilo: borde y texto de color, sin relleno.
  *   * Reject opens the inline `<RejectDialog>` -- never `window.prompt`.
  *   * Calls the typed `decidePhase` client; 409 responses surface as
  *     `ApiConflictError` (REQ-SA-29, REQ-SA-34).
@@ -24,6 +24,7 @@ import {
 import { advancePhase } from '../../api/projects'
 import { useApprovalsStore } from '../../stores/approvalsStore'
 import { useProjectsStore } from '../../stores/projectsStore'
+import { phaseLabel } from '../phaseLabels'
 import { RejectDialog } from './RejectDialog'
 
 export interface PhaseActionsProps {
@@ -151,7 +152,7 @@ export function PhaseActions({
       {pending && (
         <p className="font-medium">
           Decisión pendiente para la fase{' '}
-          <span className="font-bold">{phase}</span>
+          <span className="font-bold">{phaseLabel(phase)}</span>
           {pending.since && (
             <span className="ml-2 text-xs text-blue-700">
               desde {new Date(pending.since).toLocaleString()}
@@ -205,9 +206,9 @@ export function PhaseActions({
             onClick={() => void handle(a.action)}
             className={
               a.action === 'approve'
-                // PR #78 finding: Aprobar was unreadable because the green
-                // background lacked a contrasting text colour.
-                ? 'rounded bg-green-600 px-3 py-2 font-medium text-white hover:bg-green-700 disabled:opacity-50'
+                // Mismo estilo que Modificar y Rechazar: borde y texto de
+                // color, sin relleno.
+                ? 'rounded border border-green-600 px-3 py-2 font-medium text-green-700 hover:bg-green-50 disabled:opacity-50'
                 : 'rounded border border-blue-600 px-3 py-2 font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50'
             }
           >

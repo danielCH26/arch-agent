@@ -449,6 +449,35 @@ describe('ProposalCard HU8: justificación con patrones', () => {
     expect(within(screen.getByTestId('citation-2')).getByRole('img', { name: 'Miniatura de Microservicios' })).toBeInTheDocument()
   })
 
+  it('si la cita principal no es el patrón declarado, muestra el declarado', async () => {
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([
+      [3, catalogPattern(3, 'API Gateway + BFF', '/pattern-images/api_gateway_bff.png')],
+      [9, catalogPattern(9, 'Monolito modular', '/pattern-images/modular_monolith.svg')],
+    ]))
+    const mismatch = {
+      ...justification,
+      cites_patterns: false,
+      declared_primary: 'monolito modular',
+      primary_pattern_name: 'API Gateway + BFF',
+      primary_in_sources: false,
+      selected_pattern_id: 9,
+    }
+    await renderWithProposal(proposalOut({ citations, justification: mismatch }))
+
+    const selected = await screen.findByTestId('proposal-selected-pattern')
+    expect(selected).toHaveTextContent('Patrón seleccionado: Monolito modular')
+    expect(selected).not.toHaveTextContent('API Gateway')
+  })
+
+  it('si no se ubicó el patrón declarado, no muestra el de la cita principal', async () => {
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[3, catalogPattern(3, 'API Gateway + BFF', '/pattern-images/api_gateway_bff.png')]]))
+    const mismatch = { ...justification, cites_patterns: false, primary_in_sources: false, selected_pattern_id: null }
+    await renderWithProposal(proposalOut({ citations, justification: mismatch }))
+
+    await waitFor(() => expect(getPatternCatalog).toHaveBeenCalled())
+    expect(screen.queryByTestId('proposal-selected-pattern')).not.toBeInTheDocument()
+  })
+
   it('sin imagen del patrón elegido no muestra el bloque', async () => {
     vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[3, catalogPattern(3, 'Monolito modular', null)]]))
     await renderWithProposal(proposalOut({ citations, justification }))

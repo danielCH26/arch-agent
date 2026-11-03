@@ -159,6 +159,23 @@ class TestGetProposalExposesJustification:
         assert out.justification["primary_pattern_name"] == "Hexagonal"
         # El análisis no toca las citas guardadas.
         assert out.citations == CITATIONS
+        assert out.justification["selected_pattern_id"] == 7
+
+    def test_selected_pattern_is_the_declared_one_not_the_primary_citation(self):
+        from app.api import proposals as module
+
+        # La propuesta recomienda Hexagonal, pero el RAG trajo API Gateway como principal.
+        citations = [{"index": 1, "pattern_id": 4, "pattern_name": "API Gateway + BFF", "source_role": "primary"}]
+        db = MagicMock()
+        db.get.return_value = _proposal(3, CITED, citations=citations)
+        with patch.object(module, "SessionLocal", return_value=db), \
+             patch.object(module, "_require_owned_project"), \
+             patch.object(module, "pattern_names", return_value=[(4, "API Gateway + BFF"), (7, "Hexagonal")]):
+            out = asyncio.run(module.get_proposal(3, CURRENT_USER))
+
+        assert out.justification["primary_in_sources"] is False
+        assert out.justification["primary_pattern_id"] == 4
+        assert out.justification["selected_pattern_id"] == 7
 
 
 class TestDecideChecksOpenProject:

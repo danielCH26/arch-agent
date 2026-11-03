@@ -33,12 +33,13 @@ from app.core.adr_generator import (
     generate_guide,
     lint_adr_guide,
     render_adr_markdown,
+    strip_decorative_emoji,
+    verify_adr,
 )
 from app.core.database import SessionLocal
 from app.core.langfuse_tracer import flush as flush_langfuse
 from app.core.langfuse_tracer import get_langfuse_handler
 from app.core.llm_loader import LLMConfigError, build_langchain_model
-from app.core.pattern_justification import primary_citation
 from app.core.session_store import record_approval_decision
 from app.models.project import Project
 from app.models.session import UserSession
@@ -70,14 +71,14 @@ class AdrOut(BaseModel):
     guide_warnings: list[str] = []
     # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
     diagram_attachment_id: Optional[str] = None
-    # Patrón principal de la propuesta aprobada: el panel y el PDF muestran su
-    # imagen en la sección 3 (Decisión). None en ADR guardados antes de F29.
+    # Patrón que declara la propuesta aprobada (puede no ser la cita principal
+    # del RAG): el panel y el PDF muestran su imagen en la sección 3 (Decisión).
+    # None en ADR guardados antes de F29 o si no se pudo ubicar en el catálogo.
     primary_pattern_id: Optional[int] = None
-
-
-def _primary_pattern_id(ctx) -> Optional[int]:
-    pattern_id = (primary_citation(ctx.citations) or {}).get("pattern_id")
-    return int(pattern_id) if pattern_id is not None else None
+    # Verificación previa a la entrega: secciones vacías, genéricas o sin un
+    # dato que el lector necesita. Vacía = cada sección aporta; None = el ADR
+    # es anterior al verificador y nunca pasó por él.
+    quality_issues: Optional[list[str]] = None
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -127,7 +128,8 @@ def _out(stored: dict) -> AdrOut:
     if not stored.get("markdown"):
         return AdrOut(markdown=None, generated_at=None)
     return AdrOut(
-        markdown=stored["markdown"],
+        # Los ADR guardados antes del filtro de emojis los conservaban.
+        markdown=strip_decorative_emoji(stored["markdown"]),
         generated_at=stored.get("generated_at"),
         guide_complete=bool(stored.get("guide_complete")),
         feedback_history=list(stored.get("feedback_history") or []),
@@ -135,6 +137,7 @@ def _out(stored: dict) -> AdrOut:
         guide_warnings=list(stored.get("guide_warnings") or []),
         diagram_attachment_id=stored.get("diagram_attachment_id"),
         primary_pattern_id=stored.get("primary_pattern_id"),
+        quality_issues=stored.get("quality_issues"),
     )
 
 
@@ -276,8 +279,9 @@ async def generate_adr(
         # True si la guía pasó por la segunda llamada de corrección.
         "guide_repaired": guide_repaired,
         "guide_warnings": lint_adr_guide(ctx, guide),
+        "quality_issues": verify_adr(ctx, markdown, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
-        "primary_pattern_id": _primary_pattern_id(ctx),
+        "primary_pattern_id": ctx.selected_pattern_id,
         "feedback_history": history,
         "guide_failure": ctx.guide_failure,
         # Un ADR nuevo vuelve a necesitar aprobación.
@@ -334,8 +338,9 @@ def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
     updated["markdown"] = render_adr_markdown(ctx, llm_sections=guide, generated_at=generated_at)
     updated["guide"] = guide
     updated["guide_warnings"] = lint_adr_guide(ctx, guide)
+    updated["quality_issues"] = verify_adr(ctx, updated["markdown"], guide)
     updated["diagram_attachment_id"] = ctx.diagram_attachment_id
-    updated["primary_pattern_id"] = _primary_pattern_id(ctx)
+    updated["primary_pattern_id"] = ctx.selected_pattern_id
     updated["approved_at"] = approved_at
     return updated
 

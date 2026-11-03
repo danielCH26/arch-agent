@@ -146,7 +146,7 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
         </div>
       )}
 
-      {proposal && !streaming && <SelectedPattern pattern={primaryPattern(proposal.citations, proposal.justification, catalog)} />}
+      {proposal && !streaming && <SelectedPattern pattern={primaryPattern(proposal.justification, catalog)} />}
 
       {proposal && (proposal.citations.length > 0 || !streaming) && <Citations citations={proposal.citations} justification={streaming ? null : proposal.justification} catalog={catalog} />}
 
@@ -207,14 +207,17 @@ export function ProposalCard({ projectId, onPhaseChanged }: ProposalCardProps) {
   )
 }
 
-// Patrón principal de la propuesta: el que declara la justificación o, si no
-// la hay (propuestas viejas), la cita marcada como principal.
+// Patrón que eligió la propuesta (el declarado en "Patrón principal: X"). No
+// se usa la cita principal a ciegas: si el RAG trajo otro patrón, el bloque
+// mostraría una imagen que contradice la recomendación.
 function primaryPattern(
-  citations: ProposalCitation[],
   justification: ProposalJustification | null | undefined,
   catalog: Map<number, Pattern> | null,
 ): Pattern | null {
-  const id = justification?.primary_pattern_id ?? citations.find((c) => c.source_role === 'primary')?.pattern_id
+  const id = justification?.selected_pattern_id !== undefined
+    ? justification.selected_pattern_id
+    // Backend sin selected_pattern_id: la cita principal solo si es la declarada.
+    : justification?.primary_in_sources ? justification.primary_pattern_id : null
   return id != null ? catalog?.get(id) ?? null : null
 }
 

@@ -10,7 +10,7 @@ vi.mock('../../api/diagrams', async (importOriginal) => {
   return { ...actual, fetchDiagramHistory: vi.fn() }
 })
 
-import { AdrPanel, adrFilename, pickAdrDiagram, splitAtDecision, splitAtMermaid } from '../AdrPanel'
+import { AdrPanel, adrFilename, imageLoaded, pickAdrDiagram, splitAtDecision, splitMermaidBlocks } from '../AdrPanel'
 import { getPatternCatalog, type Pattern } from '../../api/patterns'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
@@ -232,15 +232,28 @@ describe('AdrPanel', () => {
   it('Descargar PDF abre la vista de impresión con el diagrama como imagen', async () => {
     vi.mocked(getAdr).mockResolvedValue({
       ...ADR,
-      markdown: '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n## 5. Referencias\n\nFuentes',
+      markdown:
+        '# ADR-001: Arquitectura de Clínica\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\n' +
+        '_Figura 1. Componentes del sistema._\n\n## 5. Referencias\n\nFuentes',
       diagram_attachment_id: 'a',
     })
     vi.mocked(fetchDiagramHistory).mockResolvedValue([
       { message_id: 1, id: 'a', url: '/aprobado.png', filename: null, created_at: '', decision: 'approve' },
     ])
     const written: string[] = []
+    let fontsLoaded = () => {}
+    const fontsReady = new Promise<void>((resolve) => (fontsLoaded = resolve))
+    // Imagen del diagrama que todavía no terminó de cargar.
+    const imageEvents: Record<string, () => void> = {}
+    const image = { complete: false, addEventListener: (type: string, cb: () => void) => { imageEvents[type] = cb } }
     const fakeWindow = {
-      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn() },
+      document: {
+        open: vi.fn(),
+        write: (html: string) => written.push(html),
+        close: vi.fn(),
+        fonts: { ready: fontsReady },
+        images: [image],
+      },
       addEventListener: vi.fn(),
       focus: vi.fn(),
       print: vi.fn(),
@@ -257,6 +270,17 @@ describe('AdrPanel', () => {
     expect(html).toContain('src="/aprobado.png"')
     expect(html).toContain('Referencias')
     expect(html).not.toContain('flowchart TD')
+    // El pie del ADR queda dentro de la figura.
+    expect(html).toContain('<figcaption><strong>Figura 1.</strong> Componentes del sistema.</figcaption>')
+    // No imprime hasta que cargan las tipografías y las imágenes: si no, el PDF
+    // sale con las fuentes de respaldo o con la figura en blanco.
+    await Promise.resolve()
+    expect(fakeWindow.print).not.toHaveBeenCalled()
+    fontsLoaded()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fakeWindow.print).not.toHaveBeenCalled()
+    imageEvents.load()
+    await waitFor(() => expect(fakeWindow.print).toHaveBeenCalledTimes(1))
     openSpy.mockRestore()
   })
 
@@ -291,7 +315,7 @@ describe('AdrPanel', () => {
     vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[4, HEXAGONAL]]))
     const written: string[] = []
     const fakeWindow = {
-      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn() },
+      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn(), images: [] },
       addEventListener: vi.fn(),
       focus: vi.fn(),
       print: vi.fn(),
@@ -306,6 +330,8 @@ describe('AdrPanel', () => {
     expect(html).toContain(`src="${window.location.origin}/pattern-images/hexagonal.svg"`)
     expect(html).toContain('Patrón seleccionado: Arquitectura hexagonal.')
     expect(html).toContain('Cth027 · CC BY-SA 4.0 — https://commons.wikimedia.org/x')
+    // Marcada para que la portada no la tome como miniatura del diagrama.
+    expect(html).toContain('<figure data-kind="pattern">')
     openSpy.mockRestore()
   })
 
@@ -327,10 +353,30 @@ describe('AdrPanel', () => {
     expect(splitAtDecision('sin decisión').found).toBe(false)
   })
 
-  it('splitAtMermaid separa el bloque del diagrama', () => {
-    const parts = splitAtMermaid('antes\n```mermaid\nflowchart TD\n```\ndespués')
-    expect(parts).toEqual({ before: 'antes\n', after: '\ndespués', hasMermaid: true })
-    expect(splitAtMermaid('sin diagrama')).toEqual({ before: 'sin diagrama', after: '', hasMermaid: false })
+  it('splitMermaidBlocks separa cada bloque de diagrama', () => {
+    expect(splitMermaidBlocks('antes\n```mermaid\nflowchart TD\n```\ndespués')).toEqual(['antes\n', '\ndespués'])
+    expect(
+      splitMermaidBlocks('a\n```mermaid\nflowchart TD\n```\nb\n```mermaid\n%%{init: {}}%%\nflowchart LR\n```\nc'),
+    ).toEqual(['a\n', '\nb\n', '\nc'])
+    expect(splitMermaidBlocks('sin diagrama')).toEqual(['sin diagrama'])
+  })
+
+  it('muestra la verificación previa a la entrega', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, quality_issues: ['«7.3 Consecuencias»: es genérica'] })
+    renderPanel()
+    expect(await screen.findByTestId('adr-quality')).toHaveTextContent('«7.3 Consecuencias»: es genérica')
+  })
+
+  it('la verificación sin problemas lo dice, y un ADR viejo no muestra nada', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, quality_issues: [] })
+    const { unmount } = renderPanel()
+    expect(await screen.findByTestId('adr-quality')).toHaveTextContent('todas las secciones tienen contenido específico')
+    unmount()
+
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    renderPanel()
+    await screen.findByTestId('adr-content')
+    expect(screen.queryByTestId('adr-quality')).not.toBeInTheDocument()
   })
 
   it('arma un nombre de archivo seguro', () => {
