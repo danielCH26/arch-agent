@@ -13,8 +13,8 @@ import yaml
 PATTERNS_DIR = Path(__file__).resolve().parents[2] / "data" / "patterns"
 # Las imagenes se sirven desde el frontend: /pattern-images/x -> frontend/public/pattern-images/x
 PUBLIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "public"
-# Licencia de los diagramas propios: la del repositorio (ver README, "Licencia").
-REPO_LICENSE = "Todos los derechos reservados (licencia del repositorio)"
+# Licencia de los diagramas propios: el repo no tiene LICENSE (README, "Licencia").
+REPO_LICENSE = "Todos los derechos reservados"
 
 MIN_BULLETS = 4
 MIN_WORDS_PER_BULLET = 10

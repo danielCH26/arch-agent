@@ -12,7 +12,8 @@ anteriores, etc.). Los chunks asociados se borran en cascada por el FK.
 
 Con ``--images-only`` solo copia image / image_alt / image_source del YAML a
 las filas que ya existen, sin cargar el modelo de embeddings (segundos). El
-backend lo corre en cada arranque (docker-compose.yml), asi ningun entorno
+backend lo corre en cada arranque (scripts/start_backend.sh, tanto en Docker
+Compose como en Railway), asi ningun entorno
 queda con las columnas de la migracion 0022 vacias.
 """
 

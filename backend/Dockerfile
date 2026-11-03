@@ -104,6 +104,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/docs >/dev/null || exit 1
 
-# uvicorn single-process (sentence-transformers carga el modelo en memoria
-# del proceso, escalar horizontal requiere refactor a worker pool separado)
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+# Schema + migraciones + imágenes de patrones y luego uvicorn single-process
+# (sentence-transformers carga el modelo en memoria del proceso, escalar
+# horizontal requiere refactor a worker pool separado). Es el mismo arranque
+# que docker-compose.yml: Railway despliega con este Dockerfile y sin él la
+# base de producción quedaba sin migrar ni con las imágenes de los patrones.
+CMD ["sh", "scripts/start_backend.sh"]

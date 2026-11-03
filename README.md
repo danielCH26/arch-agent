@@ -33,7 +33,8 @@ cp .env.example .env
 docker compose up -d
 
 # El backend aplica schema.sql y las migraciones pendientes al arrancar
-# (ver `command` en docker-compose.yml); si cambias migrations/, reconstruye:
+# (scripts/start_backend.sh, el mismo en Docker Compose y en Railway); si
+# cambias migrations/, reconstruye:
 #   docker compose up -d --build backend
 # También sincroniza las imágenes de los patrones (seed_patterns.py
 # --images-only). En una base nueva, el seed completo es OBLIGATORIO una vez:

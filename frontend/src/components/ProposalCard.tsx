@@ -280,7 +280,7 @@ function CitationRow({ citation, position, pattern }: { citation: ProposalCitati
 
   return (
     <li title={citation.snippet ?? undefined} data-testid={`citation-${number}`}>
-      {/* Miniatura del patrón de cada opción de trade-offs. */}
+      {/* Miniatura del patrón de cada cita. */}
       {pattern && <PatternThumbnail key={pattern.id} pattern={pattern} />}
       [{number}] {citation.pattern_name ?? `Patrón #${patternId ?? number}`}
       {citation.similarity != null && ` · similitud ${(citation.similarity * 100).toFixed(0)}%`}

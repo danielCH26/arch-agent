@@ -433,7 +433,7 @@ describe('ProposalCard HU8: justificación con patrones', () => {
       : null,
   })
 
-  it('muestra el patrón seleccionado con su imagen y atribución, y una miniatura por opción', async () => {
+  it('muestra el patrón seleccionado con su imagen y atribución, y una miniatura por cita', async () => {
     vi.mocked(getPatternCatalog).mockResolvedValue(new Map([
       [3, catalogPattern(3, 'Monolito modular', '/pattern-images/modular_monolith.svg')],
       [8, catalogPattern(8, 'Microservicios', '/pattern-images/microservices.svg')],
