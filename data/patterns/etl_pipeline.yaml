@@ -43,3 +43,12 @@ example_scenarios:
 fuentes:
   - titulo: "Extract, transform, and load (ETL) (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/data-guide/relational-data/etl"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+#
+# Lista vacia a proposito: este patron organiza COMO se despliega o se compone
+# el sistema, no como se ordenan las carpetas dentro de un modulo. El generador
+# del arbol no lo propone para ningun modulo, y eso es correcto: forzarlo seria
+# inventar una justificacion que la fuente del patron no da.
+applies_to_modules: []

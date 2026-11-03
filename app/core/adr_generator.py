@@ -159,12 +159,23 @@ class AdrContext:
     # Adjunto (captura) del diagrama que se usó: el panel muestra esa imagen,
     # así la imagen y el Mermaid del ADR son siempre el mismo diagrama.
     diagram_attachment_id: Optional[str] = None
-    # Diagrama de despliegue (Mermaid), cuando el proyecto lo tenga. Va en la
-    # sección 4 junto al de arquitectura y con el mismo estilo.
+    # Diagrama de despliegue (Mermaid) en la sección 4. HOY NADIE LO ASIGNA
+    # fuera de las pruebas: el despliegue aprobado entra por `deployment`
+    # y se escribe aparte, como "### Despliegue en <nube>". Si algún día se
+    # conecta este campo, el ADR mostraría el despliegue dos veces (aquí y en
+    # esa sección); habría que quitar una de las dos antes de usarlo.
     deployment_mermaid: Optional[str] = None
     # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
     # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
     guide_failure: Optional[str] = None
+    # Plan de despliegue APROBADO (mapeo componente -> servicio de nube), tal
+    # como quedó guardado junto a su diagrama. ``None`` si el proyecto no
+    # llegó a aprobar un despliegue: el ADR simplemente no trae esa parte.
+    deployment: Optional[dict] = None
+    # Plan de estructura del repositorio (árbol de carpetas por convenciones y
+    # patrones por módulo), tal como quedó en el último adjunto generado.
+    # ``None`` si el proyecto no generó ninguno: el ADR no trae esa parte.
+    repo_structure: Optional[dict] = None
 
 
 # --- Recolección (DB) ---------------------------------------------------------
@@ -238,6 +249,85 @@ def _approved_mermaid(
     return code, False, (ids[0] if ids else None)
 
 
+def deployment_matches_architecture(
+    attachment: dict, architecture_attachment_id: Optional[str]
+) -> bool:
+    """¿Este despliegue se calculó sobre la arquitectura que muestra el ADR?
+
+    Un despliegue guardado antes de que se registrara ese dato no trae
+    ``architecture_attachment_id``: se acepta, porque descartarlo dejaría sin
+    despliegue a los ADR ya generados.
+    """
+    sobre = attachment.get("architecture_attachment_id")
+    if not sobre or not architecture_attachment_id:
+        return True
+    return sobre == architecture_attachment_id
+
+
+def _approved_deployment(
+    db: Session,
+    *,
+    user_id: int,
+    project_id: int,
+    architecture_attachment_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Plan del diagrama de despliegue APROBADO más reciente, o ``None``.
+
+    Mismo criterio que ``_approved_mermaid`` pero sobre los adjuntos
+    ``kind="deployment"`` y las decisiones de la fase "despliegue": un
+    despliegue que se aprobó y luego se rechazó ya no cuenta.
+
+    Solo entra al ADR lo aprobado. Un despliegue generado y no decidido es un
+    borrador, y el ADR documenta decisiones.
+
+    Además tiene que corresponder a la arquitectura que el ADR está
+    mostrando: si después de aprobar un despliegue se aprueba OTRO diagrama
+    de arquitectura, el de antes ya no describe lo que hay. Sin este filtro
+    el ADR enseñaba el diagrama nuevo junto a la tabla vieja.
+
+    Los despliegues guardados antes de que se registrara ese dato no traen
+    ``architecture_attachment_id``; esos se aceptan, porque descartarlos
+    dejaría sin despliegue a los ADR ya generados.
+    """
+    rows = (
+        db.query(Message)
+        .filter(
+            Message.project_id == project_id,
+            Message.user_id == user_id,
+            Message.role == "assistant",
+            Message.attachments != None,  # noqa: E711 (comparación JSONB)
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(200)
+        .all()
+    )
+    candidates: list[tuple[str, dict]] = []
+    for row in rows:
+        for att in row.attachments or []:
+            if not isinstance(att, dict) or att.get("kind") != "deployment":
+                continue
+            plan = att.get("plan")
+            if not (att.get("id") and isinstance(plan, dict)):
+                continue
+            if not deployment_matches_architecture(att, architecture_attachment_id):
+                # Calculado sobre otra arquitectura: ya no describe esta.
+                continue
+            candidates.append((str(att["id"]), plan))
+    if not candidates:
+        return None
+
+    decisions = latest_diagram_decisions(
+        db,
+        project_id=project_id,
+        attachment_ids=[att_id for att_id, _plan in candidates],
+        phase="despliegue",
+    )
+    for att_id, plan in candidates:
+        if decisions.get(att_id) == "approve":
+            return plan
+    return None
+
+
 def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrContext:
     """Junta todo lo decidido en el proyecto. Lanza ``AdrNotReadyError`` si
     todavía no hay una propuesta aprobada: sin decisión no hay ADR."""
@@ -302,7 +392,52 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         diagram_approved=diagram_approved,
         diagram_attachment_id=diagram_attachment_id,
         decisions=decisions,
+        deployment=_approved_deployment(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=diagram_attachment_id,
+        ),
+        repo_structure=_latest_repo_structure(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=diagram_attachment_id,
+        ),
     )
+
+
+def _latest_repo_structure(
+    db,
+    *,
+    user_id: int,
+    project_id: int,
+    architecture_attachment_id: Optional[str] = None,
+) -> Optional[dict]:
+    """El plan de estructura más reciente SOBRE LA ARQUITECTURA VIGENTE, o None.
+
+    Mismo criterio que el despliegue: si el usuario aprueba un diagrama nuevo
+    y no vuelve a generar la estructura, el ADR tiene que salir sin la sección
+    antes que mostrar un árbol armado sobre el diagrama anterior.
+
+    Import local y envuelto: ``app.api.repo_structure`` importa este módulo
+    (para ``collect_adr_context``), asi que arriba seria un ciclo. Y si esa
+    parte falla, el ADR se arma sin la sección en lugar de no armarse.
+    """
+    try:
+        from app.api.repo_structure import latest_structure_plan
+
+        return latest_structure_plan(
+            db,
+            user_id=user_id,
+            project_id=project_id,
+            architecture_attachment_id=architecture_attachment_id,
+        )
+    except Exception:  # pragma: no cover - defensa del armado del ADR
+        _LOGGER.exception(
+            "No se pudo leer la estructura de repositorio del proyecto %s", project_id
+        )
+        return None
 
 
 # --- Armado (puro) ------------------------------------------------------------
@@ -408,6 +543,187 @@ def _elicitation_annex(preguntas_respuestas: list[dict]) -> str:
 
 
 _ADJUSTMENT = "(ajuste solicitado por el usuario)"
+
+
+def _deployment_block(ctx: AdrContext) -> str:
+    """Subsección del despliegue en la nube, o cadena vacía si no hay uno
+    aprobado.
+
+    Va como subsección de "4. Diagrama de arquitectura" y NO como sección
+    numerada propia: las secciones del ADR están numeradas y hay código que
+    las busca por número (``extract_guide_section`` con "## 7.", los saltos
+    de página del PDF, el lint de la guía). Insertar una sección 5 obligaría
+    a renumerar todo eso. Como subsección cuelga del diagrama, que es
+    justamente de lo que habla.
+    """
+    plan = ctx.deployment
+    if not isinstance(plan, dict):
+        return ""
+    provider = plan.get("provider") or {}
+    components = [c for c in (plan.get("components") or []) if isinstance(c, dict)]
+    if not provider.get("name") or not components:
+        return ""
+
+    rows = [
+        "| Componente | Servicio | Cómo se despliega |",
+        "| --- | --- | --- |",
+    ]
+    for item in components:
+        rows.append(
+            f"| {_cell(item.get('component'))} | {_cell(item.get('service_name'))} "
+            f"| {_cell(item.get('deploy_note'))} |"
+        )
+
+    extras = ""
+    bridges = [b for b in (plan.get("bridges") or []) if isinstance(b, dict)]
+    if bridges:
+        nombres = ", ".join(str(b.get("service_name") or "") for b in bridges if b.get("service_name"))
+        if nombres:
+            extras += (
+                f"\n\nServicios que agrega {provider.get('short_name') or provider['name']} "
+                f"para conectar las piezas (no salen de un componente de la "
+                f"arquitectura): {nombres}."
+            )
+    externals = [
+        str(e.get("name") or "")
+        for e in (plan.get("externals") or [])
+        if isinstance(e, dict) and e.get("name")
+    ]
+    if externals:
+        extras += (
+            "\n\nServicios de terceros de los que depende el sistema y que no se "
+            f"despliegan en esta nube (se consumen por API): {', '.join(externals)}."
+        )
+    unmapped = [str(u) for u in (plan.get("unmapped") or []) if str(u).strip()]
+    if unmapped:
+        extras += (
+            "\n\nComponentes sin equivalente directo en esta nube, pendientes "
+            f"de decidir: {', '.join(unmapped)}."
+        )
+
+    return (
+        f"\n### Despliegue en {provider['name']}\n\n"
+        "Dónde queda cada pieza de la arquitectura al llevarla a la nube "
+        "elegida durante el refinamiento.\n\n" + "\n".join(rows) + extras + "\n"
+    )
+
+
+def _repo_structure_block(ctx: AdrContext) -> str:
+    """Subsección con el árbol de carpetas, o cadena vacía si no hay plan.
+
+    Va como subsección de "4. Diagrama de arquitectura" por la misma razón que
+    el despliegue: las secciones están numeradas y hay código que las busca
+    por número. Ver el comentario en ``_deployment_block``.
+
+    El árbol se emite tal como lo compuso ``repo_structure.build_plan``; acá no
+    se recalcula nada. Cada decisión que agregó un patrón se lista con su
+    justificación y su fuente, que es el criterio de aceptación de la historia:
+    nada en esta sección sale sin respaldo.
+    """
+    plan = ctx.repo_structure
+    if not isinstance(plan, dict):
+        return ""
+    tree = str(plan.get("tree_text") or "").strip()
+    if not tree:
+        return ""
+
+    convenciones = [
+        c
+        for c in (plan.get("backend"), plan.get("frontend"))
+        if isinstance(c, dict) and c.get("name")
+    ]
+    partes = ["\n### Estructura del repositorio\n\n"]
+    if convenciones:
+        detalle = "; ".join(
+            f"{_cell(c['name'])} (término que la activó: «{_cell(c.get('matched_term') or '—')}»)"
+            for c in convenciones
+        )
+        partes.append(
+            "Árbol de carpetas propuesto a partir de los módulos del diagrama "
+            f"aprobado y de las convenciones del stack: {detalle}.\n"
+        )
+    # La línea en blanco antes del bloque NO es decorativa: el renderer del ADR
+    # (`renderMarkdownBlocks`) consume un párrafo hasta encontrar una línea
+    # vacía, así que sin ella se tragaba el ``` y el árbol entero, y en el PDF
+    # salía todo en un renglón con los backticks a la vista.
+    # Aclaraciones: van junto al árbol y NO en "Pendientes de revisar", porque
+    # no hay nada que revisar (un proyecto Django no tiene un hueco de
+    # frontend: sus plantillas ya están en el árbol).
+    for nota in plan.get("notes") or []:
+        if str(nota).strip():
+            partes.append(f"{_cell(str(nota))}\n")
+
+    partes.append(f"\n```\n{tree}\n```\n")
+
+    # Patrón por módulo, con la justificación y la fuente de cada decisión.
+    filas: list[str] = []
+    sin_patron: list[str] = []
+    for module in plan.get("modules") or []:
+        if not isinstance(module, dict):
+            continue
+        nombre = str(module.get("name") or "")
+        if not nombre:
+            continue
+        elegidos = [
+            p
+            for p in (module.get("patterns") or [])
+            if isinstance(p, dict) and p.get("pattern_name")
+        ]
+        if not elegidos:
+            razon = str(module.get("uncovered_reason") or "").strip()
+            sin_patron.append(f"{nombre}: {razon}" if razon else nombre)
+            continue
+        for p in elegidos:
+            ubicacion = str(p.get("path") or "")
+            # La razón y la fuente van en UNA columna. Con seis, la tabla se
+            # desbordaba del ancho de la página en el PDF y la última —la
+            # fuente— quedaba cortada a media palabra. Justo la columna que
+            # sostiene el criterio de aceptación: cada decisión con su fuente.
+            # Pasa con rutas largas, como las de Spring Boot
+            # (`com/example/myapplication/spring_security_jwt/...`).
+            razon = str(p.get("justification") or "").strip()
+            fuente = str(p.get("source_title") or "").strip()
+            # `" ".join(...)` y no una f-string: sin justificación, la celda
+            # arrancaba con un espacio (« Fuente: X.»).
+            cita = f"Fuente: {fuente}." if fuente else ""
+            porque = " ".join(trozo for trozo in (razon, cita) if trozo)
+            filas.append(
+                f"| {_cell(nombre)} | {_cell(module.get('kind'))} "
+                f"| {_cell(p.get('pattern_name'))} "
+                f"| {_cell(ubicacion or 'sin ubicación documentada')} "
+                f"| {_cell(porque)} |"
+            )
+
+    if filas:
+        partes.append(
+            "\nPatrón aplicado a cada módulo, con la razón y la fuente de la "
+            "que sale:\n\n"
+        )
+        partes.append(
+            "| Módulo | Tipo | Patrón | Dónde queda | Por qué y de dónde sale |\n"
+            "| --- | --- | --- | --- | --- |\n"
+        )
+        partes.append("\n".join(filas) + "\n")
+
+    if sin_patron:
+        partes.append(
+            "\nMódulos para los que la base de patrones no tiene hoy ninguno "
+            "aplicable (se dejan sin propuesta en lugar de asignarles uno sin "
+            f"respaldo):\n\n{_bullets(sin_patron)}\n"
+        )
+
+    # Las advertencias por falta de patrón ya tienen su propio párrafo arriba;
+    # repetirlas acá hacía que el ADR dijera lo mismo dos veces seguidas.
+    ya_dichas = {s.split(":", 1)[-1].strip() for s in sin_patron}
+    advertencias = [
+        str(w)
+        for w in (plan.get("warnings") or [])
+        if str(w).strip() and str(w).split(":", 1)[-1].strip() not in ya_dichas
+    ]
+    if advertencias:
+        partes.append(f"\nPendientes de revisar:\n\n{_bullets(advertencias)}\n")
+
+    return "".join(partes)
 
 
 def _status(ctx: AdrContext) -> str:
@@ -1331,6 +1647,7 @@ def _diagrams_block(ctx: AdrContext) -> str:
     figures = []
     if ctx.mermaid:
         figures.append(("Arquitectura", ctx.mermaid, f"Componentes del sistema y cómo se comunican ({state})"))
+    # Rama sin uso en producción: ver `AdrContext.deployment_mermaid`.
     if ctx.deployment_mermaid:
         figures.append(("Despliegue", ctx.deployment_mermaid, "Dónde corre cada componente"))
     if not figures:
@@ -1425,7 +1742,7 @@ def render_adr_markdown(
 {decision_line}{_demote_headings(proposal) or '_La propuesta aprobada no tiene contenido._'}{feedback}
 
 {diagram}
-
+{_deployment_block(ctx)}{_repo_structure_block(ctx)}
 ## 5. Referencias
 
 {_references(ctx.citations)}

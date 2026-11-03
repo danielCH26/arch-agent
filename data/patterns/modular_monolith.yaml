@@ -42,3 +42,12 @@ example_scenarios:
   - "Plataforma de e-commerce con catálogo, pedidos, pagos e inventario que un equipo de 6 personas despliega como una sola aplicación pero con módulos independientes"
   - "Producto SaaS que hoy tiene un equipo pequeño y podría separar módulos en servicios más adelante si crece"
   - "ERP para una pyme con facturación, compras y nómina como módulos que comparten una base de datos"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+#
+# Lista vacia a proposito: este patron organiza COMO se despliega o se compone
+# el sistema, no como se ordenan las carpetas dentro de un modulo. El generador
+# del arbol no lo propone para ningun modulo, y eso es correcto: forzarlo seria
+# inventar una justificacion que la fuente del patron no da.
+applies_to_modules: []

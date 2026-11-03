@@ -2,12 +2,28 @@ import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DiagramHistoryPanel } from '../DiagramHistoryPanel'
 import { fetchDiagramHistory, type DiagramVersion } from '../../api/diagrams'
+import { fetchDeploymentHistory, type DeploymentVersion } from '../../api/deployments'
 
 vi.mock('../../api/diagrams', () => ({
   fetchDiagramHistory: vi.fn(),
 }))
 
+vi.mock('../../api/deployments', () => ({
+  fetchDeploymentHistory: vi.fn(),
+}))
+
 const fetchMock = vi.mocked(fetchDiagramHistory)
+const deployMock = vi.mocked(fetchDeploymentHistory)
+
+const deployment = (over: Partial<DeploymentVersion>): DeploymentVersion => ({
+  message_id: 10,
+  id: 'dep-1',
+  url: '/api/chat/attachments/dep-1?token=x',
+  provider: 'aws',
+  created_at: '2024-01-02T12:00:00+00:00',
+  decision: null,
+  ...over,
+})
 
 const version = (over: Partial<DiagramVersion>): DiagramVersion => ({
   message_id: 1,
@@ -26,6 +42,10 @@ function renderPanel() {
 describe('DiagramHistoryPanel (solo lectura)', () => {
   beforeEach(() => {
     fetchMock.mockReset()
+    deployMock.mockReset()
+    // Por defecto, proyecto sin despliegues: cada prueba que los necesite
+    // los declara.
+    deployMock.mockResolvedValue([])
   })
 
   it('no ofrece Aprobar / Rechazar / Pedir cambios: las decisiones se toman en el chat', async () => {
@@ -70,5 +90,47 @@ describe('DiagramHistoryPanel (solo lectura)', () => {
 
     expect(await screen.findByText('Proyecto no encontrado')).toBeInTheDocument()
     expect(screen.queryByText('Todavía no hay diagramas generados en este proyecto.')).not.toBeInTheDocument()
+  })
+
+  it('muestra los diagramas de despliegue en su propia sección', async () => {
+    // El panel de Refinamiento desaparece al avanzar: sin esta sección, las
+    // versiones del despliegue quedaban inalcanzables desde Revisión.
+    fetchMock.mockResolvedValue([version({})])
+    deployMock.mockResolvedValue([deployment({ decision: 'approve' })])
+    renderPanel()
+
+    expect(await screen.findByTestId('history-deployment')).toBeInTheDocument()
+    expect(screen.getByTestId('history-architecture')).toBeInTheDocument()
+    expect(screen.getByText('Despliegue en la nube')).toBeInTheDocument()
+    expect(screen.getByText(/AWS/)).toBeInTheDocument()
+  })
+
+  it('sin despliegues no dibuja esa sección', async () => {
+    fetchMock.mockResolvedValue([version({})])
+    renderPanel()
+
+    await screen.findByTestId('history-architecture')
+    expect(screen.queryByTestId('history-deployment')).not.toBeInTheDocument()
+  })
+
+  it('solo despliegues: no dibuja la sección de arquitectura ni el vacío', async () => {
+    fetchMock.mockResolvedValue([])
+    deployMock.mockResolvedValue([deployment({})])
+    renderPanel()
+
+    expect(await screen.findByTestId('history-deployment')).toBeInTheDocument()
+    expect(screen.queryByTestId('history-architecture')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Todavía no hay diagramas generados en este proyecto.'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('si falla el historial de despliegue, los de arquitectura se ven igual', async () => {
+    fetchMock.mockResolvedValue([version({})])
+    deployMock.mockRejectedValue(new Error('backend viejo'))
+    renderPanel()
+
+    expect(await screen.findByTestId('history-architecture')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

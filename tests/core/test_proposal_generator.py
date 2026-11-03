@@ -51,8 +51,39 @@ def test_retrieve_patterns_asks_for_many_chunks_so_top_n_can_dedupe():
 
     kwargs = mocked.call_args.kwargs
     assert kwargs["scope"] == "patterns"
-    assert kwargs["k"] == gen.PROPOSAL_RAG_CANDIDATE_CHUNKS
+    # Se sobre-pide porque los patrones de nivel `modulo` (Repository, Service
+    # Layer, DTO, Unit of Work) estan en la misma tabla del RAG y se descartan
+    # despues: sin sobre-pedir, en un proyecto CRUD se quedarian con cupos del
+    # top-k y llegarian menos estilos reales a la propuesta.
+    assert kwargs["k"] == gen.PROPOSAL_RAG_CANDIDATE_CHUNKS * 2
     assert kwargs["k"] > gen.PROPOSAL_RAG_TOP_N
+
+
+def test_retrieve_patterns_drops_module_level_patterns_and_keeps_the_limit():
+    """Los patrones de modulo no llegan a la propuesta, y el corte se respeta."""
+    from unittest.mock import patch
+
+    from langchain_core.documents import Document
+
+    from app.core import proposal_generator as gen
+
+    modulo = [
+        Document(page_content="x", metadata={"pattern_name": "Repository"}),
+        Document(page_content="x", metadata={"pattern_name": "Service Layer"}),
+    ]
+    estilos = [
+        Document(page_content="x", metadata={"pattern_name": "Microservicios"})
+        for _ in range(gen.PROPOSAL_RAG_CANDIDATE_CHUNKS + 5)
+    ]
+
+    with patch.object(gen, "similarity_search", return_value=(modulo + estilos, {})):
+        docs = gen._retrieve_patterns("consulta", user_id=1)
+
+    nombres = {doc.metadata["pattern_name"] for doc in docs}
+    assert "Repository" not in nombres
+    assert "Service Layer" not in nombres
+    assert nombres == {"Microservicios"}
+    assert len(docs) == gen.PROPOSAL_RAG_CANDIDATE_CHUNKS
 
 
 def test_build_prompt_without_citations_does_not_ask_for_bracket_numbers():
@@ -1535,13 +1566,31 @@ def test_baseline_covers_every_pattern_in_the_seed_catalog():
     import yaml
 
     patterns_dir = pathlib.Path(__file__).resolve().parents[2] / "data" / "patterns"
-    names = [
-        yaml.safe_load(path.read_text(encoding="utf-8"))["pattern_name"]
+    raw = [
+        yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in sorted(patterns_dir.glob("*.yaml"))
     ]
+    # Los patrones de nivel `modulo` (Repository, Service Layer, DTO, Unit of
+    # Work) quedan fuera: no son estructuras base de arquitectura, asi que no
+    # tienen (ni deben tener) una entrada en `_PATTERN_BASELINES`. Nunca pueden
+    # ser el patron principal de una propuesta, porque `_retrieve_patterns` los
+    # descarta antes de recortar al top-k. Existen para el arbol de carpetas
+    # (F28), que los consume desde el YAML, no desde el retrieval.
+    names = [p["pattern_name"] for p in raw if p.get("level") != "modulo"]
     assert len(names) >= 10
     for name in names:
         assert "la propia del patron principal" not in _baseline_head(name), name
+
+
+def test_module_level_patterns_have_no_architecture_baseline():
+    """El complemento del test anterior: que de verdad NO tengan base propia.
+
+    Si alguien le agregara una entrada en `_PATTERN_BASELINES` a Repository,
+    una propuesta podria arrancar diciendo "ESTRUCTURA BASE SELECCIONADA:
+    repositorio", que no es un estilo de arquitectura.
+    """
+    for name in ("Repository", "Service Layer", "Unit of Work", "Data Transfer Object (DTO)"):
+        assert "la propia del patron principal" in _baseline_head(name), name
 
 
 def test_baseline_for_unknown_primary_does_not_force_another_style():

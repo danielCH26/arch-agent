@@ -215,37 +215,33 @@ function Tradeoffs({ tradeoffs }: { tradeoffs: Pattern['tradeoffs'] }) {
 function SourceChunks({ patternId }: { patternId: number }) {
   const [open, setOpen] = useState(false)
   const [chunks, setChunks] = useState<PatternSourceChunk[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
 
+  // Las fuentes se piden al abrir el patrón, no al pulsar el botón: así, si no
+  // hay documentos subidos para este patrón (lo habitual, porque `fuentes/` no
+  // se versiona), no se dibuja nada. Antes el botón siempre estaba y solo
+  // llevaba a un aviso de que no había nada que ver.
   useEffect(() => {
     setOpen(false)
     setChunks(null)
-    setError('')
-  }, [patternId])
-
-  useEffect(() => {
-    if (!open || chunks !== null) return
     let cancelled = false
-    setLoading(true)
     listPatternSourceChunks(patternId)
       .then((data) => { if (!cancelled) setChunks(data) })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Error al cargar las fuentes') })
-      .finally(() => { if (!cancelled) setLoading(false) })
+      // Si la consulta falla tampoco hay nada que mostrar: la sección es
+      // complementaria y un error aquí no debe ensuciar la ficha del patrón.
+      .catch(() => { if (!cancelled) setChunks([]) })
     return () => { cancelled = true }
-  }, [open, chunks, patternId])
+  }, [patternId])
+
+  if (!chunks || chunks.length === 0) return null
 
   return (
     <section className="border-t border-gray-100 pt-4">
       <button type="button" onClick={() => setOpen((v) => !v)} className="text-sm font-medium text-sky-700 hover:underline">
-        {open ? 'Ocultar fuentes' : 'Ver fuentes documentales'}
+        {open ? 'Ocultar fuentes' : `Ver fuentes documentales (${chunks.length})`}
       </button>
       {open && (
         <div className="mt-3 space-y-3">
-          {loading && <p className="text-sm text-gray-500">Cargando fuentes...</p>}
-          {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-          {chunks?.length === 0 && <p className="text-sm italic text-gray-500">No hay fuentes cargadas para este patrón.</p>}
-          {chunks?.map((chunk) => (
+          {chunks.map((chunk) => (
             <div key={chunk.id} className="rounded-lg bg-slate-50 p-3">
               {chunk.chunk_metadata?.filename && (
                 <p className="mb-1 text-xs font-medium text-gray-500">

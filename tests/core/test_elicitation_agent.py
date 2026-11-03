@@ -14,6 +14,7 @@ import pytest
 
 from app.core import elicitation_agent
 from app.core.elicitation_agent import (
+    ABSOLUTE_MAX_QUESTIONS,
     ElicitationAgentError,
     ElicitationLLMError,
     FIRST_QUESTION,
@@ -386,15 +387,19 @@ class TestNextStepSinReintento:
         assert decision.question == PREGUNTA_GRANULAR
         assert len(model.calls) == 1
 
-    def test_pregunta_compuesta_al_maximo_se_fuerza_done_sin_reintento(self):
-        # Al llegar al máximo la regla dura fuerza done=True y descarta la
-        # pregunta: reintentar sería una llamada desperdiciada.
+    def test_pregunta_compuesta_al_maximo_se_descarta_sin_reintento(self):
+        # Al llegar al tope la regla dura descarta la pregunta compuesta sin
+        # pedirle otra al modelo: reintentar sería una llamada desperdiciada.
+        #
+        # Antes esto además cerraba la elicitación (done=True). Ya no: si
+        # queda un tema obligatorio sin cubrir se pregunta ESE, porque cerrar
+        # ahí dejaba el resumen con campos en "no definido". Lo que la prueba
+        # protege —una sola llamada al modelo y la compuesta fuera— sigue igual.
         model = _FakeModel(
             [f'{{"done": false, "question": "{PREGUNTA_COMPUESTA}", "reason": "x"}}']
         )
         decision = next_step(model, history=HISTORY_10)
-        assert decision.done is True
-        assert decision.question is None
+        assert PREGUNTA_COMPUESTA not in (decision.question or "")
         assert len(model.calls) == 1
 
     def test_compuesta_forzada_por_minimo_tambien_se_reintenta(self):
@@ -751,22 +756,39 @@ class TestViabilityRuleGating:
         assert "presupuesto" in (decision.question or "").lower()
         assert "viabilidad" in decision.reason
 
-    def test_never_asks_an_eleventh_question(self):
+    def test_pasa_del_tope_normal_si_falta_algo_obligatorio(self):
+        """Los temas obligatorios son once y el tope normal es diez: cerrar
+        ahí dejaba campos en "no definido" sin haberlos preguntado nunca.
+        HISTORY_10 son respuestas vacías de contenido, así que todo sigue sin
+        cubrir y la elicitación tiene que continuar."""
         model = _FakeModel(['{"done": false, "question": "otra", "reason": "sigo"}'])
         decision = next_step(model, history=HISTORY_10)
+        assert decision.done is False
+        assert decision.question
+
+    def test_cierra_en_el_tope_normal_si_ya_esta_todo_cubierto(self):
+        """El tope normal sigue valiendo cuando no falta nada: no se alarga
+        porque sí."""
+        model = _FakeModel(['{"done": false, "question": "otra", "reason": "sigo"}'])
+        decision = next_step(
+            model, history=HISTORY_10, documents_context=_DOCS_COMPLETOS
+        )
         assert decision.done is True
         assert decision.question is None
 
-    def test_vague_answers_never_exceed_max_questions(self):
+    def test_vague_answers_never_exceed_absolute_max_questions(self):
+        """Con respuestas que no cubren nada, la elicitación se estira hasta
+        el tope DURO (no el normal) y ahí sí cierra. El tope duro existe para
+        que un usuario que contesta "no sé" a todo no se quede en un bucle."""
         model_response = '{"done": false, "question": "¿Qué usuarios tendrá?", "reason": "x"}'
         history = []
-        for _ in range(MAX_QUESTIONS + 2):
+        for _ in range(ABSOLUTE_MAX_QUESTIONS + 2):
             decision = next_step(_FakeModel([model_response]), history=history)
             if decision.done:
                 break
             history.append({"pregunta": decision.question, "respuesta": "no sé"})
         assert decision.done is True
-        assert len(history) == MAX_QUESTIONS
+        assert len(history) == ABSOLUTE_MAX_QUESTIONS
 
 
 # --- Re-revisión: palabras del dominio y montos pegados a la moneda ---------

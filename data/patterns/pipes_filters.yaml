@@ -42,3 +42,7 @@ example_scenarios:
 fuentes:
   - titulo: "Pipes and Filters pattern (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [procesamiento]
