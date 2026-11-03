@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0022: architect_patterns.image / image_alt / image_source
+-- Migration 0024: architect_patterns.image / image_alt / image_source
 -- =============================================================================
 -- Imagen ilustrativa de cada patron para la seccion "Base de patrones".
 --   image        ruta local servida por el frontend (/pattern-images/<archivo>) o URL

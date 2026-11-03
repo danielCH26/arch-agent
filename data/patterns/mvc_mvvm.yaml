@@ -51,3 +51,7 @@ image_source:
   autor: "Equipo arch-agent"
   licencia: "Todos los derechos reservados"
   url: null
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [ui, api]

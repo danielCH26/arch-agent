@@ -25,11 +25,11 @@ todas las imágenes y las tipografías.
   que no se rompan). La carpeta no se llama `patterns/` porque chocaría con la
   ruta `/patterns` de la SPA.
 - Datos: campos `image`, `image_alt` e `image_source` del YAML, copiados a
-  `architect_patterns` (migración 0022) por `scripts/seed_patterns.py`.
+  `architect_patterns` (migración 0024) por `scripts/seed_patterns.py`.
 
 ## Carga en la base
 
-La migración 0022 crea las columnas vacías. El backend corre
+La migración 0024 crea las columnas vacías. El backend corre
 `seed_patterns.py --images-only` en cada arranque (`scripts/start_backend.sh`,
 el `CMD` de `backend/Dockerfile`, que usan tanto Docker Compose como Railway):
 copia solo la imagen y su atribución, sin recalcular embeddings. En una base

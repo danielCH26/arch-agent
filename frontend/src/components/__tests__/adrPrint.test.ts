@@ -64,6 +64,23 @@ describe('buildAdrPrintDocument', () => {
     expect(html).toContain('<title>ADR-analitica</title>')
   })
 
+  it('solo la tabla de estructura lleva table-layout: fixed', () => {
+    // Sus rutas no tienen dónde cortar y empujaban la última columna fuera de
+    // la página. `fixed` global repartía por igual las columnas de la portada
+    // y de los trade-offs, que no declaran ancho.
+    const { doc, html } = render(
+      BODY +
+        `<h4>8. Estructura del repositorio</h4>
+         <table><thead><tr><th>Módulo</th><th>Tipo</th><th>Patrón</th><th>Dónde queda</th><th>Por qué y de dónde sale</th></tr></thead>
+         <tbody><tr><td>Pedidos</td><td>crud</td><td>Repository</td><td>app/repositories/pedidos.py</td><td>Fuente: FastAPI.</td></tr></tbody></table>`,
+    )
+    expect(html).toContain('table.estructura { table-layout: fixed; }')
+    expect(html).not.toMatch(/\n\s*table \{[^}]*table-layout/)
+    const marcadas = Array.from(doc.querySelectorAll('table.estructura'))
+    expect(marcadas).toHaveLength(1)
+    expect(marcadas[0].querySelector('th')?.textContent).toBe('Módulo')
+  })
+
   it('un ADR sin aprobar muestra el estado en ámbar', () => {
     const { doc } = render(BODY.replace('<td>Aceptado</td>', '<td>Propuesto (pendiente de aprobación)</td>'))
     const badge = doc.querySelector('.badge')!

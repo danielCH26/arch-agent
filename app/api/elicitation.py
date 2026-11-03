@@ -223,14 +223,22 @@ async def send_elicitation_message(
             )
             # Checklist determinista sobre el resumen: si al resumen le falta
             # una categoría obligatoria (usuarios, funcionalidades, calidad
-            # dicha por el usuario, presupuesto/equipo/plazo), no se cierra:
-            # se hace esa pregunta. No aplica al llegar al máximo de preguntas.
+            # dicha por el usuario, presupuesto/equipo/plazo, escala), no se
+            # cierra: se hace esa pregunta.
+            #
+            # El límite es el tope DURO, no el normal. Antes era el normal, y
+            # el comentario decía "no aplica al llegar al máximo": justo
+            # cuando más quedaba por cubrir, el control se apagaba y el
+            # resumen se guardaba con los huecos en "no definido". Los temas
+            # obligatorios son once y el tope normal es diez, así que ese
+            # caso no era raro: pasaba siempre que no hubiera documentos
+            # subidos que cubrieran parte por su cuenta.
             gaps = (
                 elicitation_agent.summary_gaps(
                     resumen, history, project.description or "", documents_text or None
                 )
                 if len(history)
-                < elicitation_agent.max_questions(
+                < elicitation_agent.absolute_max_questions(
                     history, project.description or "", documents_text or None
                 )
                 else []

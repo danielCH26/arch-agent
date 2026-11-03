@@ -110,6 +110,8 @@ from app.api.attachments import router as attachments_router  # F13, issue #17
 from app.api.diagrams import router as diagrams_router  # HU6: historial de diagramas
 from app.api.proposals import router as proposals_router
 from app.api.adr import router as adr_router  # Revisión: ADR del proyecto
+from app.api.deployments import router as deployments_router  # Diagrama de despliegue
+from app.api.repo_structure import router as repo_structure_router  # Arbol de carpetas
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -124,6 +126,8 @@ app.include_router(attachments_router)
 app.include_router(diagrams_router)
 app.include_router(proposals_router)
 app.include_router(adr_router)
+app.include_router(deployments_router)
+app.include_router(repo_structure_router)
 
 # HU6: bundle de mermaid.js para el render server-side (sidecar de Puppeteer).
 # Ruta puntual (no un StaticFiles de la raiz, que expondria server.py, .env...).

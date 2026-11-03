@@ -50,3 +50,7 @@ image_source:
   autor: "Jeroen De Dauw (Wikimedia Deutschland)"
   licencia: "CC0 1.0"
   url: "https://commons.wikimedia.org/wiki/File:Clean_Architecture_core.svg"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [crud, dominio, api, consulta]

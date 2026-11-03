@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,11 +9,16 @@ vi.mock('../../api/diagrams', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/diagrams')>()
   return { ...actual, fetchDiagramHistory: vi.fn() }
 })
+vi.mock('../../api/deployments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/deployments')>()
+  return { ...actual, fetchDeploymentHistory: vi.fn() }
+})
 
 import { AdrPanel, adrFilename, imageLoaded, pickAdrDiagram, splitAtDecision, splitMermaidBlocks } from '../AdrPanel'
 import { getPatternCatalog, type Pattern } from '../../api/patterns'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
+import { fetchDeploymentHistory } from '../../api/deployments'
 
 const EMPTY: AdrOut = { markdown: null, generated_at: null, guide_complete: false, feedback_history: [], approved_at: null }
 const ADR: AdrOut = {
@@ -45,6 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchDiagramHistory).mockResolvedValue([])
   vi.mocked(getPatternCatalog).mockResolvedValue(new Map())
+  vi.mocked(fetchDeploymentHistory).mockResolvedValue([])
 })
 
 const HEXAGONAL: Pattern = {
@@ -192,6 +198,57 @@ describe('AdrPanel', () => {
 
     await waitFor(() => expect(screen.getByTestId('adr-diagram')).toBeInTheDocument())
     expect(screen.getByAltText('Diagrama de la arquitectura del proyecto')).toHaveAttribute('src', '/del-adr.png')
+  })
+
+  it('muestra solo el diagrama de despliegue aprobado', async () => {
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    vi.mocked(fetchDeploymentHistory).mockResolvedValue([
+      { message_id: 4, id: 'd', url: '/ultimo-despliegue.png', provider: 'aws', created_at: '', decision: null },
+      { message_id: 3, id: 'c', url: '/despliegue.png', provider: 'aws', created_at: '', decision: 'approve' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-deployment-diagram')).toBeInTheDocument())
+    expect(screen.getByAltText('Diagrama de despliegue del proyecto en la nube')).toHaveAttribute(
+      'src',
+      '/despliegue.png',
+    )
+    expect(screen.getByText(/Diagrama de despliegue aprobado/)).toBeInTheDocument()
+  })
+
+  it('sin despliegue aprobado no muestra la figura de despliegue', async () => {
+    vi.mocked(getAdr).mockResolvedValue(ADR)
+    vi.mocked(fetchDeploymentHistory).mockResolvedValue([
+      { message_id: 4, id: 'd', url: '/ultimo-despliegue.png', provider: 'aws', created_at: '', decision: 'modify' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-content')).toBeInTheDocument())
+    expect(screen.queryByTestId('adr-deployment-diagram')).not.toBeInTheDocument()
+  })
+
+  it('la copia de impresión mete la captura del despliegue bajo su encabezado', async () => {
+    vi.mocked(getAdr).mockResolvedValue({
+      ...ADR,
+      markdown: '## 5. Despliegue\n\n### Despliegue en AWS\n\n| Pieza | Servicio |\n| --- | --- |\n',
+    })
+    vi.mocked(fetchDeploymentHistory).mockResolvedValue([
+      { message_id: 3, id: 'c', url: '/despliegue.png', provider: 'aws', created_at: '', decision: 'approve' },
+    ])
+
+    renderPanel()
+
+    await waitFor(() => expect(screen.getByTestId('adr-print-source')).toBeInTheDocument())
+    const fuente = screen.getByTestId('adr-print-source')
+    // Por el nombre, no por la etiqueta: `renderMarkdownBlocks` baja dos
+    // niveles cada encabezado (un `###` del ADR sale como <h5>).
+    const encabezado = within(fuente).getByText('Despliegue en AWS')
+    const figura = fuente.querySelector('figure')
+    expect(figura?.querySelector('img')).toHaveAttribute('src', '/despliegue.png')
+    // La figura va DESPUÉS del encabezado, no antes ni al final de otra sección.
+    expect(encabezado.compareDocumentPosition(figura!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('pickAdrDiagram usa el aprobado o el último si el ADR no dice cuál', () => {

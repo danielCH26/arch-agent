@@ -150,6 +150,14 @@ const PRINT_STYLES = (runningTitle: string) => `
      su palabra más larga ("Impa/cto", "Infraestruc/tura") */
   th, td { padding: 6pt 8pt; text-align: left; vertical-align: top; border-bottom: 1px solid ${C.line}; overflow-wrap: break-word; }
   th.nowrap, td.nowrap { white-space: nowrap; }
+  /* Solo la tabla de estructura (F28). Sus rutas no tienen espacios donde
+     cortar (com/example/myapplication/spring_security_jwt/...), así que
+     forzaban la columna a lo ancho y empujaban la última fuera de la página:
+     salía cortada a media palabra justo la columna de la fuente, la que
+     sostiene el criterio de "cada decisión con su fuente". Aplicarlo a todas
+     repartiría por igual las columnas de la portada y de los trade-offs,
+     que no declaran ancho. */
+  table.estructura { table-layout: fixed; }
   th { background: ${C.navy}; color: #fff; font-weight: 600; font-family: ${F.heading}; letter-spacing: .01em; }
   tbody tr:nth-child(even) td { background: ${C.paper}; }
   tbody tr:last-child td { border-bottom: 0; }
@@ -437,6 +445,18 @@ function shortColumns(root: Element): void {
   })
 }
 
+// Marca la tabla de estructura del repositorio (F28) para darle
+// `table-layout: fixed`. Se la reconoce por sus encabezados y no por su
+// posición, que depende de qué secciones traiga el ADR.
+function structureTable(root: Element): void {
+  root.querySelectorAll('table').forEach((table) => {
+    const headers = headerCells(table)
+    if (headers.includes('donde queda') && headers.includes('modulo')) {
+      table.classList.add('estructura')
+    }
+  })
+}
+
 function stripDecorativeEmoji(root: Element): void {
   const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -562,6 +582,7 @@ export function buildAdrPrintDocument(bodyHtml: string, options: AdrPrintOptions
   consequenceColumns(parsed, root)
   riskMatrix(parsed, root)
   shortColumns(root)
+  structureTable(root)
   agentNotes(parsed, root)
 
   // Sin introducción ni decisión en la ficha, la portada lleva la decisión en
