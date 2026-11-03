@@ -43,3 +43,7 @@ example_scenarios:
   - "Aplicación móvil y web con la misma lógica de negocio que debe sobrevivir a un cambio de framework en los próximos años"
   - "Sistema de reservas de larga vida donde casos de uso como 'crear reserva' y 'cancelar reserva' deben ser claros y testeables"
   - "Backend de una fintech que necesita aislar reglas de negocio del ORM y del framework web"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [crud, dominio, api, consulta]

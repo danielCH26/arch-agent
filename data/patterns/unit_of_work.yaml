@@ -1,0 +1,62 @@
+pattern_name: "Unit of Work"
+category: "Patrón de datos"
+complexity: "media"
+family: "complemento"
+level: "modulo"
+description: >
+  Mantiene la lista de objetos afectados por una transacción de negocio y
+  coordina la escritura de los cambios: el código marca lo que cambió y la
+  unidad de trabajo decide en qué momento se escribe todo junto.
+use_cases: >
+  Módulos donde una sola operación de negocio inserta, modifica o borra en
+  varias entidades o varios repositorios y todo debe quedar o no quedar en
+  conjunto; módulos con reglas que requieren consistencia entre agregados.
+when_not_to_use: >
+  No conviene cuando el ORM ya implementa la unidad de trabajo y basta con
+  usarla: duplicarla a mano agrega código sin ganancia. Tampoco cuando cada
+  operación del módulo toca una sola entidad, donde la transacción de la
+  consulta es suficiente.
+tradeoffs:
+  ventajas:
+    - "Agrupa varias escrituras en una sola transacción de negocio, así que una operación que toca varias entidades no deja el sistema a medio actualizar"
+    - "Da un punto único donde se confirma o se descarta el conjunto de cambios, lo que hace explícito el límite de la transacción en lugar de dejarlo repartido"
+    - "Permite que los repositorios se concentren en marcar cambios y no en decidir cuándo escribirlos, lo que los mantiene simples"
+    - "Reduce el número de viajes a la base de datos, porque las escrituras se acumulan y se envían juntas en lugar de una por una"
+  desventajas:
+    - "Los ORM modernos ya la implementan (el DbContext de Entity Framework es a la vez repositorio y unidad de trabajo), así que escribirla a mano suele ser duplicar lo que el framework hace"
+    - "Hace menos obvio en qué momento se escribe en la base: un cambio marcado y nunca confirmado se pierde en silencio"
+    - "Una unidad de trabajo que abarca demasiado mantiene la transacción abierta más tiempo del necesario y aumenta el riesgo de bloqueos"
+    - "Agrega una pieza con estado que hay que pasar entre repositorios y servicios, lo que complica la inyección de dependencias del módulo"
+decision_signals:
+  - pregunta: "¿Hay operaciones en este módulo que escriben en varias entidades y deben quedar todas o ninguna?"
+    señal_patron: "sí -> Unit of Work"
+  - pregunta: "¿El ORM que vas a usar ya implementa la unidad de trabajo?"
+    señal_patron: "sí -> usar la del ORM y no escribirla a mano"
+  - pregunta: "¿Cada operación del módulo toca una sola entidad?"
+    señal_patron: "sí -> no usar Unit of Work en ese módulo"
+fuentes:
+  - titulo: "Unit of Work (Patterns of Enterprise Application Architecture, Martin Fowler)"
+    url: "https://martinfowler.com/eaaCatalog/unitOfWork.html"
+  - titulo: "Design the infrastructure persistence layer (Microsoft Learn)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design"
+quality_attributes: [consistencia, integridad de datos, rendimiento]
+team_fit: "equipo con experiencia en acceso a datos, en módulos cuyas operaciones abarcan varias entidades"
+example_scenarios:
+  - "Módulo de pedidos donde confirmar un pedido descuenta inventario, crea el movimiento contable y registra el envío"
+  - "Módulo de nómina cuyo cierre de periodo escribe en varias tablas y no puede quedar a mitad de camino"
+  - "Módulo de transferencias que debita una cuenta y acredita otra en la misma operación"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema está
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [crud, dominio, procesamiento]
+
+structure_contributions:
+  - role: unit_of_work
+    dir_name: persistence
+    file_name: unit_of_work
+    class_name: UnitOfWork
+    note: >
+      Unidad de trabajo del módulo: coordina la confirmación de los cambios que
+      marcaron los repositorios. Si el ORM ya la provee, esta pieza es la del
+      ORM y no una clase propia.
+    source: 2

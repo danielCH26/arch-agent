@@ -1,0 +1,72 @@
+pattern_name: "Repository"
+category: "Monolítica"
+complexity: "baja"
+family: "complemento"
+level: "modulo"
+description: >
+  Media entre el dominio y la capa de acceso a datos mediante una interfaz
+  parecida a una colección: el código de negocio pide y guarda objetos sin
+  saber cómo se consultan ni dónde están almacenados.
+use_cases: >
+  Módulos que crean, consultan, modifican y borran una entidad y necesitan que
+  esa lógica de consulta viva en un solo lugar; módulos de dominio que deben
+  poder probarse sin base de datos reemplazando el repositorio por un doble.
+when_not_to_use: >
+  No conviene cuando el ORM ya ofrece esa abstracción y el repositorio solo la
+  reenvía sin agregar nada: queda una capa de paso. Tampoco cuando el módulo es
+  una consulta puntual sin lógica de negocio, donde una consulta directa es más
+  clara y más corta.
+tradeoffs:
+  ventajas:
+    - "Concentra el código de consulta del módulo: cuando hay muchas clases de dominio o consultas pesadas, deja de haber la misma consulta repetida en varios puntos del código"
+    - "Permite probar la lógica del módulo con pruebas unitarias, porque el repositorio se puede sustituir por un doble y la prueba no toca infraestructura"
+    - "Deja una dependencia en una sola dirección entre el dominio y el acceso a datos: el dominio define el contrato y la implementación vive en la capa de infraestructura"
+    - "Hace barato cambiar de estrategia de almacenamiento o tener varias implementaciones del mismo repositorio para desarrollo local, pruebas y producción"
+  desventajas:
+    - "Si el repositorio solo delega al ORM sin agregar lógica, es una capa de indirección que cuesta mantener y no aporta: Microsoft advierte que no es un patrón obligatorio ni en DDD ni en general"
+    - "Un repositorio genérico con muchas operaciones termina exponiendo el modelo de datos completo y pierde el sentido de ser una frontera del dominio"
+    - "Agrega una interfaz y una implementación por entidad, lo que en un módulo CRUD pequeño es más código del que el problema necesita"
+    - "Mal entendido se confunde con la clase de acceso a datos de toda la vida: el repositorio marca las operaciones en memoria y es la unidad de trabajo la que decide cuándo se escriben"
+decision_signals:
+  - pregunta: "¿El módulo tiene consultas propias que hoy aparecen repetidas en varios puntos del código?"
+    señal_patron: "sí -> Repository"
+  - pregunta: "¿Necesitas probar la lógica del módulo sin levantar la base de datos?"
+    señal_patron: "sí -> Repository"
+  - pregunta: "¿El repositorio agregaría algo más que reenviar las llamadas del ORM?"
+    señal_patron: "no -> no usar Repository en ese módulo"
+fuentes:
+  - titulo: "Repository (Patterns of Enterprise Application Architecture, Martin Fowler)"
+    url: "https://www.martinfowler.com/eaaCatalog/repository.html"
+  - titulo: "Design the infrastructure persistence layer (Microsoft Learn)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design"
+  - titulo: "Repository pattern (ASP.NET Core, Microsoft Learn)"
+    url: "https://learn.microsoft.com/aspnet/core/fundamentals/repository-pattern"
+quality_attributes: [testabilidad, modificabilidad, mantenibilidad]
+team_fit: "equipo de cualquier tamaño en un módulo con consultas propias; sobra en un módulo sin lógica de negocio"
+example_scenarios:
+  - "Módulo de inventario donde las consultas de stock disponible se usan desde el API, desde un reporte y desde un job nocturno"
+  - "Módulo de pedidos con reglas de negocio que el equipo quiere cubrir con pruebas unitarias sin base de datos"
+  - "Módulo de clientes que hoy usa PostgreSQL pero cuyas consultas podrían pasar a un servicio externo"
+
+# --- Campos de la HU de estructura de repositorio (F28) -------------------
+#
+# applies_to_modules: tipos de módulo donde este patrón aplica. El generador
+# del árbol solo propone el patrón para un módulo cuyo tipo detectado esté en
+# esta lista, y la consulta al RAG se filtra con ella. Vocabulario válido en
+# app/core/pattern_catalog.py (VALID_MODULE_KINDS).
+applies_to_modules: [crud, consulta, dominio, reporte]
+
+# structure_contributions: qué carpeta o archivo aporta este patrón al árbol.
+# El patrón dice QUÉ necesita y con qué fuente; la convención del stack dice
+# DÓNDE va (campo `pattern_slot` en data/conventions/*.yaml). `source` es el
+# índice 1-based en `fuentes` de ESTE archivo, no de la convención.
+structure_contributions:
+  - role: repository
+    dir_name: repositories
+    file_name: repositories
+    class_name: Repository
+    note: >
+      Carpeta de repositorios: una clase por entidad con las consultas del
+      módulo. La interfaz pertenece al dominio y la implementación a la capa de
+      infraestructura.
+    source: 2

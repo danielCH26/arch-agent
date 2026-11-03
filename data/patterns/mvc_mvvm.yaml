@@ -44,3 +44,7 @@ fuentes:
     url: "https://martinfowler.com/eaaDev/uiArchs.html"
   - titulo: "Model-View-ViewModel (Microsoft Learn)"
     url: "https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [ui, api]

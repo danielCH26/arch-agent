@@ -43,3 +43,7 @@ example_scenarios:
   - "Aplicación web de gestión de citas para una clínica pequeña, equipo de 3 desarrolladores, 4 meses de plazo, un solo servidor y una base de datos relacional"
   - "Sistema de inventario interno para una tienda con formularios, reportes sencillos y menos de 200 usuarios concurrentes"
   - "Proyecto universitario de un sistema de biblioteca con login, catálogo y préstamos, sin equipo de infraestructura"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema esta
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [crud, consulta, api]

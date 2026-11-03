@@ -1,0 +1,62 @@
+pattern_name: "Service Layer"
+category: "Monolítica"
+complexity: "baja"
+family: "complemento"
+level: "modulo"
+description: >
+  Define la frontera de la aplicación con una capa de servicios que establece
+  el conjunto de operaciones disponibles y coordina la respuesta de la
+  aplicación en cada una de ellas.
+use_cases: >
+  Módulos cuya lógica se invoca desde más de un punto de entrada (un endpoint
+  HTTP, un job programado, una cola de mensajes) y debe comportarse igual en
+  todos; módulos donde una operación de negocio toca varias entidades y hay que
+  coordinarlas en un solo lugar.
+when_not_to_use: >
+  No conviene cuando el módulo es un CRUD sin reglas: el servicio queda como un
+  reenvío del controlador al repositorio y agrega un salto sin valor. Tampoco
+  cuando ya hay un único punto de entrada y la lógica cabe en el controlador
+  sin volverse difícil de leer.
+tradeoffs:
+  ventajas:
+    - "Da un punto único de entrada a la lógica del módulo: la misma operación se llama igual desde un endpoint, un job y una cola, y no se reimplementa en cada uno"
+    - "Separa lo que la aplicación ofrece de cómo se invoca, así que cambiar el controlador o agregar otro canal no obliga a tocar las reglas de negocio"
+    - "Da un lugar natural para la transacción y la coordinación cuando una operación de negocio toca varias entidades o varios repositorios"
+    - "Hace evidente el catálogo de operaciones del módulo, lo que ayuda a quien llega nuevo a entender qué se puede hacer con él sin leer los controladores"
+  desventajas:
+    - "En un módulo CRUD sin reglas queda como capa de paso: el servicio solo llama al repositorio y cada campo nuevo obliga a tocar un archivo más"
+    - "Es fácil que se degrade en una clase enorme con decenas de métodos sin relación entre sí, que acaba siendo el módulo entero disfrazado de servicio"
+    - "Si la lógica de negocio se va migrando al servicio en lugar de a las entidades, el dominio queda anémico y el servicio concentra reglas que deberían vivir en el modelo"
+    - "Suma un archivo y una indirección por módulo, costo que no se recupera cuando hay un solo punto de entrada"
+decision_signals:
+  - pregunta: "¿La lógica de este módulo se va a invocar desde más de un punto de entrada (API, job, cola)?"
+    señal_patron: "sí -> Service Layer"
+  - pregunta: "¿Hay operaciones de negocio que tocan varias entidades y hay que coordinarlas en una transacción?"
+    señal_patron: "sí -> Service Layer"
+  - pregunta: "¿El módulo es un CRUD sin reglas de negocio propias?"
+    señal_patron: "sí -> no usar Service Layer en ese módulo"
+fuentes:
+  - titulo: "Service Layer (Patterns of Enterprise Application Architecture, Martin Fowler)"
+    url: "https://martinfowler.com/eaaCatalog/serviceLayer.html"
+  - titulo: "Structuring Your Code (documentación oficial de Spring Boot)"
+    url: "https://docs.spring.io/spring-boot/reference/using/structuring-your-code.html"
+quality_attributes: [mantenibilidad, reutilizacion, testabilidad]
+team_fit: "equipo de 2 a 10 personas en módulos con reglas de negocio propias y más de un punto de entrada"
+example_scenarios:
+  - "Módulo de facturación cuya operación de emitir factura se dispara desde el API y también desde un cierre mensual automático"
+  - "Módulo de reservas donde confirmar una reserva actualiza disponibilidad, cobra y notifica, todo en una sola operación"
+  - "Módulo de usuarios cuyas reglas de activación deben ser idénticas desde el panel de administración y desde el registro público"
+
+# Campos de la HU de estructura de repositorio (F28). El esquema está
+# documentado en data/patterns/repository.yaml.
+applies_to_modules: [crud, dominio, api, procesamiento, autenticacion]
+
+structure_contributions:
+  - role: service
+    dir_name: services
+    file_name: services
+    class_name: Service
+    note: >
+      Carpeta de servicios: una clase por módulo con las operaciones que la
+      aplicación ofrece hacia afuera, y la coordinación de cada una.
+    source: 1
