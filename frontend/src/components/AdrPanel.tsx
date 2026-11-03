@@ -43,11 +43,6 @@ function downloadMarkdown(markdown: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-// Parte el ADR en sus bloques ```mermaid: en el PDF cada diagrama va como
-// imagen (la captura aprobada), no como código, que una persona no técnica no
-// puede leer. Con n diagramas devuelve n + 1 tramos de texto; el diagrama i va
-// entre el tramo i y el i + 1. El de despliegue no pasa por aquí: el ADR lo
-// escribe como tabla, y su captura se inserta con `splitAtDeploymentHeading`.
 // Parte el texto en el encabezado del despliegue para poder meter la imagen
 // JUSTO debajo de él (y no suelta al final de la sección anterior). El ADR
 // escribe ese encabezado como "### Despliegue en <nube>".
@@ -66,6 +61,11 @@ export function splitAtDeploymentHeading(
   }
 }
 
+// Parte el ADR en sus bloques ```mermaid: en el PDF cada diagrama va como
+// imagen (la captura aprobada), no como código, que una persona no técnica no
+// puede leer. Con n diagramas devuelve n + 1 tramos de texto; el diagrama i va
+// entre el tramo i y el i + 1. El de despliegue no pasa por aquí: el ADR lo
+// escribe como tabla, y su captura se inserta con `splitAtDeploymentHeading`.
 export function splitMermaidBlocks(markdown: string): string[] {
   return markdown.split(/```mermaid\s*\n[\s\S]*?```/i)
 }

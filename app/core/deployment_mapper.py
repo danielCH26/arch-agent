@@ -130,29 +130,44 @@ _EDGE_LABEL_RE = re.compile(r"\|[^|]*\|")
 # Etiqueta en medio del guion: `A -- consulta --> B`. Se normaliza a `-->`
 # para que el texto no parezca un nodo más al partir la línea.
 #
-# El `(?<!-)--(?!-)` de la forma sólida es lo que evita que se coma un nodo:
-# con `-{2,}` suelto, en `A --- B --> C` la expresión tomaba `--- B -->`
-# entera como si fuera una etiqueta y devolvía la arista falsa `('A','C')`,
-# perdiendo B. Mermaid escribe la etiqueta con EXACTAMENTE dos guiones
-# (`A -- texto --> B`), así que exigirlo distingue la etiqueta de un `---`,
-# que es una flecha completa.
-# El cuerpo de la etiqueta rechaza FLECHAS, no caracteres sueltos. La versión
-# anterior usaba `[^->]`, que prohibía cualquier guion, y eso daba dos
-# problemas:
+# Historia de este patrón (cada punto es un bug que ya se corrigió):
 #
-#   - una etiqueta con guion no matcheaba y dejaba un nodo fantasma:
-#     `A -- e-commerce --> B` devolvía además `('e-commerce', 'B')`;
-#   - en la forma punteada, `[^.>]` sí aceptaba guiones y se comía un nodo
-#     entero: `A -.- B -.-> C` devolvía `('A','C')` y B desaparecía. Es el
-#     mismo error que ya se había corregido en la forma sólida.
+#   - El cuerpo de la etiqueta debe rechazar FLECHAS, no caracteres sueltos.
+#     Con `[^->]` una etiqueta con guion no matcheaba y dejaba un nodo
+#     fantasma: `A -- e-commerce --> B` daba además `('e-commerce', 'B')`.
+#   - La etiqueta debe terminar en CUALQUIER cierre válido de su familia, con
+#     o sin punta. Si solo se detiene ante el cierre con punta, ante `.-` o
+#     `---` sigue de largo y se come el nodo siguiente: `A -. t .- B -.-> C`
+#     daba `('A','C')` y B desaparecía.
+#   - La apertura no puede ser ya una flecha completa. Sin ese descarte,
+#     `A --- B --> C` y `A --o B -- t --> C` leían `--- B -->` / `--o B --`
+#     como etiqueta y perdían B.
 #
-# Con `(?:(?!<cierre>)[^>])*?` el cuerpo avanza mientras no empiece el cierre,
-# así que acepta guiones y puntos pero se detiene en la flecha.
+# El cuerpo es lazy (`[^>]*?`), así que termina en el PRIMER cierre; no hace
+# falta un lookahead aparte. Los cierres de abajo son los mismos que reconoce
+# `_ARROW_RE` como flecha completa, así que una forma nueva se agrega en un
+# solo sitio.
+
+# Cierres de flecha, uno por familia: `-->`, `--->`, `---`, `--o`, `--x`
+# (sólida), `==>`, `===` (gruesa) y `.->`, `.-`, `..-`, `.-x` (punteada).
+_SOLID_END = r"-{2,}(?:[->]|[xo](?![\w-]))"
+_THICK_END = r"={2,}[=>]"
+_DOT_END = r"\.+-(?:>|[xo](?![\w-]))?"
+# Prefijo opcional del operador: `<--`, `o--`, `x--`. `o`/`x` solo cuentan si
+# no son la última letra de un identificador (`Usuario-- t -->B`).
+_LINK_PREFIX = r"(?:(?<![\w-])[xo]|<)?"
+
 _MID_LABEL_RE = re.compile(
-    r"(?<!-)--(?!-)(?:(?!-{1,}>)[^>])*?-{1,}>"       # sólida:   A -- texto --> B
-    r"|-\.(?!-)(?:(?!\.-+>)[^>])*?\.-+>"             # punteada: A -. texto .-> B
-    r"|-\.(?!-)(?:(?!\.-)[^>])*?\.-(?!>)"            # punteada sin punta: A -. t .- B
-    r"|(?<!=)==(?!=)(?:(?!={1,}>)[^>])*?={1,}>"      # gruesa:   A == texto ==> B
+    # sólida:   A -- texto --> B  |  A -- texto --- B  |  A -- texto --o B
+    # El `(?!{_SOLID_END})` de la apertura descarta lo que ya es una flecha
+    # completa (`--o`, `---`): sin él, `A --o B -- t --> C` leía `--o B --`
+    # como apertura y perdía B.
+    rf"{_LINK_PREFIX}(?<!-)(?!{_SOLID_END})--(?!-)[^>]*?{_SOLID_END}"
+    # gruesa:   A == texto ==> B  |  A == texto === B
+    rf"|{_LINK_PREFIX}(?<!=)(?!{_THICK_END})==(?!=)[^>]*?{_THICK_END}"
+    # punteada: A -. texto .-> B  |  A -. texto .- B  |  A -. texto ..- B
+    # `(?!-\.+-)` descarta `-.-`, `-..-` y `-..-x`, que son flechas completas.
+    rf"|{_LINK_PREFIX}(?<!-)(?!-\.+-)-\.[^>]*?{_DOT_END}"
 )
 
 # Operadores de flecha de Mermaid, incluidos los bidireccionales (`<-->`) y
@@ -175,12 +190,12 @@ _MID_LABEL_RE = re.compile(
 # reconocía como flecha.
 _ARROW_RE = re.compile(
     r"\s*(?:"
-    r"<-{2,}>|<={2,}>|<-\.-+>"              # bidireccionales
-    r"|-{2,}>|={2,}>|-\.-+>"                # con punta
+    r"<-{2,}>|<={2,}>|<-\.+-+>"             # bidireccionales
+    r"|-{2,}>|={2,}>|-\.+-+>"               # con punta (A -.-> B, A -..-> B)
     r"|(?<![\w-])o-{2,}(?:[ox](?![\w-]))?"  # A o-- B, A o--o B
     r"|(?<![\w-])x-{2,}(?:[ox](?![\w-]))?"  # A x-- B, A x--x B
     r"|-{2,}[ox](?![\w-])"                  # A --o B, A --x B
-    r"|-\.-(?!>)"                           # A -.- B (punteada sin punta)
+    r"|-\.+-(?:[ox](?![\w-]))?(?!>)"        # A -.- B, A -..- B, A -.-x B, A -.-o B
     r"|-{3,}|={3,}"                         # sin punta
     r")\s*"
 )

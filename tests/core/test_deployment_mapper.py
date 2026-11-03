@@ -565,8 +565,8 @@ class TestTerceraRevisionPR:
     La corrección anterior arregló `A --- B --> C` en la forma sólida y, al
     agregar la punteada, repetí el mismo error. La causa de fondo era que el
     cuerpo de la etiqueta rechazaba CARACTERES (`[^->]`, `[^.>]`) en vez de
-    rechazar FLECHAS. Ahora usa `(?:(?!<cierre>)[^>])*?`, que acepta guiones y
-    puntos pero se detiene en la flecha.
+    rechazar FLECHAS. Ahora acepta guiones y puntos y se detiene en el primer
+    cierre (ver `TestCuartaRevisionPR` para los cierres sin punta).
     """
 
     def test_la_punteada_sin_punta_no_se_come_el_nodo_del_medio(self):
@@ -632,3 +632,130 @@ class TestTerceraRevisionPR:
             ("Usuario", "API")
         ]
         assert parse_mermaid_edges("A --> B & C") == [("A", "B"), ("A", "C")]
+
+
+class TestCuartaRevisionPR:
+    """El defecto D en la forma punteada, ahora con cierre sin punta.
+
+    La etiqueta punteada solo se detenía ante un cierre CON punta (`.->`);
+    ante `.-` seguía de largo y se tragaba el nodo siguiente. Ahora la
+    etiqueta termina en cualquier cierre válido de su familia, con o sin
+    punta, y esos cierres son los mismos que `_ARROW_RE` reconoce como flecha
+    completa (`_SOLID_END`, `_THICK_END`, `_DOT_END`).
+    """
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -. t .- B -.-> C",    # la entrada exacta del bloqueante
+            "A -..- B -.-> C",       # varios puntos, sin etiqueta
+            "A -. t ..- B -.-> C",
+            "A -.- B -. x .- C -.-> D",
+        ],
+    )
+    def test_la_punteada_con_cierre_sin_punta_no_se_come_el_nodo_del_medio(
+        self, mermaid
+    ):
+        edges = parse_mermaid_edges(mermaid)
+        assert ("A", "C") not in edges  # la conexión falsa que dibujaba
+        assert edges[:2] == [("A", "B"), ("B", "C")]
+
+    def test_los_dos_casos_de_la_tabla_del_revisor(self):
+        assert parse_mermaid_edges("A -. t .- B -.-> C") == [("A", "B"), ("B", "C")]
+        assert parse_mermaid_edges("A -..- B -.-> C") == [("A", "B"), ("B", "C")]
+
+    def test_el_encadenado_en_el_otro_orden_sigue_funcionando(self):
+        assert parse_mermaid_edges("A -.-> B -. x .- C") == [("A", "B"), ("B", "C")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            "A -.-x B",
+            "A -.-o B",
+            "A -..-x B",     # antes dejaba la arista fantasma ('A', 'x')
+            "A -..-o B",
+            "A -...-> B",
+            "A -..-> B",
+            "A <-.-> B",
+        ],
+    )
+    def test_extremos_de_cruz_y_circulo_y_varios_puntos_sin_nodo_fantasma(
+        self, mermaid
+    ):
+        """Menor del revisor: `A -.-x B` daba una arista hacia un nodo `x`."""
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    @pytest.mark.parametrize(
+        "mermaid",
+        [
+            # Menor del revisor: la etiqueta de una flecha SIN punta dejaba
+            # la arista falsa ('t', 'B'). Venía de antes del PR.
+            "A -- t --- B",
+            "A -- t ---- B",
+            "A -- t --o B",
+            "A -- t --x B",
+            "A == t === B",
+            "A -- e-commerce --- B",
+            "A -- lee y escribe --o B",
+        ],
+    )
+    def test_la_etiqueta_en_una_flecha_sin_punta_no_deja_un_nodo_fantasma(
+        self, mermaid
+    ):
+        assert parse_mermaid_edges(mermaid) == [("A", "B")]
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            ("A --o B -- t --> C", [("A", "B"), ("B", "C")]),
+            ("A -- t --o B -- u --x C", [("A", "B"), ("B", "C")]),
+            ("A -- t --- B == u === C", [("A", "B"), ("B", "C")]),
+            ("A <-- t --> B", [("A", "B")]),
+            ("A o-- t --o B", [("A", "B")]),
+            ("A -- t --xenon", []),  # `--xenon` no es un cierre: no inventa B
+        ],
+    )
+    def test_formas_mezcladas_en_una_misma_linea(self, mermaid, esperado):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    @pytest.mark.parametrize(
+        "mermaid, esperado",
+        [
+            ("A -. a.b .- B -.-> C", [("A", "B"), ("B", "C")]),
+            ("A -. v1.2 .-> B", [("A", "B")]),
+            ("A -- a.b --> B", [("A", "B")]),
+            ("A -. e-commerce .- B -.-> C", [("A", "B"), ("B", "C")]),
+        ],
+    )
+    def test_las_etiquetas_con_punto_o_guion_siguen_dando_las_aristas_correctas(
+        self, mermaid, esperado
+    ):
+        assert parse_mermaid_edges(mermaid) == esperado
+
+    def test_ninguna_combinacion_de_flechas_pierde_ni_inventa_aristas(self):
+        """Recorre todas las formas válidas de flecha, con y sin etiqueta,
+        encadenadas de a tres nodos, y exige exactamente `(A,B)` y `(B,C)`.
+
+        Es lo que habría atrapado el bloqueante: las pruebas anteriores
+        encadenaban casos sueltos en un solo orden.
+        """
+        sin_etiqueta = [
+            "-->", "--->", "---", "----", "==>", "===>", "===",
+            "-.->", "-..->", "-...->", "-.-", "-..-", "--o", "--x",
+            "-.-x", "-.-o", "-..-x", "<-->", "<==>", "<-.->", "o--o", "x--x",
+        ]
+        con_etiqueta = [
+            "-- t -->", "-- t --->", "-- t ---", "-- t --o", "-- t --x",
+            "== t ==>", "== t ===",
+            "-. t .->", "-. t ..->", "-. t .-", "-. t ..-",
+            "<-- t -->", "o-- t --o",
+        ]
+        etiquetas = ["t", "e-commerce", "a.b", "lee y escribe", "x-ray"]
+        formas = list(sin_etiqueta)
+        for forma in con_etiqueta:
+            for etiqueta in etiquetas:
+                formas.append(forma.replace(" t ", f" {etiqueta} "))
+        for primera in formas:
+            for segunda in formas:
+                linea = f"A {primera} B {segunda} C"
+                assert parse_mermaid_edges(linea) == [("A", "B"), ("B", "C")], linea

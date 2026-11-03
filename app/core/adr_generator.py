@@ -159,8 +159,11 @@ class AdrContext:
     # Adjunto (captura) del diagrama que se usó: el panel muestra esa imagen,
     # así la imagen y el Mermaid del ADR son siempre el mismo diagrama.
     diagram_attachment_id: Optional[str] = None
-    # Diagrama de despliegue (Mermaid), cuando el proyecto lo tenga. Va en la
-    # sección 4 junto al de arquitectura y con el mismo estilo.
+    # Diagrama de despliegue (Mermaid) en la sección 4. HOY NADIE LO ASIGNA
+    # fuera de las pruebas: el despliegue aprobado entra por `deployment`
+    # y se escribe aparte, como "### Despliegue en <nube>". Si algún día se
+    # conecta este campo, el ADR mostraría el despliegue dos veces (aquí y en
+    # esa sección); habría que quitar una de las dos antes de usarlo.
     deployment_mermaid: Optional[str] = None
     # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
     # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
@@ -1483,6 +1486,7 @@ def _diagrams_block(ctx: AdrContext) -> str:
     figures = []
     if ctx.mermaid:
         figures.append(("Arquitectura", ctx.mermaid, f"Componentes del sistema y cómo se comunican ({state})"))
+    # Rama sin uso en producción: ver `AdrContext.deployment_mermaid`.
     if ctx.deployment_mermaid:
         figures.append(("Despliegue", ctx.deployment_mermaid, "Dónde corre cada componente"))
     if not figures:
