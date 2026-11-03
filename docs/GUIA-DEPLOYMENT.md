@@ -195,6 +195,12 @@ cd frontend && npm install && npm run test:run
 > Si preferís no instalar nada en el host, copiá los tests al contenedor:
 > `docker compose cp ./tests backend:/app/tests` y corré
 > `docker compose exec -T backend pytest /app/tests -q`.
+>
+> Dos detalles de esa vía: si cambiaste código, **reconstruí la imagen**
+> (`docker compose up -d --build backend`), porque si no los tests van contra
+> un `/app/app` viejo; y el test `test_llm_yaml_tsx_parity.py` da error
+> porque lee `frontend/`, que no está en la imagen del backend. Ese test
+> necesita el repo completo, o sea que corre en el host.
 
 ### El walk end-to-end de HU10
 
