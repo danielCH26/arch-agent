@@ -302,7 +302,7 @@ function parseHtmlTable(tableMarkup: string) {
 
 // Las tablas se ajustan al ancho de su contenido (sin estirarse a todo el
 // mensaje) y los encabezados resaltan: más grandes, en negrita y centrados.
-const TABLE_HEADER_CELL = 'border border-gray-300 bg-gray-200 px-3 py-2 text-center align-middle text-[15px] font-bold'
+const TABLE_HEADER_CELL = 'border border-gray-300 bg-gray-200 px-3 py-2 text-center align-middle text-[15px] font-bold text-gray-900'
 // En las celdas, el texto en negrita (p. ej. los pasos numerados) va en semibold.
 const TABLE_BODY_CELL = 'border border-gray-300 px-3 py-2 align-top [&_strong]:font-semibold'
 
