@@ -327,6 +327,39 @@ def test_aprobar_bloquea_la_fila_de_sesion(client):
     assert _FakeSession.store.get("locked", 0) == before + 1
 
 
+# --- F29: imagen del patrón elegido en la sección 3 y en el PDF ---
+
+
+def _ctx_con_patron(selected: int | None = 3) -> AdrContext:
+    ctx = _ctx()
+    ctx.citations = [
+        {"pattern_id": 8, "pattern_name": "Microservicios", "source_role": "tradeoff_option"},
+        {"pattern_id": 3, "pattern_name": "Monolito modular", "source_role": "primary"},
+    ]
+    ctx.selected_pattern_id = selected
+    return ctx
+
+
+def test_el_adr_devuelve_el_patron_seleccionado_de_la_propuesta(client):
+    http, _ = client
+    with patch("app.api.adr.collect_adr_context", side_effect=lambda *a, **k: _ctx_con_patron()):
+        created = http.post("/api/projects/5/adr").json()
+        approved = http.post("/api/projects/5/adr/approve").json()
+
+    assert created["primary_pattern_id"] == 3
+    assert approved["primary_pattern_id"] == 3
+    assert http.get("/api/projects/5/adr").json()["primary_pattern_id"] == 3
+
+
+def test_si_no_se_ubica_el_patron_declarado_no_usa_la_cita_principal(client):
+    http, _ = client
+    ctx = _ctx_con_patron(selected=None)
+    with patch("app.api.adr.collect_adr_context", return_value=ctx):
+        created = http.post("/api/projects/5/adr").json()
+
+    assert created["primary_pattern_id"] is None
+
+
 def test_adr_anterior_al_verificador_no_se_presenta_como_verificado():
     from app.api.adr import _out
 

@@ -21,6 +21,11 @@ class PatternOut(BaseModel):
     use_cases: Optional[str]
     tradeoffs: Optional[dict]
     when_not_to_use: Optional[str]
+    # Imagen ilustrativa (ruta servida por el frontend o URL) y su atribucion
+    # {titulo, autor, licencia, url, modificada?}. Se cargan desde el YAML con seed_patterns.py.
+    image: Optional[str] = None
+    image_alt: Optional[str] = None
+    image_source: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -128,6 +133,9 @@ async def get_pattern(
             use_cases=pattern.use_cases,
             tradeoffs=pattern.tradeoffs,
             when_not_to_use=pattern.when_not_to_use,
+            image=pattern.image,
+            image_alt=pattern.image_alt,
+            image_source=pattern.image_source,
             decision_signals=pattern.decision_signals,
             chunks=[
                 PatternChunkOut(

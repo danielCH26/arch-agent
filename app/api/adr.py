@@ -71,6 +71,10 @@ class AdrOut(BaseModel):
     guide_warnings: list[str] = []
     # Adjunto del diagrama que usa el ADR: el panel muestra esa misma imagen.
     diagram_attachment_id: Optional[str] = None
+    # Patrón que declara la propuesta aprobada (puede no ser la cita principal
+    # del RAG): el panel y el PDF muestran su imagen en la sección 3 (Decisión).
+    # None en ADR guardados antes de F29 o si no se pudo ubicar en el catálogo.
+    primary_pattern_id: Optional[int] = None
     # Verificación previa a la entrega: secciones vacías, genéricas o sin un
     # dato que el lector necesita. Vacía = cada sección aporta; None = el ADR
     # es anterior al verificador y nunca pasó por él.
@@ -132,6 +136,7 @@ def _out(stored: dict) -> AdrOut:
         approved_at=stored.get("approved_at"),
         guide_warnings=list(stored.get("guide_warnings") or []),
         diagram_attachment_id=stored.get("diagram_attachment_id"),
+        primary_pattern_id=stored.get("primary_pattern_id"),
         quality_issues=stored.get("quality_issues"),
     )
 
@@ -276,6 +281,7 @@ async def generate_adr(
         "guide_warnings": lint_adr_guide(ctx, guide),
         "quality_issues": verify_adr(ctx, markdown, guide),
         "diagram_attachment_id": ctx.diagram_attachment_id,
+        "primary_pattern_id": ctx.selected_pattern_id,
         "feedback_history": history,
         "guide_failure": ctx.guide_failure,
         # Un ADR nuevo vuelve a necesitar aprobación.
@@ -334,6 +340,7 @@ def _rerender_approved(stored: dict, ctx: AdrContext, approved_at: str) -> dict:
     updated["guide_warnings"] = lint_adr_guide(ctx, guide)
     updated["quality_issues"] = verify_adr(ctx, updated["markdown"], guide)
     updated["diagram_attachment_id"] = ctx.diagram_attachment_id
+    updated["primary_pattern_id"] = ctx.selected_pattern_id
     updated["approved_at"] = approved_at
     return updated
 

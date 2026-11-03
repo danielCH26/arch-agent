@@ -166,6 +166,19 @@ describe('buildAdrPrintDocument', () => {
     )
   })
 
+  it('la miniatura de la portada es el diagrama aunque la imagen del patrón vaya antes', () => {
+    const patternFigure =
+      '<figure data-kind="pattern"><img src="http://localhost/pattern-images/modular_monolith.svg" alt="Monolito">' +
+      '<figcaption>Patrón seleccionado: Monolito modular.</figcaption></figure><p><em>Texto en cursiva</em></p>'
+    const { doc, html } = render(BODY.replace('<h4>3. Decisión</h4><p>Texto</p>', `<h4>3. Decisión</h4><p>Texto</p>${patternFigure}`))
+
+    expect(doc.querySelector('.cover-thumb img')?.getAttribute('src')).toBe('/aprobado.png')
+    // La del patrón conserva su pie (no absorbe el párrafo siguiente) y lleva el estilo de la opción recomendada.
+    const figure = doc.querySelector('main figure[data-kind="pattern"]')!
+    expect(figure.querySelectorAll('figcaption')).toHaveLength(1)
+    expect(html).toMatch(/figure\[data-kind="pattern"\] \{[^}]*border-left: 4px solid/)
+  })
+
   it('los trade-offs van en una tarjeta por opción con la recomendada marcada', () => {
     const { doc } = render()
     expect(Array.from(doc.querySelectorAll('main th')).some((th) => th.textContent === 'Opción')).toBe(false)

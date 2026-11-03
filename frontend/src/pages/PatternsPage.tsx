@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { PatternListSkeleton } from '../components/Skeleton'
 import { listPatterns, listPatternSourceChunks, Pattern, PatternSourceChunk } from '../api/patterns'
 import { PageHeader } from '../components/PageHeader'
+import { PatternFigure } from '../components/PatternFigure'
 
 const PAGE_SIZE = 200 // máximo permitido por GET /api/patterns
 
@@ -162,11 +163,22 @@ function PatternDetail({ pattern }: { pattern: Pattern }) {
         {pattern.category && <p className="text-sm text-gray-500">{pattern.category}</p>}
       </header>
       <Section title="Descripción" text={pattern.description} />
+      <PatternImage key={pattern.id} pattern={pattern} />
       <Section title="Casos de uso" text={pattern.use_cases} />
       <Tradeoffs tradeoffs={pattern.tradeoffs} />
       <Section title="Cuándo no usarlo" text={pattern.when_not_to_use} />
       <SourceChunks patternId={pattern.id} />
     </article>
+  )
+}
+
+// Imagen ilustrativa del patrón con su atribución, junto a la descripción.
+function PatternImage({ pattern }: { pattern: Pattern }) {
+  return (
+    <section>
+      <h3 className={SECTION_TITLE}>Cómo se ve</h3>
+      <PatternFigure pattern={pattern} />
+    </section>
   )
 }
 

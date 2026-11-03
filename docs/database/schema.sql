@@ -145,6 +145,10 @@ CREATE TABLE architect_patterns (
     when_not_to_use TEXT,
     decision_signals JSONB,
     complexity VARCHAR(10),         -- baja | media | alta (complejidad operativa)
+    fuentes JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{titulo, url}] curadas
+    image VARCHAR(500),             -- /pattern-images/<archivo> (frontend/public/pattern-images)
+    image_alt TEXT,
+    image_source JSONB,             -- {titulo, autor, licencia, url, modificada?}
     embedding vector(384),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

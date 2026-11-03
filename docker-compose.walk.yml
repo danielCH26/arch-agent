@@ -67,7 +67,8 @@ services:
       - walk_uploads:/app/uploads
       - walk_logs:/app/logs
       - walk_models:/app/.cache
-    # El command del base (init_db + migraciones + uvicorn) se conserva:
+    # El arranque del base (scripts/start_backend.sh: init_db + migraciones +
+    # imagenes de patrones + uvicorn) se conserva:
     # el walk necesita el schema aplicado al levantar.
 
 volumes:

@@ -2,6 +2,9 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../api/adr'
 import { fetchDiagramHistory, type DiagramVersion } from '../api/diagrams'
+import type { Pattern } from '../api/patterns'
+import { usePatternCatalog } from '../hooks/usePatternCatalog'
+import { PatternFigure, patternImageAlt, patternImageCredit } from './PatternFigure'
 import { fetchDeploymentHistory, type DeploymentVersion } from '../api/deployments'
 import { renderMarkdownBlocks } from './MessageBubble'
 import { CheckCircleIcon } from './NavIcons'
@@ -70,6 +73,59 @@ export function splitMermaidBlocks(markdown: string): string[] {
   return markdown.split(/```mermaid\s*\n[\s\S]*?```/i)
 }
 
+// Parte el ADR después del párrafo que abre la sección 3 (Decisión): ahí va la
+// imagen del patrón elegido, antes de la propuesta completa.
+export function splitAtDecision(markdown: string): { before: string; after: string; found: boolean } {
+  const match = markdown.match(/^#{2,}\s*3\.\s*Decisi[oó]n[^\n]*\n+(?:[^\n]+\n)*/im)
+  if (!match || match.index === undefined) return { before: markdown, after: '', found: false }
+  const end = match.index + match[0].length
+  return { before: markdown.slice(0, end), after: markdown.slice(end), found: true }
+}
+
+// La ventana de impresión no resuelve bien rutas relativas (/pattern-images/...):
+// el PDF lleva la URL absoluta de la imagen.
+function absoluteUrl(path: string): string {
+  try {
+    return new URL(path, window.location.origin).href
+  } catch {
+    return path
+  }
+}
+
+// Imagen del patrón elegido para el PDF, con la atribución en el pie (texto
+// plano: en papel el enlace no se puede abrir, así que la URL va escrita).
+function PrintPatternFigure({ pattern }: { pattern: Pattern }) {
+  const source = pattern.image_source
+  const credit = patternImageCredit(source)
+  return (
+    // data-kind: la vista de impresión le da el estilo de la opción recomendada
+    // y no la usa como miniatura de la portada (esa es la del diagrama).
+    <figure data-kind="pattern">
+      <img src={absoluteUrl(pattern.image!)} alt={patternImageAlt(pattern)} />
+      <figcaption>
+        Patrón seleccionado: {pattern.pattern_name}.
+        {source && ` Fuente: ${[source.titulo, credit, source.url].filter(Boolean).join(' — ')}.`}
+      </figcaption>
+    </figure>
+  )
+}
+
+// Markdown con la imagen del patrón elegido al inicio de la sección 3.
+function renderWithPattern(markdown: string, pattern: Pattern | null) {
+  const parts = pattern?.image ? splitAtDecision(markdown) : null
+  if (!parts?.found) return renderMarkdownBlocks(markdown)
+  return (
+    <>
+      {renderMarkdownBlocks(parts.before)}
+      <section className="my-3 rounded-lg border border-gray-100 p-3 dark:border-gray-800" data-testid="adr-selected-pattern">
+        <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Patrón seleccionado: {pattern!.pattern_name}</p>
+        <PatternFigure key={pattern!.id} pattern={pattern!} className="max-h-64 md:max-h-80" />
+      </section>
+      {renderMarkdownBlocks(parts.after)}
+    </>
+  )
+}
+
 // Abre una vista del ADR lista para imprimir y lanza el diálogo de impresión,
 // donde se elige "Guardar como PDF". Así no hacen falta librerías ni backend.
 export function openPrintView(bodyHtml: string, title: string): boolean {
@@ -85,16 +141,27 @@ export function openPrintView(bodyHtml: string, title: string): boolean {
     win.focus()
     win.print()
   }
-  // Se espera a que carguen la imagen del diagrama y las tipografías (Google
-  // Fonts): sin document.fonts.ready el PDF sale con las de respaldo. Si
-  // tardan, se imprime igual.
-  win.addEventListener('load', () => {
-    const fonts = win.document.fonts
-    if (fonts?.ready) fonts.ready.then(print, print)
-    else print()
-  })
-  setTimeout(print, 4000)
+  // Se espera a que carguen todas las imágenes (diagrama y patrón, que llega
+  // por URL absoluta y puede tardar) y las tipografías (Google Fonts): si no,
+  // el PDF sale con huecos en blanco o con las fuentes de respaldo. Si algo
+  // tarda demasiado, se imprime igual.
+  const fonts = win.document.fonts?.ready ?? Promise.resolve()
+  Promise.all([...Array.from(win.document.images).map(imageLoaded), fonts]).then(print, print)
+  setTimeout(print, PRINT_TIMEOUT_MS)
   return true
+}
+
+// Tope de espera antes de imprimir aunque falte alguna imagen o tipografía.
+const PRINT_TIMEOUT_MS = 8000
+
+// Se resuelve cuando la imagen terminó de cargar, también si falló: una imagen
+// rota no debe dejar el PDF sin imprimir.
+export function imageLoaded(img: HTMLImageElement): Promise<void> {
+  if (img.complete) return Promise.resolve()
+  return new Promise((resolve) => {
+    img.addEventListener('load', () => resolve(), { once: true })
+    img.addEventListener('error', () => resolve(), { once: true })
+  })
 }
 
 // El diagrama que usa el ADR (mismo adjunto que su Mermaid). Para ADR viejos,
@@ -222,6 +289,12 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
   // Copia del ADR armada para imprimir (oculta): el diagrama va como imagen.
   const printRef = useRef<HTMLDivElement>(null)
   const printParts = markdown ? splitMermaidBlocks(markdown) : null
+  // Patrón elegido en la propuesta aprobada, con su imagen (sección 3 y PDF).
+  const primaryPatternId = adr?.primary_pattern_id ?? null
+  const catalog = usePatternCatalog(primaryPatternId !== null)
+  const selectedPattern = primaryPatternId !== null ? catalog?.get(primaryPatternId) ?? null : null
+  // La sección 3 va antes del primer diagrama: está en el primer tramo.
+  const printDecision = printParts && selectedPattern?.image ? splitAtDecision(printParts[0]) : null
   // Igual que `renderMarkdownBlocks`, pero abriendo hueco para la captura del
   // despliegue debajo de su encabezado. Solo en el último tramo: ese encabezado
   // va después del diagrama de arquitectura.
@@ -512,7 +585,7 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
           data-testid="adr-content"
           className="prose-sm mt-3 max-h-[70vh] overflow-y-auto rounded-lg border border-gray-100 p-3 text-sm text-gray-800 dark:border-gray-800 dark:text-gray-200"
         >
-          {renderMarkdownBlocks(markdown)}
+          {renderWithPattern(markdown, selectedPattern)}
         </article>
       )}
 
@@ -524,7 +597,8 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
                 // El pie de figura es el del propio ADR ("Figura 1. ..."): la
                 // vista de impresión lo mete dentro de la figura.
                 (index === 1 && diagram ? (
-                  <figure>
+                  // data-kind: la portada toma su miniatura de esta figura, no de la del patrón.
+                  <figure data-kind="diagram">
                     <img src={diagram.url} alt="Diagrama de arquitectura del documento" />
                   </figure>
                 ) : (
@@ -532,7 +606,15 @@ export function AdrPanel({ projectId, projectName, onCompleted, onReadyChange }:
                     <strong>Diagrama disponible en la versión Markdown del documento.</strong>
                   </p>
                 ))}
-              {renderPartWithDeployment(part, index === printParts.length - 1)}
+              {index === 0 && printDecision?.found ? (
+                <>
+                  {renderMarkdownBlocks(printDecision.before)}
+                  <PrintPatternFigure pattern={selectedPattern!} />
+                  {renderPartWithDeployment(printDecision.after, index === printParts.length - 1)}
+                </>
+              ) : (
+                renderPartWithDeployment(part, index === printParts.length - 1)
+              )}
             </Fragment>
           ))}
         </div>

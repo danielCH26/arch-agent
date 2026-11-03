@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../api/adr', () => ({ getAdr: vi.fn(), generateAdr: vi.fn(), approveAdr: vi.fn() }))
+vi.mock('../../api/patterns', () => ({ getPatternCatalog: vi.fn() }))
 vi.mock('../../api/diagrams', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/diagrams')>()
   return { ...actual, fetchDiagramHistory: vi.fn() }
@@ -13,7 +14,8 @@ vi.mock('../../api/deployments', async (importOriginal) => {
   return { ...actual, fetchDeploymentHistory: vi.fn() }
 })
 
-import { AdrPanel, adrFilename, pickAdrDiagram, splitMermaidBlocks } from '../AdrPanel'
+import { AdrPanel, adrFilename, imageLoaded, pickAdrDiagram, splitAtDecision, splitMermaidBlocks } from '../AdrPanel'
+import { getPatternCatalog, type Pattern } from '../../api/patterns'
 import { approveAdr, generateAdr, getAdr, type AdrOut } from '../../api/adr'
 import { fetchDiagramHistory } from '../../api/diagrams'
 import { fetchDeploymentHistory } from '../../api/deployments'
@@ -47,8 +49,24 @@ function renderPanel(props: Partial<Parameters<typeof AdrPanel>[0]> = {}) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchDiagramHistory).mockResolvedValue([])
+  vi.mocked(getPatternCatalog).mockResolvedValue(new Map())
   vi.mocked(fetchDeploymentHistory).mockResolvedValue([])
 })
+
+const HEXAGONAL: Pattern = {
+  id: 4,
+  pattern_name: 'Arquitectura hexagonal',
+  category: null,
+  description: null,
+  use_cases: null,
+  tradeoffs: null,
+  when_not_to_use: null,
+  image: '/pattern-images/hexagonal.svg',
+  image_alt: 'Hexágono con el núcleo de la aplicación y sus adaptadores alrededor',
+  image_source: { titulo: 'File:Hexagonal Architecture.svg', autor: 'Cth027', licencia: 'CC BY-SA 4.0', url: 'https://commons.wikimedia.org/x' },
+}
+const DECISION_MD =
+  '# ADR-001: Arquitectura de Clínica\n\n## 3. Decisión\n\nLa arquitectura aprobada es la de la propuesta siguiente,\nincluida completa.\n\n### Patrón principal\n\nHexagonal\n\n## 4. Diagrama\n\n```mermaid\nflowchart TD\n  A --> B\n```\n'
 
 describe('AdrPanel', () => {
   it('sin ADR guardado ofrece generarlo', async () => {
@@ -282,12 +300,16 @@ describe('AdrPanel', () => {
     const written: string[] = []
     let fontsLoaded = () => {}
     const fontsReady = new Promise<void>((resolve) => (fontsLoaded = resolve))
+    // Imagen del diagrama que todavía no terminó de cargar.
+    const imageEvents: Record<string, () => void> = {}
+    const image = { complete: false, addEventListener: (type: string, cb: () => void) => { imageEvents[type] = cb } }
     const fakeWindow = {
       document: {
         open: vi.fn(),
         write: (html: string) => written.push(html),
         close: vi.fn(),
         fonts: { ready: fontsReady },
+        images: [image],
       },
       addEventListener: vi.fn(),
       focus: vi.fn(),
@@ -307,12 +329,14 @@ describe('AdrPanel', () => {
     expect(html).not.toContain('flowchart TD')
     // El pie del ADR queda dentro de la figura.
     expect(html).toContain('<figcaption><strong>Figura 1.</strong> Componentes del sistema.</figcaption>')
-    // No imprime hasta que cargan las tipografías: si no, el PDF sale con las de respaldo.
-    const onLoad = fakeWindow.addEventListener.mock.calls.find(([type]) => type === 'load')![1] as () => void
-    onLoad()
+    // No imprime hasta que cargan las tipografías y las imágenes: si no, el PDF
+    // sale con las fuentes de respaldo o con la figura en blanco.
     await Promise.resolve()
     expect(fakeWindow.print).not.toHaveBeenCalled()
     fontsLoaded()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fakeWindow.print).not.toHaveBeenCalled()
+    imageEvents.load()
     await waitFor(() => expect(fakeWindow.print).toHaveBeenCalledTimes(1))
     openSpy.mockRestore()
   })
@@ -326,6 +350,64 @@ describe('AdrPanel', () => {
 
     expect(await screen.findByTestId('adr-error')).toHaveTextContent('ventanas emergentes')
     openSpy.mockRestore()
+  })
+
+  it('muestra la imagen del patrón elegido en la sección 3 con su atribución', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, markdown: DECISION_MD, primary_pattern_id: 4 })
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[4, HEXAGONAL]]))
+
+    renderPanel()
+
+    const block = await screen.findByTestId('adr-selected-pattern')
+    expect(block).toHaveTextContent('Patrón seleccionado: Arquitectura hexagonal')
+    expect(block).toHaveTextContent('Cth027 · CC BY-SA 4.0')
+    // Va después del párrafo de la sección 3 y antes de la propuesta.
+    const content = screen.getByTestId('adr-content').textContent ?? ''
+    expect(content.indexOf('incluida completa')).toBeLessThan(content.indexOf('Patrón seleccionado'))
+    expect(content.indexOf('Patrón seleccionado')).toBeLessThan(content.indexOf('Patrón principal'))
+  })
+
+  it('el PDF incluye la imagen del patrón con URL absoluta y la fuente en el pie', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, markdown: DECISION_MD, primary_pattern_id: 4 })
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[4, HEXAGONAL]]))
+    const written: string[] = []
+    const fakeWindow = {
+      document: { open: vi.fn(), write: (html: string) => written.push(html), close: vi.fn(), images: [] },
+      addEventListener: vi.fn(),
+      focus: vi.fn(),
+      print: vi.fn(),
+    }
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(fakeWindow as unknown as Window)
+
+    renderPanel()
+    await screen.findByTestId('adr-selected-pattern')
+    await userEvent.click(screen.getByTestId('adr-download-pdf'))
+
+    const html = written.join('')
+    expect(html).toContain(`src="${window.location.origin}/pattern-images/hexagonal.svg"`)
+    expect(html).toContain('Patrón seleccionado: Arquitectura hexagonal.')
+    expect(html).toContain('Cth027 · CC BY-SA 4.0 — https://commons.wikimedia.org/x')
+    // Marcada para que la portada no la tome como miniatura del diagrama.
+    expect(html).toContain('<figure data-kind="pattern">')
+    openSpy.mockRestore()
+  })
+
+  it('sin patrón elegido el ADR se ve como antes', async () => {
+    vi.mocked(getAdr).mockResolvedValue({ ...ADR, markdown: DECISION_MD })
+
+    renderPanel()
+
+    expect(await screen.findByTestId('adr-content')).toHaveTextContent('Patrón principal')
+    expect(getPatternCatalog).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('adr-selected-pattern')).not.toBeInTheDocument()
+  })
+
+  it('splitAtDecision corta después del párrafo que abre la sección 3', () => {
+    const parts = splitAtDecision('## 2. Req\n\nx\n\n## 3. Decisión\n\nLa arquitectura\naprobada.\n\n### Propuesta\n')
+    expect(parts.found).toBe(true)
+    expect(parts.before.endsWith('La arquitectura\naprobada.\n')).toBe(true)
+    expect(parts.after).toBe('\n### Propuesta\n')
+    expect(splitAtDecision('sin decisión').found).toBe(false)
   })
 
   it('splitMermaidBlocks separa cada bloque de diagrama', () => {

@@ -40,6 +40,13 @@ example_scenarios:
   - "API con tráfico esporádico, equipo de 2 personas, sin servidores que administrar y facturación solo por uso"
   - "Procesamiento de imágenes o archivos subidos por usuarios que se dispara por evento y escala de 0 a miles"
   - "Backend de un evento o campaña de pocas semanas con picos fuertes de tráfico y presupuesto limitado"
+image: "/pattern-images/serverless.svg"
+image_alt: "Eventos (petición HTTP, mensaje en cola, archivo subido) disparan funciones en una plataforma gestionada; las funciones usan una base de datos gestionada y otros servicios."
+image_source:
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados"
+  url: null
 
 # Campos de la HU de estructura de repositorio (F28). El esquema esta
 # documentado en data/patterns/repository.yaml.

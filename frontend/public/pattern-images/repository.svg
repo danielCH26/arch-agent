@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" font-family="Segoe UI, Arial, sans-serif" font-size="16">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+  <rect width="640" height="400" fill="#ffffff"/>
+  <text x="320" y="32" text-anchor="middle" font-size="20" font-weight="600" fill="#1f2937">Repository</text>
+  <rect x="40" y="70" width="200" height="64" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="140.0" y="98.0" text-anchor="middle" font-weight="600" font-size="15" fill="#065f46">Servicio / caso de uso</text>
+  <text x="140.0" y="117.0" text-anchor="middle" font-size="12" fill="#475569">lógica de negocio</text>
+  <rect x="300" y="60" width="300" height="84" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="312" y="78" font-size="12" fill="#475569">Dominio</text>
+  <rect x="330" y="88" width="240" height="48" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="450.0" y="117.0" text-anchor="middle" font-weight="600" font-size="14" fill="#1e3a8a">«interfaz» PedidoRepository</text>
+  <line x1="240" y1="102" x2="325" y2="110" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <text x="282" y="96" font-size="12" fill="#475569" text-anchor="middle">usa</text>
+  <rect x="300" y="190" width="300" height="84" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="312" y="208" font-size="12" fill="#475569">Infraestructura</text>
+  <rect x="330" y="218" width="240" height="48" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="450.0" y="247.0" text-anchor="middle" font-weight="600" font-size="14" fill="#4c1d95">PedidoRepositorySQL</text>
+  <line x1="450" y1="213" x2="450" y2="141" stroke="#475569" stroke-width="2" marker-end="url(#a)" stroke-dasharray="6 5"/>
+  <text x="500" y="180" font-size="12" fill="#475569" text-anchor="middle">implementa</text>
+  <rect x="360" y="305" width="180" height="44" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="450.0" y="332.0" text-anchor="middle" font-weight="600" font-size="14" fill="#1f2937">Base de datos</text>
+  <line x1="450" y1="266" x2="450" y2="300" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <text x="320" y="378" text-anchor="middle" font-size="13" fill="#475569">El dominio pide objetos a una colección; cómo se guardan queda en la implementación</text>
+</svg>

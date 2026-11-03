@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -423,6 +424,26 @@ class TestCollectAdrContext:
         # Sin aprobado vigente se usa el último generado.
         assert ctx.mermaid == "flowchart TD\n  X --> Y"
         assert ctx.diagram_attachment_id == "att-2"
+
+    def test_el_patron_seleccionado_es_el_declarado_aunque_la_cita_principal_sea_otra(self, db):
+        from app.models.proposal import Proposal
+
+        _seed(db)
+        proposal = db.query(Proposal).filter(Proposal.lifecycle == "approved").one()
+        proposal.content = "## Patrones\n- Patrón principal: **Monolito modular** [1]\n"
+        proposal.citations = [
+            {"pattern_id": 4, "pattern_name": "API Gateway + BFF", "source_role": "primary"},
+        ]
+        db.commit()
+
+        # El declarado no está en las citas: se ubica en el catálogo por nombre.
+        with patch(
+            "app.core.adr_generator.pattern_names",
+            return_value=[(4, "API Gateway + BFF"), (9, "Monolito modular (Modular Monolith)")],
+        ):
+            ctx = collect_adr_context(db, user_id=1, project_id=5)
+
+        assert ctx.selected_pattern_id == 9
 
     def test_sin_propuesta_aprobada_no_hay_adr(self, db):
         _seed(db, approved=False)

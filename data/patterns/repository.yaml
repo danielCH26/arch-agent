@@ -70,3 +70,10 @@ structure_contributions:
       módulo. La interfaz pertenece al dominio y la implementación a la capa de
       infraestructura.
     source: 2
+image: "/pattern-images/repository.svg"
+image_alt: "El servicio usa una interfaz de repositorio que pertenece al dominio; la implementación SQL vive en la capa de infraestructura y es la única que habla con la base de datos."
+image_source:
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados"
+  url: null

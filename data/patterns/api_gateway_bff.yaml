@@ -45,6 +45,13 @@ example_scenarios:
   - "App móvil y web que necesitan respuestas distintas agregando datos de varios servicios para reducir las llamadas del cliente"
   - "Plataforma con múltiples servicios backend que expone una sola entrada con autenticación, límites de uso y enrutamiento"
   - "Producto con una app móvil, un portal web y una API pública para socios, cada uno con necesidades de datos diferentes"
+image: "/pattern-images/api_gateway_bff.png"
+image_alt: "Aplicaciones cliente que llaman a un API gateway; el gateway enruta y agrega peticiones hacia los servicios A y B, y se apoya en un proveedor de identidad, caché de respuestas y monitoreo."
+image_source:
+  titulo: "API gateways (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/gateway"
 
 # Campos de la HU de estructura de repositorio (F28). El esquema esta
 # documentado en data/patterns/repository.yaml.

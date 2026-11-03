@@ -44,6 +44,13 @@ example_scenarios:
   - "Sistema de pagos que debe poder cambiar de proveedor (Stripe, PayU, Wompi) sin reescribir la lógica de negocio"
   - "Servicio con reglas de negocio complejas que se expone por REST y por una cola de mensajes y debe tener alta cobertura de pruebas unitarias"
   - "Aplicación que hoy usa PostgreSQL pero el cliente podría exigir migrar a otra base de datos o a una API externa"
+image: "/pattern-images/hexagonal.svg"
+image_alt: "Hexágono con la aplicación (núcleo) en el centro y adaptadores alrededor: UI, scripts de prueba, logging, CLI de administración, SMS, email, base de datos y archivos, conectados por puertos."
+image_source:
+  titulo: "File:Hexagonal Architecture.svg (Wikimedia Commons)"
+  autor: "Cth027"
+  licencia: "CC BY-SA 4.0"
+  url: "https://commons.wikimedia.org/wiki/File:Hexagonal_Architecture.svg"
 
 # Campos de la HU de estructura de repositorio (F28). El esquema esta
 # documentado en data/patterns/repository.yaml.

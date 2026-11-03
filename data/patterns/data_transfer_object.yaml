@@ -67,3 +67,10 @@ structure_contributions:
       Esquemas del módulo: la forma del dato que entra y sale por la interfaz
       remota, separada de la entidad interna.
     source: 1
+image: "/pattern-images/data_transfer_object.svg"
+image_alt: "El cliente envía y recibe un DTO con solo los datos del contrato de la API; un mapeador lo convierte en la entidad interna, que nunca sale de la frontera remota."
+image_source:
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados"
+  url: null

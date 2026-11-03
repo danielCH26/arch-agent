@@ -1,8 +1,8 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProposalCard } from '../ProposalCard'
-import { getPatternDetail } from '../../api/patterns'
+import { getPatternCatalog, getPatternDetail, type Pattern } from '../../api/patterns'
 import { proposalsStore } from '../../stores/proposalsStore'
 import {
   createProposalStream,
@@ -23,6 +23,8 @@ vi.mock('../../api/proposals', () => ({
 
 vi.mock('../../api/patterns', () => ({
   getPatternDetail: vi.fn(),
+  // Sin catálogo por defecto: la tarjeta se ve igual, sin imágenes.
+  getPatternCatalog: vi.fn(() => Promise.resolve(new Map())),
 }))
 
 type Callbacks = Parameters<typeof createProposalStream>[2]
@@ -414,5 +416,74 @@ describe('ProposalCard HU8: justificación con patrones', () => {
     expect(detail).toHaveTextContent('Ventajas: simple de operar')
     expect(detail).toHaveTextContent('Fuentes indexadas: Catálogo curado de patrones (arch-agent)')
     expect(screen.getByRole('button', { name: 'Ocultar fuente' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  const catalogPattern = (id: number, name: string, image: string | null): Pattern => ({
+    id,
+    pattern_name: name,
+    category: null,
+    description: null,
+    use_cases: null,
+    tradeoffs: null,
+    when_not_to_use: null,
+    image,
+    image_alt: image ? `Diagrama de ${name} con sus módulos y su base de datos compartida` : null,
+    image_source: image
+      ? { titulo: 'Event-driven (Azure)', autor: 'Microsoft', licencia: 'CC BY 4.0', url: 'https://learn.microsoft.com/x', modificada: true }
+      : null,
+  })
+
+  it('muestra el patrón seleccionado con su imagen y atribución, y una miniatura por cita', async () => {
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([
+      [3, catalogPattern(3, 'Monolito modular', '/pattern-images/modular_monolith.svg')],
+      [8, catalogPattern(8, 'Microservicios', '/pattern-images/microservices.svg')],
+    ]))
+    await renderWithProposal(proposalOut({ citations, justification }))
+
+    const selected = await screen.findByTestId('proposal-selected-pattern')
+    expect(selected).toHaveTextContent('Patrón seleccionado: Monolito modular')
+    expect(within(selected).getByRole('img', { name: /Diagrama de Monolito modular/ })).toHaveAttribute('src', '/pattern-images/modular_monolith.svg')
+    // CC BY exige indicar los cambios.
+    expect(selected).toHaveTextContent('Microsoft · CC BY 4.0, adaptada')
+    expect(within(screen.getByTestId('citation-1')).getByRole('img', { name: 'Miniatura de Monolito modular' })).toBeInTheDocument()
+    expect(within(screen.getByTestId('citation-2')).getByRole('img', { name: 'Miniatura de Microservicios' })).toBeInTheDocument()
+  })
+
+  it('si la cita principal no es el patrón declarado, muestra el declarado', async () => {
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([
+      [3, catalogPattern(3, 'API Gateway + BFF', '/pattern-images/api_gateway_bff.png')],
+      [9, catalogPattern(9, 'Monolito modular', '/pattern-images/modular_monolith.svg')],
+    ]))
+    const mismatch = {
+      ...justification,
+      cites_patterns: false,
+      declared_primary: 'monolito modular',
+      primary_pattern_name: 'API Gateway + BFF',
+      primary_in_sources: false,
+      selected_pattern_id: 9,
+    }
+    await renderWithProposal(proposalOut({ citations, justification: mismatch }))
+
+    const selected = await screen.findByTestId('proposal-selected-pattern')
+    expect(selected).toHaveTextContent('Patrón seleccionado: Monolito modular')
+    expect(selected).not.toHaveTextContent('API Gateway')
+  })
+
+  it('si no se ubicó el patrón declarado, no muestra el de la cita principal', async () => {
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[3, catalogPattern(3, 'API Gateway + BFF', '/pattern-images/api_gateway_bff.png')]]))
+    const mismatch = { ...justification, cites_patterns: false, primary_in_sources: false, selected_pattern_id: null }
+    await renderWithProposal(proposalOut({ citations, justification: mismatch }))
+
+    await waitFor(() => expect(getPatternCatalog).toHaveBeenCalled())
+    expect(screen.queryByTestId('proposal-selected-pattern')).not.toBeInTheDocument()
+  })
+
+  it('sin imagen del patrón elegido no muestra el bloque', async () => {
+    vi.mocked(getPatternCatalog).mockResolvedValue(new Map([[3, catalogPattern(3, 'Monolito modular', null)]]))
+    await renderWithProposal(proposalOut({ citations, justification }))
+
+    await waitFor(() => expect(getPatternCatalog).toHaveBeenCalled())
+    expect(screen.queryByTestId('proposal-selected-pattern')).not.toBeInTheDocument()
+    expect(screen.getByTestId('citation-1')).toHaveTextContent('Monolito modular')
   })
 })

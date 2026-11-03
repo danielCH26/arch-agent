@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 440" font-family="Segoe UI, Arial, sans-serif" font-size="16">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+  <rect width="640" height="440" fill="#ffffff"/>
+  <text x="320" y="32" text-anchor="middle" font-size="20" font-weight="600" fill="#1f2937">Lambda frente a Kappa</text>
+
+  <text x="30" y="66" fill="#334155" font-weight="600">Lambda: dos caminos</text>
+  <rect x="30" y="110" width="120" height="56" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+  <text x="90" y="134" text-anchor="middle" fill="#334155" font-size="14">Flujo de</text>
+  <text x="90" y="152" text-anchor="middle" fill="#334155" font-size="14">eventos</text>
+  <g fill="#e0f2fe" stroke="#0284c7" stroke-width="2">
+    <rect x="180" y="78" width="240" height="44" rx="10"/><rect x="180" y="154" width="240" height="44" rx="10"/>
+  </g>
+  <g text-anchor="middle" fill="#0c4a6e" font-size="14">
+    <text x="300" y="105">Capa batch (histórico)</text><text x="300" y="181">Capa de velocidad (streaming)</text>
+  </g>
+  <rect x="450" y="110" width="160" height="56" rx="10" fill="#1d4ed8"/>
+  <text x="530" y="134" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="600">Capa de servicio</text>
+  <text x="530" y="152" text-anchor="middle" fill="#dbeafe" font-size="13">une ambas vistas</text>
+  <g stroke="#475569" stroke-width="2" marker-end="url(#a)">
+    <line x1="150" y1="130" x2="176" y2="104"/><line x1="150" y1="146" x2="176" y2="172"/>
+    <line x1="420" y1="102" x2="446" y2="126"/><line x1="420" y1="174" x2="446" y2="150"/>
+  </g>
+  <text x="320" y="224" text-anchor="middle" font-size="13" fill="#475569">La misma lógica se escribe dos veces: una para batch y otra para tiempo real</text>
+
+  <line x1="30" y1="244" x2="610" y2="244" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6 4"/>
+
+  <text x="30" y="276" fill="#334155" font-weight="600">Kappa: un solo camino</text>
+  <rect x="30" y="296" width="120" height="56" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+  <text x="90" y="320" text-anchor="middle" fill="#334155" font-size="14">Log de eventos</text>
+  <text x="90" y="338" text-anchor="middle" fill="#334155" font-size="14">(reproducible)</text>
+  <rect x="180" y="296" width="240" height="56" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="300" y="320" text-anchor="middle" fill="#065f46" font-size="14" font-weight="600">Procesamiento</text>
+  <text x="300" y="338" text-anchor="middle" fill="#065f46" font-size="14">en streaming</text>
+  <rect x="450" y="296" width="160" height="56" rx="10" fill="#1d4ed8"/>
+  <text x="530" y="329" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="600">Vistas de servicio</text>
+  <g stroke="#475569" stroke-width="2" marker-end="url(#a)">
+    <line x1="150" y1="324" x2="176" y2="324"/><line x1="420" y1="324" x2="446" y2="324"/>
+  </g>
+  <path d="M300 352 C300 392, 90 392, 90 356" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="195" y="404" text-anchor="middle" font-size="13" fill="#475569">para recalcular, se reproduce el log</text>
+  <text x="320" y="430" text-anchor="middle" font-size="13" fill="#475569">Kappa elimina la capa batch: una sola base de código para datos históricos y en tiempo real</text>
+</svg>

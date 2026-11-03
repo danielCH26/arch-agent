@@ -60,3 +60,10 @@ structure_contributions:
       marcaron los repositorios. Si el ORM ya la provee, esta pieza es la del
       ORM y no una clase propia.
     source: 2
+image: "/pattern-images/unit_of_work.svg"
+image_alt: "Los repositorios registran en la unidad de trabajo los objetos nuevos, modificados y eliminados de una operación; el commit los guarda en la base de datos en una sola transacción."
+image_source:
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados"
+  url: null

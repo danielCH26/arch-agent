@@ -50,6 +50,7 @@ from app.core.llm_errors import (
     llm_error_message,
 )
 from app.core.mermaid_validator import extract_mermaid_block, sanitize_mermaid
+from app.core.pattern_justification import selected_pattern_id
 from app.core.proposal_notes import strip_modification_note
 from app.core.session_store import latest_diagram_decisions
 from app.core.text_norm import normalize_text
@@ -59,6 +60,7 @@ from app.core.viability_rules import (
     GUIDE_ASSUMPTION_RULES,
 )
 from app.models.approval import Approval
+from app.models.architect_pattern import pattern_names
 from app.models.message import Message
 from app.models.project import Project
 from app.models.proposal import Proposal
@@ -168,6 +170,9 @@ class AdrContext:
     # Por qué no se pudo redactar la sección 7 (llm_errors: too_large,
     # rate_limit, timeout, incomplete, error). Solo para el aviso al usuario.
     guide_failure: Optional[str] = None
+    # Patrón que declara la propuesta aprobada (no siempre la cita principal
+    # del RAG): su imagen va en la sección 3. None si no se pudo ubicar.
+    selected_pattern_id: Optional[int] = None
     # Plan de despliegue APROBADO (mapeo componente -> servicio de nube), tal
     # como quedó guardado junto a su diagrama. ``None`` si el proyecto no
     # llegó a aprobar un despliegue: el ADR simplemente no trae esa parte.
@@ -375,13 +380,14 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         .all()
     ]
 
+    proposal_markdown = strip_modification_note(_content_to_text(proposal.content)).strip()
     return AdrContext(
         project_name=project.name or f"Proyecto {project_id}",
         project_description=(project.description or "").strip(),
         current_phase=project.current_phase,
         resumen=elicitation.get("resumen") or {},
         preguntas_respuestas=list(elicitation.get("preguntas_respuestas") or []),
-        proposal_markdown=strip_modification_note(_content_to_text(proposal.content)).strip(),
+        proposal_markdown=proposal_markdown,
         proposal_iteration=proposal.iteration,
         proposal_lifecycle=proposal.lifecycle,
         proposal_feedback_history=[
@@ -392,6 +398,10 @@ def collect_adr_context(db: Session, *, user_id: int, project_id: int) -> AdrCon
         diagram_approved=diagram_approved,
         diagram_attachment_id=diagram_attachment_id,
         decisions=decisions,
+        # El catálogo solo se consulta si el patrón declarado no está en las citas.
+        selected_pattern_id=selected_pattern_id(
+            proposal_markdown, list(proposal.citations or []), lambda: pattern_names(db)
+        ),
         deployment=_approved_deployment(
             db,
             user_id=user_id,

@@ -41,6 +41,13 @@ example_scenarios:
   - "Sistema bancario o contable que debe conservar cada cambio de saldo como un evento inmutable para auditoría regulatoria"
   - "Plataforma de seguros donde hay que reconstruir el estado de una póliza en cualquier fecha pasada"
   - "Aplicación donde el requisito legal es poder reproducir toda la historia de un expediente y deshacer cambios"
+image: "/pattern-images/event_sourcing.svg"
+image_alt: "Event sourcing: los comandos agregan eventos (carrito creado, ítem agregado, ítem quitado) a un almacén de eventos y a una cola; manejadores de eventos actualizan vistas de solo lectura y sistemas externos."
+image_source:
+  titulo: "Event Sourcing pattern (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
 
 # Campos de la HU de estructura de repositorio (F28). El esquema esta
 # documentado en data/patterns/repository.yaml.

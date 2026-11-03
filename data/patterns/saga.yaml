@@ -45,6 +45,13 @@ fuentes:
     url: "https://microservices.io/patterns/data/saga.html"
   - titulo: "Saga distributed transactions pattern (Microsoft Azure Architecture Center)"
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/saga"
+image: "/pattern-images/saga.png"
+image_alt: "Saga: tres servicios, cada uno con su transacción local, encadenados mediante mensajes o eventos que disparan el siguiente paso."
+image_source:
+  titulo: "Saga design pattern (Azure Architecture Center)"
+  autor: "Microsoft (Azure Architecture Center)"
+  licencia: "CC BY 4.0"
+  url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/saga"
 
 # Campos de la HU de estructura de repositorio (F28). El esquema esta
 # documentado en data/patterns/repository.yaml.

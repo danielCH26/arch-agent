@@ -42,6 +42,13 @@ example_scenarios:
   - "Plataforma de e-commerce con catálogo, pedidos, pagos e inventario que un equipo de 6 personas despliega como una sola aplicación pero con módulos independientes"
   - "Producto SaaS que hoy tiene un equipo pequeño y podría separar módulos en servicios más adelante si crece"
   - "ERP para una pyme con facturación, compras y nómina como módulos que comparten una base de datos"
+image: "/pattern-images/modular_monolith.svg"
+image_alt: "Una sola aplicación desplegable dividida en módulos (pedidos, pagos, catálogo), cada uno con su API pública y su lógica y datos, sobre una base de datos compartida con esquemas separados."
+image_source:
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados"
+  url: null
 
 # Campos de la HU de estructura de repositorio (F28). El esquema esta
 # documentado en data/patterns/repository.yaml.

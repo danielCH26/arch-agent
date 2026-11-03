@@ -60,3 +60,10 @@ structure_contributions:
       Carpeta de servicios: una clase por módulo con las operaciones que la
       aplicación ofrece hacia afuera, y la coordinación de cada una.
     source: 1
+image: "/pattern-images/service_layer.svg"
+image_alt: "Un controlador REST, un job programado y un consumidor de cola llaman a la misma capa de servicios, que coordina las reglas del dominio y los repositorios en una transacción."
+image_source:
+  titulo: "Elaboración propia (diagrama del proyecto arch-agent)"
+  autor: "Equipo arch-agent"
+  licencia: "Todos los derechos reservados"
+  url: null

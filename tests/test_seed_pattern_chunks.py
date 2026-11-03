@@ -40,3 +40,43 @@ def test_reseed_keeps_source_upload_chunks(monkeypatch):
     assert delete_params == (7,)
     assert not any(sql.startswith("DELETE") for sql, _ in cur.calls[1:])
     assert created == 1
+
+
+class FakeConn:
+    def __init__(self, rowcount):
+        self.cur = FakeCursor()
+        self.cur.rowcount = rowcount
+
+    def cursor(self):
+        return self.cur
+
+
+def test_images_only_sync_does_not_embed_nor_delete(monkeypatch):
+    """F29: el arranque del backend copia las imagenes sin recalcular embeddings."""
+    patterns = [
+        {
+            "pattern_name": "Monolito modular",
+            "image": "/pattern-images/modular_monolith.svg",
+            "image_alt": "Una sola aplicacion dividida en modulos",
+            "image_source": {"titulo": "Propio", "autor": "Equipo", "licencia": "X", "url": None},
+        },
+        {"pattern_name": "Sin imagen"},
+    ]
+    monkeypatch.setattr(seed_patterns, "load_patterns", lambda: patterns)
+
+    def no_embed(_text):
+        raise AssertionError("--images-only no debe cargar el modelo")
+
+    monkeypatch.setattr(seed_patterns, "embed_passage", no_embed)
+    conn = FakeConn(rowcount=1)
+
+    updated = seed_patterns.sync_pattern_images(conn)
+
+    assert updated == 2
+    sqls = [sql for sql, _params in conn.cur.calls]
+    assert all(sql.startswith("UPDATE architect_patterns SET image = %s") for sql in sqls)
+    first_params = conn.cur.calls[0][1]
+    assert first_params[0] == "/pattern-images/modular_monolith.svg"
+    assert '"autor": "Equipo"' in first_params[2]
+    assert first_params[3] == "Monolito modular"
+    assert conn.cur.calls[1][1] == (None, None, None, "Sin imagen")

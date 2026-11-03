@@ -226,6 +226,9 @@ const PRINT_STYLES = (runningTitle: string) => `
   figure { margin: ${S.sm}pt 0 ${S.md}pt; text-align: center; break-inside: avoid; border: 1px solid ${C.sky}; border-radius: 8px; padding: ${S.md}pt; background: #fff; }
   figcaption { font-size: ${T.small}pt; color: ${C.muted}; margin-top: 6pt; }
   figcaption strong { color: ${C.primary}; }
+  /* Patrón seleccionado (sección 3): mismo estilo que la tarjeta de la opción recomendada. */
+  figure[data-kind="pattern"] { border: 1px solid ${C.line}; border-left: 4px solid ${C.success}; border-radius: 6px; background: ${C.paper}; }
+  figure[data-kind="pattern"] img { max-height: 90mm; }
   a { color: ${C.primary}; }
 `
 
@@ -560,7 +563,8 @@ export function buildAdrPrintDocument(bodyHtml: string, options: AdrPrintOptions
 
   // Pie de cada diagrama: el párrafo en cursiva que le sigue en el ADR
   // ("Figura 1. ...") pasa a ser su <figcaption>.
-  root.querySelectorAll('figure').forEach((figure) => {
+  // La figura del patrón ya trae su pie (fuente y licencia): no se le suma otro.
+  root.querySelectorAll('figure:not([data-kind="pattern"])').forEach((figure) => {
     const next = figure.nextElementSibling
     const em = next?.firstElementChild
     if (next?.tagName !== 'P' || next.children.length !== 1 || em?.tagName !== 'EM' || text(next) !== text(em)) return
@@ -569,7 +573,9 @@ export function buildAdrPrintDocument(bodyHtml: string, options: AdrPrintOptions
     figure.appendChild(caption)
     next.remove()
   })
-  const diagramSrc = root.querySelector('figure img')?.getAttribute('src') ?? ''
+  // Miniatura de la portada: el diagrama de la arquitectura, no la imagen del
+  // patrón, que va antes (sección 3) y es una ilustración genérica.
+  const diagramSrc = root.querySelector('figure:not([data-kind="pattern"]) img')?.getAttribute('src') ?? ''
 
   tradeoffCards(parsed, root)
   qualityChips(parsed, root)

@@ -39,6 +39,9 @@ export interface ProposalJustification {
   primary_pattern_name: string | null
   primary_in_sources: boolean
   justified: boolean
+  // F29: patrón que declara la propuesta (puede no ser la cita principal del
+  // RAG); su imagen es la del "Patrón seleccionado". null si no se ubicó.
+  selected_pattern_id?: number | null
 }
 
 export type ProposalLifecycle = 'proposed' | 'approved' | 'rejected'
