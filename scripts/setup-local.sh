@@ -40,7 +40,22 @@ need() {
 ensure_line_in_env() {
     local key="$1" value="$2"
     local env_file=".env"
+    # Solo se da por puesta si la linea existe CON valor. .env.example trae
+    # las claves vacias ("JWT_SECRET_KEY="), y con un grep de "^KEY=" esa
+    # linea cuenta como presente: la clave generada se descartaba y el
+    # .env se quedaba vacio. Despues /register creaba el usuario y fallaba
+    # al firmar el token, y al reintentar daba 409 por usuario existente.
+    if grep -qE "^${key}=.+$" "$env_file"; then
+        return 0
+    fi
+    # Si la linea existe pero vacia, se reemplaza en vez de agregar otra.
     if grep -qE "^${key}=" "$env_file"; then
+        local tmp
+        tmp="$(mktemp)"
+        grep -vE "^${key}=" "$env_file" > "$tmp"
+        echo "${key}=${value}" >> "$tmp"
+        mv "$tmp" "$env_file"
+        log "  ~ ${key}=... reemplazada (estaba vacia) en .env"
         return 0
     fi
     echo "${key}=${value}" >> "$env_file"
@@ -111,11 +126,14 @@ else
 fi
 
 # --- 4. docker compose up -------------------------------------------------
-log "Construyendo imágenes Docker (backend + spa)..."
-docker compose build backend spa 2>&1 | tail -10
+log "Construyendo imágenes Docker (backend + spa + puppeteer-mcp)..."
+docker compose build backend spa puppeteer-mcp 2>&1 | tail -10
 
 log "Levantando stack completo..."
-docker compose up -d postgres-app spa engram engram-proxy
+# langfuse-worker va explicito: no es dependencia de nadie (solo lo es de
+# langfuse-web, que ya esta), asi que compose no lo levanta solo. Sin el,
+# Langfuse queda en "Waiting for first trace" sin dar ningun error.
+docker compose up -d postgres-app spa engram engram-proxy langfuse-worker
 docker compose up -d backend
 
 wait_for_postgres

@@ -38,7 +38,9 @@ cd arch-agent
 bash scripts/setup-local.sh
 ```
 
-El script es **re-ejecutable**: detecta qué pasos ya hizo y se los salta. Genera `JWT_SECRET_KEY` y `ENCRYPTION_KEY` si están vacías, levanta el stack y espera a que el backend responda.
+El script es **re-ejecutable**: detecta qué pasos ya hizo y se los salta. Genera `JWT_SECRET_KEY` y `ENCRYPTION_KEY` **si están vacías** (y las escribe en el `.env`), levanta el stack y espera a que el backend responda.
+
+Levanta también `langfuse-worker`, que no es dependencia de nadie y sin él Langfuse queda esperando su primer trace sin dar error.
 
 ### Opción B — manual
 
@@ -87,16 +89,14 @@ docker compose exec -T backend python scripts/seed_patterns.py   # reindexa los 
 | `ENCRYPTION_KEY` | Cifra la API key del LLM del usuario | **Fernet**: 32 bytes en base64 url-safe. `docker compose run --rm --no-deps backend python scripts/generate_encryption_key.py` |
 
 > Las dos son necesarias **para usar la app**, pero el backend **arranca sin ellas** y se ve sano. Eso es lo confuso: sin `JWT_SECRET_KEY` falla al iniciar sesión (no al arrancar), y sin `ENCRYPTION_KEY` el wizard del LLM devuelve **500** al cifrar la API key.
-
-> `ENCRYPTION_KEY` no es un string cualquiera: tiene que ser una clave Fernet
-> válida (44 caracteres base64 url-safe). Si no lo es, el wizard del LLM
-> falla con un **500** al cifrar la API key.
+>
+> `ENCRYPTION_KEY` además tiene que ser una clave Fernet **válida** (44 caracteres base64 url-safe), no un string cualquiera.
 
 ### Para usar un LLM
 
 | Variable | Cuándo |
 |---|---|
-| *(ninguna)* | Si configurás el LLM **desde la UI** (engranaje → Configuración Global del LLM). Es lo recomendado |
+| *(ninguna)* | Si configurás el LLM **desde la UI** (engranaje del pie de la barra lateral → Configuración del LLM). Es lo recomendado |
 | `GROQ_API_KEY` | Si querés el default de backend (Groq, `openai/gpt-oss-120b`) sin tocar la UI |
 
 > **Cuidado con `GROQ_API_KEY` si la app tiene registro abierto.** La key es del
@@ -133,10 +133,14 @@ Con el stack arriba, esto tiene que responder:
 Y después, en el navegador:
 
 1. Registrarse en <http://localhost:5173> (la contraseña necesita 8+ caracteres, mayúscula, número y símbolo).
-2. Entrar al engranaje de abajo a la derecha → **Configuración Global del LLM** → completar los 3 pasos.
-3. Crear un proyecto y responder la elición.
+2. Entrar al **engranaje del pie de la barra lateral** → **Configuración del LLM** → completar los 3 pasos.
+3. Crear un proyecto y responder la elicitación.
 
 Si los 3 pasos funcionan, la instalación está completa.
+
+> El paso 2 es el que falla si `ENCRYPTION_KEY` quedó vacía: el backend
+> registra el usuario y después explota al firmar el token. Si te pasa eso,
+> el problema son las claves, no la instalación.
 
 ---
 
@@ -181,6 +185,10 @@ docker compose exec -T backend python scripts/seed.py           # datos de ejemp
 python -m pip install -r requirements.txt
 python -m pip install pytest pytest-mock pytest-asyncio pytest-cov
 
+# Para que sea "igual que CI": las wheels de torch SOLO CPU. Sin esto, pip
+# baja la versión con CUDA, que son varios GB.
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 # el schema y las migraciones, contra el Postgres del stack
 docker compose exec -T backend python scripts/init_db.py
 docker compose exec -T backend python -m migrations.run_migrations
@@ -211,6 +219,11 @@ docker compose -f docker-compose.yml -f docker-compose.walk.yml -p walk-hu10 dow
 ```
 
 Levanta un stack **aislado** en los puertos 18xxx y recorre el flujo completo de fases.
+
+> **Necesita `WALK_LLM_API_KEY`**: el walk llama al modelo para generar la
+> propuesta, y sin la key aborta con *"WALK_LLM_API_KEY no está seteada"*.
+> El script nunca la imprime. También acepta `WALK_LLM_BASE_URL` y
+> `WALK_LLM_MODEL` para apuntar a otro proveedor.
 
 ---
 
@@ -270,7 +283,11 @@ La imagen de Postgres no trae pgvector. `docker-compose.yml` ya usa `pgvector/pg
 docker compose run --rm --no-deps backend python scripts/generate_encryption_key.py
 ```
 
-y poné el resultado en `.env`, después `docker compose restart backend`.
+y poné el resultado en `.env`, después `docker compose up -d backend`.
+
+> `restart` **no** relee el `env_file`: reinicia el contenedor con las variables
+> que ya tenía. Para que una clave nueva entre hay que recrearlo con
+> `docker compose up -d backend`.
 
 **La propuesta se genera sin citar ningún patrón**
 
@@ -307,6 +324,14 @@ docker compose up -d engram-proxy
 
 Es un servicio aparte del `engram`, así que no lo levanta cualquier `docker compose up`. El síntoma es confuso: el puerto está publicado y Engram figura "healthy", pero la conexión se corta al instante.
 
+> Ojo: un `docker compose up -d` **completo** sí lo levanta. Lo que no lo levanta
+> es pedir solo un subconjunto (`postgres-app backend spa`), porque `engram-proxy`
+> no es dependencia de nadie.
+
+**El backend también pasa por el proxy**
+
+El compose le pone `ENGRAM_URL=http://engram:7437`, y ese 7437 **no es Engram**: lo sirve el `socat` del `engram-proxy`. Si el proxy no está, el backend tampoco alcanza a Engram, no solo el host.
+
 **El puerto 7437 está ocupado por tu Engram local (Gentle AI)**
 
 Por eso el compose publica el 7439 → 7437 interno. Si igual choca, cambiá el mapeo a `"7437:7437"` en `docker-compose.yml` y ajustá `ENGRAM_URL` **solo si lo usan scripts del host**.
@@ -334,10 +359,15 @@ El navegador cachea el bundle. `Ctrl+Shift+R`, o reconstruí: `docker compose up
 Langfuse, ClickHouse, MinIO y Redis son para **observabilidad**, pero **no se pueden dejar afuera**: el servicio `backend` declara `depends_on` de `engram`, `langfuse-web` y `puppeteer-mcp`, así que compose levanta esas dependencias y las de ellas aunque pidas solo `backend`.
 
 ```bash
-docker compose up -d postgres-app backend spa   # levanta 8 contenedores, no 3
+docker compose up -d postgres-app backend spa   # levanta 11 contenedores, no 3
 ```
 
-Quedan afuera únicamente `langfuse-worker` y `engram-proxy` (este último es justo el que hace falta para que Engram responda en el host, ver [Engram](#engram)).
+De los 13 servicios del compose quedan afuera **solo** `langfuse-worker` y `engram-proxy` (este último es justo el que hace falta para que Engram responda en el host, ver [Engram](#engram)).
+
+> `langfuse-worker` no es dependencia de nadie (solo lo es de `langfuse-web`, que
+> ya está), así que compose no lo levanta solo. Sin él, Langfuse queda en
+> *"Waiting for first trace"* sin dar ningún error. `setup-local.sh` lo levanta
+> explícitamente por eso.
 
 Si lo que querés es un stack mínimo de verdad, hay que poner las dependencias en `profiles` o `required: false` en el `docker-compose.yml`. Eso es un cambio del compose, no un flag de la CLI.
 
@@ -350,8 +380,9 @@ El deploy es por **tag semver**, disparando `deploy-railway.yml`. El flujo compl
 ### Antes del primer deploy
 
 1. **Desconectar el auto-deploy de GitHub** en el servicio de Railway. Si queda conectado, cada push a `main` despliega y se rompe la regla de "merge a main no despliega".
-2. **Crear el environment `production` en GitHub** con required reviewers, y apuntar el job de deploy a ese environment. Si no, el deploy queda esperando una aprobación que nadie ve.
-3. **Validar el workflow antes de confiarle un tag.** Con un `workflow_dispatch` (input `ref`) apuntando a un commit de `main`, que es lo que recomienda `CI-CD.md`; el CLI de Railway puede fallar con `Not signed in` si no se validó antes.
+2. **Crear el environment `production` en GitHub y configurarle required reviewers.** El job de `deploy-railway.yml` ya declara `environment: production`, así que no hay que apuntarlo: si el environment no existe, **GitHub lo crea solo y sin protección**, y el deploy sale sin que nadie lo apruebe. Si lo creás vos, podés exigir la aprobación.
+3. **Validar el workflow antes de confiarle un tag.** `workflow_dispatch` (input `ref`) apuntando a un commit de `main`, que es lo que recomienda `CI-CD.md`. Ojo: **no es un dry-run, despliega de verdad** — apuntalo a un commit de `main` y no a una rama de pruebas.
+4. **Configurar el Release Command de Railway** para aplicar el schema y las migraciones (ver [abajo](#lo-que-el-workflow-no-despliega)).
 
 ### Configurar en Railway (una sola vez)
 
@@ -370,7 +401,21 @@ El deploy es por **tag semver**, disparando `deploy-railway.yml`. El flujo compl
 `deploy-railway.yml` sube **solo el backend**. Quedan por tu cuenta:
 
 - **La base de datos.** El servicio de Railway necesita su Postgres con **pgvector** (`pgvector/pgvector:pg16`), y hay que configurar `DATABASE_URL` apuntando a ella.
-- **Las variables de runtime** del servicio: `JWT_SECRET_KEY`, `ENCRYPTION_KEY` (Fernet válida), `POSTGRES_*`, `LANGFUSE_*`, `ENGRAM_*`, `PUPPETEER_MCP_URL` y las que uses para el LLM. Son las mismas de `.env.example`, pero en Railway.
+- **El schema y las migraciones.** El `command` del compose (`init_db.py && run_migrations && uvicorn`) **solo existe en `docker-compose.yml`**. El `CMD` del `backend/Dockerfile` corre `uvicorn` pelado y `server.py` no aplica nada. Contra una base nueva, el primer deploy queda sin tablas, y cada migración posterior queda sin aplicar.
+  Configurá el **Release Command** del servicio de Railway con:
+  ```
+  python scripts/init_db.py && python -m migrations.run_migrations
+  ```
+  Corre en cada deploy, antes de reemplazar la instancia.
+- **El catálogo de patrones.** Después del primer deploy hay que indexarlo una vez:
+  ```
+  python scripts/seed_patterns.py
+  ```
+  Sin esto, las propuestas se generan con 0 patrones citados.
+- **La SPA, Engram, Puppeteer y Langfuse.** El workflow no los despliega: son servicios aparte. Si los querés, configurá un servicio por uno con su propio `Dockerfile`.
+- **Las variables de runtime** del servicio: `JWT_SECRET_KEY`, `ENCRYPTION_KEY` (Fernet válida), `POSTGRES_*`, `LANGFUSE_*`, `ENGRAM_*` y las del LLM.
+
+> **No son las mismas de `.env.example`:** ahí `ENGRAM_URL` apunta a `localhost:7439` (el host) y `PUPPETEER_MCP_URL` a un host interno de compose. En Railway tienen que apuntar a los servicios reales.
 
 ### El deploy
 
@@ -402,7 +447,7 @@ curl -fsS http://localhost:7439/health -o /dev/null && echo "Engram OK"
 
 **Objetivo: < 30 minutos.**
 
-Medido en una máquina limpia (sin contenedores previos):
+Lo que mide esta tabla, con las imágenes ya descargadas:
 
 | Paso | Tiempo |
 |---|---|
@@ -415,17 +460,20 @@ Medido en una máquina limpia (sin contenedores previos):
 
 Casi todo es el build del backend: instala las wheels de **torch CPU** (~2 GB). Si las imágenes ya están en tu caché de Docker, el stack levanta en **menos de 1 minuto**.
 
-> Esta tabla mide **los builds y el arranque**, no la descarga de las imágenes
-> de terceros (Langfuse, ClickHouse, MinIO, Redis, Engram, socat, pgvector). En
-> una máquina nueva esas descargas se suman y dependen de la conexión, así que
-> la primera vez puede ir bastante más de 30 minutos.
+> **Lo que esta tabla NO mide**, y por lo tanto el objetivo de 30 minutos **todavía no está demostrado en una máquina limpia**:
+>
+> - La **descarga de las imágenes de terceros**: Langfuse (web, worker, db), ClickHouse, ClickHouse keeper, MinIO, Redis, Engram, socat, pgvector. Con la caché de Docker fría son varios GB y dependen de la conexión.
+> - El **build de `puppeteer-mcp`**, que instala Chromium.
+> - La **descarga del modelo de embeddings** (~470 MB) que hace `seed_patterns.py` al indexar el catálogo.
+>
+> Medido de punta a punta con la caché vacía, el número es mayor que 30 minutos. **Para que el KR sea un hecho y no una promesa, hay que medirlo en una máquina virtual limpia y anotar el número real acá.**
 
 Si te pasás, casi siempre es una de estas dos:
 
 | Causa | Qué hacer |
 |---|---|
 | Sin `scripts/setup-local.sh` | Corrélo: automatiza claves + espera |
-| Imágenes de terceros sin descargar | `docker compose pull` beforehand, o dejalo correr la primera vez |
+| Imágenes de terceros sin descargar | `docker compose pull` antes de arrancar, o dejalo correr la primera vez |
 
 > No hay forma de levantar "solo el backend" sin las dependencias de
 > observabilidad: el `backend` las declara en `depends_on` y compose las
